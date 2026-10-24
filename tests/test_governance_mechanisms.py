@@ -865,7 +865,16 @@ def _git_fixture(tmp_path):
     def fixture_promote(*args, **kwargs):
         kwargs.setdefault("observed_repo", d["repo"])
         kwargs.setdefault("observed_pr_number", d["pr_number"])
-        kwargs.setdefault("ci_verified_sha", d["candidate_sha"])
+        if "staged_commit" not in kwargs and "ci_verified_sha" not in kwargs:
+            # Like r1_pipeline: build M from the authorized tree/parents and report the checks on M itself.
+            real_tree = subprocess.run(["git", "-C", str(r), "merge-tree", "--write-tree", *d["expected_parents"]],
+                                       check=True, capture_output=True, text=True).stdout.split()[0]
+            staged = subprocess.run(["git", "-C", str(r), "commit-tree", real_tree,
+                                     *[a for p in d["expected_parents"] for a in ("-p", p)]],
+                                    input="R1 staged merge\n", check=True, capture_output=True, text=True,
+                                    env={**os.environ, "GIT_AUTHOR_NAME": "aao-integrator", "GIT_AUTHOR_EMAIL": "i@x",
+                                         "GIT_COMMITTER_NAME": "aao-integrator", "GIT_COMMITTER_EMAIL": "i@x"}).stdout.strip()
+            kwargs["staged_commit"], kwargs["ci_verified_sha"] = staged, staged
         return promote(*args, **kwargs)
     return fixture_promote, r, bare, base, head, tree, d, sources, sign(d,str(auditor_private))
 
@@ -1558,8 +1567,10 @@ def test_integrator_blocks_when_remote_candidate_head_moves(tmp_path):
     git(rival, "push", "--force", "origin", "candidate")
     git(repo, "fetch", "origin", "candidate")
     assert git(rival, "rev-parse", "HEAD") != head
+    # Either control rejects it first: the moved head (PR head mismatch) or M no longer matching the merge it
+    # would publish (staged commit tree differs). Both fail closed with main unchanged.
     _assert_integrator_rejects_without_main_change(
-        promote, repo, bare, auth, signature, sources, "PR head mismatch")
+        promote, repo, bare, auth, signature, sources, "PR head mismatch|staged commit tree differs")
 
 
 def test_authorization_rejects_git_version_mismatch(tmp_path):
@@ -2201,3 +2212,11 @@ def test_notifier_rejects_unknown_key_and_control_field_collision(tmp_path):
         consume(event, {"issuer": str(public)}, state, "2026-01-01T00:00:00+00:00", sink)
     with pytest.raises(ValueError, match="control"):
         append(tmp_path / "collision", {"sequence": 9}, "issuer", str(private), {"issuer": str(public)})
+
+
+def test_integrator_never_accepts_checks_verified_on_the_pr_head(tmp_path):
+    # Codex pre-audit r1 A-01: CI evidence must be on M (staged_commit), never on the PR head.
+    promote, repo, bare, _base, head, _tree, auth, sources, signature = _git_fixture(tmp_path)
+    _assert_integrator_rejects_without_main_change(
+        lambda *a, **k: promote(*a, **{**k, "ci_verified_sha": head}),
+        repo, bare, auth, signature, sources, "CI evidence is for another candidate")

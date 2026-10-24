@@ -356,9 +356,9 @@ def promote(repo: Path, remote: str, auth: dict[str, Any], signature: str,
             raise ValueError("staged commit tree differs from authorized merge tree")
         if staged_parents != expected_parents:
             raise ValueError("staged commit parents differ from authorized parents")
-    if ci_verified_sha == auth.get("candidate_sha") or (
-        staged_commit is not None and ci_verified_sha == staged_commit
-    ):
+    # Required checks count only when verified on M itself (the staged merge commit that will be published), never on
+    # the PR head (E2E_PR_PIPELINE invariant; Codex pre-audit r1 A-01).
+    if staged_commit is not None and ci_verified_sha == staged_commit:
         state["ci_candidate_sha"] = auth["candidate_sha"]
     reasons = validate(auth, signature, state)
     if not all((ra01, ra02, ra03, ra07, ra09)):

@@ -7,6 +7,7 @@ import pytest
 
 from aao import protected_routes, r1_pipeline
 
+
 @pytest.fixture
 def normative():
     return protected_routes.load_document()
@@ -112,9 +113,9 @@ def _push(actor, head, before, ref="refs/heads/feature"):
 
 @pytest.mark.nt("NT-02-3")
 def test_supervisor_attributes_fork_prs_through_push_chain_and_commit_history(tmp_path, monkeypatch):
-    from aao.supervisor_service import attribution
-    from aao.manifest_audit import attributed_implementers, attributed_principals
     from aao import manifest_audit
+    from aao.manifest_audit import attributed_implementers, attributed_principals
+    from aao.supervisor_service import attribution
 
     candidate, parent, commit = "a" * 40, "b" * 40, "c" * 40
     registry = "/repos/org/repo/pulls?state=open&per_page=100"
@@ -166,10 +167,11 @@ def test_supervisor_malformed_fork_skips_repo_and_pull_failure_writes_nothing(tm
 
 @pytest.mark.nt("NT-02-10")
 def test_push_principal_maps_must_be_injective(tmp_path):
-    from aao.supervisor_service import load_config
+    import json
+
     from aao import integration_authorization
     from aao.manifest_audit import attributed_implementers
-    import json
+    from aao.supervisor_service import load_config
     registry = tmp_path / "registry.json"
     config_path = tmp_path / "config.json"
     registry.write_text(json.dumps({"ledger_keys": {"k": "key"}, "integrator_key_id": "k",

@@ -120,7 +120,7 @@ def attribution(config: dict[str, Any], client: Any | None = None) -> dict[str, 
         repo_owner, repo_name = head_repo.split("/", 1) if head_repo.count("/") == 1 else (None, None)
         try:
             events = get(f"/repos/{quote(repo_owner or '', safe='')}/{quote(repo_name or '', safe='')}/events?per_page=100")
-        except Exception:
+        except (RuntimeError, OSError):  # GitHubAuthError is a RuntimeError; these PRs stay unresolved
             skipped.update(pr["number"] for pr in repo_prs)
             continue
         pushes: list[tuple[str, str, str, str]] = []
@@ -143,7 +143,7 @@ def attribution(config: dict[str, Any], client: Any | None = None) -> dict[str, 
         for pr in repo_prs:
             try:
                 commits = get(f"/repos/{escaped}/pulls/{pr['number']}/commits?per_page=100")
-            except Exception:
+            except (RuntimeError, OSError):
                 skipped.add(pr["number"])
                 continue
             if isinstance(commits, list) and len(commits) >= 100:

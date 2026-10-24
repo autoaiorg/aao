@@ -47,12 +47,16 @@ PY
 }
 
 CODEX_SHA256=b93f6811d3f653f0fb83be4050d857fb9abbb111dfa2ce160563327daff7f306
+HOST_SHA256=8ee4f472e92ac226a189e98998633b2d07f989f208515750764db660369f2926
 case ${1:-} in
   login-codex)
     src=$(readlink -f "$(command -v codex)") || die "no codex binary for this user"
     tmpbin=$(mktemp); cp -- "$src" "$tmpbin"
     [[ $(sha256sum "$tmpbin" | cut -d' ' -f1) == "$CODEX_SHA256" ]] || { rm -f "$tmpbin"; die "$src is not the pinned Codex 0.164.0 release binary"; }
     sudo install -o root -g root -m 0755 "$tmpbin" /usr/local/bin/codex; rm -f "$tmpbin"
+    host=$(dirname "$src")/codex-code-mode-host; tmpbin=$(mktemp); cp -- "$host" "$tmpbin"
+    [[ $(sha256sum "$tmpbin" | cut -d' ' -f1) == "$HOST_SHA256" ]] || { rm -f "$tmpbin"; die "$host is not the pinned codex-code-mode-host release binary"; }
+    sudo install -o root -g root -m 0755 "$tmpbin" /usr/local/bin/codex-code-mode-host; rm -f "$tmpbin"
     say "log aao-auditor-alt into its own Codex session: open the URL, enter the code"
     sudo -u aao-auditor-alt -H sh -c 'umask 077; exec /usr/local/bin/codex login --device-auth'  # never group-writable state
     sudo -u aao-auditor-alt -H /usr/local/bin/codex login status | tee -a "$OUT/session.log" ;;

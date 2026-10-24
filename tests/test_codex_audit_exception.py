@@ -25,6 +25,9 @@ def test_codex_binary_hash_is_pinned_identically_in_runner_and_session():
     runner = re.search(r"CODEX_SHA256=([0-9a-f]{64})", CODEX_RUNNER).group(1)
     session = re.search(r"CODEX_SHA256=([0-9a-f]{64})", SESSION).group(1)
     assert runner == session == "b93f6811d3f653f0fb83be4050d857fb9abbb111dfa2ce160563327daff7f306"
+    host_runner = re.search(r"HOST_SHA256=([0-9a-f]{64})", CODEX_RUNNER).group(1)
+    host_session = re.search(r"HOST_SHA256=([0-9a-f]{64})", SESSION).group(1)
+    assert host_runner == host_session == "8ee4f472e92ac226a189e98998633b2d07f989f208515750764db660369f2926"
 
 
 def test_bootstrap_accepts_codex_only_with_a_recorded_named_exception():
@@ -63,3 +66,10 @@ def test_symlink_rule_on_a_real_state_dir(tmp_path):
     (alias / "evil").unlink()
     (d / "evil").symlink_to(codex)  # the pinned binary is only allowed for arg0 aliases
     assert "refusing" in run().stderr
+
+
+def test_audit_run_disables_plugins_browser_and_memory_and_drops_caches():
+    disabled = CODEX_RUNNER.split("DISABLED=(", 1)[1].split(")", 1)[0].split()
+    assert {"plugins", "plugin_sharing", "browser_use", "computer_use", "memories", "in_app_browser"} <= set(disabled)
+    assert '"${DISABLED[@]/#/--disable=}"' in CODEX_RUNNER
+    assert CODEX_RUNNER.index('rm -rf -- "$d/plugins" "$d/tmp"') < CODEX_RUNNER.index('bad=$(find "$d"')

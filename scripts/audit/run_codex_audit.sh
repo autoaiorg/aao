@@ -10,6 +10,11 @@ set -euo pipefail
 umask 022
 CODEX=/usr/local/bin/codex
 CODEX_SHA256=b93f6811d3f653f0fb83be4050d857fb9abbb111dfa2ce160563327daff7f306  # openai/codex rust-v0.164.0 musl, release asset
+HOST=/usr/local/bin/codex-code-mode-host   # codex runs model commands through this sibling binary
+HOST_SHA256=8ee4f472e92ac226a189e98998633b2d07f989f208515750764db660369f2926  # same release, codex-code-mode-host asset
+# Everything an audit does not need is off: no plugins (remote downloads), browser, computer use, images or memory.
+DISABLED=(plugins plugin_sharing browser_use browser_use_external browser_use_full_cdp_access in_app_browser computer_use
+          image_generation memories apps)
 EXCEPTION=CEO-DEC-AUDIT-CODEX-2026-10-24
 declare -A PROMPTS=([r1-chain]=3ddba5375577292dc75bb0ce04634c7d63f03d20cd74bcf1fca1d232f9246ef9
                    [p2p3-trial]=6272f2160ba4281f23b4f9aa32a7a9f3819a8559ee74361beddeb132795b4fb5
@@ -24,6 +29,8 @@ home=$(getent passwd "$me" | cut -d: -f6)
 [[ $HOME == "$home" ]] || { echo "refusing: HOME=$HOME is not $me's home ($home)" >&2; exit 1; }
 [[ ! -L $CODEX && $(stat -c '%u %a' "$CODEX") == "0 755" ]] || { echo "refusing: $CODEX must be a root:0755 regular file" >&2; exit 1; }
 [[ $(sha256sum "$CODEX" | cut -d' ' -f1) == "$CODEX_SHA256" ]] || { echo "refusing: $CODEX is not the pinned release binary" >&2; exit 1; }
+[[ ! -L $HOST && $(stat -c '%u %a' "$HOST") == "0 755" ]] || { echo "refusing: $HOST must be a root:0755 regular file" >&2; exit 1; }
+[[ $(sha256sum "$HOST" | cut -d' ' -f1) == "$HOST_SHA256" ]] || { echo "refusing: $HOST is not the pinned release binary" >&2; exit 1; }
 for d in /usr/local/bin /usr/local /usr /; do
   [[ ! -L $d && $(stat -c '%u' "$d") == 0 && $(( 0$(stat -c '%a' "$d") & 022 )) == 0 ]] \
     || { echo "refusing: $d lets another account replace $CODEX" >&2; exit 1; }
@@ -33,6 +40,8 @@ done
 # Codex session state must belong to this uid only (its own login; never a copied credential).
 d="$home/.codex"
 [[ -d $d && ! -L $d && $(realpath -e "$d") == "$home"/* ]] || { echo "refusing: $d missing (log in once: sudo -u $me -H $CODEX login --device-auth)" >&2; exit 1; }
+# Codex-managed caches (downloaded plugins, arg0 aliases) are rebuilt per run; they are never trusted state.
+rm -rf -- "$d/plugins" "$d/tmp"
 bad=$(find "$d" \( ! -uid "$(id -u)" -o \( ! -type l -perm /022 \) \) -print -quit)
 [[ -z $bad ]] || { echo "refusing: $bad is not exclusively $me's" >&2; exit 1; }
 # Codex itself creates arg0 aliases (apply_patch, applypatch, codex-linux-sandbox) under tmp/arg0-linux/ that point
@@ -62,12 +71,13 @@ g -C "$work/repo" -c advice.detachedHead=false checkout -q "$head"
 } > "$out/prompt.txt"
 ( cd "$work/repo" && env -i PATH=/usr/bin:/bin:/usr/local/bin HOME="$home" USER="$me" LOGNAME="$me" LANG=C.UTF-8 CODEX_HOME="$d" \
     "$CODEX" exec --sandbox read-only --ephemeral --skip-git-repo-check -c model_reasoning_effort=high \
+    "${DISABLED[@]/#/--disable=}" \
     --output-last-message "$out/report.md" - < "$out/prompt.txt" ) > "$out/codex.log" 2>&1
 [[ -s $out/report.md ]] || { echo "refusing: codex produced no report (see $out/codex.log)" >&2; exit 1; }
 cat > "$out/attestation.json" <<JSON
 {"auditor":"codex","exception":"$EXCEPTION","os_user":"$me","uid":$(id -u),"base":"$base","head":"$head",
  "checked_out_head":"$(g -C "$work/repo" rev-parse HEAD)","prompt_name":"$pname","prompt_template_sha256":"$PROMPT_SHA256",
- "codex_sha256":"$(sha256sum "$CODEX" | cut -d' ' -f1)","codex_version":"$("$CODEX" --version 2>/dev/null | head -1 | tr -d '"')",
+ "codex_sha256":"$(sha256sum "$CODEX" | cut -d' ' -f1)","codex_code_mode_host_sha256":"$(sha256sum "$HOST" | cut -d' ' -f1)","disabled_features":"${DISABLED[*]}","codex_version":"$("$CODEX" --version 2>/dev/null | head -1 | tr -d '"')",
  "prompt_sha256":"$(sha256sum "$out/prompt.txt" | cut -d' ' -f1)",
  "report_sha256":"$(sha256sum "$out/report.md" | cut -d' ' -f1)","finished_at":"$(date -u +%FT%TZ)"}
 JSON

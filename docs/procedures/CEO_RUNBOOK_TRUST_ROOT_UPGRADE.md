@@ -79,7 +79,7 @@ sudo /root/aao-src/scripts/trial/run_trial.sh --rev $REV 2>&1 | tee ~/aao-trial-
 
 **Duración:** hay pasos que esperan a los checks o a la aparición de los runs. P3-10 espera hasta 10 min.
 
-**Resultados:** se espera que A-01, A-02 y P3-02 terminen en `EQUIVALENCE-PENDING`, nunca en PASS, hasta tu decisión. Un `NOT RUN` en las pruebas que siguen siendo manuales (A-07, A-08, A-13, P3-04, P3-08 y P3-11) es normal.
+**Resultados:** se espera que A-01, A-02 y P3-02 terminen en `EQUIVALENCE-PENDING`, nunca en PASS, hasta tu decisión. Todas las pruebas están automatizadas: un `NOT RUN` ya no es normal y hay que analizarlo. Las excepciones son A-12, que es parcial, y A-13, que queda `PENDING` hasta que se recoge su resultado diferido a la hora larga de la ejecución. A-07, A-08 y P3-11 solo cuentan si el supervisor instalado está en la misma revisión del arnés.
 
 Al terminar, deja la evidencia legible para el PM:
 
@@ -93,7 +93,7 @@ sudo tar -C /var/log/aao-trial -czf ~/aao-trial-$TS.tgz "$TS" && sudo chown "$US
 El PM analiza la evidencia y prepara:
 1. el registro del ensayo;
 2. la propuesta de validación formal de la equivalencia (decisión R3);
-3. el procedimiento de las pruebas manuales restantes;
-4. el siguiente lote: B-1 de r1-chain, que bloquea `--enable-integrator`, más C-01, C-02 y C-03 de p2p3-trial.
+3. el dictamen del auditor sobre la equivalencia y los controles de P3-10 (`ceo_session.sh dictamen`);
+4. la sesión 2: `--ra-status`, los rulesets canónicos, el cambio del repositorio del bucle y, si el CEO lo decide, `--enable-integrator`.
 
 Ese lote necesitará su propia auditoría independiente antes de volver a tocar la raíz de confianza.

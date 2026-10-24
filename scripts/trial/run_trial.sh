@@ -52,12 +52,45 @@ if [[ -e $WORK_ROOT ]]; then [[ -d $WORK_ROOT && $(stat -c '%u:%g %a' "$WORK_ROO
 install -d -o root -g root -m 0755 "$WORK_ROOT"
 mapfile -t APPS < <(python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); [print(a["name"],a["linux_uid"]) for a in d["apps"]]' "$REG")
 # Verify the exact three live trial rulesets, including the auditor identity on B.
-check_rulesets(){
-  local list details id data; list=$(runuser -u "$CEO" -- env -i HOME="$(getent passwd "$CEO"|cut -d: -f6)" PATH=/usr/bin:/bin gh api "repos/$REPO/rulesets?includes_parents=true") || return 1
-  details=$(python3 -I -c 'import json,sys; rows=json.load(sys.stdin); want={"A main: integrator only":25776805,"B main+staging: integrity (no bypass)":25776806,"C tags":25776807}; by={r.get("name"):r.get("id") for r in rows}; print("\n".join(str(by.get(n) or i) for n,i in want.items()))' <<<"$list") || return 1
-  while IFS= read -r id; do data=$(runuser -u "$CEO" -- env -i HOME="$(getent passwd "$CEO"|cut -d: -f6)" PATH=/usr/bin:/bin gh api "repos/$REPO/rulesets/$id") || return 1; printf '%s\n' "$data"; done <<<"$details" | python3 -I -c 'import json,sys; rows=[json.loads(x) for x in sys.stdin]; a,b,c=rows; ok=[x.get("name") for x in rows]==["A main: integrator only","B main+staging: integrity (no bypass)","C tags"] and all(x.get("enforcement")=="active" for x in rows); rules=b.get("rules",[]); required=next((r.get("parameters",{}).get("required_status_checks",[]) for r in rules if r.get("type")=="required_status_checks"),[]); arules={r.get("type") for r in a.get("rules",[])}; brules={r.get("type") for r in rules}; crules={r.get("type") for r in c.get("rules",[])}; abypass=a.get("bypass_actors",[]); ok=ok and {x.get("context"):x.get("integration_id") for x in required}.get("aao-audit")==5448107 and "test" in {x.get("context") for x in required} and not b.get("bypass_actors") and "non_fast_forward" in brules and "deletion" in brules and {"update","pull_request"}.issubset(arules) and [(x.get("actor_id"),x.get("actor_type")) for x in abypass]==[(5447984,"Integration")] and c.get("target")=="tag" and {"creation","update","deletion"}.issubset(crules); sys.exit(0 if ok else 1)'
+check_rulesets(){ # [snapshot_file]: exact security shape of rulesets A/B/C (targets, refs, bypass, rules, checks)
+  local list; list=$(runuser -u "$CEO" -- env -i HOME="$(getent passwd "$CEO"|cut -d: -f6)" PATH=/usr/bin:/bin gh api "repos/$REPO/rulesets?includes_parents=true") || return 1
+  python3 -I - "$list" "${1:-/dev/null}" "$CEO" "$REPO" <<'PY'
+import json, pwd, subprocess, sys
+listing, out, ceo, repo = json.loads(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+home = pwd.getpwnam(ceo).pw_dir
+def get(ident):
+    return json.loads(subprocess.run(["runuser", "-u", ceo, "--", "env", "-i", f"HOME={home}", "PATH=/usr/bin:/bin", "gh", "api",
+                                      f"repos/{repo}/rulesets/{int(ident)}"], check=True, capture_output=True, text=True).stdout)
+full = {r["name"]: get(r["id"]) for r in listing}
+json.dump(full, open(out, "w"), indent=1, sort_keys=True)
+integrator = [(5447984, "Integration", "always")]
+want = {"A main: integrator only": ("branch", ["refs/heads/main"], integrator, {"update", "pull_request"}),
+        "B main+staging: integrity (no bypass)": ("branch", ["refs/heads/aao-staging/**", "refs/heads/main"], [],
+                                                  {"non_fast_forward", "deletion", "required_status_checks"}),
+        "C tags": ("tag", ["~ALL"], integrator, {"creation", "update", "deletion"})}
+problems = []
+for name, (target, include, bypass, rules) in want.items():
+    r = full.get(name)
+    if r is None:
+        problems.append(f"missing {name}"); continue
+    ref = (r.get("conditions") or {}).get("ref_name") or {}
+    got_bypass = sorted((b.get("actor_id"), b.get("actor_type"), b.get("bypass_mode")) for b in r.get("bypass_actors") or [])
+    types = {x.get("type") for x in r.get("rules") or []}
+    if r.get("enforcement") != "active": problems.append(f"{name}: not active")
+    if r.get("target") != target: problems.append(f"{name}: target {r.get('target')}")
+    if sorted(ref.get("include") or []) != include or (ref.get("exclude") or []): problems.append(f"{name}: refs {ref}")
+    if got_bypass != bypass: problems.append(f"{name}: bypass {got_bypass}")
+    if not rules <= types: problems.append(f"{name}: missing rules {sorted(rules - types)}")
+b = full.get("B main+staging: integrity (no bypass)") or {}
+checks = next((x.get("parameters", {}).get("required_status_checks", []) for x in b.get("rules") or [] if x.get("type") == "required_status_checks"), [])
+got = {(c.get("context"), c.get("integration_id")) for c in checks}
+if ("aao-audit", 5448107) not in got or not ({("test", None), ("test", 15368)} & got) or len(got) != 2:
+    problems.append(f"B: required checks {sorted(got, key=str)}")
+for p in problems: print("ruleset gate:", p, file=sys.stderr)
+sys.exit(1 if problems else 0)
+PY
 }
-check_rulesets || die 'trial rulesets A/B/C are not active with required auditor/test and no B bypass'
+check_rulesets "$tmp/rulesets-start.json" || die 'trial rulesets A/B/C do not have the verified shape (targets, refs, bypass, rules, checks)'
 # Pin the protected trial repository identity once, using the integrator App's
 # installation credential. Every equivalence record receives this immutable
 # start-of-run observation and compares the id again.
@@ -418,16 +451,23 @@ fi
 wants(){ ((${#ONLY[@]} == 0)) || [[ " ${ONLY[*]} " =~ " $1 " ]]; }
 record(){ # id role status reason [json-evidence-file]: a root-side evidence record bound to this run
   python3 -I -c 'import json,sys; ev=json.load(open(sys.argv[5])) if len(sys.argv) > 5 and sys.argv[5] else []
-json.dump({"test_id":sys.argv[1],"role":sys.argv[2],"status":sys.argv[3],"reason":sys.argv[4],"run_id":sys.argv[6],"harness_revision":sys.argv[7],"evidence":ev},open(sys.argv[8],"w"),indent=1)' \
-    "$1" "$2" "$3" "$4" "${5:-}" "$AAO_TRIAL_RUN_ID" "$REV" "$LOG/root-$1.json"
+json.dump({"test_id":sys.argv[1],"role":sys.argv[2],"status":sys.argv[3],"reason":sys.argv[4],"run_id":sys.argv[6],"harness_revision":sys.argv[7],"supervisor_revision":sys.argv[9],"evidence":ev},open(sys.argv[8],"w"),indent=1)' \
+    "$1" "$2" "$3" "$4" "${5:-}" "$AAO_TRIAL_RUN_ID" "$REV" "$LOG/root-$1.json" "${sup_rev:-unknown}"
   printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$LOG/root-$1.json" | tee -a "$LOG/summary.tsv"; [[ $3 != FAIL ]] || rc=1
 }
 SUP_CONFIG=/etc/aao-supervisor/config.json
+# A-07/A-08/P3-11 test the INSTALLED supervisor, so they only count if its frozen code is this harness revision.
+sup_rev=$(env -i PATH=/usr/bin:/bin HOME=/nonexistent GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_NO_REPLACE_OBJECTS=1 \
+  git -c safe.directory='*' -c core.fsmonitor=false -c core.hooksPath=/dev/null -C /srv/aao/frozen/aao-supervisor/tree rev-parse HEAD 2>/dev/null || echo unknown)
+installed_rev=$(cat /etc/aao-audit/expected-revision 2>/dev/null || echo unknown)
+SUP_AT_REV=0; [[ $sup_rev == "$REV" && $installed_rev == "$REV" && $(stat -c %u /srv/aao/frozen/aao-supervisor/tree 2>/dev/null) == 0 ]] && SUP_AT_REV=1
+sup_skip(){ record "$1" aao-supervisor "NOT RUN" "installed supervisor is at ${sup_rev} (trust root ${installed_rev}), not the harness revision $REV: upgrade first"; }
 sup_cfg(){ python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], sys.argv[3]))' "$SUP_CONFIG" "$1" "$2"; }
 
 # A-08: the supervisor attributes the fork PR head to the implementer that pushed it (authenticated PushEvent
 # chain in the fork), not to the PR author (aao-pm[bot]). Uses the installed supervisor unit, triggered by root.
-if wants A-08; then
+if wants A-08 && ((!SUP_AT_REV)); then sup_skip A-08
+elif wants A-08; then
   if [[ ${fork_head:-} =~ ^[0-9a-f]{40}$ && -n ${fork_pr:-} ]]; then
     attribution=$(sup_cfg attribution_path /var/lib/aao-supervisor/attribution.json); a08=; deadline=$((SECONDS + 420))
     while ((SECONDS < deadline)); do
@@ -470,7 +510,9 @@ for n in sorted(os.listdir(d)) if os.path.isdir(d) else []:
   except (OSError, ValueError): continue
   if e.get("type")==kind: print(json.dumps(e))' "$1" "$2" "$3"
 }
-if wants A-07 || wants P3-11; then
+if (wants A-07 || wants P3-11) && ((!SUP_AT_REV)); then
+  wants A-07 && sup_skip A-07; wants P3-11 && sup_skip P3-11
+elif wants A-07 || wants P3-11; then
   iuid=${APP_UID[aao-integrator]}; ihome=$(getent passwd "$iuid" | cut -d: -f6); iwork=$WORK_ROOT/$iuid
   ensure_work(){ [[ ! -L $1 ]] || die "role work directory is a symlink: $1"; [[ -e $1 ]] || install -d -o "$2" -g "$(id -gn "$2")" -m 0700 "$1"; role_work_safe "$1" "$2" || die "unsafe role work directory: $1"; }
   ensure_work "$iwork" "$iuid"
@@ -546,7 +588,8 @@ if wants A-13; then
 fi
 declare -A HOMES=(); HOMES[$CEO]=$(getent passwd "$CEO" | cut -d: -f6)
 for app in "${!APP_UID[@]}"; do user=${APP_UID[$app]}; HOMES[$user]=$(getent passwd "$user" | cut -d: -f6); done
-check_rulesets || { echo 'FAIL: trial rulesets changed or are no longer active at end' >&2; rc=1; }
+cp "$tmp/rulesets-start.json" "$LOG/rulesets-start.json" 2>/dev/null || true
+check_rulesets "$LOG/rulesets-end.json" || { echo 'FAIL: trial rulesets changed or are no longer active at end' >&2; rc=1; }
 (cd "$LOG" && find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
 chmod 0640 "$LOG"/*; echo "Evidence: $LOG"; column -t -s $'\t' "$LOG/summary.tsv" 2>/dev/null || cat "$LOG/summary.tsv"
 exit "$rc"

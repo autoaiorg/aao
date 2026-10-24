@@ -46,7 +46,10 @@ def desired() -> list[dict[str, Any]]:
          "conditions": {"ref_name": {"include": ["refs/heads/main", "refs/heads/aao-staging/**"], "exclude": []}},
          "rules": [{"type": "non_fast_forward"}, {"type": "deletion"},
                    {"type": "required_status_checks", "parameters": {
-                       "strict_required_status_checks_policy": False, "do_not_enforce_on_create": False,
+                       # Creation is not gated: the R1 pipeline creates aao-staging/<pr>-<sha> with M, and only then
+                       # does the auditor publish aao-audit on M. Updates of main/staging still require both checks;
+                       # deletion and non-fast-forward stay blocked, and main already exists.
+                       "strict_required_status_checks_policy": False, "do_not_enforce_on_create": True,
                        "required_status_checks": [{"context": "aao-audit", "integration_id": AUDITOR_APP},
                                                   {"context": "test", "integration_id": ACTIONS_APP}]}}]},
         {"name": "C tags", "target": "tag", "enforcement": "active", "bypass_actors": integrator,

@@ -951,3 +951,12 @@ def test_restrict_updates_attribution_lists_co_occurring_rules_and_checks_need_e
     assert not _rejection_attributable({"response": "Validation failed: required status check context is invalid"}, "required status check")
     assert not _rejection_attributable({"response": "deletion of this branch is not supported here"}, "deletion")
     assert _rejection_attributable({"response": "Cannot delete this protected ref."}, "deletion")
+
+
+def test_stage_merge_commit_message_is_given_on_stdin_never_inherited():
+    # Without a message, git commit-tree reads the caller's stdin (the CEO terminal) and times out (live run e09a18a).
+    import inspect
+    from aao import github_trial
+    source = inspect.getsource(github_trial)
+    call = source[source.index('"commit-tree",'):][:400]
+    assert 'input="AAO trial staged merge' in call

@@ -305,8 +305,8 @@ def _merge_trial_pr(client: GitHubAppClient, base: str, evidence: list[dict]) ->
                                   capture_output=True, text=True, timeout=60).stdout.splitlines()[0].strip()
             merge_sha = subprocess.run(["git", "-c", "user.name=AAO Integrator", "-c",
                                         "user.email=aao-integrator@users.noreply.github.com", "commit-tree",
-                                        tree, "-p", base_sha, "-p", candidate], check=True, capture_output=True,
-                                       text=True, timeout=30).stdout.strip()
+                                        tree, "-p", base_sha, "-p", candidate], input="AAO trial staged merge\n",
+                                       check=True, capture_output=True, text=True, timeout=30).stdout.strip()
         except (OSError, subprocess.SubprocessError, IndexError) as exc:
             evidence.append({"method": "git merge-tree/commit-tree", "status": "error", "response": type(exc).__name__})
             return "FAIL", "could not construct local merge commit", evidence

@@ -120,3 +120,8 @@ def test_fixture_tree_is_sent_as_json_and_p3_07_candidate_keeps_main_tree():
     assert "--input -" in tree_line and "-f 'tree[0]" not in source
     block = source.split('if [[ $id == P3-07 || $id == P3-12 ]]; then', 1)[1].split("else", 1)[0]
     assert "checkout -q -B trial-candidate origin/main^" in block and "checkout -q origin/main -- ." in block
+
+
+def test_stage_branch_is_unique_per_run():
+    # A fixed aao-trial/required-<id> branch from an earlier run makes the next STAGE-COMMIT a rejected non-fast-forward.
+    assert 'AAO_GITHUB_TRIAL_BRANCH="aao-trial/required-$id-$TS"' in RUNNER.read_text()

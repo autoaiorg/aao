@@ -1,0 +1,165 @@
+test	role	status	evidence
+EQUIVALENCE-PENDING: trial installation absent, configured fork scope exact, positive fork push accepted; CEO formal equivalence validation required before PASS
+Evidence: /home/aao-impl-codex/aao-trial-evidence/A-01-2026-10-24T210049+0000.json
+A-01	aao-impl-codex	EQUIVALENCE-PENDING	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-impl-codex-A-01-aao-impl-codex.json
+EQUIVALENCE-PENDING: trial installation absent, configured fork scope exact, positive fork push accepted; CEO formal equivalence validation required before PASS
+Evidence: /home/aao-impl-claude/aao-trial-evidence/A-01-2026-10-24T210101+0000.json
+A-01	aao-impl-claude	EQUIVALENCE-PENDING	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-impl-claude-A-01-aao-impl-claude.json
+EQUIVALENCE-PENDING: trial installation absent, configured fork scope exact, positive fork push accepted; CEO formal equivalence validation required before PASS
+Evidence: /home/aao-impl-ag/aao-trial-evidence/A-01-2026-10-24T210113+0000.json
+A-01	aao-impl-agy	EQUIVALENCE-PENDING	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-impl-ag-A-01-aao-impl-agy.json
+EQUIVALENCE-PENDING: trial installation absent, configured fork scope exact, positive fork push accepted; CEO formal equivalence validation required before PASS
+Evidence: /home/aao-impl-codex/aao-trial-evidence/A-02-2026-10-24T210126+0000.json
+A-02	aao-impl-codex	EQUIVALENCE-PENDING	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-impl-codex-A-02-aao-impl-codex.json
+EQUIVALENCE-PENDING: trial installation absent, configured fork scope exact, positive fork push accepted; CEO formal equivalence validation required before PASS
+Evidence: /home/aao-impl-claude/aao-trial-evidence/A-02-2026-10-24T210137+0000.json
+A-02	aao-impl-claude	EQUIVALENCE-PENDING	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-impl-claude-A-02-aao-impl-claude.json
+EQUIVALENCE-PENDING: trial installation absent, configured fork scope exact, positive fork push accepted; CEO formal equivalence validation required before PASS
+Evidence: /home/aao-impl-ag/aao-trial-evidence/A-02-2026-10-24T210149+0000.json
+A-02	aao-impl-agy	EQUIVALENCE-PENDING	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-impl-ag-A-02-aao-impl-agy.json
+FAIL: integrator could not stage explicit local commit
+Evidence: /home/aao-integrator/aao-trial-evidence/STAGE-COMMIT-2026-10-24T210153+0000.json
+A-03	aao-integrator	FAIL	FAIL: integrator could not stage explicit local commit
+FAIL: integrator could not stage explicit local commit
+Evidence: /home/aao-integrator/aao-trial-evidence/STAGE-COMMIT-2026-10-24T210155+0000.json
+A-04	aao-integrator	FAIL	FAIL: integrator could not stage explicit local commit
+FAIL: could not construct local merge commit
+Evidence: /home/aao-integrator/aao-trial-evidence/A-05-2026-10-24T210237+0000.json
+A-05	aao-integrator	FAIL	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-integrator-A-05-aao-integrator.json
+PASS: aao-audit check was accepted from the configured auditor app_id
+Evidence: /home/aao-auditor/aao-trial-evidence/A-06-2026-10-24T210241+0000.json
+A-06	aao-auditor	PASS	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-auditor-A-06-aao-auditor.json
+PASS: issue created; server denied protected-branch push; main unchanged
+Evidence: /home/aao-notifier/aao-trial-evidence/A-09-2026-10-24T210246+0000.json
+A-09	aao-notifier	PASS	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-notifier-A-09-aao-notifier.json
+NOT RUN: current token revocation was exercised; full A-12 still requires deleting this App key or suspending its installation, then proving new token issuance fails
+Evidence: /home/aao-integrator/aao-trial-evidence/A-12-2026-10-24T210248+0000.json
+A-12	aao-integrator	NOT RUN	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-integrator-A-12-aao-integrator.json
+PASS: workflow push denied for missing workflows permission; non-workflow control push accepted
+Evidence: /home/aao-probe-noworkflows/aao-trial-evidence/A-14-2026-10-24T210255+0000.json
+A-14	aao-probe-noworkflows	PASS	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-probe-noworkflows-A-14-aao-probe-noworkflows.json
+PASS: server rejected CEO push for restrict updates; protected ref unchanged; rules listed by GitHub: ['Cannot update this protected ref.', 'Changes must be made through a pull request.', '2 of 2 required status checks are expected.']
+Evidence: /home/alessbarb/aao-trial-evidence/P3-01-2026-10-24T210301+0000.json
+P3-01	ceo	PASS	/var/log/aao-trial/20261024T210029.560027569Z/collected-alessbarb-P3-01-ceo.json
+EQUIVALENCE-PENDING: trial installation absent, configured fork scope exact, positive fork push accepted; CEO formal equivalence validation required before PASS
+Evidence: /home/aao-impl-codex/aao-trial-evidence/P3-02-2026-10-24T210313+0000.json
+P3-02	aao-impl-codex	EQUIVALENCE-PENDING	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-impl-codex-P3-02-aao-impl-codex.json
+EQUIVALENCE-PENDING: trial installation absent, configured fork scope exact, positive fork push accepted; CEO formal equivalence validation required before PASS
+Evidence: /home/aao-impl-claude/aao-trial-evidence/P3-02-2026-10-24T210325+0000.json
+P3-02	aao-impl-claude	EQUIVALENCE-PENDING	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-impl-claude-P3-02-aao-impl-claude.json
+EQUIVALENCE-PENDING: trial installation absent, configured fork scope exact, positive fork push accepted; CEO formal equivalence validation required before PASS
+Evidence: /home/aao-impl-ag/aao-trial-evidence/P3-02-2026-10-24T210337+0000.json
+P3-02	aao-impl-agy	EQUIVALENCE-PENDING	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-impl-ag-P3-02-aao-impl-agy.json
+PASS: protected branch denied missing-check update with HTTP 422; main unchanged
+Evidence: /home/aao-integrator/aao-trial-evidence/P3-03-2026-10-24T210342+0000.json
+P3-03	aao-integrator	PASS	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-integrator-P3-03-aao-integrator.json
+FAIL: integrator could not stage explicit local commit
+Evidence: /home/aao-integrator/aao-trial-evidence/STAGE-COMMIT-2026-10-24T210344+0000.json
+P3-05	aao-integrator	FAIL	FAIL: integrator could not stage explicit local commit
+FAIL: could not construct local merge commit
+Evidence: /home/aao-integrator/aao-trial-evidence/P3-06-2026-10-24T210426+0000.json
+P3-06	aao-integrator	FAIL	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-integrator-P3-06-aao-integrator.json
+FAIL: integrator could not stage explicit local commit
+Evidence: /home/aao-integrator/aao-trial-evidence/STAGE-COMMIT-2026-10-24T210429+0000.json
+P3-07	aao-integrator	FAIL	FAIL: integrator could not stage explicit local commit
+PASS: CEO merge denied by Restrict updates; PR remains open; GitHub message: repository rule violations found
+
+cannot update this protected ref.
+
+required status check "aao-audit" is expected.
+
+
+Evidence: /home/alessbarb/aao-trial-evidence/P3-09-2026-10-24T210434+0000.json
+P3-09	ceo	PASS	/var/log/aao-trial/20261024T210029.560027569Z/collected-alessbarb-P3-09-ceo.json
+FAIL: integrator could not stage explicit local commit
+Evidence: /home/aao-integrator/aao-trial-evidence/STAGE-COMMIT-2026-10-24T210436+0000.json
+P3-12	aao-integrator	FAIL	FAIL: integrator could not stage explicit local commit
+PASS: installation permissions match role manifest
+Evidence: /home/aao-integrator/aao-trial-evidence/A-10-2026-10-24T210438+0000.json
+A-10	aao-integrator	PASS	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-integrator-A-10-aao-integrator.json
+PASS: installation permissions match role manifest
+Evidence: /home/aao-auditor/aao-trial-evidence/A-10-2026-10-24T210440+0000.json
+A-10	aao-auditor	PASS	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-auditor-A-10-aao-auditor.json
+PASS: installation permissions match role manifest
+Evidence: /home/aao-auditor-alt/aao-trial-evidence/A-10-2026-10-24T210443+0000.json
+A-10	aao-auditor-alt	PASS	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-auditor-alt-A-10-aao-auditor-alt.json
+PASS: installation permissions match role manifest
+Evidence: /home/aao-supervisor/aao-trial-evidence/A-10-2026-10-24T210445+0000.json
+A-10	aao-supervisor	PASS	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-supervisor-A-10-aao-supervisor.json
+PASS: installation permissions match role manifest
+Evidence: /home/aao-notifier/aao-trial-evidence/A-10-2026-10-24T210447+0000.json
+A-10	aao-notifier	PASS	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-notifier-A-10-aao-notifier.json
+PASS: installation permissions match role manifest
+Evidence: /home/aao-pm/aao-trial-evidence/A-10-2026-10-24T210449+0000.json
+A-10	aao-pm	PASS	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-pm-A-10-aao-pm.json
+PASS: installation permissions match role manifest
+Evidence: /home/aao-impl-claude/aao-trial-evidence/A-10-2026-10-24T210452+0000.json
+A-10	aao-impl-claude	PASS	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-impl-claude-A-10-aao-impl-claude.json
+PASS: installation permissions match role manifest
+Evidence: /home/aao-impl-codex/aao-trial-evidence/A-10-2026-10-24T210454+0000.json
+A-10	aao-impl-codex	PASS	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-impl-codex-A-10-aao-impl-codex.json
+PASS: installation permissions match role manifest
+Evidence: /home/aao-impl-ag/aao-trial-evidence/A-10-2026-10-24T210456+0000.json
+A-10	aao-impl-agy	PASS	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-impl-ag-A-10-aao-impl-agy.json
+NOT RUN: this App has no permission column for the verified repository class in P2 §4
+Evidence: /home/aao-probe-noworkflows/aao-trial-evidence/A-10-2026-10-24T210459+0000.json
+A-10	aao-probe-noworkflows	NOT RUN	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-probe-noworkflows-A-10-aao-probe-noworkflows.json
+PASS: implementer pushed 71b67fe43a8f313f0c118cd9b78644b854aeb38a to autoaiorg/aao-trial-codex:aao-trial/a11-p310-20261024T210029.560027569Z; no installation on autoaiorg/aao-governance-trial
+Evidence: /home/aao-impl-codex/aao-trial-evidence/FORK-BRANCH-2026-10-24T210505+0000.json
+FORK-BRANCH	aao-impl-codex	PASS	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-impl-codex-FORK-BRANCH-aao-impl-codex.json
+PASS: aao-pm opened PR #6 from autoaiorg/aao-trial-codex
+Evidence: /home/aao-pm/aao-trial-evidence/A-11-2026-10-24T210508+0000.json
+A-11	aao-pm	PASS	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-pm-A-11-aao-pm.json
+FAIL: workflow run 40132652973 executed 1 job(s) without approval
+Evidence: /home/aao-supervisor/aao-trial-evidence/P3-10-2026-10-24T210532+0000.json
+P3-10	aao-supervisor	FAIL	/var/log/aao-trial/20261024T210029.560027569Z/collected-aao-supervisor-P3-10-aao-supervisor.json
+A-07	manual	NOT RUN	manual step documented in trial setup
+A-08	manual	NOT RUN	manual step documented in trial setup
+A-13	manual	NOT RUN	manual step documented in trial setup
+P3-04	manual	NOT RUN	manual step documented in trial setup
+P3-08	manual	NOT RUN	manual step documented in trial setup
+P3-11	manual	NOT RUN	manual step documented in trial setup
+Evidence: /var/log/aao-trial/20261024T210029.560027569Z
+test         role                   status               evidence
+A-01         aao-impl-codex         EQUIVALENCE-PENDING  /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-impl-codex-A-01-aao-impl-codex.json
+A-01         aao-impl-claude        EQUIVALENCE-PENDING  /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-impl-claude-A-01-aao-impl-claude.json
+A-01         aao-impl-agy           EQUIVALENCE-PENDING  /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-impl-ag-A-01-aao-impl-agy.json
+A-02         aao-impl-codex         EQUIVALENCE-PENDING  /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-impl-codex-A-02-aao-impl-codex.json
+A-02         aao-impl-claude        EQUIVALENCE-PENDING  /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-impl-claude-A-02-aao-impl-claude.json
+A-02         aao-impl-agy           EQUIVALENCE-PENDING  /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-impl-ag-A-02-aao-impl-agy.json
+A-03         aao-integrator         FAIL                 FAIL: integrator could not stage explicit local commit
+A-04         aao-integrator         FAIL                 FAIL: integrator could not stage explicit local commit
+A-05         aao-integrator         FAIL                 /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-integrator-A-05-aao-integrator.json
+A-06         aao-auditor            PASS                 /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-auditor-A-06-aao-auditor.json
+A-09         aao-notifier           PASS                 /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-notifier-A-09-aao-notifier.json
+A-12         aao-integrator         NOT RUN              /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-integrator-A-12-aao-integrator.json
+A-14         aao-probe-noworkflows  PASS                 /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-probe-noworkflows-A-14-aao-probe-noworkflows.json
+P3-01        ceo                    PASS                 /var/log/aao-trial/20261024T210029.560027569Z/collected-alessbarb-P3-01-ceo.json
+P3-02        aao-impl-codex         EQUIVALENCE-PENDING  /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-impl-codex-P3-02-aao-impl-codex.json
+P3-02        aao-impl-claude        EQUIVALENCE-PENDING  /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-impl-claude-P3-02-aao-impl-claude.json
+P3-02        aao-impl-agy           EQUIVALENCE-PENDING  /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-impl-ag-P3-02-aao-impl-agy.json
+P3-03        aao-integrator         PASS                 /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-integrator-P3-03-aao-integrator.json
+P3-05        aao-integrator         FAIL                 FAIL: integrator could not stage explicit local commit
+P3-06        aao-integrator         FAIL                 /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-integrator-P3-06-aao-integrator.json
+P3-07        aao-integrator         FAIL                 FAIL: integrator could not stage explicit local commit
+P3-09        ceo                    PASS                 /var/log/aao-trial/20261024T210029.560027569Z/collected-alessbarb-P3-09-ceo.json
+P3-12        aao-integrator         FAIL                 FAIL: integrator could not stage explicit local commit
+A-10         aao-integrator         PASS                 /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-integrator-A-10-aao-integrator.json
+A-10         aao-auditor            PASS                 /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-auditor-A-10-aao-auditor.json
+A-10         aao-auditor-alt        PASS                 /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-auditor-alt-A-10-aao-auditor-alt.json
+A-10         aao-supervisor         PASS                 /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-supervisor-A-10-aao-supervisor.json
+A-10         aao-notifier           PASS                 /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-notifier-A-10-aao-notifier.json
+A-10         aao-pm                 PASS                 /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-pm-A-10-aao-pm.json
+A-10         aao-impl-claude        PASS                 /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-impl-claude-A-10-aao-impl-claude.json
+A-10         aao-impl-codex         PASS                 /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-impl-codex-A-10-aao-impl-codex.json
+A-10         aao-impl-agy           PASS                 /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-impl-ag-A-10-aao-impl-agy.json
+A-10         aao-probe-noworkflows  NOT RUN              /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-probe-noworkflows-A-10-aao-probe-noworkflows.json
+FORK-BRANCH  aao-impl-codex         PASS                 /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-impl-codex-FORK-BRANCH-aao-impl-codex.json
+A-11         aao-pm                 PASS                 /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-pm-A-11-aao-pm.json
+P3-10        aao-supervisor         FAIL                 /var/log/aao-trial/20261024T210029.560027569Z/collected-aao-supervisor-P3-10-aao-supervisor.json
+A-07         manual                 NOT RUN              manual step documented in trial setup
+A-08         manual                 NOT RUN              manual step documented in trial setup
+A-13         manual                 NOT RUN              manual step documented in trial setup
+P3-04        manual                 NOT RUN              manual step documented in trial setup
+P3-08        manual                 NOT RUN              manual step documented in trial setup
+P3-11        manual                 NOT RUN              manual step documented in trial setup

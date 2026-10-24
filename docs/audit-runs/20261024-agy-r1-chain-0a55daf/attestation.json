@@ -1,0 +1,5 @@
+{"auditor":"antigravity","os_user":"aao-auditor-alt","uid":1006,"base":"b392750ff9c06f33a7ef39dae4a27c43f422ff9c","head":"0a55daf5ee08c7f10c6c56224da145228c549011",
+ "checked_out_head":"0a55daf5ee08c7f10c6c56224da145228c549011","prompt_name":"r1-chain","prompt_template_sha256":"3ddba5375577292dc75bb0ce04634c7d63f03d20cd74bcf1fca1d232f9246ef9",
+ "agy_sha256":"337dcde668441a2828968644d7982829c2d2a5e0c4144f346e1f3fc6abb3cdc7","agy_version":"1.4.4","prior_agy_state_files":731,
+ "prompt_sha256":"51c018492c1322ed0c4906644bd08e1d9c0bf16191eb329c99316f49e082779a",
+ "report_sha256":"6ff881a2d24095d4242c8d480b2babc26706bf735dde3f8b207568fc0e0beb3f","finished_at":"2026-10-24T17:26:12Z"}

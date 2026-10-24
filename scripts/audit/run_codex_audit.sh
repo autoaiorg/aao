@@ -35,8 +35,13 @@ d="$home/.codex"
 [[ -d $d && ! -L $d && $(realpath -e "$d") == "$home"/* ]] || { echo "refusing: $d missing (log in once: sudo -u $me -H $CODEX login --device-auth)" >&2; exit 1; }
 bad=$(find "$d" \( ! -uid "$(id -u)" -o \( ! -type l -perm /022 \) \) -print -quit)
 [[ -z $bad ]] || { echo "refusing: $bad is not exclusively $me's" >&2; exit 1; }
+# Codex itself creates arg0 aliases (apply_patch, applypatch, codex-linux-sandbox) under tmp/arg0-linux/ that point
+# to the running binary. Only those, and only to the pinned root-owned binary, may leave $d.
 while IFS= read -r -d '' link; do
-  [[ $(realpath -m -- "$link") == "$d"/* ]] || { echo "refusing: symlink $link resolves outside $d" >&2; exit 1; }
+  target=$(realpath -m -- "$link")
+  [[ $target == "$d"/* ]] && continue
+  [[ $link == "$d"/tmp/arg0-linux/*/* && $target == "$CODEX" ]] && continue
+  echo "refusing: symlink $link resolves outside $d" >&2; exit 1
 done < <(find "$d" -type l -print0)
 out="$home/aao-audits/$head"; [[ $pname == r1-chain ]] || out="$out-$pname"; [[ ! -e $out ]] || { echo "refusing: $out exists (one audit per SHA)" >&2; exit 1; }
 mkdir -p -m 0700 "$out"

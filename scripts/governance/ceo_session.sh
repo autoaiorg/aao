@@ -54,7 +54,7 @@ case ${1:-} in
     [[ $(sha256sum "$tmpbin" | cut -d' ' -f1) == "$CODEX_SHA256" ]] || { rm -f "$tmpbin"; die "$src is not the pinned Codex 0.164.0 release binary"; }
     sudo install -o root -g root -m 0755 "$tmpbin" /usr/local/bin/codex; rm -f "$tmpbin"
     say "log aao-auditor-alt into its own Codex session: open the URL, enter the code"
-    sudo -u aao-auditor-alt -H /usr/local/bin/codex login --device-auth
+    sudo -u aao-auditor-alt -H sh -c 'umask 077; exec /usr/local/bin/codex login --device-auth'  # never group-writable state
     sudo -u aao-auditor-alt -H /usr/local/bin/codex login status | tee -a "$OUT/session.log" ;;
   audits)
     (($# == 4 || $# == 5)) || die "usage: audits <REV> <R1_BASE> <TRIAL_BASE> [antigravity|codex]"; sha "$2" REV; sha "$3" R1_BASE; sha "$4" TRIAL_BASE

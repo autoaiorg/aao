@@ -109,10 +109,11 @@ def _canonical(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 
 
-def _atomic_json(path: Path, value: dict[str, Any]) -> None:
+def _atomic_json(path: Path, value: dict[str, Any], *, mode: int = 0o600) -> None:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
+        os.fchmod(fd, mode)
         with os.fdopen(fd, "wb") as stream:
             stream.write(_canonical(value)); stream.flush(); os.fsync(stream.fileno())
         os.replace(name, path)
@@ -261,7 +262,7 @@ def integrator_tick(github: Any, git_remote: str, mirror: str | Path, inbox: str
             if not auth_path.is_file() or not sig_path.is_file():
                 request = {"schema": "aao.audit-request.v1", "type": "audit", "repo": owner_repo,
                            "pr_number": number, "manifest": manifest}
-                _atomic_json(inbox / f"{key}.json", request)
+                _atomic_json(inbox / f"{key}.json", request, mode=0o644)
                 state.update(status="queued", audit_request=key)
                 _atomic_json(state_path, state); results.append(state); continue
             auth = json.loads(auth_path.read_text())
@@ -284,7 +285,7 @@ def integrator_tick(github: Any, git_remote: str, mirror: str | Path, inbox: str
             gate_path = reports / gate_id / "gate.json"
             if not gate_path.is_file():
                 _atomic_json(inbox / f"{gate_id}.json", {"schema": "aao.audit-request.v1", "type": "gate",
-                            "id": key, "promoted_sha": staged, "repo": owner_repo, "pr_number": number})
+                            "id": key, "promoted_sha": staged, "repo": owner_repo, "pr_number": number}, mode=0o644)
                 _atomic_json(state_path, state); results.append(state); continue
             gate = json.loads(gate_path.read_text())
             if gate.get("conformant") is not True:

@@ -25,8 +25,16 @@ def test_workflow_is_safe_for_untrusted_pull_requests(path):
     code = "\n".join(line.split("#", 1)[0] for line in text.splitlines())
     # Condition 2: explicit top-level permissions, nothing writable anywhere (top level or per job).
     assert re.search(r"(?m)^permissions:\s*$", code), "missing explicit top-level permissions block"
-    assert not re.search(r"(?m):\s*write\s*$|write-all|read-all", code), "a permission is not read-only/explicit"
+    assert not re.search(r":\s*['\"]?write\b|write-all|read-all", code), "a permission is not read-only/explicit"
     # Condition 3: no trigger that runs untrusted content with base-repository privileges.
     assert not re.search(r"\bpull_request_target\b|\bworkflow_run\b", code)
     # Condition 1: no secrets referenced (GITHUB_TOKEN stays implicit and read-only).
     assert "secrets." not in code and "secrets[" not in code
+
+
+def test_inline_write_permission_is_caught():
+    # Codex audit 50033ae p2p3 B-03: `permissions: {contents: write}` inside a job must not pass.
+    pattern = r":\s*['\"]?write\b|write-all|read-all"
+    assert re.search(pattern, "    permissions: {contents: write}")
+    assert re.search(pattern, "  contents: 'write'")
+    assert not re.search(pattern, "permissions:\n  contents: read")

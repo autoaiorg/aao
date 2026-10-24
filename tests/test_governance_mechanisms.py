@@ -1974,7 +1974,7 @@ def test_integrator_records_incident_on_ambiguous_push_with_divergent_remote(
     assert request["schema"] == "aao.integrator-incident.v1"
     assert request["type"] == "incident"
     assert "differs from base" in request["detail"]
-    assert (request_path.stat().st_mode & 0o777) == 0o640
+    assert (request_path.stat().st_mode & 0o777) == 0o644
     assert canonical({key: value for key, value in request.items() if key != "signature"})
     assert freeze_preceded_request == [True]
     registry = json.loads(sources.trust_registry.read_text())
@@ -2011,7 +2011,7 @@ def test_integrator_stays_blocked_when_freeze_file_deleted_but_incident_open(tmp
 
     promote, repo, bare, _base, _head, _tree, auth, sources, signature = _git_fixture(tmp_path)
     registry = json.loads(sources.trust_registry.read_text())
-    incident = append(sources.ledger, {"type": "incident", "id": "incident-open",
+    incident = append(sources.ledger, {"type": "integrator-incident", "id": "incident-open",
         "detail": "remote state uncertain", "intended_sha": "a" * 40, "observed_sha": None},
         registry["integrator_key_id"], str(sources.integrator_private_key), registry["ledger_keys"])
     sources.ledger_anchor.write_text(incident["hash"])

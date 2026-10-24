@@ -62,14 +62,61 @@ def test_runner_uses_root_only_work_parent_clean_role_git_and_run_scoped_evidenc
     assert '[[ $extra_state != FAIL && $extra_rc -ne 1 ]]' in source
 
 
-def test_ruleset_gate_fetches_details_and_checks_rules_and_bypass_actors():
-    source = RUNNER.read_text()
-    assert 'gh api "repos/$REPO/rulesets?includes_parents=true"' in source
-    assert 'gh api "repos/$REPO/rulesets/$id"' in source
-    for rule in ('"non_fast_forward"', '"required_status_checks"', '"deletion"', '"pull_request"'):
-        assert rule in source
-    assert "bypass_actors" in source
-    assert '[(x.get("actor_id"),x.get("actor_type")) for x in abypass]==[(5447984,"Integration")]' in source
+GOOD_RULESETS = {
+    1: {"name": "A main: integrator only", "target": "branch", "enforcement": "active",
+        "conditions": {"ref_name": {"include": ["refs/heads/main"], "exclude": []}},
+        "bypass_actors": [{"actor_id": 5447984, "actor_type": "Integration", "bypass_mode": "always"}],
+        "rules": [{"type": "update"}, {"type": "pull_request"}]},
+    2: {"name": "B main+staging: integrity (no bypass)", "target": "branch", "enforcement": "active",
+        "conditions": {"ref_name": {"include": ["refs/heads/main", "refs/heads/aao-staging/**"], "exclude": []}},
+        "bypass_actors": [],
+        "rules": [{"type": "non_fast_forward"}, {"type": "deletion"},
+                  {"type": "required_status_checks", "parameters": {"required_status_checks": [
+                      {"context": "aao-audit", "integration_id": 5448107}, {"context": "test"}]}}]},
+    3: {"name": "C tags", "target": "tag", "enforcement": "active",
+        "conditions": {"ref_name": {"include": ["~ALL"], "exclude": []}},
+        "bypass_actors": [{"actor_id": 5447984, "actor_type": "Integration", "bypass_mode": "always"}],
+        "rules": [{"type": "creation"}, {"type": "update"}, {"type": "deletion"}]},
+}
+
+
+def _ruleset_gate(tmp_path, rulesets):
+    """Run the runner's exact ruleset gate against canned API answers (runuser/gh replaced by a shim)."""
+    import copy
+    import json
+    import pwd
+    import subprocess
+    code = RUNNER.read_text().split("check_rulesets(){", 1)[1].split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+    store = tmp_path / "rulesets"
+    store.mkdir(exist_ok=True)
+    for ident, body in rulesets.items():
+        (store / str(ident)).write_text(json.dumps({**copy.deepcopy(body), "id": ident}))
+    shim = tmp_path / "bin"
+    shim.mkdir(exist_ok=True)
+    (shim / "runuser").write_text(f'#!/bin/sh\nfor last; do :; done\nexec cat "{store}/${{last##*/}}"\n')
+    (shim / "runuser").chmod(0o755)
+    listing = json.dumps([{"id": i, "name": b["name"]} for i, b in rulesets.items()])
+    me = pwd.getpwuid(__import__("os").getuid()).pw_name
+    return subprocess.run(["python3", "-I", "-", listing, str(tmp_path / "snap.json"), me, "o/r"], input=code,
+                          env={"PATH": f"{shim}:/usr/bin:/bin"}, capture_output=True, text=True, check=False)
+
+
+def test_ruleset_gate_requires_the_verified_shape(tmp_path):
+    import copy
+    assert _ruleset_gate(tmp_path, GOOD_RULESETS).returncode == 0
+    assert sorted(__import__("json").loads((tmp_path / "snap.json").read_text())) == [r["name"] for r in GOOD_RULESETS.values()]
+
+    def broken(mutate):
+        rulesets = copy.deepcopy(GOOD_RULESETS)
+        mutate(rulesets)
+        return _ruleset_gate(tmp_path, rulesets)
+    assert broken(lambda r: r[3]["conditions"]["ref_name"].update(exclude=["~ALL"])).returncode == 1   # C excludes all tags
+    assert broken(lambda r: r[2]["conditions"]["ref_name"]["include"].remove("refs/heads/aao-staging/**")).returncode == 1
+    assert broken(lambda r: r[1]["bypass_actors"].append({"actor_id": 1, "actor_type": "OrganizationAdmin", "bypass_mode": "always"})).returncode == 1
+    assert broken(lambda r: r[3]["bypass_actors"].clear() or r[3]["bypass_actors"].append({"actor_id": 9, "actor_type": "Integration", "bypass_mode": "always"})).returncode == 1
+    assert broken(lambda r: r[1].update(target="tag")).returncode == 1
+    assert broken(lambda r: r[2]["rules"][2]["parameters"]["required_status_checks"].pop(0)).returncode == 1
+    assert broken(lambda r: r[1].update(enforcement="disabled")).returncode == 1
 
 
 def test_runner_passes_both_implementer_forks_and_runs_a10_for_all_apps():

@@ -1,7 +1,7 @@
 {
  "schema": "aao.protected-routes.v1",
  "approved_by": "CEO",
- "approved_at": "2026-10-24T10:38:00Z",
+ "approved_at": "2026-10-25 (CEO merge of the PR adding 21 security routes; Codex audit 50033ae r1 A-03)",
  "decision": "docs/proposals/RA01_RA02_TRUST_INPUTS.md",
  "semantics": {
   "directory": "entry ending in '/' covers everything below it",
@@ -181,6 +181,90 @@
   },
   {
    "path": "db/postgres/011_sha_bound_reviews_and_veto.sql",
+   "minimum_risk_class": "R2"
+  },
+  {
+   "path": "src/aao/authorization_issuer.py",
+   "minimum_risk_class": "R2"
+  },
+  {
+   "path": "src/aao/authorization.py",
+   "minimum_risk_class": "R2"
+  },
+  {
+   "path": "src/aao/identity_attribution.py",
+   "minimum_risk_class": "R2"
+  },
+  {
+   "path": "src/aao/identity.py",
+   "minimum_risk_class": "R2"
+  },
+  {
+   "path": "src/aao/pending_veto.py",
+   "minimum_risk_class": "R2"
+  },
+  {
+   "path": "src/aao/git_paths.py",
+   "minimum_risk_class": "R2"
+  },
+  {
+   "path": "src/aao/protected_routes.py",
+   "minimum_risk_class": "R2"
+  },
+  {
+   "path": "src/aao/principal_credentials.py",
+   "minimum_risk_class": "R2"
+  },
+  {
+   "path": "src/aao/sandboxed_repository_checks.py",
+   "minimum_risk_class": "R2"
+  },
+  {
+   "path": "src/aao/local_candidate_controller.py",
+   "minimum_risk_class": "R2"
+  },
+  {
+   "path": "src/aao/trial_security.py",
+   "minimum_risk_class": "R2"
+  },
+  {
+   "path": "src/aao/github_trial.py",
+   "minimum_risk_class": "R2"
+  },
+  {
+   "path": "src/aao/fork_pr_trial.py",
+   "minimum_risk_class": "R2"
+  },
+  {
+   "path": "scripts/trial/",
+   "minimum_risk_class": "R2"
+  },
+  {
+   "path": "scripts/governance/",
+   "minimum_risk_class": "R2"
+  },
+  {
+   "path": "scripts/github_apps/",
+   "minimum_risk_class": "R2"
+  },
+  {
+   "path": "scripts/verify_identity_separation.sh",
+   "minimum_risk_class": "R2"
+  },
+  {
+   "path": "scripts/run_p1_identity_separation.sh",
+   "minimum_risk_class": "R2"
+  },
+  {
+   "path": "deploy/trial/",
+   "minimum_risk_class": "R2"
+  },
+  {
+   "path": "docs/proposals/github-apps/",
+   "minimum_risk_class": "R2"
+  },
+  {
+   "path": "docs/procedures/",
    "minimum_risk_class": "R2"
   }
  ],

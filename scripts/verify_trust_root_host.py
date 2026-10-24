@@ -82,6 +82,29 @@ def _group(name: str):
         return None
 
 
+def _owner_uid(path: Path) -> int:
+    return Path(path).stat().st_uid
+
+
+def tree_git(tree: Path, *args: str) -> str:
+    """Run git on a frozen tree without letting its repository config reach root.
+
+    A tree owned by a role uid (the auditor's) is read AS that uid: its .git/config (core.fsmonitor, filters, hooks)
+    can then only run code with the privileges that uid already has. Root-owned trees are read as root. Either way
+    no system/global config, no hooks, no fsmonitor and no optional index writes."""
+    owner = _owner_uid(tree)
+    env = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LANG": "C.UTF-8", "GIT_CONFIG_NOSYSTEM": "1",
+           "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_NO_REPLACE_OBJECTS": "1", "GIT_TERMINAL_PROMPT": "0",
+           "GIT_OPTIONAL_LOCKS": "0"}
+    command = ["git", "-c", "safe.directory=*", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+               "-C", str(tree), *args]
+    if owner != 0:
+        command = ["runuser", "-u", pwd.getpwuid(owner).pw_name, "--", "env", "-i",
+                   *(f"{k}={v}" for k, v in env.items()), *command]
+    return subprocess.run(command, check=False, capture_output=True, text=True,
+                          env=env if owner == 0 else None).stdout.strip()
+
+
 def ancestors_safe(path: Path, writers: set[int]) -> str:
     """'' if no ancestor of path is a symlink or writable by a uid outside `writers` (root always allowed)."""
     for parent in Path(os.path.abspath(path)).parents:
@@ -338,10 +361,8 @@ def exclusivity(expected_revision: str) -> None:
     check(not problem, "E9 frozen auditor directory ancestors are protected", problem)
     bad = tree_writers(tree, {0, account.pw_uid})
     check(tree.is_dir() and not bad, "E10 auditor git tree: no writer besides root/auditor", "; ".join(bad))
-    revision = subprocess.run(["git", "-c", "safe.directory=*", "-C", str(tree), "rev-parse", "HEAD"],
-                              check=False, capture_output=True, text=True).stdout.strip()
-    dirty = subprocess.run(["git", "-c", "safe.directory=*", "-C", str(tree), "status", "--porcelain",
-                            "--untracked-files=all"], check=False, capture_output=True, text=True).stdout.strip()
+    revision = tree_git(tree, "rev-parse", "HEAD")
+    dirty = tree_git(tree, "status", "--porcelain", "--untracked-files=all")
     check(revision == expected_revision and not dirty, "E11 auditor tree is clean at the expected revision",
           f"HEAD={revision} dirty={bool(dirty)}")
     bad = tree_writers(venv, {0})
@@ -354,10 +375,8 @@ def exclusivity(expected_revision: str) -> None:
         check(not problem, f"E9 frozen {role} directory ancestors are protected", problem)
         bad = tree_writers(frozen / "tree", {0})
         check((frozen / "tree").is_dir() and not bad, f"E10 {role} git tree is root-only writable", "; ".join(bad))
-        revision = subprocess.run(["git", "-c", "safe.directory=*", "-C", str(frozen / "tree"), "rev-parse", "HEAD"],
-                                  check=False, capture_output=True, text=True).stdout.strip()
-        dirty = subprocess.run(["git", "-c", "safe.directory=*", "-C", str(frozen / "tree"), "status", "--porcelain",
-                                "--untracked-files=all"], check=False, capture_output=True, text=True).stdout.strip()
+        revision = tree_git(frozen / "tree", "rev-parse", "HEAD")
+        dirty = tree_git(frozen / "tree", "status", "--porcelain", "--untracked-files=all")
         check(revision == expected_revision and not dirty, f"E11 {role} tree is clean at the expected revision",
               f"HEAD={revision} dirty={bool(dirty)}")
         bad = tree_writers(frozen / "venv", {0})

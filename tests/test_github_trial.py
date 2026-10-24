@@ -893,6 +893,7 @@ def test_equivalence_is_pending_never_pass_and_rejects_wrong_role(monkeypatch):
             return auth.APIResponse(204, {}, {})
     monkeypatch.setenv("AAO_GITHUB_TRIAL_FORKS", "autoaiorg/aao-codex,autoaiorg/aao-trial-codex")
     monkeypatch.setenv("AAO_GITHUB_TRIAL_FORK", "autoaiorg/aao-trial-codex")
+    monkeypatch.setenv("AAO_TRIAL_RUN_ID", "trial123")
     monkeypatch.setenv("AAO_TRIAL_EXPECTED_REPO_ID", "123")
     monkeypatch.setenv("AAO_TRIAL_P0_EVIDENCE", json.dumps({"status": 200, "full_name": "autoaiorg/aao-governance-trial", "id": 123}))
     monkeypatch.setenv("AAO_TRIAL_P4_EVIDENCE", json.dumps({"gh_hosts_yml_absent": True, "git_credentials_absent": True, "token_environment_absent": True, "runner_environment_token_absent": True, "aao_config_exact": True, "deploy_keys_empty": True, "outside_collaborators_clear": True, "org_members_clear": True}))
@@ -902,11 +903,18 @@ def test_equivalence_is_pending_never_pass_and_rejects_wrong_role(monkeypatch):
     client = EquivalenceClient([
         (200, {"total_count": 2, "repositories": [{"full_name": "autoaiorg/aao-codex"}]}),
         (200, {"total_count": 2, "repositories": [{"full_name": "autoaiorg/aao-trial-codex"}]}),
+        (404, {"message": "Not Found"}),
+        (200, {"object": {"sha": "b" * 40}}),
     ])
     status, _, _ = trial.run_test("EQUIVALENCE", "autoaiorg", "aao-governance-trial", "aao-impl-codex", client)
     assert status == "EQUIVALENCE-PENDING" and status != "PASS"
     assert client.token_options == [{"repository_names": False}, {}]
-    assert [call[1] for call in client.calls] == ["/installation/repositories?per_page=100&page=1", "/installation/repositories?per_page=100&page=2"]
+    assert [call[1] for call in client.calls] == [
+        "/installation/repositories?per_page=100&page=1",
+        "/installation/repositories?per_page=100&page=2",
+        "/repos/autoaiorg/aao-trial-codex/git/ref/heads/aao-trial/equivalence-trial123-bbbbbbbbbbbb",
+        "/repos/autoaiorg/aao-trial-codex/git/ref/heads/aao-trial/equivalence-trial123-bbbbbbbbbbbb",
+    ]
     unselected = EquivalenceClient([])
     unselected.selection = "all"
     status, _, _ = trial.run_test("EQUIVALENCE", "autoaiorg", "aao-governance-trial", "aao-impl-codex", unselected)
@@ -1042,3 +1050,9 @@ def test_p3_04_precondition_refuses_an_incomplete_check_run_listing(monkeypatch)
     assert not ready and "incomplete" in why
     client = DummyClient([(200, {"id": 77}), (200, {"total_count": 2, "check_runs": runs})])
     assert trial._wait_wrong_publisher(client, "/repos/org/trial", "b" * 40, [])[0]
+    not_ready_runs = [*runs, {"name": "aao-audit", "app": {"id": 88},
+                              "status": "in_progress", "conclusion": None}]
+    client = DummyClient([(200, {"id": 77}), (200, {"total_count": 3, "check_runs": not_ready_runs})])
+    monkeypatch.setattr(trial, "CHECK_WAIT_SECONDS", 0)
+    ready, _ = trial._wait_wrong_publisher(client, "/repos/org/trial", "b" * 40, [])
+    assert not ready

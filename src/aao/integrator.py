@@ -50,7 +50,7 @@ def _write_incident_request(inbox: Path, payload: dict[str, Any], private_key: s
     path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
-        os.fchmod(fd, 0o640)
+        os.fchmod(fd, 0o644)
         with os.fdopen(fd, "wb") as stream:
             stream.write(canonical(signed)); stream.flush(); os.fsync(stream.fileno())
         os.replace(temporary, path)

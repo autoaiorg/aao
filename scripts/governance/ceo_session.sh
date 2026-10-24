@@ -17,16 +17,23 @@
 #       Collect the detached A-13 token-expiry result.
 set -euo pipefail
 [[ $EUID != 0 ]] || { echo 'run as the CEO, not root (sudo is used per step)' >&2; exit 2; }
-REPO_DIR=${AAO_REPO_DIR:-$HOME/workspace/repos/active/aao}
-OUT=$HOME/aao-session-$(date -u +%Y%m%dT%H%M%SZ); mkdir -p "$OUT"
+OUT=$HOME/aao-session-$(date -u +%Y%m%dT%H%M%SZ); (umask 077; mkdir -p "$OUT")
+# Never read code from a working copy: its .git is agent-writable (hooks, config, replace objects). Every file this
+# session installs or runs comes from a private clean clone of the public repository, by exact SHA.
+SRC=$OUT/src
+g(){ env -i PATH=/usr/bin:/bin HOME=/nonexistent LANG=C.UTF-8 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+       GIT_NO_REPLACE_OBJECTS=1 GIT_TERMINAL_PROMPT=0 git -c core.hooksPath=/dev/null -c core.fsmonitor=false "$@"; }
 say(){ printf '\n==== %s\n' "$*" | tee -a "$OUT/session.log"; }
 die(){ printf 'STOP: %s\nNothing after this step was run. Send %s/session.log to the PM.\n' "$*" "$OUT" | tee -a "$OUT/session.log" >&2; exit 1; }
 sha(){ [[ $1 =~ ^[0-9a-f]{40}$ ]] || die "$2 must be a full 40-hex SHA"; }
-fetch_rev(){ git -C "$REPO_DIR" fetch -q origin && git -C "$REPO_DIR" cat-file -e "$1^{commit}" || die "revision $1 not found in $REPO_DIR"; }
+fetch_rev(){
+  [[ -d $SRC/.git ]] || g clone -q --no-checkout https://github.com/autoaiorg/aao.git "$SRC" || die "cannot clone the public repository"
+  g -C "$SRC" cat-file -e "$1^{commit}" || die "revision $1 not found in a fresh clone of autoaiorg/aao"
+}
 install_audit_runner(){
   for f in scripts/audit/run_agy_audit.sh:0755 scripts/audit/run_codex_audit.sh:0755 docs/audit-prompts/r1-chain.md:0644 docs/audit-prompts/p2p3-trial.md:0644 \
            docs/audit-prompts/p2p3-dictamen.md:0644; do
-    git -C "$REPO_DIR" show "$1:${f%:*}" | sudo install -o root -g root -m "${f#*:}" /dev/stdin "/opt/aao-audit/$(basename "${f%:*}")"
+    g -C "$SRC" show "$1:${f%:*}" | sudo install -o root -g root -m "${f#*:}" /dev/stdin "/opt/aao-audit/$(basename "${f%:*}")"
   done
 }
 audit(){ # base head prompt [tool]
@@ -67,7 +74,8 @@ case ${1:-} in
     say "DONE. Send this output to the PM. Do not run 'apply' unless both verdicts are ['APPROVE-TECHNICAL']." ;;
   apply)
     (($# == 3 || $# == 4)) || die "usage: apply <REV> <R1_REPORT_SHA256> [CEO-DEC-AUDIT-CODEX-2026-10-24]"; sha "$2" REV; fetch_rev "$2";
-    EXC=(); [[ -z ${4:-} ]] || EXC=(--audit-exception "$4") [[ $3 =~ ^[0-9a-f]{64}$ ]] || die "R1_REPORT_SHA256 must be 64 hex"
+    EXC=(); [[ -z ${4:-} ]] || EXC=(--audit-exception "$4")
+    [[ $3 =~ ^[0-9a-f]{64}$ ]] || die "R1_REPORT_SHA256 must be 64 hex"
     REV=$2 RH=$3
     say "1/5 root clone at $REV"
     if sudo test -e /root/aao-src; then sudo mv /root/aao-src "/root/aao-src.old-$(date +%Y%m%dT%H%M%S)"; fi
@@ -90,8 +98,9 @@ case ${1:-} in
     TS=$(sudo ls -t /var/log/aao-trial | head -1)
     sudo tar -C /var/log/aao-trial -czf "$OUT/aao-trial-$TS.tgz" "$TS" && sudo chown "$USER": "$OUT/aao-trial-$TS.tgz"
     echo "trial exit=$trial_rc run_id=$TS (FAIL lines are results for the PM to analyse, not a reason to stop)" | tee -a "$OUT/session.log"
+    ((trial_rc != 99)) || die "the trial could not restore ruleset A (exit 99): fix that before anything else"
     say "5/5 canonical fork-PR approval policy -> all_external_contributors (CEO-DEC-P2P3 §4)"
-    git -C "$REPO_DIR" show "$REV:scripts/governance/canonical_protection.py" > "$OUT/canonical_protection.py"
+    g -C "$SRC" show "$REV:scripts/governance/canonical_protection.py" > "$OUT/canonical_protection.py"
     python3 -I "$OUT/canonical_protection.py" --repo autoaiorg/aao approval 2>&1 | tee -a "$OUT/session.log" \
       || die "approval policy not set"
     say "DONE. Send $OUT (session.log, trial.log, aao-trial-$TS.tgz) to the PM. A-13: '$0 a13 $REV $TS' in ~65 min." ;;

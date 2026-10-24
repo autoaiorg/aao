@@ -87,6 +87,16 @@ def test_dispatch_gate_path_and_file_are_group_readable_not_writable(tmp_path, m
     assert stat.S_IMODE((directory / "gate.json").stat().st_mode) == 0o640
 
 
+def test_r1_inbox_atomic_json_is_world_readable_but_state_default_stays_private(tmp_path):
+    from aao.r1_pipeline import _atomic_json
+
+    inbox_file, state_file = tmp_path / "inbox" / "request.json", tmp_path / "state.json"
+    _atomic_json(inbox_file, {"type": "audit"}, mode=0o644)
+    _atomic_json(state_file, {"status": "pending"})
+    assert stat.S_IMODE(inbox_file.stat().st_mode) == 0o644
+    assert stat.S_IMODE(state_file.stat().st_mode) == 0o600
+
+
 def test_issued_authorization_files_are_group_readable_not_writable(tmp_path, monkeypatch):
     report_dir = tmp_path / "report"
     report_dir.mkdir(mode=0o750)

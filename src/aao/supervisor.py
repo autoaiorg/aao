@@ -132,14 +132,19 @@ def _sequence(path: Path, private_key: str) -> int:
     return int(state.get("sequence", 0))
 
 
-def _persist_sequence(path: Path, sequence: int, private_key: str) -> None:
+def _persist_sequence(path: Path, sequence: int, private_key: str, *, lock_held: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    def persist() -> None:
+        state = _read_state(path, private_key)
+        state["sequence"] = max(sequence, int(state.get("sequence", 0)))
+        _write_state(path, state, private_key)
+    if lock_held:
+        persist()
+        return
     with (path.with_name(path.name + ".lock")).open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         try:
-            state = _read_state(path, private_key)
-            state["sequence"] = max(sequence, int(state.get("sequence", 0)))
-            _write_state(path, state, private_key)
+            persist()
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
 

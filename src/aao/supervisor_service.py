@@ -6,6 +6,7 @@ reviewed commit; this module is deployed only to the supervisor's frozen tree.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -320,16 +321,23 @@ def watch(config: dict[str, Any], client: Any | None = None, *,
         next_drift = None
 
     directory = events_dir or Path(config.get("events_path", "/var/lib/aao-supervisor/events"))
-    sequence = _sequence(Path(config["state_path"]), config["private_key"])
-    for event in pending:
-        sequence += 1
-        signed = _sign({**event, "sequence": sequence, "key_id": config["key_id"], "expires_at": expiry},
-                       config["private_key"])
-        target = directory / f"{sequence:020d}.json"
-        _atomic_json(target, signed)
-    # The signed heartbeat sequence is shared with notifier anti-replay.
-    if pending:
-        _persist_sequence(Path(config["state_path"]), sequence, config["private_key"])
+    state_file = Path(config["state_path"])
+    # Reserve and publish while holding the same lock as heartbeat sequence writes.
+    # Notifier-consumed events may still have gaps from intervening heartbeats; the notifier is not deployed.
+    with state_file.with_name(state_file.name + ".lock").open("a") as sequence_lock:
+        fcntl.flock(sequence_lock, fcntl.LOCK_EX)
+        try:
+            sequence = _sequence(state_file, config["private_key"])
+            for event in pending:
+                sequence += 1
+                signed = _sign({**event, "sequence": sequence, "key_id": config["key_id"], "expires_at": expiry},
+                               config["private_key"])
+                target = directory / f"{sequence:020d}.json"
+                _atomic_json(target, signed)
+            # Persist even for an empty pending set to serialize the sequence read against heartbeat writes.
+            _persist_sequence(state_file, sequence, config["private_key"], lock_held=True)
+        finally:
+            fcntl.flock(sequence_lock, fcntl.LOCK_UN)
     _atomic_json(state_path, {"push_ids": sorted(seen), "ruleset_drift_hash": next_drift})
     return {"events": len(pending), "governance_violations": sum(e["type"] == "governance-violation" for e in pending),
             "ruleset_drift": sum(e["type"] == "ruleset-drift" for e in pending),

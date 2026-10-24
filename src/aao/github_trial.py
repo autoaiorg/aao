@@ -109,8 +109,15 @@ def _git_push(client: GitHubAppClient, repo: str, refspec: str, *, force_with_le
         if key.startswith(("GIT_TRACE", "GIT_CURL_VERBOSE")):
             env.pop(key, None)
     env["GIT_TRACE_REDACT"] = "1"
-    env["GIT_CONFIG_COUNT"] = str(len(config))
-    for i, (key, value) in enumerate(config):
+    try:
+        existing_count = int(env.get("GIT_CONFIG_COUNT", "0"))
+        if existing_count < 0:
+            existing_count = 0
+    except ValueError:
+        existing_count = 0
+    env["GIT_CONFIG_COUNT"] = str(existing_count + len(config))
+    for offset, (key, value) in enumerate(config):
+        i = existing_count + offset
         env[f"GIT_CONFIG_KEY_{i}"] = key
         env[f"GIT_CONFIG_VALUE_{i}"] = value
     remote = f"https://github.com/{repo}.git"
@@ -839,6 +846,9 @@ def _run_test(test_id: str, owner: str, repo: str, role: str, client: GitHubAppC
                 stage_status == 200 and _is_ancestor(stage_before or "", candidate) is not False
             ):
                 return "NOT RUN", "P3-07 candidate must be divergent from both main and the selected staging ref", evidence
+            checks_ok, checks_reason = _wait_required_checks(client, base, candidate, evidence)
+            if not checks_ok:
+                return "INCONCLUSIVE", checks_reason, evidence
             main_item = _git_push(client, f"{owner}/{repo}", f"+{candidate}:refs/heads/main", no_verify=True)
             evidence.append(main_item)
             stage_item = _git_push(client, f"{owner}/{repo}", f"+{candidate}:refs/heads/{stage}", no_verify=True)
@@ -855,6 +865,9 @@ def _run_test(test_id: str, owner: str, repo: str, role: str, client: GitHubAppC
                                        text=True, timeout=10).stdout.strip()
             if _is_ancestor(before, candidate) is not False:
                 return "NOT RUN", "P3-12 requires a candidate that is genuinely non-fast-forward to main", evidence
+            checks_ok, checks_reason = _wait_required_checks(client, base, candidate, evidence)
+            if not checks_ok:
+                return "INCONCLUSIVE", checks_reason, evidence
             item = _git_push(client, f"{owner}/{repo}", "+HEAD:refs/heads/main", no_verify=True)
         evidence.append(item)
         unchanged = _verify_unchanged(client, base, before, evidence)

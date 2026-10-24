@@ -149,6 +149,7 @@ def test_r1_signed_audit_issues_exact_authorization(audit_setup, tmp_path, monke
     document = issue_authorization(
         env["state"] / "e2e-r1", "example/project", 17, env["key"], output,
         anchor_path=env["anchor"], anchor_owner_uids=(env["anchor"].stat().st_uid,),
+        registry_owner_uids=(os.getuid(),),
     )
     assert document["candidate_sha"] == data["candidate_sha"]
     assert document["base_sha"] == data["target_sha"]
@@ -235,7 +236,8 @@ def test_integrator_rejects_staged_commit_mismatch(audit_setup, tmp_path, mismat
     output = tmp_path / "authorization"
     issue_authorization(env["state"] / f"e2e-staged-{mismatch}", "example/project", 17,
                         env["key"], output, anchor_path=env["anchor"],
-                        anchor_owner_uids=(env["anchor"].stat().st_uid,))
+                        anchor_owner_uids=(env["anchor"].stat().st_uid,),
+                        registry_owner_uids=(os.getuid(),))
     _bare, sources, doc, sig = _bare_chain(env, data, output, tmp_path)
     tree = data["result_tree"] if mismatch == "parents" else _git(env["repo"], "rev-parse", f"{data['candidate_sha']}^{{tree}}")
     parents = [data["target_sha"], data["candidate_sha"]]
@@ -262,7 +264,8 @@ def test_issuer_rejects_tampered_report_signature(audit_setup):
     with pytest.raises(AuditError, match="not promotion-valid"):
         issue_authorization(report_dir, "example/project", 17, env["key"],
                             env["tmp"] / "must-not-exist", anchor_path=env["anchor"],
-                            anchor_owner_uids=(env["anchor"].stat().st_uid,))
+                            anchor_owner_uids=(env["anchor"].stat().st_uid,),
+                        registry_owner_uids=(os.getuid(),))
 
 
 def test_protected_path_does_not_emit_when_r2_is_disabled(audit_setup):
@@ -286,7 +289,8 @@ def test_protected_path_does_not_emit_when_r2_is_disabled(audit_setup):
     with pytest.raises(AuditError, match="R2 is not enabled"):
         issue_authorization(env["state"] / "e2e-protected", "example/project", 17,
                             env["key"], env["tmp"] / "must-not-exist",
-                            anchor_path=env["anchor"], anchor_owner_uids=(env["anchor"].stat().st_uid,))
+                            anchor_path=env["anchor"], anchor_owner_uids=(env["anchor"].stat().st_uid,),
+                        registry_owner_uids=(os.getuid(),))
     assert not (env["tmp"] / "must-not-exist").exists()
 
 
@@ -300,7 +304,8 @@ def test_integrator_refuses_signed_supervisor_pending_veto(audit_setup, tmp_path
     output = tmp_path / "authorization"
     issue_authorization(env["state"] / "e2e-pending-veto", "example/project", 17,
                         env["key"], output, anchor_path=env["anchor"],
-                        anchor_owner_uids=(env["anchor"].stat().st_uid,))
+                        anchor_owner_uids=(env["anchor"].stat().st_uid,),
+                        registry_owner_uids=(os.getuid(),))
     bare, sources, doc, sig = _bare_chain(env, data, output, tmp_path)
     directory = Path(str(sources.ledger) + ".pending-vetoes")
     directory.mkdir(mode=0o700)

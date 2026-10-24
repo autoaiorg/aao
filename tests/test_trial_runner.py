@@ -69,7 +69,7 @@ def test_ruleset_gate_fetches_details_and_checks_rules_and_bypass_actors():
     for rule in ('"non_fast_forward"', '"required_status_checks"', '"deletion"', '"pull_request"'):
         assert rule in source
     assert "bypass_actors" in source
-    assert 'x.get("actor_id")==5447984' in source
+    assert '[(x.get("actor_id"),x.get("actor_type")) for x in abypass]==[(5447984,"Integration")]' in source
 
 
 def test_runner_passes_both_implementer_forks_and_runs_a10_for_all_apps():
@@ -89,9 +89,12 @@ def test_runner_collects_p0_p4_and_p4b_before_equivalence_execution():
     assert 'collect_impl_p4()' in source
     assert 'IFS=, read -r -a fork_list' in source
     assert 'for target in "$REPO" "${fork_list[@]}"' in source
-    for check in ('hosts.yml', '.git-credentials', 'GH_TOKEN=', 'GITHUB_TOKEN=',
-                  'deploy_keys_by_repository', 'outside_collaborators_clear', 'org_members_clear'):
+    for check in ('hosts.yml', '.git-credentials', 'user_manager_state', '/var/lib/systemd/linger/',
+                  'user@$n.service', '"systemd_user_manager"', 'token_environment_absent',
+                  'deploy_keys_by_repository', 'outside_collaborators_clear', 'org_members_clear',
+                  'not [x for x in outside if x]'):
         assert check in source
+    assert 'systemctl","--user' not in source
     assert 'collect_p4b()' in source
     assert 'orgs/autoaiorg/members?role=admin' in source
     assert 'repos/$REPO/collaborators?permission=admin' in source

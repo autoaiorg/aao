@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 import pwd
+import re
 import stat
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -74,8 +75,8 @@ def heartbeat(config: dict[str, Any]) -> dict[str, Any]:
         seconds=config["validity_seconds"])).isoformat(), **custody)
 
 
-def attribution(config: dict[str, Any], client: Any | None = None) -> int:
-    """Record only GitHub-sourced push actors and PR authors; API failure writes nothing."""
+def attribution(config: dict[str, Any], client: Any | None = None) -> dict[str, Any]:
+    """Attribute PR head commits from GitHub push-event history; unresolved PRs fail closed."""
     from aao.github_app_auth import GitHubAppClient
     from aao.supervisor import record_attribution
 
@@ -96,26 +97,99 @@ def attribution(config: dict[str, Any], client: Any | None = None) -> int:
             raise RuntimeError(f"GitHub attribution API failed (HTTP {status})")
         return body
 
+    sha_re = re.compile(r"[0-9a-f]{40}\Z")
+    pulls = get(f"/repos/{escaped}/pulls?state=open&per_page=100")
+    prs: list[dict[str, Any]] = []
+    skipped: set[int] = set()
+    for pr in pulls:
+        head = pr.get("head") if isinstance(pr, dict) else None
+        repo_info = head.get("repo") if isinstance(head, dict) else None
+        sha, ref = (head.get("sha"), head.get("ref")) if isinstance(head, dict) else (None, None)
+        repo_name = repo_info.get("full_name") if isinstance(repo_info, dict) else None
+        number = pr.get("number") if isinstance(pr, dict) else None
+        if isinstance(number, int) and isinstance(sha, str) and sha_re.fullmatch(sha) and isinstance(ref, str) and isinstance(repo_name, str):
+            prs.append({"number": number, "sha": sha, "ref": ref, "repo": repo_name})
+        elif isinstance(number, int):
+            skipped.add(number)
+
+    repos: dict[str, list[dict[str, Any]]] = {}
+    for pr in prs:
+        repos.setdefault(pr["repo"], []).append(pr)
     attributed: dict[str, set[str]] = {}
-    push_principals = config["push_principals"]
-    # Only authenticated push events are eligible. PR author logins are not push authentication.
-    events = get(f"/repos/{escaped}/events?per_page=100")
-    for event in events:
-        if not isinstance(event, dict):
-            raise TypeError("malformed GitHub repository event")
-        if event.get("type") == "PushEvent":
+    for head_repo, repo_prs in repos.items():
+        repo_owner, repo_name = head_repo.split("/", 1) if head_repo.count("/") == 1 else (None, None)
+        try:
+            events = get(f"/repos/{quote(repo_owner or '', safe='')}/{quote(repo_name or '', safe='')}/events?per_page=100")
+        except Exception:
+            skipped.update(pr["number"] for pr in repo_prs)
+            continue
+        pushes: list[tuple[str, str, str, str]] = []
+        malformed = False
+        for event in events:
+            if not isinstance(event, dict) or event.get("type") != "PushEvent":
+                continue
             actor = event.get("actor")
-            commits = event.get("payload", {}).get("commits") if isinstance(event.get("payload"), dict) else None
-            if not isinstance(actor, dict) or not isinstance(actor.get("login"), str) or not isinstance(commits, list):
-                raise ValueError("malformed GitHub push event")
-            for commit in commits:
-                sha = commit.get("sha") if isinstance(commit, dict) else None
-                if not isinstance(sha, str) or len(sha) != 40 or any(ch not in "0123456789abcdef" for ch in sha):
-                    raise ValueError("malformed commit in GitHub push event")
-                attributed.setdefault(sha, set()).add(actor["login"])
+            payload = event.get("payload")
+            if (not isinstance(actor, dict) or not isinstance(actor.get("login"), str) or not actor["login"]
+                    or not isinstance(payload, dict) or not isinstance(payload.get("head"), str)
+                    or not sha_re.fullmatch(payload["head"]) or not isinstance(payload.get("before"), str)
+                    or not sha_re.fullmatch(payload["before"]) or not isinstance(payload.get("ref"), str)):
+                malformed = True
+                break
+            pushes.append((actor["login"], payload["head"], payload["before"], payload["ref"]))
+        if malformed:
+            skipped.update(pr["number"] for pr in repo_prs)
+            continue
+        for pr in repo_prs:
+            try:
+                commits = get(f"/repos/{escaped}/pulls/{pr['number']}/commits?per_page=100")
+            except Exception:
+                skipped.add(pr["number"])
+                continue
+            if isinstance(commits, list) and len(commits) >= 100:
+                # GitHub returns at most 100 commits per page; a truncated set cannot
+                # establish complete commit-to-push attribution for this PR.
+                skipped.add(pr["number"])
+                continue
+            commit_shas = {item.get("sha") for item in commits if isinstance(item, dict)
+                           and isinstance(item.get("sha"), str) and sha_re.fullmatch(item["sha"])}
+            matching = [push for push in pushes if push[1] == pr["sha"] and push[3] == f"refs/heads/{pr['ref']}"]
+            if not matching:
+                skipped.add(pr["number"])
+                continue
+            chain_events: dict[str, list[tuple[str, str]]] = {}
+            for actor, head, before, ref in pushes:
+                if ref == f"refs/heads/{pr['ref']}":
+                    chain_events.setdefault(head, []).append((actor, before))
+            principals: set[str] = set()
+            visited: set[str] = set()
+            pending = [pr["sha"]]
+            complete = True
+            reached_creation = False
+            while pending:
+                head_sha = pending.pop()
+                if head_sha == "0" * 40:
+                    reached_creation = True
+                    continue
+                if head_sha in visited:
+                    continue
+                visited.add(head_sha)
+                links = chain_events.get(head_sha)
+                if not links:
+                    complete = False
+                    continue
+                for actor, before in links:
+                    principals.add(actor)
+                    pending.append(before)
+            complete = complete and reached_creation
+            if not complete:
+                skipped.add(pr["number"])
+                continue
+            principals.update(actor for actor, head, _before, _ref in pushes if head in commit_shas)
+            attributed.setdefault(pr["sha"], set()).update(principals)
     for sha, principals in sorted(attributed.items()):
         record_attribution(Path(config["attribution_path"]), sha, sorted(principals))
-    return len(attributed)
+    return {"candidates": len(attributed), "skipped_prs": sorted(skipped)}
 
 
 def main() -> int:
@@ -128,8 +202,8 @@ def main() -> int:
         print(json.dumps({"sequence": event["sequence"], "ledger_head": event["ledger_head"]}))
         return 0
     if args.command == "attribution":
-        count = attribution(config)
-        print(json.dumps({"status": "recorded", "candidates": count}))
+        result = attribution(config)
+        print(json.dumps({"status": "recorded", **result}))
         return 0
     serve_veto_intake(Path(config["intake_socket"]), auditor_uid=config["auditor_uid"],
                       validity_seconds=config["validity_seconds"], **_custody(config))

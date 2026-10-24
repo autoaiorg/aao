@@ -1,6 +1,7 @@
 """Offline R1 orchestration tests with a fake GitHub client and local bare remotes."""
 import hashlib
 import json
+import os
 import subprocess
 from datetime import UTC, datetime
 
@@ -306,6 +307,7 @@ def test_real_r1_authorizes_and_promotes_over_alternating_ticks(tmp_path, audit_
     monkeypatch.setattr(auditor_dispatch, "issue_authorization", issue_after_anchoring)
     result = auditor_dispatch.dispatch_once(inbox, reports, env["key"], github,
         anchor_path=env["anchor"], anchor_owner_uids=(env["anchor"].stat().st_uid,),
+        registry_owner_uids=(os.getuid(),),
         repository_root=mirror, runner=ok_runner)
     assert result[0]["status"] == "approve", result
     assert audit_file.exists()
@@ -326,6 +328,7 @@ def test_real_r1_authorizes_and_promotes_over_alternating_ticks(tmp_path, audit_
                    if json.loads(path.read_text()) == gate_request)
     gate_result = auditor_dispatch.dispatch_once(inbox, reports, env["key"], github,
         anchor_path=env["anchor"], anchor_owner_uids=(env["anchor"].stat().st_uid,),
+        registry_owner_uids=(os.getuid(),),
         repository_root=mirror)
     assert any(item["id"] == gate_id and item["status"] == "success" for item in gate_result)
     assert github.checks[(staged, "aao-audit")] == "success"
@@ -355,6 +358,7 @@ def test_real_r1_authorizes_and_promotes_over_alternating_ticks(tmp_path, audit_
     second_audit_result = auditor_dispatch.dispatch_once(
         inbox, reports, env["key"], github,
         anchor_path=env["anchor"], anchor_owner_uids=(env["anchor"].stat().st_uid,),
+        registry_owner_uids=(os.getuid(),),
         repository_root=mirror, runner=ok_runner,
     )
     assert any(item.get("id") == second_audit_key and item["status"] == "approve"
@@ -372,6 +376,7 @@ def test_real_r1_authorizes_and_promotes_over_alternating_ticks(tmp_path, audit_
     second_gate_result = auditor_dispatch.dispatch_once(
         inbox, reports, env["key"], github,
         anchor_path=env["anchor"], anchor_owner_uids=(env["anchor"].stat().st_uid,),
+        registry_owner_uids=(os.getuid(),),
         repository_root=mirror,
     )
     assert any(item.get("id") == second_gate_id and item["status"] == "success"
@@ -384,6 +389,7 @@ def test_real_r1_authorizes_and_promotes_over_alternating_ticks(tmp_path, audit_
     repeated_gate_result = auditor_dispatch.dispatch_once(
         inbox, reports, env["key"], github,
         anchor_path=env["anchor"], anchor_owner_uids=(env["anchor"].stat().st_uid,),
+        registry_owner_uids=(os.getuid(),),
         repository_root=mirror,
     )
     assert any(item.get("id") == second_gate_id and item["status"] == "ignored"
@@ -398,6 +404,7 @@ def test_real_r1_authorizes_and_promotes_over_alternating_ticks(tmp_path, audit_
     new_sha_gate_result = auditor_dispatch.dispatch_once(
         inbox, reports, env["key"], github,
         anchor_path=env["anchor"], anchor_owner_uids=(env["anchor"].stat().st_uid,),
+        registry_owner_uids=(os.getuid(),),
         repository_root=mirror,
     )
     assert any(item.get("id") == second_gate_id and item["status"] == "failure"
@@ -413,6 +420,7 @@ def test_real_r1_authorizes_and_promotes_over_alternating_ticks(tmp_path, audit_
     missing_sha_result = auditor_dispatch.dispatch_once(
         inbox, reports, env["key"], github,
         anchor_path=env["anchor"], anchor_owner_uids=(env["anchor"].stat().st_uid,),
+        registry_owner_uids=(os.getuid(),),
         repository_root=mirror,
     )
     assert any(item.get("id") == second_gate_id and item["status"] == "failed"

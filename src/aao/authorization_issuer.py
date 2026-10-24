@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import pwd
 import stat
 import subprocess
 import tempfile
@@ -53,9 +54,15 @@ def issue_authorization(
     report_dir: Path, repo: str, pr_number: int, key: Path, output: Path, *,
     anchor_path: Path = ANCHOR_PATH, anchor_owner_uids: tuple[int, ...] = (0,),
     now: datetime | None = None, registry_path: Path | None = None,
+    registry_owner_uids: tuple[int, ...] | None = None,
 ) -> dict[str, Any]:
     """Verify the signed audit and emit an exact §6.1 authorization document."""
     anchor = load_anchor(anchor_path, anchor_owner_uids)
+    if registry_owner_uids is None:
+        try:
+            registry_owner_uids = (0, pwd.getpwnam("aao-trust").pw_uid)
+        except KeyError:
+            registry_owner_uids = (0,)
     report_path, signature_path = report_dir / "report.json", report_dir / "report.sig"
     report_info = report_dir.lstat()
     if (not stat.S_ISDIR(report_info.st_mode) or report_info.st_uid != anchor["auditor_uid"]
@@ -90,7 +97,7 @@ def issue_authorization(
                    "protected_routes_sha256": policy.get("protected_routes_sha256")}
     try:
         normative = load_document()
-        registry = json.loads(read_protected(registry_path or TRUST_REGISTRY_PATH, (0, *anchor_owner_uids)))
+        registry = json.loads(read_protected(registry_path or TRUST_REGISTRY_PATH, registry_owner_uids))
         compare_copies(normative, registry, operational)
     except (OSError, ValueError, TypeError) as error:
         raise AuditError(str(error)) from error

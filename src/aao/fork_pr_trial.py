@@ -18,7 +18,6 @@ import subprocess
 import sys
 import time
 import urllib.parse
-from typing import Any
 
 from .github_app_auth import GitHubAppClient, GitHubAuthError, create_jwt
 from .github_trial import _api, _git_push, _trial_repo_allowed, validate_role_uid, write_evidence

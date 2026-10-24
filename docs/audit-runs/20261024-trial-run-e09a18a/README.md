@@ -58,3 +58,16 @@ La ejecución `40132652973`:
 **Relacionado.** El repositorio canónico `autoaiorg/aao` tiene una política más débil, `first_time_contributors`.
 
 **Decisión R3 pendiente del CEO.** El P3 exige que no se ejecute sin aprobación, y no se cumple.
+
+## Decisión del CEO (R3, 2026-10-24): se acepta el riesgo residual de P3-10
+
+P3-10 queda como **FAIL con riesgo residual aceptado**. La aceptación queda sujeta a estas condiciones:
+
+1. RA-01 mantiene `.github/workflows/` como mínimo en R2. Hoy en `docs/protected-routes.json`: `minimum_risk_class: R2`.
+2. `default_workflow_permissions` sigue en `read`. Comprobado el 2026-10-24 en `autoaiorg/aao`.
+3. No hay secretos, variables ni entornos de Actions:
+   - repositorios: comprobado el 2026-10-24, 0 en `autoaiorg/aao` y 0 en `autoaiorg/aao-governance-trial`;
+   - organización: **pendiente de que lo verifique el CEO**, porque la API exige `admin:org`.
+4. La política de aprobación del repositorio canónico pasa de `first_time_contributors` a `all_external_contributors`. Es una operación administrativa que va en el próximo procedimiento consolidado del CEO.
+
+Si alguna condición deja de cumplirse, la aceptación se invalida.

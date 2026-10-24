@@ -167,7 +167,7 @@ def test_runner_separates_creation_from_approval_check_under_distinct_uids():
     assert 'fork_step "${APP_UID[aao-pm]}" A-11 "$REPO" aao-pm' in source
     assert 'fork_step "${APP_UID[aao-supervisor]}" P3-10 "$REPO" aao-supervisor' in source
     assert source.index("FORK-BRANCH \"$fork\"") < source.index("A-11 \"$REPO\"") < source.index("P3-10 \"$REPO\"")
-    assert "for id in A-07 A-08 A-13 P3-04 P3-08 P3-11; do" in source
+    assert "manual step documented in trial setup" not in source  # every former manual test is automated
     assert "from aao.fork_pr_trial import main" in source
     assert 'AAO_GITHUB_TRIAL_FORK="$fork" AAO_GITHUB_TRIAL_BRANCH="$fork_branch"' in source.split('P3-10 "$REPO"', 1)[1].splitlines()[0]
     assert '".config/systemd/user"' in source and '".config/environment.d"' in source

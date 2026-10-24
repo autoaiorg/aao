@@ -13,9 +13,10 @@ from pathlib import Path
 from typing import Any
 
 from aao.git_paths import changed_paths as git_changed_paths
-from aao.governance_ledger import active_vetoes, append, open_incidents, verify
+from aao.governance_ledger import active_vetoes, open_incidents, verify
 from aao.integration_authorization import canonical, validate
 from aao.pending_veto import PendingVetoError, pending_vetoes
+from aao.supervisor import _sign
 
 TRUST_VERIFICATION_PATH = Path("/var/lib/aao-trust-verify/status.json")
 TRUST_VERIFICATION_ROOT = Path("/")
@@ -37,6 +38,24 @@ class TrustSources:
     trust_verification: Path = TRUST_VERIFICATION_PATH
     trust_verification_root: Path = TRUST_VERIFICATION_ROOT
     trust_verification_owner_uid: int = 0
+    incident_inbox: Path = Path("/var/lib/aao-audit-inbox")
+
+
+def _write_incident_request(inbox: Path, payload: dict[str, Any], private_key: str) -> None:
+    """Publish an integrator-signed incident request without ledger custody."""
+    import tempfile
+
+    signed = _sign(payload, private_key)
+    path = Path(inbox) / f"incident-{payload['intended_sha']}.json"
+    path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(fd, 0o640)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(canonical(signed)); stream.flush(); os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def _require_trust_root_verification(sources: TrustSources, registry: dict[str, Any],
@@ -396,18 +415,16 @@ def promote(repo: Path, remote: str, auth: dict[str, Any], signature: str,
                 f"{detail}; intended_sha={commit}; observed_sha={observed_sha}\n"
             )
             try:
-                incident = append(trust_sources.ledger, {
-                    "type": "incident", "id": f"ambiguous-push-{commit}",
-                    "target_ref": ref, "detail": detail, "intended_sha": commit,
-                    "observed_sha": observed_sha,
-                    "intended_tree_sha": auth["merge_result_tree_sha"],
-                    "observed_tree_sha": None, "intended_parents": auth["expected_parents"],
-                    "observed_parents": None,
-                }, registry["integrator_key_id"], str(trust_sources.integrator_private_key),
-                    ledger_keys, rows[-1]["hash"] if rows else "0" * 64)
-                trust_sources.ledger_anchor.write_text(incident["hash"])
-            except Exception as ledger_error:
-                raise RuntimeError(f"post-publication incident; frozen; ledger recording failed: {ledger_error}") from ledger_error
+                payload = {"schema": "aao.integrator-incident.v1", "type": "incident",
+                    "id": f"ambiguous-push-{commit}", "target_ref": ref, "detail": detail,
+                    "intended_sha": commit, "observed_sha": observed_sha,
+                    "intended_tree_sha": auth["merge_result_tree_sha"], "observed_tree_sha": None,
+                    "intended_parents": auth["expected_parents"], "observed_parents": None,
+                    "created_at": current_time.isoformat(), "key_id": registry["integrator_key_id"]}
+                _write_incident_request(trust_sources.incident_inbox, payload,
+                                        str(trust_sources.integrator_private_key))
+            except Exception as incident_error:
+                raise RuntimeError(f"post-publication incident; frozen; incident request recording failed: {incident_error}") from incident_error
             raise RuntimeError("post-publication incident; integrator frozen")
     expected_tree = auth["merge_result_tree_sha"]
     observed: dict[str, Any] = {"sha": None, "tree_sha": None, "parents": None}
@@ -432,21 +449,15 @@ def promote(repo: Path, remote: str, auth: dict[str, Any], signature: str,
             f"{detail}; intended_sha={commit}; observed_sha={observed['sha']}\n"
         )
         try:
-            incident = append(trust_sources.ledger, {
-                "type": "incident",
-                "id": f"post-push-{commit}",
-                "target_ref": ref,
-                "detail": detail,
-                "intended_sha": commit,
-                "observed_sha": observed["sha"],
-                "intended_tree_sha": expected_tree,
-                "observed_tree_sha": observed["tree_sha"],
-                "intended_parents": expected_parents,
-                "observed_parents": observed["parents"],
-            }, registry["integrator_key_id"], str(trust_sources.integrator_private_key), ledger_keys,
-                rows[-1]["hash"] if rows else "0" * 64)
-            trust_sources.ledger_anchor.write_text(incident["hash"])
-        except Exception as ledger_error:  # noqa: BLE001 - preserve freeze if recording itself fails.
-            raise RuntimeError(f"post-publication incident; frozen; ledger recording failed: {ledger_error}") from error
+            payload = {"schema": "aao.integrator-incident.v1", "type": "incident",
+                "id": f"post-push-{commit}", "target_ref": ref, "detail": detail,
+                "intended_sha": commit, "observed_sha": observed["sha"],
+                "intended_tree_sha": expected_tree, "observed_tree_sha": observed["tree_sha"],
+                "intended_parents": expected_parents, "observed_parents": observed["parents"],
+                "created_at": current_time.isoformat(), "key_id": registry["integrator_key_id"]}
+            _write_incident_request(trust_sources.incident_inbox, payload,
+                                    str(trust_sources.integrator_private_key))
+        except Exception as incident_error:  # noqa: BLE001 - preserve freeze if recording itself fails.
+            raise RuntimeError(f"post-publication incident; frozen; incident request recording failed: {incident_error}") from error
         raise RuntimeError("post-publication incident; integrator frozen") from error
     return commit

@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodic AAO supervisor GitHub governance and ruleset watch
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30s
+Persistent=true
+Unit=aao-supervisor-watch.service
+
+[Install]
+WantedBy=timers.target

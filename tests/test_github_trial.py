@@ -303,11 +303,81 @@ def test_a10_implementer_on_trial_canonical_fails_even_with_read_only_permission
     assert [call[1] for call in client.calls] == ["/repos/org/trial"]
 
 
-def test_default_branch_delete_is_not_run():
-    status, reason, evidence = trial.run_test("P3-08", "org", "trial", "aao-integrator", DummyClient([]))
-    assert status == "NOT RUN"
-    assert "Default-branch" in reason
-    assert not evidence
+LIVE_DELETE = ("remote: error: GH013: Repository rule violations found for refs/heads/aao-staging/p308-x.\n"
+               "remote: - Cannot delete this protected ref.\n ! [remote rejected] (push declined due to repository rule violations)")
+
+
+def _p308(monkeypatch, *, created=0, delete_exit=1, delete_response=LIVE_DELETE, after_status=200):
+    sha = "e" * 40
+    monkeypatch.setattr(trial, "_local_head", lambda: sha)
+    monkeypatch.setattr(trial, "_wait_required_checks", lambda *a: (True, "green"))
+    pushes = []
+
+    def push(_client, _repo, refspec, **_kw):
+        pushes.append(refspec)
+        if refspec.startswith(":"):
+            return {"method": "git push", "exit_code": delete_exit, "status": delete_exit,
+                    "server_rejected": delete_exit != 0, "response": delete_response}
+        return {"method": "git push", "exit_code": created, "status": created, "server_rejected": False, "response": ""}
+    monkeypatch.setattr(trial, "_git_push", push)
+    replies = [(200, {"object": {"sha": sha}}), (after_status, {"object": {"sha": sha}})]
+    return trial.run_test("P3-08", "org", "trial", "aao-integrator", DummyClient(replies)), pushes
+
+
+def test_p3_08_deletion_of_protected_staging_ref_is_attributed_to_the_deletion_rule(monkeypatch):
+    (status, _reason, _), pushes = _p308(monkeypatch)
+    assert status == "PASS" and pushes == ["e" * 40 + ":refs/heads/aao-staging/p308-eeeeeeeeeeee", ":refs/heads/aao-staging/p308-eeeeeeeeeeee"]
+
+
+def test_p3_08_fails_if_deleted_and_is_inconclusive_without_rule_text_or_created_ref(monkeypatch):
+    assert _p308(monkeypatch, delete_exit=0, after_status=404)[0][0] == "FAIL"
+    assert _p308(monkeypatch, delete_response="remote: error: GH013: Repository rule violations found")[0][0] == "INCONCLUSIVE"
+    assert _p308(monkeypatch, created=1)[0][0] == "INCONCLUSIVE"
+
+
+def _p304(monkeypatch, patch_reply, *, ready=(True, "ready"), main_after=None):
+    base, sha = "a" * 40, "b" * 40
+    monkeypatch.setattr(trial, "_local_head", lambda: sha)
+    monkeypatch.setattr(trial, "_is_ancestor", lambda old, new: True)
+    monkeypatch.setattr(trial, "_wait_wrong_publisher", lambda *a: ready)
+    client = DummyClient([(200, {"object": {"sha": base}}), patch_reply, (200, {"object": {"sha": main_after or base}})])
+    return trial.run_test("P3-04", "org", "trial", "aao-integrator", client), client
+
+
+def test_p3_04_wrong_publisher_aao_audit_is_rejected_by_ruleset_b(monkeypatch):
+    live = (422, {"message": 'Repository rule violations found\n\nRequired status check "aao-audit" is expected.\n\n'})
+    (status, reason, _), _client = _p304(monkeypatch, live)
+    assert status == "PASS" and "aao-audit" in reason
+
+
+def test_p3_04_fails_on_acceptance_and_never_patches_without_precondition(monkeypatch):
+    assert _p304(monkeypatch, (200, {}), main_after="b" * 40)[0][0] == "FAIL"
+    (status, _, _), client = _p304(monkeypatch, (422, {}), ready=(False, "not ready"))
+    assert status == "INCONCLUSIVE" and not any(c[0] == "PATCH" for c in client.calls)
+    assert _p304(monkeypatch, (422, {"message": "Validation Failed"}))[0][0] == "INCONCLUSIVE"
+
+
+def test_a13_expired_token_must_get_401(monkeypatch):
+    monkeypatch.setenv("AAO_TRIAL_A13_WAIT", "1")
+    monkeypatch.setenv("AAO_TRIAL_A13_SECONDS", "0")
+    assert trial.run_test("A-13", "org", "trial", "aao-integrator", DummyClient([(401, {"message": "Bad credentials"})]))[0] == "PASS"
+    assert trial.run_test("A-13", "org", "trial", "aao-integrator", DummyClient([(200, {})]))[0] == "FAIL"
+
+
+def test_a13_without_wait_mode_is_not_run():
+    assert trial.run_test("A-13", "org", "trial", "aao-integrator", DummyClient([]))[0] == "NOT RUN"
+
+
+def test_a07_ceo_push_reports_pushed_only_when_main_moved(monkeypatch):
+    base, sha = "a" * 40, "b" * 40
+    monkeypatch.setattr(trial, "_local_head", lambda: sha)
+    monkeypatch.setattr(trial, "_is_ancestor", lambda old, new: True)
+    monkeypatch.setattr(trial, "_git_push", lambda *a, **k: {"exit_code": 0, "status": 0})
+    pushed = trial.run_test("A-07", "org", "trial", "ceo", DummyClient([(200, {"object": {"sha": base}}), (200, {"object": {"sha": sha}})]))
+    assert pushed[0] == "PUSHED"
+    blocked = trial.run_test("A-07", "org", "trial", "ceo", DummyClient([(200, {"object": {"sha": base}}), (200, {"object": {"sha": base}})]))
+    assert blocked[0] == "FAIL"
+    assert trial.run_test("A-07", "org", "trial", "aao-integrator", DummyClient([]))[0] == "NOT RUN"
 
 
 def test_a14_requires_implementer_on_fork():
@@ -961,3 +1031,14 @@ def test_stage_merge_commit_message_is_given_on_stdin_never_inherited():
     source = inspect.getsource(github_trial)
     call = source[source.index('"commit-tree",'):][:400]
     assert 'input="AAO trial staged merge' in call
+
+
+def test_p3_04_precondition_refuses_an_incomplete_check_run_listing(monkeypatch):
+    monkeypatch.setattr(trial, "CHECK_WAIT_SECONDS", 0)
+    runs = [{"name": "test", "app": {"id": 15368}, "status": "completed", "conclusion": "success"},
+            {"name": "aao-audit", "app": {"id": 99}, "status": "completed", "conclusion": "success"}]
+    client = DummyClient([(200, {"id": 77}), (200, {"total_count": 101, "check_runs": runs})])
+    ready, why = trial._wait_wrong_publisher(client, "/repos/org/trial", "b" * 40, [])
+    assert not ready and "incomplete" in why
+    client = DummyClient([(200, {"id": 77}), (200, {"total_count": 2, "check_runs": runs})])
+    assert trial._wait_wrong_publisher(client, "/repos/org/trial", "b" * 40, [])[0]

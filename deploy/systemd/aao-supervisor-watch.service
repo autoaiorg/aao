@@ -1,0 +1,17 @@
+[Unit]
+Description=AAO supervisor GitHub governance and ruleset watch
+After=network-online.target local-fs.target systemd-tmpfiles-setup.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=aao-supervisor
+Group=aao-supervisor
+UMask=0027
+ExecStart=/srv/aao/frozen/aao-supervisor/venv/bin/python -I -c "import sys; sys.path.insert(0, '/srv/aao/frozen/aao-supervisor/tree/src'); from aao.supervisor_service import main; sys.argv[0] = 'aao-supervisor'; raise SystemExit(main())" watch
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=/var/lib/aao-supervisor/events /var/lib/aao-supervisor
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

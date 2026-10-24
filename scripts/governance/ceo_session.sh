@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# The CEO's consolidated privileged steps, in order, stopping at the first failure. Run as the CEO (not root);
+# it uses sudo itself. Nothing here is decided by the script: every authorization is an argument the CEO gives.
+#
+#   ceo_session.sh audits <REV> <R1_BASE> <TRIAL_BASE>
+#       Independent Antigravity audits of REV (r1-chain and p2p3-trial), copies to ~/, verdict replay. Read-only
+#       for the trust root. Send the output to the PM; continue only with two APPROVE-TECHNICAL.
+#   ceo_session.sh apply <REV> <R1_REPORT_SHA256>
+#       Root clone at REV, trust-root upgrade (dry run, then apply, PASS required), full P2/P3 trial (A-13 left
+#       running detached), evidence archive in ~/, and the canonical fork-PR approval policy (CEO-DEC-P2P3 §4).
+#   ceo_session.sh dictamen <REV> <BASE>
+#       Independent Antigravity dictamen on committed trial evidence (prompt p2p3-dictamen).
+#   ceo_session.sh a13 <REV> <RUN_ID>
+#       Collect the detached A-13 token-expiry result.
+set -euo pipefail
+[[ $EUID != 0 ]] || { echo 'run as the CEO, not root (sudo is used per step)' >&2; exit 2; }
+REPO_DIR=${AAO_REPO_DIR:-$HOME/workspace/repos/active/aao}
+OUT=$HOME/aao-session-$(date -u +%Y%m%dT%H%M%SZ); mkdir -p "$OUT"
+say(){ printf '\n==== %s\n' "$*" | tee -a "$OUT/session.log"; }
+die(){ printf 'STOP: %s\nNothing after this step was run. Send %s/session.log to the PM.\n' "$*" "$OUT" | tee -a "$OUT/session.log" >&2; exit 1; }
+sha(){ [[ $1 =~ ^[0-9a-f]{40}$ ]] || die "$2 must be a full 40-hex SHA"; }
+fetch_rev(){ git -C "$REPO_DIR" fetch -q origin && git -C "$REPO_DIR" cat-file -e "$1^{commit}" || die "revision $1 not found in $REPO_DIR"; }
+install_audit_runner(){
+  for f in scripts/audit/run_agy_audit.sh:0755 docs/audit-prompts/r1-chain.md:0644 docs/audit-prompts/p2p3-trial.md:0644 \
+           docs/audit-prompts/p2p3-dictamen.md:0644; do
+    git -C "$REPO_DIR" show "$1:${f%:*}" | sudo install -o root -g root -m "${f#*:}" /dev/stdin "/opt/aao-audit/$(basename "${f%:*}")"
+  done
+}
+audit(){ # base head prompt
+  local suffix=""; [[ $3 == r1-chain ]] || suffix="-$3"
+  say "Antigravity audit $3 of $2 (10-20 min, silent: do not interrupt)"
+  sudo -u aao-auditor-alt -H /opt/aao-audit/run_agy_audit.sh "$1" "$2" "$3" 2>&1 | tee -a "$OUT/session.log" || die "audit $3 failed"
+  sudo cat "/home/aao-auditor-alt/aao-audits/$2$suffix/report.md" > "$HOME/aao-agy-audit-$2$suffix.md"
+  sudo cat "/home/aao-auditor-alt/aao-audits/$2$suffix/attestation.json" > "$HOME/aao-agy-attest-$2$suffix.json"
+  python3 -I - "$HOME/aao-agy-attest-$2$suffix.json" "$HOME/aao-agy-audit-$2$suffix.md" "$2" <<'PY' | tee -a "$OUT/session.log"
+import hashlib, json, re, sys
+att, report, rev = json.load(open(sys.argv[1])), open(sys.argv[2], "rb").read(), sys.argv[3]
+assert att["head"] == att["checked_out_head"] == rev and att["os_user"] == "aao-auditor-alt", "attestation is not for this REV"
+assert hashlib.sha256(report).hexdigest() == att["report_sha256"], "report does not match its attestation"
+verdicts = {re.sub(r"[\s*`]", "", l.split("Veredicto:", 1)[1]) for l in report.decode().splitlines() if "Veredicto:" in l}
+print(f"{att['prompt_name']}: verdict {sorted(verdicts)} report_sha256={att['report_sha256']}")
+PY
+}
+
+case ${1:-} in
+  audits)
+    (($# == 4)) || die "usage: audits <REV> <R1_BASE> <TRIAL_BASE>"; sha "$2" REV; sha "$3" R1_BASE; sha "$4" TRIAL_BASE
+    fetch_rev "$2"; install_audit_runner "$2"
+    audit "$3" "$2" r1-chain; audit "$4" "$2" p2p3-trial
+    say "DONE. Send this output to the PM. Do not run 'apply' unless both verdicts are ['APPROVE-TECHNICAL']." ;;
+  apply)
+    (($# == 3)) || die "usage: apply <REV> <R1_REPORT_SHA256>"; sha "$2" REV; fetch_rev "$2"; [[ $3 =~ ^[0-9a-f]{64}$ ]] || die "R1_REPORT_SHA256 must be 64 hex"
+    REV=$2 RH=$3
+    say "1/5 root clone at $REV"
+    if sudo test -e /root/aao-src; then sudo mv /root/aao-src "/root/aao-src.old-$(date +%Y%m%dT%H%M%S)"; fi
+    sudo env -i PATH=/usr/bin:/bin HOME=/root GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 \
+      git -c core.hooksPath=/dev/null clone -q https://github.com/autoaiorg/aao.git /root/aao-src
+    sudo git -C /root/aao-src -c advice.detachedHead=false checkout -q "$REV"
+    [[ $(sudo git -C /root/aao-src rev-parse HEAD) == "$REV" ]] || die "root clone is not at $REV"
+    [[ $(sudo sha256sum "/home/aao-auditor-alt/aao-audits/$REV/report.md" | cut -d' ' -f1) == "$RH" ]] || die "the r1-chain report is not the one you pinned"
+    B=(sudo /root/aao-src/scripts/bootstrap/host_bootstrap.sh --rev "$REV" --ceo-user "$USER")
+    say "2/5 trust-root upgrade: dry run"
+    "${B[@]}" --trust-root-upgrade --loop-repo autoaiorg/aao-governance-trial --audit-report-sha256 "$RH" 2>&1 | tee "$OUT/upgrade-dry.log" \
+      || die "upgrade dry run failed"
+    grep -q "audit verdict \['APPROVE-TECHNICAL'\]" "$OUT/upgrade-dry.log" || die "dry run did not accept the audit"
+    say "3/5 trust-root upgrade: apply"
+    "${B[@]}" --apply --trust-root-upgrade --loop-repo autoaiorg/aao-governance-trial --audit-report-sha256 "$RH" 2>&1 | tee "$OUT/upgrade.log" \
+      || die "upgrade failed (see the rollback instructions printed above)"
+    grep -q '^RESULT: PASS' "$OUT/upgrade.log" && grep -q "^upgraded .* -> $REV" "$OUT/upgrade.log" || die "upgrade did not end with verifier PASS"
+    say "4/5 full P2/P3 trial (30-60 min; A-13 keeps running ~62 min detached)"
+    set +e; sudo /root/aao-src/scripts/trial/run_trial.sh --rev "$REV" 2>&1 | tee "$OUT/trial.log"; trial_rc=${PIPESTATUS[0]}; set -e
+    TS=$(sudo ls -t /var/log/aao-trial | head -1)
+    sudo tar -C /var/log/aao-trial -czf "$OUT/aao-trial-$TS.tgz" "$TS" && sudo chown "$USER": "$OUT/aao-trial-$TS.tgz"
+    echo "trial exit=$trial_rc run_id=$TS (FAIL lines are results for the PM to analyse, not a reason to stop)" | tee -a "$OUT/session.log"
+    say "5/5 canonical fork-PR approval policy -> all_external_contributors (CEO-DEC-P2P3 §4)"
+    git -C "$REPO_DIR" show "$REV:scripts/governance/canonical_protection.py" > "$OUT/canonical_protection.py"
+    python3 -I "$OUT/canonical_protection.py" --repo autoaiorg/aao approval 2>&1 | tee -a "$OUT/session.log" \
+      || die "approval policy not set"
+    say "DONE. Send $OUT (session.log, trial.log, aao-trial-$TS.tgz) to the PM. A-13: '$0 a13 $REV $TS' in ~65 min." ;;
+  dictamen)
+    (($# == 3)) || die "usage: dictamen <REV> <BASE>"; sha "$2" REV; sha "$3" BASE
+    fetch_rev "$2"; install_audit_runner "$2"; audit "$3" "$2" p2p3-dictamen
+    say "DONE. Send this output to the PM." ;;
+  a13)
+    (($# == 3)) || die "usage: a13 <REV> <RUN_ID>"; sha "$2" REV
+    sudo /root/aao-src/scripts/trial/run_trial.sh --rev "$2" --a13-collect "$3" 2>&1 | tee -a "$OUT/session.log" ;;
+  *) sed -n '2,16p' "$0"; exit 2 ;;
+esac

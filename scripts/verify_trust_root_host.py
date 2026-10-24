@@ -56,6 +56,8 @@ UNITS = {"aao-auditor@probe.service": "aao-auditor@.service",
          "aao-integrator-tick.timer": "aao-integrator-tick.timer",
          "aao-supervisor-attribution.service": "aao-supervisor-attribution.service",
          "aao-supervisor-attribution.timer": "aao-supervisor-attribution.timer",
+         "aao-supervisor-watch.service": "aao-supervisor-watch.service",
+         "aao-supervisor-watch.timer": "aao-supervisor-watch.timer",
          "aao-supervisor-intake.service": "aao-supervisor-intake.service"}
 results: list[tuple[bool, str, str]] = []
 
@@ -344,6 +346,22 @@ def exclusivity(expected_revision: str) -> None:
           f"HEAD={revision} dirty={bool(dirty)}")
     bad = tree_writers(venv, {0})
     check(venv.is_dir() and not bad, "E12 auditor venv is root-owned, no group/other write", "; ".join(bad))
+    # Same write closure for the other frozen roles (C-1 of the 0a55daf audit): root-built by host_bootstrap,
+    # skipped by identity_separation.sh on an installed host, so they are verified here.
+    for role in ("aao-supervisor", "aao-integrator"):
+        frozen = AUDITOR_ROOT.parent / role
+        problem = ancestors_safe(frozen, {uid(TRUST)})
+        check(not problem, f"E9 frozen {role} directory ancestors are protected", problem)
+        bad = tree_writers(frozen / "tree", {0})
+        check((frozen / "tree").is_dir() and not bad, f"E10 {role} git tree is root-only writable", "; ".join(bad))
+        revision = subprocess.run(["git", "-c", "safe.directory=*", "-C", str(frozen / "tree"), "rev-parse", "HEAD"],
+                                  check=False, capture_output=True, text=True).stdout.strip()
+        dirty = subprocess.run(["git", "-c", "safe.directory=*", "-C", str(frozen / "tree"), "status", "--porcelain",
+                                "--untracked-files=all"], check=False, capture_output=True, text=True).stdout.strip()
+        check(revision == expected_revision and not dirty, f"E11 {role} tree is clean at the expected revision",
+              f"HEAD={revision} dirty={bool(dirty)}")
+        bad = tree_writers(frozen / "venv", {0})
+        check((frozen / "venv").is_dir() and not bad, f"E12 {role} venv is root-owned, no group/other write", "; ".join(bad))
     base = Path(os.path.realpath(venv / "bin" / "python"))
     stdlib = Path(sysconfig.get_paths()["stdlib"])
     bad = [f"{base}"] if base.lstat().st_uid != 0 or base.lstat().st_mode & 0o022 or ancestors_safe(base, set()) else []

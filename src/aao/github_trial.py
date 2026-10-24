@@ -19,11 +19,10 @@ from typing import Any
 from .github_app_auth import ROLE_NAMES, GitHubAppClient, GitHubAuthError, linux_user
 
 NOT_RUN = {
-    "A-07": "Manual CEO step: with the CEO token, push a commit to the canonical repository; verify governance-violation records the real actor.",
-    "A-08": "Manual supervisor/CEO step: generate attribution.json from actual push and PR-author events; verify App identities and provisional status when events are absent.",
-    "A-11": "Manual organization/fork step: install implementer App only on the organization fork, open a fork PR, and verify no canonical-repository push permission.",
-    "P3-10": "Manual Actions step: open an unapproved fork PR changing .github/workflows; verify Actions does not run and GITHUB_TOKEN is read-only.",
-    "P3-11": "Manual CEO step: disable ruleset A in the trial repository; verify GitHub audit log and supervisor alert.",
+    "A-08": "Runner-side: run_trial.sh triggers the installed supervisor attribution unit and reads attribution.json as root.",
+    "A-11": "Runner-side: run_trial.sh runs FORK-BRANCH (implementer), A-11 (aao-pm) via aao.fork_pr_trial.",
+    "P3-10": "Runner-side: run_trial.sh runs P3-10 (aao-supervisor) via aao.fork_pr_trial.",
+    "P3-11": "Runner-side: run_trial.sh disables/restores ruleset A with the CEO login and checks the supervisor alert.",
 }
 
 EXPECTED_PERMISSIONS = {
@@ -210,7 +209,8 @@ def _push_rejection_pass(item: dict, unchanged: bool, expected: str = "protected
     return item.get("exit_code", 0) != 0 and item.get("server_rejected") is True and reason_matches and unchanged
 
 
-_REQUIRED_CHECKS_EXPECTED = re.compile(r"\d+ of \d+ required status checks? (?:is|are) expected")
+_REQUIRED_CHECKS_EXPECTED = re.compile(
+    r"\d+ of \d+ required status checks? (?:is|are) expected|required status check \"[^\"]+\" is expected")
 
 
 def _rejection_attributable(item: dict, rule: str) -> bool:
@@ -401,6 +401,43 @@ def _merge_trial_pr(client: GitHubAppClient, base: str, evidence: list[dict]) ->
     return "FAIL", "promotion verification failed: main, tree, parents, or PR merged state differs", evidence
 
 
+def _local_head() -> str | None:
+    try:
+        sha = subprocess.run(["git", "rev-parse", "HEAD^{commit}"], check=True, capture_output=True,
+                             text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return sha if re.fullmatch(r"[0-9a-f]{40}", sha) else None
+
+
+def _wait_wrong_publisher(client: GitHubAppClient, base: str, sha: str, evidence: list[dict]) -> tuple[bool, str]:
+    """P3-04 precondition: `test` green and every `aao-audit` run on sha published by an App other than aao-auditor."""
+    app = _api(client, "GET", "/apps/aao-auditor")
+    evidence.append(app)
+    auditor_id = app.get("response", {}).get("id") if isinstance(app.get("response"), dict) else None
+    if app["status"] != 200 or not isinstance(auditor_id, int):
+        return False, "could not establish the aao-auditor App identity"
+    deadline = time.monotonic() + CHECK_WAIT_SECONDS
+    while True:
+        result = _api(client, "GET", f"{base}/commits/{sha}/check-runs?per_page=100")
+        evidence.append(result)
+        body = result.get("response") if isinstance(result.get("response"), dict) else {}
+        runs = body.get("check_runs", [])
+        if result["status"] != 200 or not isinstance(runs, list) or body.get("total_count") != len(runs):
+            return False, "check-run listing is incomplete (more than one page or unreadable); refusing to judge the publisher"
+        audits = [r for r in runs if r.get("name") == "aao-audit"]
+        tests = [r for r in runs if r.get("name") == "test"]
+        if any(r.get("app", {}).get("id") == auditor_id for r in audits):
+            return False, "an aao-audit run from the real auditor exists on the P3-04 candidate"
+        if audits and tests and all(r.get("status") == "completed" and r.get("conclusion") == "success" for r in tests):
+            evidence.append({"method": "P3-04 precondition", "sha": sha, "test": "green",
+                             "aao_audit_publishers": sorted({r.get("app", {}).get("id") for r in audits})})
+            return True, "ready"
+        if time.monotonic() >= deadline:
+            return False, f"P3-04 precondition (test green + wrong-publisher aao-audit) not met within {CHECK_WAIT_SECONDS}s"
+        time.sleep(CHECK_POLL_SECONDS)
+
+
 def owner_repo(base: str) -> str:
     return base.removeprefix("/repos/")
 
@@ -573,8 +610,8 @@ def _run_test(test_id: str, owner: str, repo: str, role: str, client: GitHubAppC
     if test_id in {"PUBLISH-AUDIT", "STAGE-COMMIT"} and not _trial_repo_allowed(owner, repo):
         return "NOT RUN", "trial helper is restricted to an explicitly allowlisted non-canonical trial repository", evidence
     if test_id == "PUBLISH-AUDIT":
-        if role != "aao-auditor":
-            return "NOT RUN", "explicit aao-audit publication requires role aao-auditor", evidence
+        if role not in ("aao-auditor", "aao-auditor-alt"):
+            return "NOT RUN", "aao-audit publication requires aao-auditor (or aao-auditor-alt for the P3-04 wrong-publisher fixture)", evidence
         sha = os.environ.get("AAO_GITHUB_TRIAL_SHA", "")
         if not re.fullmatch(r"[0-9a-f]{40}", sha):
             return "FAIL", "AAO_GITHUB_TRIAL_SHA must be an explicit full 40-hex commit SHA", evidence
@@ -723,6 +760,19 @@ def _run_test(test_id: str, owner: str, repo: str, role: str, client: GitHubAppC
         evidence.append({"method": "DELETE", "path": "/installation/token", "body": None,
                          "status": item.status if item else None, "response": _redact(item.body) if item else None})
         return ("NOT RUN", "current token revocation was exercised; full A-12 still requires deleting this App key or suspending its installation, then proving new token issuance fails", evidence) if item and item.status in (200, 204) else ("FAIL", "installation token revocation failed", evidence)
+    if test_id == "A-13" and os.environ.get("AAO_TRIAL_A13_WAIT") == "1":
+        # Long-running: the runner starts this detached (systemd-run) and collects it later. The token minted
+        # by main() is kept only in this process' memory, used once after it has expired, and never written.
+        minted = time.time()
+        wait = int(os.environ.get("AAO_TRIAL_A13_SECONDS", "3720"))
+        evidence.append({"method": "installation token minted", "minted_at": datetime.fromtimestamp(minted, UTC).isoformat(),
+                         "use_after_seconds": wait})
+        time.sleep(max(0, minted + wait - time.time()))
+        item = _api(client, "GET", base)
+        evidence.append(item)
+        if item["status"] == 401:
+            return "PASS", f"installation token used {wait}s after minting was rejected with HTTP 401", evidence
+        return "FAIL", f"expired installation token returned HTTP {item['status']}, expected 401", evidence
     if test_id == "A-13":
         return "NOT RUN", "Manual expiry step: use an installation token after its expires_at time (or revoke it), then verify GitHub returns HTTP 401; harness cannot wait an hour within one-test invocation.", evidence
     if test_id == "A-14":
@@ -761,6 +811,21 @@ def _run_test(test_id: str, owner: str, repo: str, role: str, client: GitHubAppC
         evidence.append(positive)
         accepted = positive.get("exit_code") == 0 and positive.get("status") == 0
         return ("PASS", "workflow push denied for missing workflows permission; non-workflow control push accepted", evidence) if accepted else ("FAIL", "workflow push denial passed but non-workflow control push was not accepted", evidence)
+    if test_id == "A-07":
+        # The runner disabled ruleset A first (P3-11). The CEO pushes a fully checked fast-forward to main; the
+        # verdict (the supervisor's governance-violation alert) is evaluated by the runner, not here.
+        if role != "ceo":
+            return "NOT RUN", "A-07 pushes with the CEO identity", evidence
+        sha = _local_head()
+        before = _main_sha(client, base, evidence)
+        if not sha or not before or _is_ancestor(before, sha) is not True:
+            return "NOT RUN", "A-07 requires a local fast-forward candidate of main", evidence
+        item = _git_push(client, f"{owner}/{repo}", f"{sha}:refs/heads/main", no_verify=True)
+        evidence.append(item)
+        after = _main_sha(client, base, evidence)
+        if item.get("exit_code") == 0 and after == sha:
+            return "PUSHED", f"CEO push landed {sha} on main; supervisor detection is checked by the runner", evidence
+        return "FAIL", "CEO push did not land on main (ruleset A still enforced?)", evidence
     if test_id == "P3-09":
         if role != "ceo":
             return "NOT RUN", "Run explicitly with --role ceo to test the CEO identity.", evidence
@@ -897,7 +962,27 @@ def _run_test(test_id: str, owner: str, repo: str, role: str, client: GitHubAppC
             return status, reason, evidence
         return ("PASS", f"server denied {test_id} push for expected reason; main unchanged", evidence) if _push_rejection_pass(item, unchanged, expected) else ("FAIL", "push was not rejected by the server for the expected reason or main changed", evidence)
     if test_id == "P3-08":
-        return "NOT RUN", "Default-branch deletion is not a meaningful ruleset test: GitHub forbids deleting the default branch independently of rulesets. Configure a protected non-default trial branch and rerun.", evidence
+        # main is the default branch (GitHub refuses deleting it regardless of rulesets), so ruleset B's
+        # deletion rule is exercised on a protected aao-staging/* ref created from a fully checked candidate.
+        if role != "aao-integrator":
+            return "NOT RUN", "P3-08 runs as aao-integrator on a protected aao-staging/* ref", evidence
+        sha = _local_head()
+        if not sha:
+            return "NOT RUN", "P3-08 requires a local candidate commit", evidence
+        checks_ok, checks_reason = _wait_required_checks(client, base, sha, evidence)
+        if not checks_ok:
+            return "INCONCLUSIVE", checks_reason, evidence
+        ref = f"aao-staging/p308-{sha[:12]}"
+        created = _git_push(client, f"{owner}/{repo}", f"{sha}:refs/heads/{ref}", no_verify=True)
+        evidence.append(created)
+        status_before, sha_before = _ref_sha(client, base, ref, evidence)
+        if created.get("exit_code") != 0 or status_before != 200 or sha_before != sha:
+            return "INCONCLUSIVE", "could not create the protected staging ref to attempt its deletion", evidence
+        item = _git_push(client, f"{owner}/{repo}", f":refs/heads/{ref}", no_verify=True)
+        evidence.append(item)
+        unchanged = _ref_unchanged(client, base, ref, status_before, sha_before, evidence)
+        status, reason = _denial_outcome(item, unchanged, "deletion", "P3-08 deletion of protected staging ref")
+        return status, reason, evidence
     if test_id in ("A-05", "P3-06"):
         if role != "aao-integrator":
             return "NOT RUN", "Run as aao-integrator on the disposable trial repository after authorization and all required checks are present.", evidence
@@ -943,7 +1028,29 @@ def _run_test(test_id: str, owner: str, repo: str, role: str, client: GitHubAppC
         unchanged = _verify_unchanged(client, base, before, evidence)
         return ("PASS", f"protected branch denied missing-check update with HTTP {item['status']}; main unchanged", evidence) if expected and unchanged else ("FAIL", "update was not rejected for required-check protection or main changed", evidence)
     if test_id == "P3-04":
-        return "NOT RUN", "Prepare a candidate whose aao-audit check/status was published by a non-auditor App, then run as aao-integrator and attempt the candidate ref update; the auditor app_id is not available cross-uid to this invocation.", evidence
+        # The runner staged HEAD (a fast-forward of main) and published `aao-audit` on it from aao-auditor-alt.
+        # Ruleset A is bypassed by the integrator, so once `test` is green the only unmet rule is the publisher.
+        if role != "aao-integrator":
+            return "NOT RUN", "P3-04 runs as aao-integrator", evidence
+        sha = _local_head()
+        before = _main_sha(client, base, evidence)
+        if not sha or not before:
+            return "NOT RUN", "P3-04 requires a local candidate and a readable main", evidence
+        if _is_ancestor(before, sha) is not True:
+            return "NOT RUN", "P3-04 candidate must be a fast-forward of main", evidence
+        ready, why = _wait_wrong_publisher(client, base, sha, evidence)
+        if not ready:
+            return "INCONCLUSIVE", why, evidence
+        item = _api(client, "PATCH", f"{base}/git/refs/heads/main", {"sha": sha, "force": False})
+        evidence.append(item)
+        message = item["response"].get("message", "").lower() if isinstance(item["response"], dict) else ""
+        unchanged = _verify_unchanged(client, base, before, evidence)
+        if item["status"] in (200, 201) or not unchanged:
+            return "FAIL", "main accepted a candidate whose aao-audit came from a non-auditor App", evidence
+        if item["status"] in (403, 422) and _rejection_attributable({"response": message}, "required status check") \
+                and ("aao-audit" in message or "1 of 2" in message):
+            return "PASS", f"main update denied: aao-audit from a non-auditor App does not satisfy ruleset B ({message[:200]})", evidence
+        return "INCONCLUSIVE", "update denied but not attributable to the aao-audit publisher requirement", evidence
     raise ValueError(f"unsupported test id: {test_id}")
 
 
@@ -1030,8 +1137,8 @@ def main(argv: list[str] | None = None) -> int:
         if not _trial_repo_allowed(*args.repo.split("/", 1)):
             raise GitHubAuthError("--repo must be explicitly listed in AAO_GITHUB_TRIAL_REPOS and cannot be " + CANONICAL_REPO)
         if args.role == "ceo":
-            if args.test_id not in ("P3-01", "P3-09"):
-                raise GitHubAuthError("--role ceo is allowed only for P3-01 and P3-09")
+            if args.test_id not in ("P3-01", "P3-09", "A-07"):
+                raise GitHubAuthError("--role ceo is allowed only for P3-01, P3-09 and A-07")
             token_result = subprocess.run(["gh", "auth", "token", "--hostname", "github.com"], check=True, capture_output=True,
                                           text=True, timeout=10, stdin=subprocess.DEVNULL)
             token = token_result.stdout.strip()

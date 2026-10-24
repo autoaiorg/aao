@@ -1,0 +1,136 @@
+== preflight
+rev=0a55daf5ee08c7f10c6c56224da145228c549011 ceo=alessbarb src=/root/aao-src apply=1 log=/var/log/aao-bootstrap/20261024T211235
+== identities (P1)
+# preflight
+# preflight OK
+# docker group members (not modified): alessbarb
++ chmod 0700 /home/aao-pm
++ chmod 0700 /home/aao-impl-codex
++ chmod 0700 /home/aao-impl-claude
++ chmod 0700 /home/aao-impl-ag
++ chmod 0700 /home/aao-auditor
++ chmod 0700 /home/aao-auditor-alt
++ chmod 0700 /home/aao-integrator
++ chmod 0700 /home/aao-supervisor
++ chmod 0700 /home/aao-notifier
++ chmod 0700 /home/aao-trust
++ usermod -aG aao-events aao-notifier
++ usermod -aG aao-ledger-read aao-integrator
++ usermod -aG aao-ledger-read aao-supervisor
++ install -d -o aao-auditor -g aao-ledger-read -m 0750 /var/lib/aao-auditor
++ install -d -o aao-auditor -g aao-auditor -m 0700 /var/lib/aao-auditor/keys
++ install -d -o aao-auditor -g aao-ledger-read -m 0750 /var/lib/aao-auditor/ledger
++ install -d -o aao-auditor-alt -g aao-ledger-read -m 0750 /var/lib/aao-auditor-alt
++ install -d -o aao-auditor-alt -g aao-auditor-alt -m 0700 /var/lib/aao-auditor-alt/keys
++ install -d -o aao-auditor-alt -g aao-ledger-read -m 0750 /var/lib/aao-auditor-alt/ledger
++ install -d -o aao-supervisor -g aao-events -m 0750 /var/lib/aao-supervisor
++ install -d -o aao-supervisor -g aao-events -m 0750 /var/lib/aao-supervisor/events
++ install -d -o aao-trust -g aao-trust -m 0755 /srv/aao
++ install -d -o aao-trust -g aao-trust -m 0755 /srv/aao/trust
++ install -d -o aao-trust -g aao-trust -m 0755 /srv/aao/trust/keys
++ install -d -o aao-trust -g aao-trust -m 0755 /srv/aao/frozen
++ install -d -o aao-trust -g aao-trust -m 0755 /srv/aao/frozen/aao-auditor
++ install -d -o aao-trust -g aao-trust -m 0755 /srv/aao/frozen/aao-auditor-alt
++ install -d -o aao-trust -g aao-trust -m 0755 /srv/aao/frozen/aao-integrator
++ install -d -o aao-trust -g aao-trust -m 0755 /srv/aao/frozen/aao-supervisor
++ wrote /etc/sudoers.d/aao-launch
+
+Next steps (manual, one time):
+  1. Log in each agent CLI as its own user, e.g.  sudo -u aao-impl-codex -i codex login
+     Never copy the CEO's GitHub token (~/.config/gh) into an agent account.
+  2. Clone the repository inside each agent home (not a shared working copy).
+  3. Leave PostgreSQL running from the CEO account; agents reach it over
+     TCP at 127.0.0.1:54329 and never use the docker socket.
+  4. Run scripts/verify_identity_separation.sh as every role and attach the output to the F2 evidence.
+  Rollback:  sudo scripts/identity_separation.sh --revert   (lock, keep data)
+             sudo scripts/identity_separation.sh --purge    (archive + verify, then remove everything)
+  After --revert, re-installing requires --purge first (--apply refuses locked accounts).
+== app-keys
+ok   aao-integrator key present
+ok   aao-auditor key present
+ok   aao-auditor-alt key present
+ok   aao-supervisor key present
+ok   aao-notifier key present
+ok   aao-pm key present
+ok   aao-impl-claude key present
+ok   aao-impl-codex key present
+ok   aao-impl-agy key present
+ok   aao-integrator metadata present
+ok   aao-auditor metadata present
+ok   aao-auditor-alt metadata present
+ok   aao-supervisor metadata present
+ok   aao-notifier metadata present
+ok   aao-pm metadata present
+ok   aao-impl-claude metadata present
+ok   aao-impl-codex metadata present
+ok   aao-impl-agy metadata present
+== p2-verify (9/9 required)
+app auth: 9/9 (/var/log/aao-bootstrap/20261024T211235/app-auth.jsonl)
+== antigravity
+ok   /usr/local/bin/agy present sha256=337dcde668441a2828968644d7982829c2d2a5e0c4144f346e1f3fc6abb3cdc7
+ok   agy session present for aao-auditor-alt
+== trust-root-upgrade
+audit verdict ['APPROVE-TECHNICAL']
+audit attestation sha256=d1814451d364f9b93487bc7fb6237f3c2e4e1429914e3ef882fd97fd110ff31d report sha256=6ff881a2d24095d4242c8d480b2babc26706bf735dde3f8b207568fc0e0beb3f
+Removed "/etc/systemd/system/paths.target.wants/aao-auditor-dispatch.path".
+Removed "/etc/systemd/system/multi-user.target.wants/aao-supervisor-intake.service".
+Removed "/etc/systemd/system/timers.target.wants/aao-auditor-dispatch.timer".
+Removed "/etc/systemd/system/timers.target.wants/aao-trust-root-verify.timer".
+Removed "/etc/systemd/system/timers.target.wants/aao-supervisor-heartbeat.timer".
+Removed "/etc/systemd/system/timers.target.wants/aao-supervisor-attribution.timer".
+loop units running now: none
+policy.json sha256=258d2c2afa6a9043b3d8bea185577297d4101e5b8dad9d63a9cc2beb786f72c0
+trust-anchor.json sha256=db6e152a2e8769f71dbb159a01f157f1f6f70326f82ad2ec54044627062644bb
+supervisor-config.json sha256=ab7fc72ccd3f4069a83ffd9b21c3c537844dcb4921584c9fb4a80696d805054f
+registry.json sha256=2f15151face5ce89658035f7516323d576d34697254f5e110e296b414eec0eeb
+integrator-config.json sha256=b5e3b3d5c272b28003c46e1c2fdf2bf3eb382191ec6d292e1c650fca7c1d77e4
+dispatch.json sha256=538a595658cf2c2767172fa89d6929b705e01f0ab0428eeeb05d770d433a790e
+policy canonical sha256 (pinned in the anchor) = 84769a2ee8f84fb44bdb77b3621e3de5ba45f45a14cf7bf9391689a3bea02a8b
+Created symlink /etc/systemd/system/multi-user.target.wants/aao-supervisor-intake.service → /etc/systemd/system/aao-supervisor-intake.service.
+Created symlink /etc/systemd/system/timers.target.wants/aao-supervisor-heartbeat.timer → /etc/systemd/system/aao-supervisor-heartbeat.timer.
+Created symlink /etc/systemd/system/timers.target.wants/aao-supervisor-attribution.timer → /etc/systemd/system/aao-supervisor-attribution.timer.
+verify_trust_root_host.py sha256=28eae614db4bb968142a810b577d9067b01f7275cba66fda6c5dc713acaea01f expected_revision=0a55daf5ee08c7f10c6c56224da145228c549011
+PASS  E1 auditor shell is nologin
+PASS  E2 auditor password is locked
+PASS  E3 no systemd user linger for auditor
+PASS  E4 no cron/at job runs as auditor (user spools, /etc/crontab, /etc/cron.d)
+PASS  E5 no account besides the CEO is in a root-equivalent group
+PASS  E6 effective sudo policy (sudo -l -U, aliases/includes resolved): only root/CEO can run as auditor
+PASS  E6b no local polkit rule grants unit management or mentions the auditor
+PASS  E7a no other unit (any search path, incl. transient/generated) sets User=aao-auditor
+PASS  E7 every auditor-uid process is inside an aao-auditor unit
+PASS  E8 aao-auditor@probe.service: single root-only fragment identical to the reviewed file, no drop-ins
+PASS  E8 aao-auditor-dispatch.service: single root-only fragment identical to the reviewed file, no drop-ins
+PASS  E8 aao-auditor-dispatch.path: single root-only fragment identical to the reviewed file, no drop-ins
+PASS  E8 aao-auditor-dispatch.timer: single root-only fragment identical to the reviewed file, no drop-ins
+PASS  E8 aao-integrator-tick.service: single root-only fragment identical to the reviewed file, no drop-ins
+PASS  E8 aao-integrator-tick.timer: single root-only fragment identical to the reviewed file, no drop-ins
+PASS  E8 aao-supervisor-attribution.service: single root-only fragment identical to the reviewed file, no drop-ins
+PASS  E8 aao-supervisor-attribution.timer: single root-only fragment identical to the reviewed file, no drop-ins
+PASS  E8 aao-supervisor-intake.service: single root-only fragment identical to the reviewed file, no drop-ins
+PASS  E9 frozen auditor directory ancestors are protected
+PASS  E10 auditor git tree: no writer besides root/auditor
+PASS  E11 auditor tree is clean at the expected revision
+PASS  E12 auditor venv is root-owned, no group/other write
+PASS  E13 base interpreter and stdlib are root-only writable
+PASS  E14 git/bwrap/openssl/timeout/prlimit are root-only writable
+PASS  E15 auditor signing key is auditor-owned 0600
+PASS  S1 intake dir is aao-supervisor:aao-auditor 2750
+PASS  S2 intake dir ancestors are root-owned and not writable
+PASS  S3 intake socket is aao-supervisor:aao-auditor 0660
+PASS  S4 only aao-supervisor-intake.service listens on the socket
+PASS  S5 heartbeat dir is aao-supervisor:aao-ledger-read 2750
+PASS  S6 heartbeat file is supervisor-owned, not group/other writable
+PASS  T1 trust anchor is root-owned and protected
+PASS  T2 anchor has exactly the fields of manifest_audit._ANCHOR_FIELDS
+PASS  T3 anchor auditor_uid is aao-auditor
+PASS  T3b attribution writer is aao-supervisor
+PASS  T4 anchor points at the verified socket/heartbeat
+PASS  T5 pinned policy digest matches and the policy is auditor-owned
+PASS  T6 policy trusts exactly the frozen auditor revision
+RESULT: PASS (38 checks)
+Created symlink /etc/systemd/system/timers.target.wants/aao-trust-root-verify.timer → /etc/systemd/system/aao-trust-root-verify.timer.
+Created symlink /etc/systemd/system/paths.target.wants/aao-auditor-dispatch.path → /etc/systemd/system/aao-auditor-dispatch.path.
+Created symlink /etc/systemd/system/timers.target.wants/aao-auditor-dispatch.timer → /etc/systemd/system/aao-auditor-dispatch.timer.
+upgraded ef1913799fa5c04534f7f2204ff9d5f7de4eb1d4 -> 0a55daf5ee08c7f10c6c56224da145228c549011; backup in /var/backups/aao-trust-root/20261024T191258Z-ef1913799fa5c04534f7f2204ff9d5f7de4eb1d4. The integrator is OFF: re-enable it only with --enable-integrator.
+== done (apply=1). Log: /var/log/aao-bootstrap/20261024T211235

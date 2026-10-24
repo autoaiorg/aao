@@ -147,6 +147,21 @@ runuser -u aao-auditor -- openssl pkeyutl -sign -inkey /var/lib/aao-auditor/keys
 t "signature verifies with published trust key" openssl pkeyutl -verify -pubin -inkey /srv/aao/trust/keys/aao-auditor-ed25519.pub -rawin -in /tmp/r.json -sigfile /tmp/r.sig
 t "signature fails with the other auditor's key" bash -c "! openssl pkeyutl -verify -pubin -inkey /srv/aao/trust/keys/aao-auditor-alt-ed25519.pub -rawin -in /tmp/r.json -sigfile /tmp/r.sig >/dev/null 2>&1"
 
+echo "== T13 installed trust root: frozen trees, venvs and the mirror do not fail the preflight"
+mkdir -p /srv/aao/frozen/aao-auditor/tree/.git /srv/aao/frozen/aao-integrator/tree /srv/aao/frozen/aao-integrator/venv/bin /srv/aao/mirror
+touch /srv/aao/frozen/aao-auditor/tree/.git/index /srv/aao/frozen/aao-auditor/tree/README.md
+chown -R aao-auditor:aao-auditor /srv/aao/frozen/aao-auditor/tree && chown root:root /srv/aao/frozen/aao-auditor/tree/.git/index
+chown -R root:root /srv/aao/frozen/aao-integrator/tree /srv/aao/frozen/aao-integrator/venv
+ln -s /usr/bin/python3 /srv/aao/frozen/aao-integrator/venv/bin/python
+chown aao-integrator:aao-integrator /srv/aao/mirror
+t "installed host passes the preflight" bash -c "bash $S/identity_separation.sh --apply >/tmp/t13 2>&1"
+ln -s /etc /srv/aao/frozen/aao-supervisor/tree
+t "a pruned path that is a symlink fails closed" bash -c "! bash $S/identity_separation.sh --apply >/tmp/t13b 2>&1 && grep -q 'aao-supervisor/tree exists and is not a plain directory' /tmp/t13b"
+rm /srv/aao/frozen/aao-supervisor/tree
+touch /srv/aao/frozen/stray && chown aao-auditor /srv/aao/frozen/stray
+t "content outside the pruned trees is still checked" bash -c "! bash $S/identity_separation.sh --apply >/tmp/t13c 2>&1 && grep -q 'frozen/stray is not owned by the owner of its directory' /tmp/t13c"
+rm -rf /srv/aao/frozen/stray /srv/aao/frozen/aao-auditor/tree /srv/aao/frozen/aao-integrator/tree /srv/aao/frozen/aao-integrator/venv /srv/aao/mirror
+
 echo "== T11b purge fails closed when the archive cannot be written"
 t "purge with unwritable archive dir fails" bash -c "! AAO_ARCHIVE_DIR=/nonexistent bash $S/identity_separation.sh --purge >/tmp/pf 2>&1 && grep -q 'nothing was removed' /tmp/pf"
 t "accounts preserved after failed purge" bash -c "id aao-auditor && id aao-pm" 

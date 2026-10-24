@@ -1,6 +1,6 @@
 # Auditoría independiente de Antigravity: arnés del ensayo P2/P3 en b392750 (2026-10-24)
 
-**Veredicto: APPROVE-TECHNICAL.** Hay 0 hallazgos A, 0 B y 3 C. Verifica que están corregidos todos los B de la auditoría [592d807](../20261024-agy-p2p3-trial-592d807/README.md) y revisa la automatización nueva de A-11 y P3-10. Esta auditoría habilita técnicamente `run_trial.sh --rev b392750ff9c06f33a7ef39dae4a27c43f422ff9c`. El procedimiento está en [`CEO_RUNBOOK_b392750.md`](../../procedures/CEO_RUNBOOK_b392750.md).
+**Veredicto: APPROVE-TECHNICAL.** Hay 0 hallazgos A, 0 B y 3 C. Verifica que están corregidos todos los B de la auditoría [592d807](../20261024-agy-p2p3-trial-592d807/README.md) y revisa la automatización nueva de A-11 y P3-10. Esta auditoría habilita técnicamente `run_trial.sh --rev b392750ff9c06f33a7ef39dae4a27c43f422ff9c`. El procedimiento está en [`CEO_RUNBOOK_TRUST_ROOT_UPGRADE.md`](../../procedures/CEO_RUNBOOK_TRUST_ROOT_UPGRADE.md).
 
 | Campo | Valor |
 |---|---|

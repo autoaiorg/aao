@@ -1,6 +1,6 @@
 # Auditoría independiente de Antigravity: cadena R1 en b392750 (2026-10-24)
 
-**Veredicto: APPROVE-TECHNICAL.** Hay 0 hallazgos A, 2 B y 3 C. Esta auditoría habilita técnicamente `host_bootstrap.sh --trust-root-upgrade` a `b392750ff9c06f33a7ef39dae4a27c43f422ff9c`. El procedimiento está en [`CEO_RUNBOOK_b392750.md`](../../procedures/CEO_RUNBOOK_b392750.md).
+**Veredicto: APPROVE-TECHNICAL.** Hay 0 hallazgos A, 2 B y 3 C. Esta auditoría habilita técnicamente `host_bootstrap.sh --trust-root-upgrade` a `b392750ff9c06f33a7ef39dae4a27c43f422ff9c`. El procedimiento está en [`CEO_RUNBOOK_TRUST_ROOT_UPGRADE.md`](../../procedures/CEO_RUNBOOK_TRUST_ROOT_UPGRADE.md).
 
 | Campo | Valor |
 |---|---|
@@ -25,3 +25,15 @@ El triaje lo hizo Claude, que actúa como PM. No es una revisión independiente.
 | C-1: atribución limitada a 100 PR abiertas | Se acepta. |
 | C-2: `ls-remote` sin token | Se acepta mientras los repositorios sean públicos. |
 | C-3: con varios workflows, P3-10 da FAIL de forma conservadora | Se acepta. |
+
+## Intento de actualización en el host (2026-10-24 18:55, CEO)
+
+La simulación y la aplicación de `--trust-root-upgrade` a `b392750` fallaron las dos en la comprobación previa de identidades: `PREFLIGHT FAIL: /srv/aao/frozen/aao-auditor/tree is not owned by the owner of its directory`.
+
+**No se cambió nada en el host.** El fallo se produce antes de cualquier operación.
+
+**Diagnóstico.** El CEO ejecutó un listado de solo lectura: 0 violaciones en `/var/lib/aao-*` y 20 en `/srv/aao`, todas en los árboles y venvs congelados y en `mirror`.
+
+**Causa.** `identity_separation.sh` recorre `/srv/aao` sin excluir esos subárboles. La instalación de la raíz de confianza los crea más tarde, con otros propietarios y con symlinks en los venvs. En un host nuevo la comprobación se ejecutaba antes de que existieran, así que solo falla en un host ya instalado. Ni las auditorías ni los tests lo cubrían.
+
+**Corrección y siguiente paso.** La revisión siguiente corrige el fallo y añade el test de contenedor T13. Necesita una nueva auditoría independiente antes de volver a intentar la actualización.

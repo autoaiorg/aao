@@ -18,7 +18,8 @@ import json
 import re
 import subprocess
 import sys
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 INTEGRATOR_APP = 5447984
 AUDITOR_APP = 5448107

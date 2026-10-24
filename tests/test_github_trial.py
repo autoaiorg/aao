@@ -325,7 +325,7 @@ def _p308(monkeypatch, *, created=0, delete_exit=1, delete_response=LIVE_DELETE,
 
 
 def test_p3_08_deletion_of_protected_staging_ref_is_attributed_to_the_deletion_rule(monkeypatch):
-    (status, reason, _), pushes = _p308(monkeypatch)
+    (status, _reason, _), pushes = _p308(monkeypatch)
     assert status == "PASS" and pushes == ["e" * 40 + ":refs/heads/aao-staging/p308-eeeeeeeeeeee", ":refs/heads/aao-staging/p308-eeeeeeeeeeee"]
 
 

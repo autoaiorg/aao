@@ -171,6 +171,6 @@ def test_p3_07_candidate_is_divergent_and_keeps_the_workflow(tmp_path):
     git("checkout", "-q", "main", "--", ".")
     git("commit", "-q", "--allow-empty", "-m", "AAO trial fixture P3-07")
     candidate = git("rev-parse", "HEAD")
-    ancestor = subprocess.run(["git", "merge-base", "--is-ancestor", main, candidate], cwd=tmp_path).returncode
+    ancestor = subprocess.run(["git", "merge-base", "--is-ancestor", main, candidate], cwd=tmp_path, check=False).returncode
     assert ancestor == 1  # main is not an ancestor: the push is non-fast-forward
     assert ".github/workflows/test.yml" in git("ls-tree", "-r", "--name-only", candidate).split()

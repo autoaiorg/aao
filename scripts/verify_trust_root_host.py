@@ -56,6 +56,8 @@ UNITS = {"aao-auditor@probe.service": "aao-auditor@.service",
          "aao-integrator-tick.timer": "aao-integrator-tick.timer",
          "aao-supervisor-attribution.service": "aao-supervisor-attribution.service",
          "aao-supervisor-attribution.timer": "aao-supervisor-attribution.timer",
+         "aao-supervisor-watch.service": "aao-supervisor-watch.service",
+         "aao-supervisor-watch.timer": "aao-supervisor-watch.timer",
          "aao-supervisor-intake.service": "aao-supervisor-intake.service"}
 results: list[tuple[bool, str, str]] = []
 

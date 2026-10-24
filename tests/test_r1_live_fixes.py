@@ -234,5 +234,6 @@ def test_verifier_lists_dispatch_integrator_and_attribution_units():
 
     expected = {"aao-auditor-dispatch.service", "aao-auditor-dispatch.path", "aao-auditor-dispatch.timer",
                 "aao-integrator-tick.service", "aao-integrator-tick.timer",
-                "aao-supervisor-attribution.service", "aao-supervisor-attribution.timer"}
+                "aao-supervisor-attribution.service", "aao-supervisor-attribution.timer",
+                "aao-supervisor-watch.service", "aao-supervisor-watch.timer"}
     assert expected <= set(verifier.UNITS)

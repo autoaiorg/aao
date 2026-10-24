@@ -20,6 +20,8 @@ Todos los comandos usan `REV` de forma explícita, así que una fusión posterio
 
 Todo ello requiere antes los resultados del ensayo y tu decisión R3. El integrador sigue apagado durante todo el procedimiento.
 
+**Forma preferida:** `scripts/governance/ceo_session.sh`, en dos comandos: `audits` y `apply`. Ejecuta los mismos pasos en orden y se detiene en el primer fallo. Los bloques de abajo son la referencia paso a paso.
+
 Copia y pega los bloques en orden. Si un paso termina en `FAIL`, detente y envía la salida.
 
 ## Paso 1. Clon de root en la revisión fijada (unos 30 s)

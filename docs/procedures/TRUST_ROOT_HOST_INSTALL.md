@@ -81,7 +81,7 @@ El registro nace con todos los RA en **PENDING**, así que el integrador falla c
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now aao-supervisor-intake.service aao-supervisor-heartbeat.timer aao-supervisor-attribution.timer
+sudo systemctl enable --now aao-supervisor-intake.service aao-supervisor-heartbeat.timer aao-supervisor-attribution.timer aao-supervisor-watch.timer
 # 1) Verify FIRST. The status file is what the integrator requires (PASS less than 26 h old).
 set -o pipefail
 sudo /usr/bin/python3 -I /srv/aao/frozen/aao-supervisor/tree/scripts/verify_trust_root_host.py --expected-revision "$REV" \

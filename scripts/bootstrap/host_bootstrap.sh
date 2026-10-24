@@ -253,7 +253,7 @@ generate_install() {
 }
 verify_and_enable() {
   run systemctl daemon-reload
-  run systemctl enable --now aao-supervisor-intake.service aao-supervisor-heartbeat.timer aao-supervisor-attribution.timer
+  run systemctl enable --now aao-supervisor-intake.service aao-supervisor-heartbeat.timer aao-supervisor-attribution.timer aao-supervisor-watch.timer
   if ((APPLY)); then
     /usr/bin/python3 -I /srv/aao/frozen/aao-supervisor/tree/scripts/verify_trust_root_host.py --expected-revision "$REV" \
       --status-file /var/lib/aao-trust-verify/status.json | tee "$LOG/trust-root-verify.log" \
@@ -320,10 +320,13 @@ if ((UPGRADE)); then
   BK=/var/backups/aao-trust-root/$(date -u +%Y%m%dT%H%M%SZ)-$OLD
   run install -d -o root -g root -m 0700 /var/backups/aao-trust-root "$BK"
   # Stop the loop first (integrator included): nothing runs against a half-replaced root.
-  run systemctl disable --now aao-integrator-tick.timer aao-auditor-dispatch.path aao-auditor-dispatch.timer \
-    aao-trust-root-verify.timer aao-supervisor-attribution.timer aao-supervisor-heartbeat.timer aao-supervisor-intake.service
+  # Only units this host already has: an upgrade from an older revision lacks units added later (e.g. the watch).
+  installed=(); for u in aao-integrator-tick.timer aao-auditor-dispatch.path aao-auditor-dispatch.timer aao-trust-root-verify.timer \
+    aao-supervisor-attribution.timer aao-supervisor-watch.timer aao-supervisor-heartbeat.timer aao-supervisor-intake.service; do
+    [[ -e /etc/systemd/system/$u ]] && installed+=("$u"); done
+  run systemctl disable --now "${installed[@]}"
   # A oneshot already in flight would keep running against the old tree: stop the services too, then require all idle.
-  LOOP_UNITS=(aao-integrator-tick.service aao-auditor-dispatch.service 'aao-auditor@*.service' aao-supervisor-attribution.service
+  LOOP_UNITS=(aao-integrator-tick.service aao-auditor-dispatch.service 'aao-auditor@*.service' aao-supervisor-attribution.service aao-supervisor-watch.service
               aao-supervisor-heartbeat.service aao-supervisor-intake.service aao-trust-root-verify.service)
   active=$(systemctl list-units --state=active,activating,deactivating --no-legend --plain "${LOOP_UNITS[@]}" | awk '{print $1}')
   echo "loop units running now: ${active:-none}"

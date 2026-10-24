@@ -25,8 +25,20 @@ class FakeClient:
         raise AssertionError(f"unexpected call {method} {path}")
 
 
+BRANCH_NAME = "aao-trial/a11-p310-x"
+
+
+def run(run_id, status="completed", conclusion="action_required", repo=FORK, branch=BRANCH_NAME):
+    return {"id": run_id, "status": status, "conclusion": conclusion, "head_branch": branch,
+            "head_repository": {"full_name": repo}}
+
+
 def runs(*items):
     return lambda m, p, b: m == "GET" and "/actions/runs?" in p, 200, {"workflow_runs": list(items)}
+
+
+def the_pr(sha=HEAD, repo=FORK, ref=BRANCH_NAME):
+    return lambda m, p, b: m == "GET" and p.endswith("/pulls/7"), 200, {"head": {"sha": sha, "ref": ref, "repo": {"full_name": repo}}}
 
 
 def jobs(count, status=200):
@@ -37,26 +49,36 @@ def jobs(count, status=200):
 def gate_env(monkeypatch):
     monkeypatch.setenv("AAO_GITHUB_TRIAL_PR", "7")
     monkeypatch.setenv("AAO_GITHUB_TRIAL_PR_HEAD", HEAD)
+    monkeypatch.setenv("AAO_GITHUB_TRIAL_FORK", FORK)
+    monkeypatch.setenv("AAO_GITHUB_TRIAL_BRANCH", BRANCH_NAME)
     monkeypatch.setattr(fpt, "P310_WAIT_SECONDS", 0)
     monkeypatch.setattr(fpt.time, "sleep", lambda _s: None)
 
 
 def test_p310_passes_only_when_every_run_waits_for_approval_with_no_job(gate_env):
-    client = FakeClient([runs({"id": 1, "status": "completed", "conclusion": "action_required"}), jobs(0)])
+    client = FakeClient([the_pr(), runs(run(1)), jobs(0)])
     status, _reason, _ev = fpt.approval_gate(TRIAL, client)
     assert status == "PASS"
 
 
+def test_p310_ignores_runs_not_bound_to_the_fork_pr_and_checks_the_pr_head(gate_env):
+    for other in (run(1, repo="autoaiorg/aao-trial-claude"), run(1, branch="aao-trial/other")):
+        assert fpt.approval_gate(TRIAL, FakeClient([the_pr(), runs(other), jobs(0)]))[0] == "INCONCLUSIVE"
+    moved = FakeClient([the_pr(sha="b" * 40), runs(run(1)), jobs(0)])
+    assert fpt.approval_gate(TRIAL, moved)[0] == "INCONCLUSIVE"
+    assert not any("/actions/" in c[1] for c in moved.calls)
+
+
 def test_p310_fails_when_a_run_executed_jobs_even_if_marked_action_required(gate_env):
-    client = FakeClient([runs({"id": 1, "status": "completed", "conclusion": "action_required"}), jobs(1)])
+    client = FakeClient([the_pr(), runs(run(1)), jobs(1)])
     assert fpt.approval_gate(TRIAL, client)[0] == "FAIL"
 
 
 def test_p310_without_runs_or_with_ungated_runs_is_inconclusive_never_pass(gate_env):
-    assert fpt.approval_gate(TRIAL, FakeClient([runs()]))[0] == "INCONCLUSIVE"
-    queued = FakeClient([runs({"id": 1, "status": "queued", "conclusion": None}), jobs(0)])
+    assert fpt.approval_gate(TRIAL, FakeClient([the_pr(), runs()]))[0] == "INCONCLUSIVE"
+    queued = FakeClient([the_pr(), runs(run(1, status="queued", conclusion=None)), jobs(0)])
     assert fpt.approval_gate(TRIAL, queued)[0] == "INCONCLUSIVE"
-    broken = FakeClient([runs({"id": 1, "status": "completed", "conclusion": "action_required"}), jobs(0, status=403)])
+    broken = FakeClient([the_pr(), runs(run(1)), jobs(0, status=403)])
     assert fpt.approval_gate(TRIAL, broken)[0] == "INCONCLUSIVE"
 
 
@@ -144,3 +166,5 @@ def test_runner_separates_creation_from_approval_check_under_distinct_uids():
     assert source.index("FORK-BRANCH \"$fork\"") < source.index("A-11 \"$REPO\"") < source.index("P3-10 \"$REPO\"")
     assert "for id in A-07 A-08 A-13 P3-04 P3-08 P3-11; do" in source
     assert "from aao.fork_pr_trial import main" in source
+    assert 'AAO_GITHUB_TRIAL_FORK="$fork" AAO_GITHUB_TRIAL_BRANCH="$fork_branch"' in source.split('P3-10 "$REPO"', 1)[1].splitlines()[0]
+    assert '".config/systemd/user"' in source and '".config/environment.d"' in source

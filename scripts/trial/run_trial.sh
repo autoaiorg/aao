@@ -68,8 +68,9 @@ P0_JSON=$(integrator_target_identity)
 EXPECTED_REPO_ID=$(python3 -I -c 'import json,sys;d=json.loads(sys.argv[1]);print(d.get("id") if isinstance(d.get("id"),int) else 0)' "$P0_JSON")
 gh_read(){ runuser -u "$CEO" -- env -i HOME="$(getent passwd "$CEO"|cut -d: -f6)" PATH=/usr/bin:/bin gh api --paginate "$1" --jq '.[].login' 2>/dev/null || printf '%s\n' '__GH_API_ERROR__'; }
 gh_keys(){ runuser -u "$CEO" -- env -i HOME="$(getent passwd "$CEO"|cut -d: -f6)" PATH=/usr/bin:/bin gh api --paginate "$1" --jq '.[].id' 2>/dev/null || printf '%s\n' '__GH_API_ERROR__'; }
-# P4: root asks the system manager. A role uid with user@UID inactive and no linger has no user services
-# (so no service environment can hold a token); any other state fails P4 closed.
+# P4: root asks the system manager. Inactive user@UID and no linger means no user service is running at check
+# time; the role side also rejects GH_TOKEN/GITHUB_TOKEN in its user unit and environment.d files (units that
+# would carry a token once a manager starts). Any other manager state fails P4 closed.
 user_manager_state(){
   local n st; n=$(id -u "$1" 2>/dev/null) || { printf unknown; return; }
   [[ -e /var/lib/systemd/linger/$1 ]] && { printf lingering; return; }
@@ -82,6 +83,11 @@ collect_impl_p4(){
 h=pathlib.Path.home(); app=sys.argv[1]; gh=h/".config/gh/hosts.yml"; cred=h/".git-credentials"; conf=h/".config/aao"
 expected={app+".pem",app+".json"}; actual={p.name for p in conf.iterdir()} if conf.is_dir() else set()
 state=sys.argv[2]; tokens=[] if state=="absent" else ["systemd-user-manager-"+state]
+for d in (h/".config/systemd/user", h/".config/environment.d"):
+ for f in (sorted(d.rglob("*")) if d.is_dir() else []):
+  try: text=f.read_text(errors="replace") if f.is_file() else ""
+  except OSError: text="GH_TOKEN="
+  if "GH_TOKEN" in text or "GITHUB_TOKEN" in text: tokens.append("user-unit-token:"+str(f.relative_to(h)))
 print(json.dumps({"gh_hosts_yml_absent":not gh.exists(),"git_credentials_absent":not cred.exists(),"token_environment_absent":not tokens,
 "runner_environment_token_absent":True,"runner_environment":"runuser env -i allowlist; no GH_TOKEN/GITHUB_TOKEN passed",
 "aao_config_exact":actual==expected,"uid":os.getuid(),"config_names":sorted(actual),"systemd_user_manager":state,"systemd_checked":state=="absent"}))' "$app" "$(user_manager_state "$uid")" 2>/dev/null || printf '%s' '{}')
@@ -343,7 +349,7 @@ if ((${#ONLY[@]} == 0)) || [[ " ${ONLY[*]} " =~ " A-11 " || " ${ONLY[*]} " =~ " 
   fi
   if [[ $step_state == PASS ]]; then
     fork_pr=$(python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); print(next(x["number"] for x in d["evidence"] if x.get("method")=="fork pull request"))' "$step_ev")
-    fork_step "${APP_UID[aao-supervisor]}" P3-10 "$REPO" aao-supervisor / AAO_GITHUB_TRIAL_PR="$fork_pr" AAO_GITHUB_TRIAL_PR_HEAD="$fork_head"
+    fork_step "${APP_UID[aao-supervisor]}" P3-10 "$REPO" aao-supervisor / AAO_GITHUB_TRIAL_PR="$fork_pr" AAO_GITHUB_TRIAL_PR_HEAD="$fork_head" AAO_GITHUB_TRIAL_FORK="$fork" AAO_GITHUB_TRIAL_BRANCH="$fork_branch"
   else
     printf 'P3-10\taao-supervisor\tNOT RUN\tno fork PR was created in this run\n' | tee -a "$LOG/summary.tsv"
   fi

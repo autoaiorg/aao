@@ -103,14 +103,27 @@ def open_pr(parent: str, client: GitHubAppClient) -> tuple[str, str, list[dict]]
 def approval_gate(parent: str, client: GitHubAppClient) -> tuple[str, str, list[dict]]:
     number = int(_env("AAO_GITHUB_TRIAL_PR", re.compile(r"[1-9][0-9]*")))
     head = _env("AAO_GITHUB_TRIAL_PR_HEAD", SHA)
-    evidence: list[dict] = [{"method": "pull request under test", "number": number, "sha": head}]
+    fork = _env("AAO_GITHUB_TRIAL_FORK", re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"))
+    branch = _env("AAO_GITHUB_TRIAL_BRANCH", BRANCH)
+    evidence: list[dict] = [{"method": "pull request under test", "number": number, "sha": head,
+                             "head_repo": fork, "branch": branch}]
+    # Fork-triggered runs leave run.pull_requests empty, so bind runs to the PR by its exact head repo/branch/SHA.
+    pr = _api(client, "GET", _repo_path(parent) + f"/pulls/{number}")
+    evidence.append(pr)
+    body = pr["response"] if isinstance(pr["response"], dict) else {}
+    pr_head = body.get("head") or {}
+    if (pr["status"] != 200 or pr_head.get("sha") != head or pr_head.get("ref") != branch
+            or (pr_head.get("repo") or {}).get("full_name", "").lower() != fork.lower()):
+        return "INCONCLUSIVE", f"PR #{number} is not the fork PR {fork}:{branch} at {head}", evidence
     deadline = time.monotonic() + P310_WAIT_SECONDS
     while True:
         runs = _api(client, "GET", _repo_path(parent) + f"/actions/runs?event=pull_request&head_sha={head}&per_page=100")
         evidence.append(runs)
         if runs["status"] != 200 or not isinstance(runs["response"], dict):
             return "INCONCLUSIVE", f"workflow run query returned HTTP {runs['status']}", evidence
-        listed = runs["response"].get("workflow_runs") or []
+        listed = [run for run in runs["response"].get("workflow_runs") or []
+                  if run.get("head_branch") == branch
+                  and (run.get("head_repository") or {}).get("full_name", "").lower() == fork.lower()]
         gated = 0
         for run in listed:
             jobs = _api(client, "GET", _repo_path(parent) + f"/actions/runs/{int(run['id'])}/jobs?filter=all")

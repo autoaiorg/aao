@@ -53,7 +53,7 @@ mapfile -t APPS < <(python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1]
 check_rulesets(){
   local list details id data; list=$(runuser -u "$CEO" -- env -i HOME="$(getent passwd "$CEO"|cut -d: -f6)" PATH=/usr/bin:/bin gh api "repos/$REPO/rulesets?includes_parents=true") || return 1
   details=$(python3 -I -c 'import json,sys; rows=json.load(sys.stdin); want={"A main: integrator only":25776805,"B main+staging: integrity (no bypass)":25776806,"C tags":25776807}; by={r.get("name"):r.get("id") for r in rows}; print("\n".join(str(by.get(n) or i) for n,i in want.items()))' <<<"$list") || return 1
-  while IFS= read -r id; do data=$(runuser -u "$CEO" -- env -i HOME="$(getent passwd "$CEO"|cut -d: -f6)" PATH=/usr/bin:/bin gh api "repos/$REPO/rulesets/$id") || return 1; printf '%s\n' "$data"; done <<<"$details" | python3 -I -c 'import json,sys; rows=[json.loads(x) for x in sys.stdin]; a,b,c=rows; ok=[x.get("name") for x in rows]==["A main: integrator only","B main+staging: integrity (no bypass)","C tags"] and all(x.get("enforcement")=="active" for x in rows); rules=b.get("rules",[]); required=next((r.get("parameters",{}).get("required_status_checks",[]) for r in rules if r.get("type")=="required_status_checks"),[]); arules={r.get("type") for r in a.get("rules",[])}; brules={r.get("type") for r in rules}; crules={r.get("type") for r in c.get("rules",[])}; abypass=a.get("bypass_actors",[]); ok=ok and {x.get("context"):x.get("integration_id") for x in required}.get("aao-audit")==5448107 and "test" in {x.get("context") for x in required} and not b.get("bypass_actors") and "non_fast_forward" in brules and "deletion" in brules and {"update","pull_request"}.issubset(arules) and any(x.get("actor_id")==5447984 and x.get("actor_type")=="Integration" for x in abypass) and c.get("target")=="tag" and {"creation","update","deletion"}.issubset(crules); sys.exit(0 if ok else 1)'
+  while IFS= read -r id; do data=$(runuser -u "$CEO" -- env -i HOME="$(getent passwd "$CEO"|cut -d: -f6)" PATH=/usr/bin:/bin gh api "repos/$REPO/rulesets/$id") || return 1; printf '%s\n' "$data"; done <<<"$details" | python3 -I -c 'import json,sys; rows=[json.loads(x) for x in sys.stdin]; a,b,c=rows; ok=[x.get("name") for x in rows]==["A main: integrator only","B main+staging: integrity (no bypass)","C tags"] and all(x.get("enforcement")=="active" for x in rows); rules=b.get("rules",[]); required=next((r.get("parameters",{}).get("required_status_checks",[]) for r in rules if r.get("type")=="required_status_checks"),[]); arules={r.get("type") for r in a.get("rules",[])}; brules={r.get("type") for r in rules}; crules={r.get("type") for r in c.get("rules",[])}; abypass=a.get("bypass_actors",[]); ok=ok and {x.get("context"):x.get("integration_id") for x in required}.get("aao-audit")==5448107 and "test" in {x.get("context") for x in required} and not b.get("bypass_actors") and "non_fast_forward" in brules and "deletion" in brules and {"update","pull_request"}.issubset(arules) and [(x.get("actor_id"),x.get("actor_type")) for x in abypass]==[(5447984,"Integration")] and c.get("target")=="tag" and {"creation","update","deletion"}.issubset(crules); sys.exit(0 if ok else 1)'
 }
 check_rulesets || die 'trial rulesets A/B/C are not active with required auditor/test and no B bypass'
 # Pin the protected trial repository identity once, using the integrator App's
@@ -68,24 +68,29 @@ P0_JSON=$(integrator_target_identity)
 EXPECTED_REPO_ID=$(python3 -I -c 'import json,sys;d=json.loads(sys.argv[1]);print(d.get("id") if isinstance(d.get("id"),int) else 0)' "$P0_JSON")
 gh_read(){ runuser -u "$CEO" -- env -i HOME="$(getent passwd "$CEO"|cut -d: -f6)" PATH=/usr/bin:/bin gh api --paginate "$1" --jq '.[].login' 2>/dev/null || printf '%s\n' '__GH_API_ERROR__'; }
 gh_keys(){ runuser -u "$CEO" -- env -i HOME="$(getent passwd "$CEO"|cut -d: -f6)" PATH=/usr/bin:/bin gh api --paginate "$1" --jq '.[].id' 2>/dev/null || printf '%s\n' '__GH_API_ERROR__'; }
+# P4: root asks the system manager. Inactive user@UID and no linger means no user service is running at check
+# time; the role side also rejects GH_TOKEN/GITHUB_TOKEN in its user unit and environment.d files (units that
+# would carry a token once a manager starts). Any other manager state fails P4 closed.
+user_manager_state(){
+  local n st; n=$(id -u "$1" 2>/dev/null) || { printf unknown; return; }
+  [[ -e /var/lib/systemd/linger/$1 ]] && { printf lingering; return; }
+  st=$(systemctl is-active "user@$n.service" 2>/dev/null)
+  [[ $st == inactive ]] && printf absent || printf '%s' "${st:-unknown}"
+}
 collect_impl_p4(){
   local uid=$1 home=$2 app=$3 forks=$4 local_json outside members keys_ok keys_listing
   local_json=$(runuser -u "$uid" -- env -i HOME="$home" PATH=/usr/bin:/bin /usr/bin/python3 -I -c 'import json,os,pathlib,subprocess,sys
 h=pathlib.Path.home(); app=sys.argv[1]; gh=h/".config/gh/hosts.yml"; cred=h/".git-credentials"; conf=h/".config/aao"
 expected={app+".pem",app+".json"}; actual={p.name for p in conf.iterdir()} if conf.is_dir() else set()
-manager=subprocess.run(["systemctl","--user","show-environment"],capture_output=True,text=True)
-tokens=[x for x in manager.stdout.splitlines() if x.startswith(("GH_TOKEN=","GITHUB_TOKEN="))] if manager.returncode==0 else ["systemd-user-environment-unavailable"]
-units=subprocess.run(["systemctl","--user","list-units","--type=service","--all","--no-legend","--plain"],capture_output=True,text=True)
-if units.returncode: tokens.append("systemd-user-services-unavailable")
-else:
- for row in units.stdout.splitlines():
-  unit=row.split()[0] if row.split() else ""
-  if unit:
-   r=subprocess.run(["systemctl","--user","show","--property=Environment","--value",unit],capture_output=True,text=True)
-   if r.returncode or any(x.startswith(("GH_TOKEN=","GITHUB_TOKEN=")) for x in r.stdout.split()): tokens.append("service-token-or-unavailable")
+state=sys.argv[2]; tokens=[] if state=="absent" else ["systemd-user-manager-"+state]
+for d in (h/".config/systemd/user", h/".config/environment.d"):
+ for f in (sorted(d.rglob("*")) if d.is_dir() else []):
+  try: text=f.read_text(errors="replace") if f.is_file() else ""
+  except OSError: text="GH_TOKEN="
+  if "GH_TOKEN" in text or "GITHUB_TOKEN" in text: tokens.append("user-unit-token:"+str(f.relative_to(h)))
 print(json.dumps({"gh_hosts_yml_absent":not gh.exists(),"git_credentials_absent":not cred.exists(),"token_environment_absent":not tokens,
 "runner_environment_token_absent":True,"runner_environment":"runuser env -i allowlist; no GH_TOKEN/GITHUB_TOKEN passed",
-"aao_config_exact":actual==expected,"uid":os.getuid(),"config_names":sorted(actual),"systemd_checked":manager.returncode==0 and units.returncode==0}))' "$app" 2>/dev/null || printf '%s' '{}')
+"aao_config_exact":actual==expected,"uid":os.getuid(),"config_names":sorted(actual),"systemd_user_manager":state,"systemd_checked":state=="absent"}))' "$app" "$(user_manager_state "$uid")" 2>/dev/null || printf '%s' '{}')
   outside=$(gh_read "repos/$REPO/collaborators?affiliation=outside&per_page=100" || true)
   members=$(gh_read "orgs/autoaiorg/members?per_page=100" || true)
   keys_ok=true
@@ -97,7 +102,7 @@ print(json.dumps({"gh_hosts_yml_absent":not gh.exists(),"git_credentials_absent"
     keys_listing+="${target}=[${key_ids//$'\n'/,}];"
     [[ -z $key_ids ]] || keys_ok=false
   done
-  python3 -I -c 'import json,sys; p=json.loads(sys.argv[1]); outside=sys.argv[2].splitlines(); members=sys.argv[3].splitlines(); ids={x.lower() for x in ("aao-impl-claude","aao-impl-codex","aao-impl-agy","aao-impl-claude[bot]","aao-impl-codex[bot]","aao-impl-agy[bot]")}; p.update({"deploy_keys_empty":sys.argv[4]=="true","deploy_keys_by_repository":sys.argv[5],"outside_collaborators_clear":"__GH_API_ERROR__" not in outside and not any(x.lower() in ids for x in outside),"org_members_clear":"__GH_API_ERROR__" not in members and not any(x.lower() in ids for x in members),"outside_collaborators":outside,"org_members":members}); print(json.dumps(p))' "$local_json" "$outside" "$members" "$keys_ok" "$keys_listing"
+  python3 -I -c 'import json,sys; p=json.loads(sys.argv[1]); outside=sys.argv[2].splitlines(); members=sys.argv[3].splitlines(); ids={x.lower() for x in ("aao-impl-claude","aao-impl-codex","aao-impl-agy","aao-impl-claude[bot]","aao-impl-codex[bot]","aao-impl-agy[bot]")}; p.update({"deploy_keys_empty":sys.argv[4]=="true","deploy_keys_by_repository":sys.argv[5],"outside_collaborators_clear":"__GH_API_ERROR__" not in outside and not [x for x in outside if x],"org_members_clear":"__GH_API_ERROR__" not in members and not any(x.lower() in ids for x in members),"outside_collaborators":outside,"org_members":members}); print(json.dumps(p))' "$local_json" "$outside" "$members" "$keys_ok" "$keys_listing"
 }
 collect_p4b(){
   local owners admins login
@@ -300,8 +305,57 @@ for role in "${A10_ROLES[@]}"; do
   [[ $state != FAIL && $a10_rc -ne 1 ]] || rc=1
   true
 done
+# A-11 (fork PR creation) and P3-10 (external workflow approval gate) are separate evidence records.
+# Each step runs under its own uid with its own App key: implementer -> its fork, aao-pm -> PR, aao-supervisor -> verify.
+fork_step(){
+  local uid=$1 step=$2 target=$3 role=$4 cwd=$5 home step_rc; shift 5
+  home=$(getent passwd "$uid" | cut -d: -f6)
+  set +e
+  (cd "$cwd" && runuser -u "$uid" -- env -i HOME="$home" PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null GIT_CONFIG_KEY_1=core.fsmonitor GIT_CONFIG_VALUE_1=false AAO_GITHUB_TRIAL_REPOS="$target" AAO_GITHUB_TRIAL_FORK_PARENT="$REPO" AAO_TRIAL_RUN_ID="$AAO_TRIAL_RUN_ID" AAO_TRIAL_HARNESS_REV="$REV" "$@" /usr/bin/python3 -I -c "import sys;sys.path.insert(0,'$INSTALL/src');from aao.fork_pr_trial import main;raise SystemExit(main())" "$step" --repo "$target" --role "$role") >"$LOG/$step-$role.out" 2>&1
+  step_rc=$?
+  set -e
+  cat "$LOG/$step-$role.out"
+  step_ev=$(capture_evidence "$uid" "$home" "$step" "$role" || true)
+  step_state='NOT RUN (no evidence from this run)'; [[ -n $step_ev ]] && step_state=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status","FAIL"))' "$step_ev")
+  printf '%s\t%s\t%s\t%s\n' "$step" "$role" "$step_state" "${step_ev:-none}" | tee -a "$LOG/summary.tsv"
+  [[ $step_state != FAIL && $step_rc -ne 1 ]] || rc=1
+}
+if ((${#ONLY[@]} == 0)) || [[ " ${ONLY[*]} " =~ " A-11 " || " ${ONLY[*]} " =~ " P3-10 " ]]; then
+  impl=aao-impl-codex; impl_uid=${APP_UID[$impl]}; impl_home=$(getent passwd "$impl_uid" | cut -d: -f6); fork=autoaiorg/aao-trial-codex
+  fork_branch="aao-trial/a11-p310-$TS"
+  impl_work=$WORK_ROOT/$impl_uid; [[ ! -L $impl_work ]] || die "role work directory is a symlink: $impl_work"
+  if [[ -e $impl_work ]]; then role_work_safe "$impl_work" "$impl_uid" || die "unsafe role work directory: $impl_work"; else install -d -o "$impl_uid" -g "$(id -gn "$impl_uid")" -m 0700 "$impl_work"; fi
+  runuser -u "$impl_uid" -- env -i HOME="$impl_home" PATH=/usr/bin:/bin mkdir -p "$impl_work/$TS"
+  fork_clone=$impl_work/$TS/fork
+  IGIT=(runuser -u "$impl_uid" -- env -i HOME="$impl_home" PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c core.hooksPath=/dev/null -c core.fsmonitor=false)
+  fork_ready=0
+  if "${IGIT[@]}" clone --quiet "https://github.com/$fork.git" "$fork_clone" && "${IGIT[@]}" -C "$fork_clone" fetch --quiet "https://github.com/$REPO.git" main && "${IGIT[@]}" -C "$fork_clone" checkout -q -B a11-candidate FETCH_HEAD; then
+    # The PR changes a workflow, so the pull_request run executes PR-controlled workflow code unless approval gates it.
+    runuser -u "$impl_uid" -- env -i HOME="$impl_home" PATH=/usr/bin:/bin /bin/sh -c 'printf "      - run: echo AAO-P3-10-canary-%s\n" "$2" >> "$1/.github/workflows/test.yml"' sh "$fork_clone" "$TS" \
+      && "${IGIT[@]}" -C "$fork_clone" add .github/workflows/test.yml \
+      && "${IGIT[@]}" -C "$fork_clone" -c user.name='AAO Trial Fixture' -c user.email=trial-fixture@users.noreply.github.com commit -q -m "AAO trial A-11/P3-10 workflow change $TS" \
+      && fork_ready=1
+  fi
+  if ((fork_ready)); then
+    fork_head=$("${IGIT[@]}" -C "$fork_clone" rev-parse HEAD)
+    fork_step "$impl_uid" FORK-BRANCH "$fork" "$impl" "$fork_clone" AAO_GITHUB_TRIAL_BRANCH="$fork_branch"
+  else
+    step_state=FAIL; printf 'FORK-BRANCH\t%s\tFAIL\tcould not prepare the workflow-changing fork commit\n' "$impl" | tee -a "$LOG/summary.tsv"; rc=1
+  fi
+  if [[ $step_state == PASS ]]; then
+    fork_step "${APP_UID[aao-pm]}" A-11 "$REPO" aao-pm / AAO_GITHUB_TRIAL_FORK="$fork" AAO_GITHUB_TRIAL_BRANCH="$fork_branch" AAO_TRIAL_CANDIDATE_SHA="$fork_head"
+  else
+    printf 'A-11\taao-pm\tNOT RUN\tFORK-BRANCH did not pass\n' | tee -a "$LOG/summary.tsv"
+  fi
+  if [[ $step_state == PASS ]]; then
+    fork_pr=$(python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); print(next(x["number"] for x in d["evidence"] if x.get("method")=="fork pull request"))' "$step_ev")
+    fork_step "${APP_UID[aao-supervisor]}" P3-10 "$REPO" aao-supervisor / AAO_GITHUB_TRIAL_PR="$fork_pr" AAO_GITHUB_TRIAL_PR_HEAD="$fork_head" AAO_GITHUB_TRIAL_FORK="$fork" AAO_GITHUB_TRIAL_BRANCH="$fork_branch"
+  else
+    printf 'P3-10\taao-supervisor\tNOT RUN\tno fork PR was created in this run\n' | tee -a "$LOG/summary.tsv"
+  fi
+fi
 # Manual tests remain explicit, never silently omitted.
-for id in A-07 A-08 A-11 A-13 P3-04 P3-08 P3-10 P3-11; do
+for id in A-07 A-08 A-13 P3-04 P3-08 P3-11; do
   if ((${#ONLY[@]} == 0)) || [[ " ${ONLY[*]} " =~ " $id " ]]; then printf '%s\tmanual\tNOT RUN\tmanual step documented in trial setup\n' "$id" | tee -a "$LOG/summary.tsv"; fi
 done
 declare -A HOMES=(); HOMES[$CEO]=$(getent passwd "$CEO" | cut -d: -f6)

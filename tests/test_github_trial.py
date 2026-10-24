@@ -436,6 +436,7 @@ def test_p3_01_ruleset_name_does_not_override_failed_required_checks(monkeypatch
 
 
 def test_p3_07_integrator_requires_non_fast_forward_rule_for_both_refs(monkeypatch):
+    monkeypatch.setattr(trial, "_wait_required_checks", lambda *_a: (True, "passed"))
     """P3-07 is PASS only when both server denials name non_fast_forward, not required checks."""
     main, candidate = "a" * 40, "b" * 40
     base = "/repos/org/trial/git/ref/heads/"
@@ -455,7 +456,38 @@ def test_p3_07_integrator_requires_non_fast_forward_rule_for_both_refs(monkeypat
                       f"+{candidate}:refs/heads/aao-staging/{candidate[:12]}"]
 
 
+
+def test_p3_07_waits_for_required_checks_before_forced_push(monkeypatch):
+    main, candidate = "a" * 40, "b" * 40
+    base = "/repos/org/trial/git/ref/heads/"
+    client = RefClient({base + "main": [_ref_reply(main)],
+                        base + "aao-staging/" + candidate[:12]: [(404, {"message": "Not Found"})]})
+    monkeypatch.setattr(trial.subprocess, "run", lambda *_a, **_k: type(
+        "Result", (), {"stdout": candidate + "\n", "returncode": 1})())
+    pushes = []
+    monkeypatch.setattr(trial, "_wait_required_checks", lambda *_a: (False, "checks pending"))
+    monkeypatch.setattr(trial, "_git_push", lambda *_a, **_k: pushes.append(True))
+    status, reason, _ = trial.run_test("P3-07", "org", "trial", "aao-integrator", client)
+    assert (status, reason) == ("INCONCLUSIVE", "checks pending")
+    assert pushes == []
+
+
+def test_p3_12_waits_for_required_checks_before_push(monkeypatch):
+    main, candidate = "a" * 40, "b" * 40
+    base = "/repos/org/trial/git/ref/heads/main"
+    client = RefClient({base: [_ref_reply(main)]})
+    monkeypatch.setattr(trial.subprocess, "run", lambda *_a, **_k: type(
+        "Result", (), {"stdout": candidate + "\n", "returncode": 0})())
+    monkeypatch.setattr(trial, "_is_ancestor", lambda *_a: False)
+    pushes = []
+    monkeypatch.setattr(trial, "_wait_required_checks", lambda *_a: (False, "checks pending"))
+    monkeypatch.setattr(trial, "_git_push", lambda *_a, **_k: pushes.append(True))
+    status, reason, _ = trial.run_test("P3-12", "org", "trial", "aao-integrator", client)
+    assert (status, reason) == ("INCONCLUSIVE", "checks pending")
+    assert pushes == []
+
 def test_p3_07_generic_ruleset_denial_is_inconclusive(monkeypatch):
+    monkeypatch.setattr(trial, "_wait_required_checks", lambda *_a: (True, "passed"))
     main, candidate = "a" * 40, "b" * 40
     base = "/repos/org/trial/git/ref/heads/"
     client = RefClient({base + "main": [_ref_reply(main), _ref_reply(main)],
@@ -469,6 +501,7 @@ def test_p3_07_generic_ruleset_denial_is_inconclusive(monkeypatch):
 
 
 def test_p3_07_non_fast_forward_name_does_not_override_failed_checks(monkeypatch):
+    monkeypatch.setattr(trial, "_wait_required_checks", lambda *_a: (True, "passed"))
     main, candidate = "a" * 40, "b" * 40
     base = "/repos/org/trial/git/ref/heads/"
     client = RefClient({base + "main": [_ref_reply(main), _ref_reply(main)],
@@ -489,6 +522,7 @@ def test_p3_07_implementer_uses_a01_not_p3_07():
 
 
 def test_p3_12_forced_non_fast_forward_must_be_server_rejected(monkeypatch):
+    monkeypatch.setattr(trial, "_wait_required_checks", lambda *_a: (True, "passed"))
     main, candidate = "a" * 40, "b" * 40
     client = RefClient({"/repos/org/trial/git/ref/heads/main": [_ref_reply(main), _ref_reply(main)]})
     monkeypatch.setattr(trial.subprocess, "run", lambda *_a, **_k: type(
@@ -583,6 +617,11 @@ def test_a10_non_implementer_roles_are_checked_against_canonical_column(role):
 
 
 def test_git_push_discards_trace_settings_and_redacts_stderr(monkeypatch):
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "2")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.hooksPath")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "/dev/null")
+    monkeypatch.setenv("GIT_CONFIG_KEY_1", "core.fsmonitor")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_1", "false")
     monkeypatch.setenv("GIT_TRACE_CURL", "/tmp/curl-trace.log")
     monkeypatch.setenv("GIT_TRACE_REDACT", "0")
     seen = {}
@@ -595,6 +634,10 @@ def test_git_push_discards_trace_settings_and_redacts_stderr(monkeypatch):
     assert "secret-token" not in " ".join(seen["args"])
     assert "GIT_TRACE_CURL" not in seen["env"]
     assert seen["env"]["GIT_TRACE_REDACT"] == "1"
+    assert seen["env"]["GIT_CONFIG_COUNT"] == "3"
+    assert seen["env"]["GIT_CONFIG_VALUE_0"] == "/dev/null"
+    assert seen["env"]["GIT_CONFIG_VALUE_1"] == "false"
+    assert seen["env"]["GIT_CONFIG_KEY_2"] == "http.extraheader"
     assert "secret-token" not in result["response"]
 
 

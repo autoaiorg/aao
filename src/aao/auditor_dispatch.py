@@ -107,6 +107,7 @@ def _publish(client: Any, repo: str, sha: str, conclusion: str, detail: str) -> 
 def dispatch_once(inbox: str | Path, reports: str | Path, key: str | Path,
                   github_auditor_client: Any, *, anchor_path: Path = ANCHOR_PATH,
                   anchor_owner_uids: tuple[int, ...] = (0,),
+                  registry_owner_uids: tuple[int, ...] | None = None,
                   repository_root: Path | None = None,
                   expected_repo: str | None = None,
                   runner: Callable[[Path, list[str]], tuple[int, str, str]] | None = None) -> list[dict[str, str]]:
@@ -162,7 +163,8 @@ def dispatch_once(inbox: str | Path, reports: str | Path, key: str | Path,
                     auth_dir = reports / request_id / "authorization"
                     issue_authorization(audit_dir, request["repo"], request["pr_number"], key,
                                         auth_dir, anchor_path=anchor_path,
-                                        anchor_owner_uids=anchor_owner_uids)
+                                        anchor_owner_uids=anchor_owner_uids,
+                                        registry_owner_uids=registry_owner_uids)
                     for name in ("authorization.json", "authorization.sig"):
                         target = reports / request_id / name
                         target.write_bytes((auth_dir / name).read_bytes())

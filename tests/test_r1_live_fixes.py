@@ -12,6 +12,20 @@ from aao import auditor_dispatch, authorization_issuer, integrator, supervisor_s
 from aao.protected_routes import load_document, route_map, routes_digest
 
 
+class _AttributionClient:
+    def __init__(self, responses):
+        self.responses = responses
+
+    def installation_token(self, *_args):
+        return "test-token"
+
+    def request(self, _method, path):
+        value = self.responses.get(path, [])
+        if isinstance(value, Exception):
+            raise value
+        return type("Response", (), {"status": 200, "body": value})()
+
+
 def test_integrator_heartbeat_sequence_is_written_under_integrator_state(tmp_path, monkeypatch):
     heartbeat = tmp_path / "heartbeat.json"
     sequence = tmp_path / "integrator" / "heartbeat.sequence"
@@ -96,8 +110,14 @@ def test_issued_authorization_files_are_group_readable_not_writable(tmp_path, mo
     registry_path = tmp_path / "registry.json"
     registry_path.write_text(json.dumps(registry))
     monkeypatch.setattr(authorization_issuer, "TRUST_REGISTRY_PATH", registry_path)
-    monkeypatch.setattr(authorization_issuer, "read_protected",
-                        lambda path, *_args: registry_path.read_bytes() if path == registry_path else raw)
+    read_owners = {}
+    monkeypatch.setattr(authorization_issuer.pwd, "getpwnam", lambda _name: type("User", (), {"pw_uid": 4242})())
+    def read_protected(path, owners):
+        if path == registry_path:
+            read_owners["registry"] = owners
+            return registry_path.read_bytes()
+        return raw
+    monkeypatch.setattr(authorization_issuer, "read_protected", read_protected)
     monkeypatch.setattr(authorization_issuer, "verify_promotion", lambda *args, **kwargs: (True, ()))
     monkeypatch.setattr(authorization_issuer, "changed_paths", lambda *args: [])
     monkeypatch.setattr(authorization_issuer.authorization, "sign", lambda *args: "test-signature")
@@ -105,41 +125,105 @@ def test_issued_authorization_files_are_group_readable_not_writable(tmp_path, mo
     authorization_issuer.issue_authorization(report_dir, "owner/repo", 1, tmp_path / "key", output,
                                                anchor_path=tmp_path / "anchor",
                                                anchor_owner_uids=(os.getuid(),))
+    assert read_owners["registry"] == (0, 4242)
     assert stat.S_IMODE(output.stat().st_mode) == 0o750
     for name in ("authorization.json", "authorization.sig"):
         mode = stat.S_IMODE((output / name).stat().st_mode)
         assert mode == 0o640 and mode & 0o022 == 0
 
 
-def test_attribution_records_only_registry_mapped_github_push_after_api_success(tmp_path):
-    sha_push = "a" * 40
+def test_attribution_records_pr_head_chain_and_requires_pull_api(tmp_path):
+    sha_push, prior = "a" * 40, "b" * 40
 
     class Client:
         def installation_token(self, owner, repo):
             assert (owner, repo) == ("owner", "repo")
-
         def request(self, method, path):
-            assert method == "GET"
-            assert "/events?" in path
-            body = [{"type": "PushEvent", "actor": {"login": "aao-impl-codex[bot]"},
-                     "payload": {"commits": [{"sha": sha_push}]}}]
-            return type("Response", (), {"status": 200, "body": body})()
+            body = {
+                "/repos/owner/repo/pulls?state=open&per_page=100": [{"number": 3, "head": {
+                    "sha": sha_push, "ref": "feature", "repo": {"full_name": "owner/repo"}}}],
+                "/repos/owner/repo/events?per_page=100": [
+                    {"type": "PushEvent", "actor": {"login": "aao-impl-codex[bot]"}, "payload": {
+                        "head": sha_push, "before": prior, "ref": "refs/heads/feature"}},
+                    {"type": "PushEvent", "actor": {"login": "aao-pm[bot]"}, "payload": {
+                        "head": prior, "before": "0" * 40, "ref": "refs/heads/feature"}}],
+                "/repos/owner/repo/pulls/3/commits?per_page=100": [{"sha": sha_push}]}
+            return type("Response", (), {"status": 200, "body": body[path]})()
 
     path = tmp_path / "attribution.json"
-    config = {"repository": "owner/repo", "attribution_path": str(path),
-              "push_principals": {"aao-impl-codex[bot]": "codex"}}
-    assert supervisor_service.attribution(config, Client()) == 1
-    data = json.loads(path.read_text())
-    assert data["candidates"] == {sha_push: ["aao-impl-codex[bot]"]}
+    config = {"repository": "owner/repo", "attribution_path": str(path)}
+    assert supervisor_service.attribution(config, Client()) == {"candidates": 1, "skipped_prs": []}
+    assert json.loads(path.read_text())["candidates"][sha_push] == ["aao-impl-codex[bot]", "aao-pm[bot]"]
 
     class Failed(Client):
         def request(self, method, path):
             return type("Response", (), {"status": 503, "body": []})()
-
     failed_path = tmp_path / "failed.json"
     with pytest.raises(RuntimeError):
         supervisor_service.attribution({**config, "attribution_path": str(failed_path)}, Failed())
     assert not failed_path.exists()
+
+
+def test_attribution_duplicate_push_heads_preserve_all_actors(tmp_path):
+    sha, first_parent, second_parent = "a" * 40, "b" * 40, "c" * 40
+    pulls = "/repos/owner/repo/pulls?state=open&per_page=100"
+    client = type("Client", (), {
+        "installation_token": lambda *_args: None,
+        "request": lambda self, _method, path: type("Response", (), {"status": 200, "body": {
+            pulls: [{"number": 4, "head": {"sha": sha, "ref": "feature",
+                       "repo": {"full_name": "owner/repo"}}}],
+            "/repos/owner/repo/events?per_page=100": [
+                {"type": "PushEvent", "actor": {"login": "first"}, "payload": {
+                    "head": sha, "before": first_parent, "ref": "refs/heads/feature"}},
+                {"type": "PushEvent", "actor": {"login": "second"}, "payload": {
+                    "head": sha, "before": second_parent, "ref": "refs/heads/feature"}},
+                {"type": "PushEvent", "actor": {"login": "older-first"}, "payload": {
+                    "head": first_parent, "before": "0" * 40, "ref": "refs/heads/feature"}},
+                {"type": "PushEvent", "actor": {"login": "older-second"}, "payload": {
+                    "head": second_parent, "before": "0" * 40, "ref": "refs/heads/feature"}}],
+            "/repos/owner/repo/pulls/4/commits?per_page=100": [{"sha": sha}],
+        }[path]})()
+    })()
+    path = tmp_path / "attribution.json"
+    result = supervisor_service.attribution({"repository": "owner/repo", "attribution_path": str(path)}, client)
+    assert result == {"candidates": 1, "skipped_prs": []}
+    assert json.loads(path.read_text())["candidates"][sha] == ["first", "older-first", "older-second", "second"]
+
+
+def test_attribution_cycle_without_creation_path_skips_pr(tmp_path):
+    sha_a, sha_b = "a" * 40, "b" * 40
+    pulls = "/repos/owner/repo/pulls?state=open&per_page=100"
+    responses = {
+        pulls: [{"number": 5, "head": {"sha": sha_a, "ref": "feature",
+                  "repo": {"full_name": "owner/repo"}}}],
+        "/repos/owner/repo/events?per_page=100": [
+            {"type": "PushEvent", "actor": {"login": "actor-a"}, "payload": {
+                "head": sha_a, "before": sha_b, "ref": "refs/heads/feature"}},
+            {"type": "PushEvent", "actor": {"login": "actor-b"}, "payload": {
+                "head": sha_b, "before": sha_a, "ref": "refs/heads/feature"}}],
+        "/repos/owner/repo/pulls/5/commits?per_page=100": [{"sha": sha_a}],
+    }
+    path = tmp_path / "attribution.json"
+    assert supervisor_service.attribution({"repository": "owner/repo", "attribution_path": str(path)},
+        _AttributionClient(responses)) == {"candidates": 0, "skipped_prs": [5]}
+    assert not path.exists()
+
+
+def test_attribution_skips_pull_with_commit_pagination_limit(tmp_path):
+    sha = "a" * 40
+    pulls = "/repos/owner/repo/pulls?state=open&per_page=100"
+    responses = {
+        pulls: [{"number": 6, "head": {"sha": sha, "ref": "feature",
+                  "repo": {"full_name": "owner/repo"}}}],
+        "/repos/owner/repo/events?per_page=100": [
+            {"type": "PushEvent", "actor": {"login": "actor"}, "payload": {
+                "head": sha, "before": "0" * 40, "ref": "refs/heads/feature"}}],
+        "/repos/owner/repo/pulls/6/commits?per_page=100": [{"sha": f"{i:040x}"} for i in range(100)],
+    }
+    path = tmp_path / "attribution.json"
+    assert supervisor_service.attribution({"repository": "owner/repo", "attribution_path": str(path)},
+        _AttributionClient(responses)) == {"candidates": 0, "skipped_prs": [6]}
+    assert not path.exists()
 
 
 def test_verifier_lists_dispatch_integrator_and_attribution_units():

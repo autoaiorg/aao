@@ -67,5 +67,5 @@ def test_apply_repairs_a_drifted_ruleset_in_place_and_reports_unexpected_ones():
     gh = FakeGh([*rulesets, {"name": "legacy", "target": "branch"}])
     problems = cp.apply(gh, "o/r")
     assert ("PUT", "repos/o/r/rulesets/2") in gh.writes and not any(w[0] == "POST" for w in gh.writes)
-    assert problems == ["unexpected ruleset (review by hand): legacy"]
-    assert cp.main(["--repo", "o/r", "verify"], gh=gh) == 0  # unexpected extras are reported, not blocking
+    assert problems == ["unexpected ruleset (remove it or add it to this script after review): legacy"]
+    assert cp.main(["--repo", "o/r", "verify"], gh=gh) == 1  # verify proves the applicable set is exactly A, B, C

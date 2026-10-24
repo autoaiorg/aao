@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import fcntl
 import hashlib
 import json
 import os
@@ -201,19 +202,22 @@ def dispatch_once(inbox: str | Path, reports: str | Path, key: str | Path,
                 if not verified:
                     raise ValueError("integrator incident signature is invalid")
                 anchor = load_anchor(anchor_path, anchor_owner_uids)
-                rows = ledger_rows(anchor)
-                if any(row.get("type") == "integrator-incident"
-                       and isinstance(row.get("incident"), dict)
-                       and row["incident"].get("id") == request["id"] for row in rows):
-                    results.append({"id": request_id, "status": "ignored", "reason": "incident already recorded"})
-                    continue
-                auditor_id = anchor["policy"]["auditor_id"]
-                with tempfile.TemporaryDirectory(prefix="aao-ledger-keys-") as temporary:
-                    keys = _ledger_keys(anchor, Path(temporary))
-                    append_ledger(_ledger(anchor), {"type": "integrator-incident",
-                        "incident": payload,
-                        "integrator_signature_sha256": hashlib.sha256(signature).hexdigest()}, auditor_id,
-                        str(key), keys)
+                # Check-then-append under one lock: concurrent dispatchers cannot record the same incident twice.
+                with Path(str(_ledger(anchor)) + ".lock").open("a") as ledger_lock:
+                    fcntl.flock(ledger_lock, fcntl.LOCK_EX)
+                    rows = ledger_rows(anchor)
+                    if any(row.get("type") == "integrator-incident"
+                           and isinstance(row.get("incident"), dict)
+                           and row["incident"].get("id") == request["id"] for row in rows):
+                        results.append({"id": request_id, "status": "ignored", "reason": "incident already recorded"})
+                        continue
+                    auditor_id = anchor["policy"]["auditor_id"]
+                    with tempfile.TemporaryDirectory(prefix="aao-ledger-keys-") as temporary:
+                        keys = _ledger_keys(anchor, Path(temporary))
+                        append_ledger(_ledger(anchor), {"type": "integrator-incident",
+                            "incident": payload,
+                            "integrator_signature_sha256": hashlib.sha256(signature).hexdigest()}, auditor_id,
+                            str(key), keys)
                 results.append({"id": request_id, "status": "recorded"})
             except (OSError, ValueError, TypeError, KeyError, RuntimeError, subprocess.SubprocessError,
                     json.JSONDecodeError) as error:

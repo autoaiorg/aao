@@ -330,7 +330,9 @@ if ((UPGRADE)); then
               aao-supervisor-heartbeat.service aao-supervisor-intake.service aao-trust-root-verify.service)
   active=$(systemctl list-units --state=active,activating,deactivating --no-legend --plain "${LOOP_UNITS[@]}" | awk '{print $1}')
   echo "loop units running now: ${active:-none}"
-  run systemctl stop "${LOOP_UNITS[@]}"
+  # systemctl stop fails (rc 5) on a unit that is not loaded, e.g. one added by REV on an older host.
+  mapfile -t loaded < <(systemctl list-units --all --no-legend --plain "${LOOP_UNITS[@]}" | awk '{print $1}')
+  ((${#loaded[@]} == 0)) || run systemctl stop "${loaded[@]}"
   if ((APPLY)); then
     active=$(systemctl list-units --state=active,activating,deactivating --no-legend --plain "${LOOP_UNITS[@]}" | awk '{print $1}')
     [[ -z $active ]] || die "still running, nothing replaced: $active"

@@ -1031,3 +1031,14 @@ def test_stage_merge_commit_message_is_given_on_stdin_never_inherited():
     source = inspect.getsource(github_trial)
     call = source[source.index('"commit-tree",'):][:400]
     assert 'input="AAO trial staged merge' in call
+
+
+def test_p3_04_precondition_refuses_an_incomplete_check_run_listing(monkeypatch):
+    monkeypatch.setattr(trial, "CHECK_WAIT_SECONDS", 0)
+    runs = [{"name": "test", "app": {"id": 15368}, "status": "completed", "conclusion": "success"},
+            {"name": "aao-audit", "app": {"id": 99}, "status": "completed", "conclusion": "success"}]
+    client = DummyClient([(200, {"id": 77}), (200, {"total_count": 101, "check_runs": runs})])
+    ready, why = trial._wait_wrong_publisher(client, "/repos/org/trial", "b" * 40, [])
+    assert not ready and "incomplete" in why
+    client = DummyClient([(200, {"id": 77}), (200, {"total_count": 2, "check_runs": runs})])
+    assert trial._wait_wrong_publisher(client, "/repos/org/trial", "b" * 40, [])[0]

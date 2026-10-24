@@ -93,7 +93,7 @@ def verify(gh: Gh, repo: str) -> list[str]:
         elif shape(got) != shape(want):
             problems.append(f"{want['name']}: expected {json.dumps(shape(want))}, got {json.dumps(shape(got))}")
     extra = sorted(set(have) - {w["name"] for w in desired()})
-    problems += [f"unexpected ruleset (review by hand): {name}" for name in extra]
+    problems += [f"unexpected ruleset (remove it or add it to this script after review): {name}" for name in extra]
     return problems
 
 
@@ -143,9 +143,9 @@ def main(argv: list[str] | None = None, gh: Gh = gh_cli) -> int:
     problems = apply(gh, args.repo) if args.action == "apply" else verify(gh, args.repo)
     for problem in problems:
         print(f"FAIL {problem}")
-    blocking = [p for p in problems if not p.startswith("unexpected ruleset")]
-    print("RESULT", "FAIL" if blocking else "PASS")
-    return 1 if blocking else 0
+    # Any unexpected ruleset blocks: verify must prove the applicable set is exactly A, B and C.
+    print("RESULT", "FAIL" if problems else "PASS")
+    return 1 if problems else 0
 
 
 if __name__ == "__main__":

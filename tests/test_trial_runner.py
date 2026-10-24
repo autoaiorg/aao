@@ -147,7 +147,8 @@ def test_p3_04_fixture_uses_the_wrong_publisher_and_others_the_auditor():
 
 def test_ruleset_a_is_restored_on_any_exit_and_marked_disabled_before_it_is_disabled():
     source = RUNNER.read_text()
-    assert "trap 'restore_a || true; rm -rf \"$tmp\"' EXIT" in source
+    assert "trap 'if ! restore_a; then rm -rf \"$tmp\"; exit 99; fi; rm -rf \"$tmp\"' EXIT" in source
+    assert "trap 'exit 130' INT TERM HUP" in source
     block = source.split("if wants A-07 || wants P3-11; then", 1)[1]
     assert block.index("A_DISABLED=1") < block.index("enforcement=disabled") < block.index("restore_a ||")
     assert "check_rulesets && A_DISABLED=0" in source
@@ -174,3 +175,16 @@ def test_p3_07_candidate_is_divergent_and_keeps_the_workflow(tmp_path):
     ancestor = subprocess.run(["git", "merge-base", "--is-ancestor", main, candidate], cwd=tmp_path, check=False).returncode
     assert ancestor == 1  # main is not an ancestor: the push is non-fast-forward
     assert ".github/workflows/test.yml" in git("ls-tree", "-r", "--name-only", candidate).split()
+
+
+def test_a07_and_p3_11_events_are_correlated_to_this_repo_and_main():
+    block = RUNNER.read_text().split("if wants A-07 || wants P3-11; then", 1)[1]
+    assert 'e.get("ref")=="refs/heads/main" and e.get("repo")==sys.argv[3]' in block
+    assert block.count('get("repo")==sys.argv[1]') >= 2  # drift and restored events
+    assert "exit 99" in RUNNER.read_text().split("restore_a(){", 1)[1].split("if wants A-07", 1)[0]
+
+
+def test_bootstrap_stops_only_loaded_units():
+    source = (Path(__file__).parents[1] / "scripts/bootstrap/host_bootstrap.sh").read_text()
+    assert 'systemctl list-units --all --no-legend --plain "${LOOP_UNITS[@]}"' in source
+    assert 'run systemctl stop "${loaded[@]}"' in source and 'run systemctl stop "${LOOP_UNITS[@]}"' not in source

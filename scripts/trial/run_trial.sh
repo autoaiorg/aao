@@ -419,7 +419,8 @@ restore_a(){
   echo "CRITICAL: ruleset A of $REPO could not be restored/verified. Re-enable it by hand NOW: gh api -X PUT repos/$REPO/rulesets/$A_ID -f enforcement=active" >&2
   return 1
 }
-trap 'restore_a || true; rm -rf "$tmp"' EXIT
+trap 'if ! restore_a; then rm -rf "$tmp"; exit 99; fi; rm -rf "$tmp"' EXIT  # unrestorable ruleset A = failed run
+trap 'exit 130' INT TERM HUP  # route signals through the EXIT trap so ruleset A is always restored
 sup_events(){ # newer than marker, of a type: prints matching event JSON lines
   python3 -I -c 'import json,os,sys
 d,marker,kind=sys.argv[1],float(sys.argv[2]),sys.argv[3]
@@ -433,7 +434,8 @@ for n in sorted(os.listdir(d)) if os.path.isdir(d) else []:
 }
 if wants A-07 || wants P3-11; then
   iuid=${APP_UID[aao-integrator]}; ihome=$(getent passwd "$iuid" | cut -d: -f6); iwork=$WORK_ROOT/$iuid
-  role_work_safe "$iwork" "$iuid" || die "unsafe role work directory: $iwork"
+  ensure_work(){ [[ ! -L $1 ]] || die "role work directory is a symlink: $1"; [[ -e $1 ]] || install -d -o "$2" -g "$(id -gn "$2")" -m 0700 "$1"; role_work_safe "$1" "$2" || die "unsafe role work directory: $1"; }
+  ensure_work "$iwork" "$iuid"
   runuser -u "$iuid" -- env -i HOME="$ihome" PATH=/usr/bin:/bin mkdir -p "$iwork/$TS"; a07_clone=$iwork/$TS/a07
   IG=(runuser -u "$iuid" -- env -i HOME="$ihome" PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c core.hooksPath=/dev/null -c core.fsmonitor=false)
   "${IG[@]}" clone --quiet "https://github.com/$REPO.git" "$a07_clone"
@@ -451,6 +453,7 @@ print(1 if ok("test") and ok("aao-audit",5448107) else 0)' || echo 0)
       ceo_gh api "repos/$REPO/rulesets/$A_ID" > "$LOG/P3-11-ruleset-A.before.json"
       A_DISABLED=1; ceo_gh api -X PUT "repos/$REPO/rulesets/$A_ID" -f enforcement=disabled > "$LOG/P3-11-ruleset-A.disabled.json"
       ceo_home=$(getent passwd "$CEO" | cut -d: -f6); ceo_clone=$WORK_ROOT/$CEO/$TS/a07
+      ensure_work "$WORK_ROOT/$CEO" "$CEO"
       runuser -u "$CEO" -- env -i HOME="$ceo_home" PATH=/usr/bin:/bin mkdir -p "$ceo_clone"
       CG=(runuser -u "$CEO" -- env -i HOME="$ceo_home" PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c core.hooksPath=/dev/null -c core.fsmonitor=false)
       "${CG[@]}" clone --quiet "https://github.com/$REPO.git" "$ceo_clone/trial" && "${CG[@]}" -C "$ceo_clone/trial" fetch --quiet origin "aao-trial/required-A-07-$TS" && "${CG[@]}" -C "$ceo_clone/trial" checkout -q --detach "$a07_sha"
@@ -461,15 +464,15 @@ print(1 if ok("test") and ok("aao-audit",5448107) else 0)' || echo 0)
       violation= drift=; deadline=$((SECONDS + 420))
       while ((SECONDS < deadline)) && [[ -z $violation || -z $drift ]]; do
         systemctl start aao-supervisor-watch.service || true
-        violation=$(sup_events "$events_dir" "$marker" governance-violation | python3 -I -c 'import json,sys; print(next((l for l in sys.stdin if json.loads(l).get("head")==sys.argv[1] and json.loads(l).get("actor")==sys.argv[2]),""),end="")' "$a07_sha" "$CEO")
-        drift=$(sup_events "$events_dir" "$marker" ruleset-drift | python3 -I -c 'import json,sys; print(next((l for l in sys.stdin if "update" in json.loads(l).get("missing",[])),""),end="")')
+        violation=$(sup_events "$events_dir" "$marker" governance-violation | python3 -I -c 'import json,sys; print(next((l for l in sys.stdin if (e:=json.loads(l)).get("head")==sys.argv[1] and e.get("actor")==sys.argv[2] and e.get("ref")=="refs/heads/main" and e.get("repo")==sys.argv[3]),""),end="")' "$a07_sha" "$CEO" "$REPO")
+        drift=$(sup_events "$events_dir" "$marker" ruleset-drift | python3 -I -c 'import json,sys; print(next((l for l in sys.stdin if "update" in (e:=json.loads(l)).get("missing",[]) and e.get("repo")==sys.argv[1]),""),end="")' "$REPO")
         [[ -n $violation && -n $drift ]] || sleep 30
       done
       restore_a || { record P3-11 ceo FAIL "ruleset A could not be restored and verified"; exit 1; }
       restored=; deadline=$((SECONDS + 300))
       while ((SECONDS < deadline)) && [[ -z $restored ]]; do
         systemctl start aao-supervisor-watch.service || true
-        restored=$(sup_events "$events_dir" "$marker" ruleset-restored | head -1); [[ -n $restored ]] || sleep 30
+        restored=$(sup_events "$events_dir" "$marker" ruleset-restored | python3 -I -c 'import json,sys; print(next((l for l in sys.stdin if json.loads(l).get("repo")==sys.argv[1]),""),end="")' "$REPO"); [[ -n $restored ]] || sleep 30
       done
       printf '%s\n' "${violation:-null}" > "$LOG/A-07-event.json"; printf '[%s,%s]\n' "${drift:-null}" "${restored:-null}" > "$LOG/P3-11-events.json"
       landed=$(ceo_gh api "repos/$REPO/git/ref/heads/main" --jq .object.sha 2>/dev/null || true)
@@ -487,6 +490,9 @@ print(1 if ok("test") and ok("aao-audit",5448107) else 0)' || echo 0)
       record A-07 ceo INCONCLUSIVE "A-07 candidate checks did not turn green within 420s; ruleset A was not touched"
       record P3-11 ceo INCONCLUSIVE "skipped with A-07: ruleset A was not touched"
     fi
+  else
+    record A-07 ceo INCONCLUSIVE "A-07 candidate could not be staged/published (see A-07-STAGE-COMMIT.out); ruleset A was not touched"
+    record P3-11 ceo INCONCLUSIVE "skipped with A-07: ruleset A was not touched"
   fi
 fi
 

@@ -421,7 +421,10 @@ def _wait_wrong_publisher(client: GitHubAppClient, base: str, sha: str, evidence
     while True:
         result = _api(client, "GET", f"{base}/commits/{sha}/check-runs?per_page=100")
         evidence.append(result)
-        runs = result.get("response", {}).get("check_runs", []) if isinstance(result.get("response"), dict) else []
+        body = result.get("response") if isinstance(result.get("response"), dict) else {}
+        runs = body.get("check_runs", [])
+        if result["status"] != 200 or not isinstance(runs, list) or body.get("total_count") != len(runs):
+            return False, "check-run listing is incomplete (more than one page or unreadable); refusing to judge the publisher"
         audits = [r for r in runs if r.get("name") == "aao-audit"]
         tests = [r for r in runs if r.get("name") == "test"]
         if any(r.get("app", {}).get("id") == auditor_id for r in audits):

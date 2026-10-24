@@ -299,8 +299,57 @@ for role in "${A10_ROLES[@]}"; do
   [[ $state != FAIL && $a10_rc -ne 1 ]] || rc=1
   true
 done
+# A-11 (fork PR creation) and P3-10 (external workflow approval gate) are separate evidence records.
+# Each step runs under its own uid with its own App key: implementer -> its fork, aao-pm -> PR, aao-supervisor -> verify.
+fork_step(){
+  local uid=$1 step=$2 target=$3 role=$4 cwd=$5 home step_rc; shift 5
+  home=$(getent passwd "$uid" | cut -d: -f6)
+  set +e
+  (cd "$cwd" && runuser -u "$uid" -- env -i HOME="$home" PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null GIT_CONFIG_KEY_1=core.fsmonitor GIT_CONFIG_VALUE_1=false AAO_GITHUB_TRIAL_REPOS="$target" AAO_GITHUB_TRIAL_FORK_PARENT="$REPO" AAO_TRIAL_RUN_ID="$AAO_TRIAL_RUN_ID" AAO_TRIAL_HARNESS_REV="$REV" "$@" /usr/bin/python3 -I -c "import sys;sys.path.insert(0,'$INSTALL/src');from aao.fork_pr_trial import main;raise SystemExit(main())" "$step" --repo "$target" --role "$role") >"$LOG/$step-$role.out" 2>&1
+  step_rc=$?
+  set -e
+  cat "$LOG/$step-$role.out"
+  step_ev=$(capture_evidence "$uid" "$home" "$step" "$role" || true)
+  step_state='NOT RUN (no evidence from this run)'; [[ -n $step_ev ]] && step_state=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status","FAIL"))' "$step_ev")
+  printf '%s\t%s\t%s\t%s\n' "$step" "$role" "$step_state" "${step_ev:-none}" | tee -a "$LOG/summary.tsv"
+  [[ $step_state != FAIL && $step_rc -ne 1 ]] || rc=1
+}
+if ((${#ONLY[@]} == 0)) || [[ " ${ONLY[*]} " =~ " A-11 " || " ${ONLY[*]} " =~ " P3-10 " ]]; then
+  impl=aao-impl-codex; impl_uid=${APP_UID[$impl]}; impl_home=$(getent passwd "$impl_uid" | cut -d: -f6); fork=autoaiorg/aao-trial-codex
+  fork_branch="aao-trial/a11-p310-$TS"
+  impl_work=$WORK_ROOT/$impl_uid; [[ ! -L $impl_work ]] || die "role work directory is a symlink: $impl_work"
+  if [[ -e $impl_work ]]; then role_work_safe "$impl_work" "$impl_uid" || die "unsafe role work directory: $impl_work"; else install -d -o "$impl_uid" -g "$(id -gn "$impl_uid")" -m 0700 "$impl_work"; fi
+  runuser -u "$impl_uid" -- env -i HOME="$impl_home" PATH=/usr/bin:/bin mkdir -p "$impl_work/$TS"
+  fork_clone=$impl_work/$TS/fork
+  IGIT=(runuser -u "$impl_uid" -- env -i HOME="$impl_home" PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c core.hooksPath=/dev/null -c core.fsmonitor=false)
+  fork_ready=0
+  if "${IGIT[@]}" clone --quiet "https://github.com/$fork.git" "$fork_clone" && "${IGIT[@]}" -C "$fork_clone" fetch --quiet "https://github.com/$REPO.git" main && "${IGIT[@]}" -C "$fork_clone" checkout -q -B a11-candidate FETCH_HEAD; then
+    # The PR changes a workflow, so the pull_request run executes PR-controlled workflow code unless approval gates it.
+    runuser -u "$impl_uid" -- env -i HOME="$impl_home" PATH=/usr/bin:/bin /bin/sh -c 'printf "      - run: echo AAO-P3-10-canary-%s\n" "$2" >> "$1/.github/workflows/test.yml"' sh "$fork_clone" "$TS" \
+      && "${IGIT[@]}" -C "$fork_clone" add .github/workflows/test.yml \
+      && "${IGIT[@]}" -C "$fork_clone" -c user.name='AAO Trial Fixture' -c user.email=trial-fixture@users.noreply.github.com commit -q -m "AAO trial A-11/P3-10 workflow change $TS" \
+      && fork_ready=1
+  fi
+  if ((fork_ready)); then
+    fork_head=$("${IGIT[@]}" -C "$fork_clone" rev-parse HEAD)
+    fork_step "$impl_uid" FORK-BRANCH "$fork" "$impl" "$fork_clone" AAO_GITHUB_TRIAL_BRANCH="$fork_branch"
+  else
+    step_state=FAIL; printf 'FORK-BRANCH\t%s\tFAIL\tcould not prepare the workflow-changing fork commit\n' "$impl" | tee -a "$LOG/summary.tsv"; rc=1
+  fi
+  if [[ $step_state == PASS ]]; then
+    fork_step "${APP_UID[aao-pm]}" A-11 "$REPO" aao-pm / AAO_GITHUB_TRIAL_FORK="$fork" AAO_GITHUB_TRIAL_BRANCH="$fork_branch" AAO_TRIAL_CANDIDATE_SHA="$fork_head"
+  else
+    printf 'A-11\taao-pm\tNOT RUN\tFORK-BRANCH did not pass\n' | tee -a "$LOG/summary.tsv"
+  fi
+  if [[ $step_state == PASS ]]; then
+    fork_pr=$(python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); print(next(x["number"] for x in d["evidence"] if x.get("method")=="fork pull request"))' "$step_ev")
+    fork_step "${APP_UID[aao-supervisor]}" P3-10 "$REPO" aao-supervisor / AAO_GITHUB_TRIAL_PR="$fork_pr" AAO_GITHUB_TRIAL_PR_HEAD="$fork_head"
+  else
+    printf 'P3-10\taao-supervisor\tNOT RUN\tno fork PR was created in this run\n' | tee -a "$LOG/summary.tsv"
+  fi
+fi
 # Manual tests remain explicit, never silently omitted.
-for id in A-07 A-08 A-11 A-13 P3-04 P3-08 P3-10 P3-11; do
+for id in A-07 A-08 A-13 P3-04 P3-08 P3-11; do
   if ((${#ONLY[@]} == 0)) || [[ " ${ONLY[*]} " =~ " $id " ]]; then printf '%s\tmanual\tNOT RUN\tmanual step documented in trial setup\n' "$id" | tee -a "$LOG/summary.tsv"; fi
 done
 declare -A HOMES=(); HOMES[$CEO]=$(getent passwd "$CEO" | cut -d: -f6)

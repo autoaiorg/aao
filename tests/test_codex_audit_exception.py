@@ -33,3 +33,33 @@ def test_bootstrap_accepts_codex_only_with_a_recorded_named_exception():
     assert "docs/decisions/$AUDIT_EXCEPTION.md" in gate and "'^auditor_sustituto: codex$'" in gate
     assert 'att["auditor"] in allowed' in gate and 'att.get("exception") == exception' in gate
     assert "auditor_sustituto: codex" in DECISION.read_text().splitlines()
+
+
+def test_only_codex_arg0_aliases_to_the_pinned_binary_may_leave_the_state_dir():
+    loop = CODEX_RUNNER.split("while IFS= read -r -d '' link; do", 1)[1].split("done <", 1)[0]
+    assert '[[ $link == "$d"/tmp/arg0-linux/*/* && $target == "$CODEX" ]] && continue' in loop
+    assert 'refusing: symlink $link resolves outside $d' in loop
+    assert "umask 077; exec /usr/local/bin/codex login --device-auth" in SESSION
+
+
+def test_symlink_rule_on_a_real_state_dir(tmp_path):
+    import subprocess
+    loop = "while IFS= read -r -d '' link; do" + CODEX_RUNNER.split("while IFS= read -r -d '' link; do", 1)[1].split("done <", 1)[0] \
+        + 'done < <(find "$d" -type l -print0); echo OK'
+    codex, d = tmp_path / "codex", tmp_path / "home" / ".codex"
+    codex.write_text("bin")
+    alias = d / "tmp" / "arg0-linux" / "codex-arg0X"
+    alias.mkdir(parents=True)
+    (alias / "apply_patch").symlink_to(codex)
+    (d / "inside").write_text("x")
+    (d / "ok-link").symlink_to(d / "inside")
+
+    def run():
+        return subprocess.run(["bash", "-c", loop], env={"CODEX": str(codex), "d": str(d), "PATH": "/usr/bin:/bin"},
+                              capture_output=True, text=True, check=False)
+    assert run().stdout.strip() == "OK"
+    (alias / "evil").symlink_to("/etc/passwd")
+    assert "refusing" in run().stderr
+    (alias / "evil").unlink()
+    (d / "evil").symlink_to(codex)  # the pinned binary is only allowed for arg0 aliases
+    assert "refusing" in run().stderr

@@ -161,6 +161,14 @@ Host facts (read-only checks, 2026-10-20):
   exercised.
 - `/etc/aao-audit` and `/var/lib/aao-auditor` do not exist.
 
+> **Estado actual (2026-10-24). La tabla siguiente describe el host del 2026-10-19 y está superada en parte.**
+>
+> **Separación de identidades.** Desde la separación P1 y la instalación de la raíz de confianza, el auditor tiene su propia cuenta, sin shell y con la contraseña bloqueada. Su clave y su código congelado están bajo su custodia, `/etc/aao-audit` pertenece a root y hay un verificador del host (`verify_trust_root_host.py`, `RESULT: PASS`) que se reejecuta cada día.
+>
+> **Riesgo residual vigente.** La cuenta del CEO (uid 1000) **sigue en el grupo `docker`**, y los agentes interactivos, Claude y Codex, se ejecutan con esa misma cuenta. Por eso uid 1000 puede llegar a root sin contraseña. El verificador no lo marca, porque trata la cuenta del CEO como raíz de confianza.
+>
+> **Remediación propuesta al CEO.** Hay dos opciones: sacar `alessbarb` del grupo `docker` y usar `sudo docker`, o ejecutar los agentes con cuentas propias. Es una decisión R3 pendiente.
+
 | Property | Demonstrable now? | Why |
 | --- | --- | --- |
 | Candidate code cannot read auditor files or use the network during checks | **Yes, locally** (bwrap probe test passes locally; skipped in CI, which does not install bubblewrap) | `--unshare-all`, read-only tree, secrets refused if under a sandbox mount |

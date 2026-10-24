@@ -256,7 +256,14 @@ def watch(config: dict[str, Any], client: Any | None = None, *,
         return body
 
     # Fetch and validate both sources before changing state or publishing any event.
-    events = get(f"/repos/{escaped}/events?per_page=100")
+    # The events API serves at most 300 events (3 pages of 100); read all of them so a burst between two timer
+    # ticks cannot push a main PushEvent out of view. Older events are beyond GitHub's own retention window.
+    events: list[Any] = []
+    for page in (1, 2, 3):
+        batch = get(f"/repos/{escaped}/events?per_page=100&page={page}")
+        events.extend(batch)
+        if len(batch) < 100:
+            break
     observed = get(f"/repos/{escaped}/rules/branches/main")
     for event in events:
         if not isinstance(event, dict):

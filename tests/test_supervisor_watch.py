@@ -21,8 +21,9 @@ class Client:
 
     def request(self, method, path):
         self.calls.append(path)
-        if path.endswith("/events?per_page=100"):
-            return self.events
+        if "/events?per_page=100&page=" in path:
+            page = int(path.rsplit("=", 1)[1])
+            return self.events[(page - 1) * 100:page * 100]
         if path.endswith("/rules/branches/main"):
             if isinstance(self.rules, Exception):
                 raise self.rules
@@ -115,3 +116,11 @@ def test_watch_api_failure_writes_nothing(setup):
         _watch(config, directory, _events(), RuntimeError("API unavailable"))
     assert not directory.exists()
     assert not (directory.parent / "watch-state.json").exists()
+
+
+def test_watch_reads_every_event_page_github_serves(setup):
+    config, _public, events_dir, _tmp = setup
+    filler = _events(actor="someone", ref="refs/heads/feature", push_id=1) * 100
+    client = Client(filler + filler + _events(push_id=99), _rules())
+    assert supervisor_service.watch(config, client, events_dir=events_dir)["governance_violations"] == 1
+    assert [c for c in client.calls if "/events" in c][-1].endswith("page=3")

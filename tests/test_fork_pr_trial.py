@@ -156,6 +156,9 @@ def test_steps_are_bound_to_their_roles_and_never_the_canonical_repo(monkeypatch
     assert fpt.main(["P3-10", "--repo", TRIAL, "--role", "aao-pm"]) == 2
     assert fpt.main(["FORK-BRANCH", "--repo", TRIAL, "--role", "aao-supervisor"]) == 2
     assert fpt.main(["A-11", "--repo", "autoaiorg/aao", "--role", "aao-pm"]) == 2
+    monkeypatch.setenv("AAO_GITHUB_TRIAL_REPOS", f"{FORK},autoaiorg/aao")
+    monkeypatch.setenv("AAO_GITHUB_TRIAL_FORK_PARENT", "autoaiorg/aao")
+    assert fpt.main(["FORK-BRANCH", "--repo", FORK, "--role", "aao-impl-codex"]) == 2
 
 
 def test_runner_separates_creation_from_approval_check_under_distinct_uids():

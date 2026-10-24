@@ -163,6 +163,16 @@ check_path() {  # path owner group mode
 while read -r path owner group mode; do check_path "$path" "$owner" "$group" "$mode"; done < <(layout)
 # Existing content of managed directories: owned by the directory owner, no
 # ACLs, no setuid/setgid, private keys mode 0600, nothing writable by others.
+# The trust-root install later adds trees with other owners under /srv/aao: the frozen code trees and venvs
+# (venvs contain symlinks) and the integrator's mirror. verify_trust_root_host.py governs those, and on a
+# fresh host they did not exist yet, so they are skipped here. They must still be real directories, so a
+# planted symlink cannot use the exclusion to hide content.
+PRUNED=(/srv/aao/mirror)
+for c in "${AUDITORS[@]}" aao-integrator aao-supervisor; do PRUNED+=("/srv/aao/frozen/$c/tree" "/srv/aao/frozen/$c/venv"); done
+PRUNE_ARGS=(); for p in "${PRUNED[@]}"; do
+  [[ ! -e $p && ! -L $p ]] || [[ -d $p && ! -L $p ]] || die "$p exists and is not a plain directory"
+  PRUNE_ARGS+=(-path "$p" -o); done
+unset 'PRUNE_ARGS[${#PRUNE_ARGS[@]}-1]'
 for d in /var/lib/aao-auditor /var/lib/aao-auditor-alt /var/lib/aao-supervisor /srv/aao; do
   [[ -d "$d" ]] || continue
   while IFS= read -r -d '' f; do
@@ -171,7 +181,7 @@ for d in /var/lib/aao-auditor /var/lib/aao-auditor-alt /var/lib/aao-supervisor /
     [[ -n $(getfacl -s -p "$f" 2>/dev/null) ]] && die "extended ACL on $f"
     m=$(stat -c '%a' "$f")
     (( ( 0$m & 06002 ) == 0 )) || die "$f has setuid/setgid or is world-writable ($m)"
-  done < <(find "$d" -mindepth 1 -print0)
+  done < <(find "$d" -mindepth 1 \( "${PRUNE_ARGS[@]}" \) -prune -o -print0)
 done
 for a in "${AUDITORS[@]}"; do
   k="/var/lib/$a/keys/auditor-ed25519.pem"

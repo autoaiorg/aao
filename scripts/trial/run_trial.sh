@@ -74,7 +74,7 @@ gh_keys(){ runuser -u "$CEO" -- env -i HOME="$(getent passwd "$CEO"|cut -d: -f6)
 user_manager_state(){
   local n st; n=$(id -u "$1" 2>/dev/null) || { printf unknown; return; }
   [[ -e /var/lib/systemd/linger/$1 ]] && { printf lingering; return; }
-  st=$(systemctl is-active "user@$n.service" 2>/dev/null)
+  st=$(systemctl is-active "user@$n.service" 2>/dev/null || true)
   [[ $st == inactive ]] && printf absent || printf '%s' "${st:-unknown}"
 }
 collect_impl_p4(){
@@ -311,7 +311,7 @@ fork_step(){
   local uid=$1 step=$2 target=$3 role=$4 cwd=$5 home step_rc; shift 5
   home=$(getent passwd "$uid" | cut -d: -f6)
   set +e
-  (cd "$cwd" && runuser -u "$uid" -- env -i HOME="$home" PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null GIT_CONFIG_KEY_1=core.fsmonitor GIT_CONFIG_VALUE_1=false AAO_GITHUB_TRIAL_REPOS="$target" AAO_GITHUB_TRIAL_FORK_PARENT="$REPO" AAO_TRIAL_RUN_ID="$AAO_TRIAL_RUN_ID" AAO_TRIAL_HARNESS_REV="$REV" "$@" /usr/bin/python3 -I -c "import sys;sys.path.insert(0,'$INSTALL/src');from aao.fork_pr_trial import main;raise SystemExit(main())" "$step" --repo "$target" --role "$role") >"$LOG/$step-$role.out" 2>&1
+  (cd "$cwd" && runuser -u "$uid" -- env -i HOME="$home" PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null GIT_CONFIG_KEY_1=core.fsmonitor GIT_CONFIG_VALUE_1=false AAO_GITHUB_TRIAL_REPOS="$target,$REPO" AAO_GITHUB_TRIAL_FORK_PARENT="$REPO" AAO_TRIAL_RUN_ID="$AAO_TRIAL_RUN_ID" AAO_TRIAL_HARNESS_REV="$REV" "$@" /usr/bin/python3 -I -c "import sys;sys.path.insert(0,'$INSTALL/src');from aao.fork_pr_trial import main;raise SystemExit(main())" "$step" --repo "$target" --role "$role") >"$LOG/$step-$role.out" 2>&1
   step_rc=$?
   set -e
   cat "$LOG/$step-$role.out"
@@ -338,7 +338,7 @@ if ((${#ONLY[@]} == 0)) || [[ " ${ONLY[*]} " =~ " A-11 " || " ${ONLY[*]} " =~ " 
   fi
   if ((fork_ready)); then
     fork_head=$("${IGIT[@]}" -C "$fork_clone" rev-parse HEAD)
-    fork_step "$impl_uid" FORK-BRANCH "$fork" "$impl" "$fork_clone" AAO_GITHUB_TRIAL_BRANCH="$fork_branch"
+    fork_step "$impl_uid" FORK-BRANCH "$fork" "$impl" "$fork_clone" AAO_GITHUB_TRIAL_BRANCH="$fork_branch" AAO_TRIAL_CANDIDATE_SHA="$fork_head"
   else
     step_state=FAIL; printf 'FORK-BRANCH\t%s\tFAIL\tcould not prepare the workflow-changing fork commit\n' "$impl" | tee -a "$LOG/summary.tsv"; rc=1
   fi

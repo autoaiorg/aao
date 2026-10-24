@@ -157,6 +157,8 @@ def main(argv: list[str] | None = None) -> int:
             raise GitHubAuthError("--repo must be listed in AAO_GITHUB_TRIAL_REPOS and is never the canonical repository")
         validate_role_uid(args.role)
         parent = os.environ.get("AAO_GITHUB_TRIAL_FORK_PARENT", "")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", parent) or not _trial_repo_allowed(*parent.split("/", 1)):
+            raise GitHubAuthError("AAO_GITHUB_TRIAL_FORK_PARENT must be listed in AAO_GITHUB_TRIAL_REPOS and is never the canonical repository")
         if args.step != "FORK-BRANCH" and args.repo.lower() != parent.lower():
             raise GitHubAuthError("A-11 and P3-10 target the trial repository named by AAO_GITHUB_TRIAL_FORK_PARENT")
         client = GitHubAppClient(args.role)

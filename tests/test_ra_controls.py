@@ -110,6 +110,7 @@ def _push(actor, head, before, ref="refs/heads/feature"):
     return {"type": "PushEvent", "actor": {"login": actor}, "payload":
             {"head": head, "before": before, "ref": ref}}
 
+@pytest.mark.nt("NT-02-3")
 def test_supervisor_attributes_fork_prs_through_push_chain_and_commit_history(tmp_path, monkeypatch):
     from aao.supervisor_service import attribution
     from aao.manifest_audit import attributed_implementers, attributed_principals
@@ -163,6 +164,7 @@ def test_supervisor_malformed_fork_skips_repo_and_pull_failure_writes_nothing(tm
         attribution({"repository": "org/repo", "attribution_path": str(path)}, failed)
     assert not path.exists()
 
+@pytest.mark.nt("NT-02-10")
 def test_push_principal_maps_must_be_injective(tmp_path):
     from aao.supervisor_service import load_config
     from aao import integration_authorization

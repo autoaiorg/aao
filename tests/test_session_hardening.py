@@ -37,3 +37,18 @@ def test_canonical_ruleset_b_does_not_gate_staging_creation():
     params = next(rule["parameters"] for rule in b["rules"] if rule["type"] == "required_status_checks")
     assert params["do_not_enforce_on_create"] is True
     assert cp.shape(b)["rules"]["required_status_checks"]["do_not_enforce_on_create"] is True
+
+
+def test_enable_integrator_requires_verified_rulesets_of_the_served_repo():
+    bootstrap = (ROOT / "scripts/bootstrap/host_bootstrap.sh").read_text()
+    block = bootstrap.split("if ((ENABLE_INTEGRATOR)); then", 1)[1].split("\nfi\n", 1)[0]
+    gate = block.index('python3 -I - --repo "$irepo" verify < "$SRC/scripts/governance/canonical_protection.py"')
+    assert gate < block.index("systemctl enable --now aao-integrator-tick.timer")
+    assert '["repo"]' in block and "/etc/aao-integrator/config.json" in block
+
+
+def test_seed_verifies_restoration_on_every_exit_after_disabling():
+    seed = (ROOT / "scripts/trial/seed_trial_ci.sh").read_text()
+    assert "trap 'restore; verify_restored || exit 1' EXIT" in seed
+    assert seed.index("trap 'restore; verify_restored || exit 1' EXIT") < seed.index("enforcement=disabled")
+    assert "restore; trap - EXIT\nverify_restored || exit 1" in seed

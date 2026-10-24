@@ -1,12 +1,14 @@
-# Procedimiento del CEO para la revisión b392750 (actualización de la raíz de confianza y ensayo P2/P3)
+# Procedimiento del CEO: actualizar la raíz de confianza y ejecutar el ensayo P2/P3
 
-**Revisión fijada:** `b392750ff9c06f33a7ef39dae4a27c43f422ff9c`. Todos los comandos la usan de forma explícita. Una fusión posterior en `main` no la cambia.
+Este procedimiento es válido para cualquier revisión auditada. Necesitas tres valores, que el PM deja en el registro de las auditorías de esa revisión (`docs/audit-runs/<fecha>-agy-r1-chain-<sha>/README.md`):
+- `REV`: el SHA completo de `main` auditado;
+- `RH`: el sha256 del informe r1-chain que has leído;
+- la confirmación de que el informe p2p3-trial de la misma `REV` es APPROVE-TECHNICAL y no tiene hallazgos A.
 
-**Autorizaciones de partida:**
-- auditoría r1-chain APPROVE-TECHNICAL ([registro](../audit-runs/20261024-agy-r1-chain-b392750/README.md); informe `e513e11c…`);
-- auditoría p2p3-trial APPROVE-TECHNICAL ([registro](../audit-runs/20261024-agy-p2p3-trial-b392750/README.md); informe `031b1eb6…`).
+Todos los comandos usan `REV` de forma explícita, así que una fusión posterior en `main` no la cambia.
 
-Ninguna tiene hallazgos A.
+**Historial:**
+- `b392750`: el paso 2 falló en la comprobación previa de identidades, porque `identity_separation.sh` no admitía los árboles congelados de un host ya instalado. No se cambió nada en el host. Se corrigió en la revisión siguiente.
 
 **Qué incluye:** solo las operaciones que requieren tus privilegios: sudo y la decisión de fijar la raíz de confianza.
 
@@ -22,7 +24,8 @@ Copia y pega los bloques en orden. Si un paso termina en `FAIL`, detente y enví
 ## Paso 1. Clon de root en la revisión fijada (unos 30 s)
 
 ```bash
-REV=b392750ff9c06f33a7ef39dae4a27c43f422ff9c
+REV=<SHA auditado>      # 40 hex, del registro de la auditoría
+RH=<sha256 del informe r1-chain>
 sudo test -e /root/aao-src && sudo mv /root/aao-src /root/aao-src.old-$(date +%Y%m%dT%H%M%S)
 sudo env -i PATH=/usr/bin:/bin HOME=/root GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 \
   git -c core.hooksPath=/dev/null clone -q https://github.com/autoaiorg/aao.git /root/aao-src
@@ -36,26 +39,26 @@ El clon anterior no se borra: se aparta.
 ## Paso 2. Actualizar la raíz de confianza (simulación y después aplicación, unos 5 min)
 
 ```bash
-sudo sha256sum /home/aao-auditor-alt/aao-audits/$REV/report.md   # debe ser e513e11cc1ba7c6f1e9fcb41f9f5d4cb29c2ba852d25d3200bd5281e59ea4553
-$B --trust-root-upgrade --loop-repo autoaiorg/aao-governance-trial --audit-report-sha256 e513e11cc1ba7c6f1e9fcb41f9f5d4cb29c2ba852d25d3200bd5281e59ea4553
+[ "$(sudo sha256sum /home/aao-auditor-alt/aao-audits/$REV/report.md | cut -d" " -f1)" = "$RH" ] && echo "informe OK"
+$B --trust-root-upgrade --loop-repo autoaiorg/aao-governance-trial --audit-report-sha256 $RH
 ```
 
 La simulación no cambia nada. Comprueba en su salida:
 - `audit verdict ['APPROVE-TECHNICAL']`;
-- que `b392750` desciende de la revisión instalada (`ef19137…`);
+- que `REV` desciende de la revisión instalada (`/etc/aao-audit/expected-revision`);
 - que las líneas `DRY:` paran las unidades, hacen la copia de seguridad, congelan y regeneran.
 
 Si todo está bien:
 
 ```bash
-$B --apply --keys-dir /root/aao-keys --trust-root-upgrade --loop-repo autoaiorg/aao-governance-trial --audit-report-sha256 e513e11cc1ba7c6f1e9fcb41f9f5d4cb29c2ba852d25d3200bd5281e59ea4553
+$B --apply --keys-dir /root/aao-keys --trust-root-upgrade --loop-repo autoaiorg/aao-governance-trial --audit-report-sha256 $RH
 ```
 
 **Resultado esperado:**
 - el verificador del host termina con `RESULT PASS`;
 - el supervisor, la reverificación y el despacho del auditor quedan activos;
 - **el integrador queda apagado**;
-- la copia de la configuración anterior queda en `/var/backups/aao-trust-root/<fecha>-ef19137…/`.
+- la copia de la configuración anterior queda en `/var/backups/aao-trust-root/<fecha>-<revisión anterior>/`.
 
 **Si el verificador falla**, el despacho queda apagado y el script imprime cómo restaurar. Envíame la salida y no improvises.
 

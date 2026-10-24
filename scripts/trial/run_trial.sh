@@ -53,7 +53,7 @@ mapfile -t APPS < <(python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1]
 check_rulesets(){
   local list details id data; list=$(runuser -u "$CEO" -- env -i HOME="$(getent passwd "$CEO"|cut -d: -f6)" PATH=/usr/bin:/bin gh api "repos/$REPO/rulesets?includes_parents=true") || return 1
   details=$(python3 -I -c 'import json,sys; rows=json.load(sys.stdin); want={"A main: integrator only":25776805,"B main+staging: integrity (no bypass)":25776806,"C tags":25776807}; by={r.get("name"):r.get("id") for r in rows}; print("\n".join(str(by.get(n) or i) for n,i in want.items()))' <<<"$list") || return 1
-  while IFS= read -r id; do data=$(runuser -u "$CEO" -- env -i HOME="$(getent passwd "$CEO"|cut -d: -f6)" PATH=/usr/bin:/bin gh api "repos/$REPO/rulesets/$id") || return 1; printf '%s\n' "$data"; done <<<"$details" | python3 -I -c 'import json,sys; rows=[json.loads(x) for x in sys.stdin]; a,b,c=rows; ok=[x.get("name") for x in rows]==["A main: integrator only","B main+staging: integrity (no bypass)","C tags"] and all(x.get("enforcement")=="active" for x in rows); rules=b.get("rules",[]); required=next((r.get("parameters",{}).get("required_status_checks",[]) for r in rules if r.get("type")=="required_status_checks"),[]); arules={r.get("type") for r in a.get("rules",[])}; brules={r.get("type") for r in rules}; crules={r.get("type") for r in c.get("rules",[])}; abypass=a.get("bypass_actors",[]); ok=ok and {x.get("context"):x.get("integration_id") for x in required}.get("aao-audit")==5448107 and "test" in {x.get("context") for x in required} and not b.get("bypass_actors") and "non_fast_forward" in brules and "deletion" in brules and {"update","pull_request"}.issubset(arules) and any(x.get("actor_id")==5447984 and x.get("actor_type")=="Integration" for x in abypass) and c.get("target")=="tag" and {"creation","update","deletion"}.issubset(crules); sys.exit(0 if ok else 1)'
+  while IFS= read -r id; do data=$(runuser -u "$CEO" -- env -i HOME="$(getent passwd "$CEO"|cut -d: -f6)" PATH=/usr/bin:/bin gh api "repos/$REPO/rulesets/$id") || return 1; printf '%s\n' "$data"; done <<<"$details" | python3 -I -c 'import json,sys; rows=[json.loads(x) for x in sys.stdin]; a,b,c=rows; ok=[x.get("name") for x in rows]==["A main: integrator only","B main+staging: integrity (no bypass)","C tags"] and all(x.get("enforcement")=="active" for x in rows); rules=b.get("rules",[]); required=next((r.get("parameters",{}).get("required_status_checks",[]) for r in rules if r.get("type")=="required_status_checks"),[]); arules={r.get("type") for r in a.get("rules",[])}; brules={r.get("type") for r in rules}; crules={r.get("type") for r in c.get("rules",[])}; abypass=a.get("bypass_actors",[]); ok=ok and {x.get("context"):x.get("integration_id") for x in required}.get("aao-audit")==5448107 and "test" in {x.get("context") for x in required} and not b.get("bypass_actors") and "non_fast_forward" in brules and "deletion" in brules and {"update","pull_request"}.issubset(arules) and [(x.get("actor_id"),x.get("actor_type")) for x in abypass]==[(5447984,"Integration")] and c.get("target")=="tag" and {"creation","update","deletion"}.issubset(crules); sys.exit(0 if ok else 1)'
 }
 check_rulesets || die 'trial rulesets A/B/C are not active with required auditor/test and no B bypass'
 # Pin the protected trial repository identity once, using the integrator App's
@@ -68,24 +68,23 @@ P0_JSON=$(integrator_target_identity)
 EXPECTED_REPO_ID=$(python3 -I -c 'import json,sys;d=json.loads(sys.argv[1]);print(d.get("id") if isinstance(d.get("id"),int) else 0)' "$P0_JSON")
 gh_read(){ runuser -u "$CEO" -- env -i HOME="$(getent passwd "$CEO"|cut -d: -f6)" PATH=/usr/bin:/bin gh api --paginate "$1" --jq '.[].login' 2>/dev/null || printf '%s\n' '__GH_API_ERROR__'; }
 gh_keys(){ runuser -u "$CEO" -- env -i HOME="$(getent passwd "$CEO"|cut -d: -f6)" PATH=/usr/bin:/bin gh api --paginate "$1" --jq '.[].id' 2>/dev/null || printf '%s\n' '__GH_API_ERROR__'; }
+# P4: root asks the system manager. A role uid with user@UID inactive and no linger has no user services
+# (so no service environment can hold a token); any other state fails P4 closed.
+user_manager_state(){
+  local n st; n=$(id -u "$1" 2>/dev/null) || { printf unknown; return; }
+  [[ -e /var/lib/systemd/linger/$1 ]] && { printf lingering; return; }
+  st=$(systemctl is-active "user@$n.service" 2>/dev/null)
+  [[ $st == inactive ]] && printf absent || printf '%s' "${st:-unknown}"
+}
 collect_impl_p4(){
   local uid=$1 home=$2 app=$3 forks=$4 local_json outside members keys_ok keys_listing
   local_json=$(runuser -u "$uid" -- env -i HOME="$home" PATH=/usr/bin:/bin /usr/bin/python3 -I -c 'import json,os,pathlib,subprocess,sys
 h=pathlib.Path.home(); app=sys.argv[1]; gh=h/".config/gh/hosts.yml"; cred=h/".git-credentials"; conf=h/".config/aao"
 expected={app+".pem",app+".json"}; actual={p.name for p in conf.iterdir()} if conf.is_dir() else set()
-manager=subprocess.run(["systemctl","--user","show-environment"],capture_output=True,text=True)
-tokens=[x for x in manager.stdout.splitlines() if x.startswith(("GH_TOKEN=","GITHUB_TOKEN="))] if manager.returncode==0 else ["systemd-user-environment-unavailable"]
-units=subprocess.run(["systemctl","--user","list-units","--type=service","--all","--no-legend","--plain"],capture_output=True,text=True)
-if units.returncode: tokens.append("systemd-user-services-unavailable")
-else:
- for row in units.stdout.splitlines():
-  unit=row.split()[0] if row.split() else ""
-  if unit:
-   r=subprocess.run(["systemctl","--user","show","--property=Environment","--value",unit],capture_output=True,text=True)
-   if r.returncode or any(x.startswith(("GH_TOKEN=","GITHUB_TOKEN=")) for x in r.stdout.split()): tokens.append("service-token-or-unavailable")
+state=sys.argv[2]; tokens=[] if state=="absent" else ["systemd-user-manager-"+state]
 print(json.dumps({"gh_hosts_yml_absent":not gh.exists(),"git_credentials_absent":not cred.exists(),"token_environment_absent":not tokens,
 "runner_environment_token_absent":True,"runner_environment":"runuser env -i allowlist; no GH_TOKEN/GITHUB_TOKEN passed",
-"aao_config_exact":actual==expected,"uid":os.getuid(),"config_names":sorted(actual),"systemd_checked":manager.returncode==0 and units.returncode==0}))' "$app" 2>/dev/null || printf '%s' '{}')
+"aao_config_exact":actual==expected,"uid":os.getuid(),"config_names":sorted(actual),"systemd_user_manager":state,"systemd_checked":state=="absent"}))' "$app" "$(user_manager_state "$uid")" 2>/dev/null || printf '%s' '{}')
   outside=$(gh_read "repos/$REPO/collaborators?affiliation=outside&per_page=100" || true)
   members=$(gh_read "orgs/autoaiorg/members?per_page=100" || true)
   keys_ok=true
@@ -97,7 +96,7 @@ print(json.dumps({"gh_hosts_yml_absent":not gh.exists(),"git_credentials_absent"
     keys_listing+="${target}=[${key_ids//$'\n'/,}];"
     [[ -z $key_ids ]] || keys_ok=false
   done
-  python3 -I -c 'import json,sys; p=json.loads(sys.argv[1]); outside=sys.argv[2].splitlines(); members=sys.argv[3].splitlines(); ids={x.lower() for x in ("aao-impl-claude","aao-impl-codex","aao-impl-agy","aao-impl-claude[bot]","aao-impl-codex[bot]","aao-impl-agy[bot]")}; p.update({"deploy_keys_empty":sys.argv[4]=="true","deploy_keys_by_repository":sys.argv[5],"outside_collaborators_clear":"__GH_API_ERROR__" not in outside and not any(x.lower() in ids for x in outside),"org_members_clear":"__GH_API_ERROR__" not in members and not any(x.lower() in ids for x in members),"outside_collaborators":outside,"org_members":members}); print(json.dumps(p))' "$local_json" "$outside" "$members" "$keys_ok" "$keys_listing"
+  python3 -I -c 'import json,sys; p=json.loads(sys.argv[1]); outside=sys.argv[2].splitlines(); members=sys.argv[3].splitlines(); ids={x.lower() for x in ("aao-impl-claude","aao-impl-codex","aao-impl-agy","aao-impl-claude[bot]","aao-impl-codex[bot]","aao-impl-agy[bot]")}; p.update({"deploy_keys_empty":sys.argv[4]=="true","deploy_keys_by_repository":sys.argv[5],"outside_collaborators_clear":"__GH_API_ERROR__" not in outside and not [x for x in outside if x],"org_members_clear":"__GH_API_ERROR__" not in members and not any(x.lower() in ids for x in members),"outside_collaborators":outside,"org_members":members}); print(json.dumps(p))' "$local_json" "$outside" "$members" "$keys_ok" "$keys_listing"
 }
 collect_p4b(){
   local owners admins login

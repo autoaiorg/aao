@@ -112,3 +112,11 @@ def test_pinned_setup_inputs_come_from_revision_objects():
     assert 'git -C "$REPO" archive "$REV" scripts/github_apps/create_app_form.py docs/proposals/github-apps' in probe
     assert '--manifest-dir "$form_tmp/docs/proposals/github-apps"' in probe
     assert 'manifest_dir = MANIFESTS' in form
+
+
+def test_fixture_tree_is_sent_as_json_and_p3_07_candidate_keeps_main_tree():
+    source = RUNNER.read_text()
+    tree_line = next(line for line in source.splitlines() if 'repos/$REPO/git/trees' in line)
+    assert "--input -" in tree_line and "-f 'tree[0]" not in source
+    block = source.split('if [[ $id == P3-07 || $id == P3-12 ]]; then', 1)[1].split("else", 1)[0]
+    assert "checkout -q -B trial-candidate origin/main^" in block and "checkout -q origin/main -- ." in block

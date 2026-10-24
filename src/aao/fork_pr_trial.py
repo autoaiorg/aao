@@ -77,16 +77,15 @@ def open_pr(parent: str, client: GitHubAppClient) -> tuple[str, str, list[dict]]
     fork = _env("AAO_GITHUB_TRIAL_FORK", re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"))
     branch = _env("AAO_GITHUB_TRIAL_BRANCH", BRANCH)
     expected = _env("AAO_TRIAL_CANDIDATE_SHA", SHA)
-    fork_owner, fork_name = fork.split("/", 1)
+    fork_owner = fork.split("/", 1)[0]
     evidence: list[dict] = []
+    # Live 0a55daf: a bare repo name in head_repo is rejected ("head" invalid); owner/name is accepted. aao-pm has no
+    # write access to the fork, so it cannot grant maintainer edits ("fork_collab"): ask for none.
     body = {"title": f"AAO trial A-11/P3-10 {branch}", "base": "main", "head": f"{fork_owner}:{branch}",
+            "head_repo": fork, "maintainer_can_modify": False,
             "body": "Disposable trial PR opened by aao-pm from an implementer fork. Do not approve workflows or merge."}
-    # GitHub documents head_repo as required for same-owner forks without a format; record each attempt.
-    for head_repo in (fork_name, fork):
-        record = _api(client, "POST", _repo_path(parent) + "/pulls", {**body, "head_repo": head_repo})
-        evidence.append(record)
-        if record["status"] != 422:
-            break
+    record = _api(client, "POST", _repo_path(parent) + "/pulls", body)
+    evidence.append(record)
     pr = record["response"] if isinstance(record["response"], dict) else {}
     head, base = pr.get("head") or {}, pr.get("base") or {}
     ok = (record["status"] == 201 and isinstance(pr.get("number"), int)

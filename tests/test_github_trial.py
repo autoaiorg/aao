@@ -170,6 +170,11 @@ class DummyClient:
         response = next(self.replies)
         return auth.APIResponse(response[0], response[1], {})
 
+    def app_request(self, method, path, body=None):
+        self.calls.append(("app " + method, path, body))
+        response = next(self.replies)
+        return auth.APIResponse(response[0], response[1], {})
+
 
 def _promotion_replies(*, audit_app_id=77):
     base, head, tree, merge = "a" * 40, "b" * 40, "c" * 40, "d" * 40
@@ -259,6 +264,16 @@ def test_a10_wrong_installation_permissions_is_fail():
                           (200, {"permissions": {"contents": "write", "metadata": "read", "administration": "write"}})])
     status, _, _ = trial.run_test("A-10", "org", "trial", "aao-impl-codex", client)
     assert status == "FAIL"
+
+
+def test_a10_installation_lookup_uses_app_jwt_and_404_is_inconclusive():
+    client = DummyClient([(200, {"fork": False}), (404, {"message": "Not Found"})])
+    status, _, evidence = trial.run_test("A-10", "org", "trial", "aao-auditor", client)
+    assert status == "INCONCLUSIVE"
+    assert client.calls == [("GET", "/repos/org/trial", None),
+                            ("app GET", "/repos/org/trial/installation", None)]
+    assert evidence[-1] == {"method": "GET", "path": "/repos/org/trial/installation",
+                            "status": 404, "response": {"message": "Not Found"}}
 
 
 def test_permission_tables_match_p2_manifest_values():
@@ -403,11 +418,13 @@ def test_a04_never_claims_server_rejection_from_stale_lease_client_result(monkey
 
 
 def test_p3_01_ceo_pass_requires_restrict_updates_attribution(monkeypatch):
-    """Generic GH013 can be caused by required checks; only explicit Restrict updates proves P3-01."""
+    """Direct protected-ref text remains attributable with co-occurring rules."""
     before = "a" * 40
     client = RefClient({"/repos/org/trial/git/ref/heads/main": [_ref_reply(before), _ref_reply(before)]})
     monkeypatch.setattr(trial, "_git_push", lambda *_a, **_k: _push_record(
-        "HEAD:refs/heads/main", "remote: error: GH013: Restrict updates rule violation"))
+        "HEAD:refs/heads/main", "remote: error: GH013: Repository rule violations found for refs/heads/main.\n"
+        "- Cannot update this protected ref.\n- Changes must be made through a pull request.\n"
+        "- 2 of 2 required status checks are expected."))
     assert trial.run_test("P3-01", "org", "trial", "ceo", client)[0] == "PASS"
 
 
@@ -433,6 +450,38 @@ def test_p3_01_ruleset_name_does_not_override_failed_required_checks(monkeypatch
     monkeypatch.setattr(trial, "_git_push", lambda *_a, **_k: _push_record(
         "HEAD:refs/heads/main", "remote: GH013: Restrict updates and required status checks aao-audit failed"))
     assert trial.run_test("P3-01", "org", "trial", "ceo", client)[0] == "INCONCLUSIVE"
+
+
+def test_required_status_check_text_is_attributable_even_with_http_422():
+    response = "Repository rule violations found\n\n2 of 2 required status checks are expected.\n\n"
+    assert trial._rejection_attributable({"response": response}, "required status check")
+
+
+def test_non_fast_forward_with_required_checks_is_not_attributable():
+    response = "Cannot force-push this ref.\n2 of 2 required status checks are expected."
+    assert not trial._rejection_attributable({"response": response}, "non-fast-forward")
+
+
+def test_generic_gh013_without_rule_message_is_not_attributable():
+    assert not trial._rejection_attributable(
+        {"response": "GH013: Repository rule violations found for refs/heads/main."}, "restrict updates")
+    assert not trial._rejection_attributable(
+        {"response": "other rule blocked by required checks"}, "some other rule")
+
+
+def test_p3_03_live_required_status_check_422_is_pass(monkeypatch):
+    candidate, main = "b" * 40, "a" * 40
+    monkeypatch.setattr(trial.subprocess, "run", lambda *_a, **_k: type(
+        "Result", (), {"stdout": candidate + "\n"})())
+    monkeypatch.setattr(trial, "_git_push", lambda *_a, **_k: _push_record(
+        f"{candidate}:refs/heads/aao-trial/no-audit-{candidate[:8]}", "staged", code=0, server=False))
+    client = RefClient({"/repos/org/trial/git/ref/heads/main": [
+        _ref_reply(main), _ref_reply(main),
+    ], "/repos/org/trial/git/refs/heads/main": [(422, {"message": "Repository rule violations found\n\n"
+                                                        "2 of 2 required status checks are expected.\n\n"})]})
+    status, reason, evidence = trial.run_test("P3-03", "org", "trial", "aao-integrator", client)
+    assert status == "PASS" and "HTTP 422" in reason
+    assert any(record.get("status") == 422 for record in evidence)
 
 
 def test_p3_07_integrator_requires_non_fast_forward_rule_for_both_refs(monkeypatch):
@@ -510,7 +559,7 @@ def test_p3_07_non_fast_forward_name_does_not_override_failed_checks(monkeypatch
     monkeypatch.setattr(trial.subprocess, "run", lambda *_a, **_k: type(
         "Result", (), {"stdout": candidate + "\n", "returncode": 1})())
     monkeypatch.setattr(trial, "_git_push", lambda *_a, **_k: _push_record(
-        "forced", "remote: GH013: non_fast_forward; required checks aao-audit failed"))
+        "forced", "remote: GH013: non_fast_forward; 2 of 2 required status checks are expected"))
     assert trial.run_test("P3-07", "org", "trial", "aao-integrator", client)[0] == "INCONCLUSIVE"
 
 
@@ -560,7 +609,7 @@ def test_p3_09_ceo_pass_requires_restrict_updates_attribution():
     """A still-open PR plus generic denial is insufficient; the API message must name Restrict updates."""
     client = DummyClient([
         (200, [{"number": 9}]),
-        (403, {"message": "Protected branch update failed: Restrict updates rule"}),
+        (403, {"message": "Cannot update this protected ref."}),
         (200, {"merged": False, "state": "open"}),
     ])
     status, _, _ = trial.run_test("P3-09", "org", "trial", "ceo", client)
@@ -879,9 +928,26 @@ def test_promotion_phase_requires_staged_sha_green_checks_and_cas(monkeypatch):
     assert any(method == "POST" and path == "/graphql" for method, path, _ in client.calls)
     mutation = next(body for method, path, body in client.calls if method == "POST" and path == "/graphql")
     assert mutation["variables"]["input"]["repositoryId"] == "R_kgDOtrial"
+    assert "refs {" not in mutation["query"]
     assert any(item.get("sha") == "d" * 40 and item.get("status") == "green" for item in evidence)
 
 
 def test_all_update_refs_inputs_include_repository_id():
     source = (Path(__file__).parents[1] / "src/aao/github_trial.py").read_text()
     assert source.count('"refUpdates": [{"name": "refs/heads/main"') == source.count('"repositoryId": repository_id, "refUpdates": [{"name": "refs/heads/main"')
+    assert "refs {" not in source
+
+
+def test_restrict_updates_attribution_lists_co_occurring_rules_and_checks_need_expected_phrase():
+    from aao.github_trial import _denial_outcome, _rejection_attributable
+    live = ("remote: error: GH013: Repository rule violations found for refs/heads/main.\nremote: \n"
+            "remote: - Cannot update this protected ref.\nremote: \nremote: - Changes must be made through a pull request.\n"
+            "remote: \nremote: - 2 of 2 required status checks are expected.\n")
+    item = {"exit_code": 1, "server_rejected": True, "response": live}
+    status, reason = _denial_outcome(item, True, "restrict updates", "CEO push")
+    assert status == "PASS" and "Cannot update this protected ref." in reason and "2 of 2 required status checks are expected." in reason
+    only_checks = {"exit_code": 1, "server_rejected": True, "response": "remote: - 2 of 2 required status checks are expected."}
+    assert _denial_outcome(only_checks, True, "restrict updates", "CEO push")[0] == "INCONCLUSIVE"
+    assert not _rejection_attributable({"response": "Validation failed: required status check context is invalid"}, "required status check")
+    assert not _rejection_attributable({"response": "deletion of this branch is not supported here"}, "deletion")
+    assert _rejection_attributable({"response": "Cannot delete this protected ref."}, "deletion")

@@ -137,7 +137,8 @@ make_fixture_pr(){
   fixture_ts=$(date -u +%Y%m%dT%H%M%S%NZ); branch="aao-trial/runner-$fixture_ts"
   main_sha=$(runuser -u "$CEO" -- env -i HOME="$ceohome" PATH=/usr/bin:/bin gh api "repos/$REPO/git/ref/heads/main" --jq .object.sha)
   blob=$(runuser -u "$CEO" -- env -i HOME="$ceohome" PATH=/usr/bin:/bin gh api -X POST "repos/$REPO/git/blobs" -f content="AAO disposable trial fixture $fixture_ts" -f encoding=utf-8 --jq .sha)
-  tree=$(runuser -u "$CEO" -- env -i HOME="$ceohome" PATH=/usr/bin:/bin gh api -X POST "repos/$REPO/git/trees" -f "base_tree=$main_sha" -f "tree[0][path]=trial-fixtures/$fixture_ts.txt" -f 'tree[0][mode]=100644' -f 'tree[0][type]=blob' -f "tree[0][sha]=$blob" --jq .sha)
+  # gh -f cannot express an array of objects (tree[0][path] becomes an object): send the JSON body on stdin.
+  tree=$(python3 -I -c 'import json,sys; print(json.dumps({"base_tree": sys.argv[1], "tree": [{"path": sys.argv[2], "mode": "100644", "type": "blob", "sha": sys.argv[3]}]}))' "$main_sha" "trial-fixtures/$fixture_ts.txt" "$blob" | runuser -u "$CEO" -- env -i HOME="$ceohome" PATH=/usr/bin:/bin gh api -X POST "repos/$REPO/git/trees" --input - --jq .sha)
   commit=$(runuser -u "$CEO" -- env -i HOME="$ceohome" PATH=/usr/bin:/bin gh api -X POST "repos/$REPO/git/commits" -f message="AAO trial fixture $fixture_ts" -f "tree=$tree" -f "parents[]=$main_sha" --jq .sha)
   runuser -u "$CEO" -- env -i HOME="$ceohome" PATH=/usr/bin:/bin gh api -X POST "repos/$REPO/git/refs" -f "ref=refs/heads/$branch" -f "sha=$commit" >/dev/null
   runuser -u "$CEO" -- env -i HOME="$ceohome" PATH=/usr/bin:/bin gh pr create --repo "$REPO" --base main --head "$branch" --title "AAO disposable trial fixture $fixture_ts" --body 'Runner-created disposable fixture; do not merge manually.' >/dev/null
@@ -169,7 +170,10 @@ for id in "${IDS[@]}"; do
   # A disposable child commit is available for tests which need a distinct candidate.
   runuser -u "$uid" -- env -i HOME="$home" PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$clone" fetch --quiet origin main || { printf '%s\t%s\tFAIL\torigin main fetch failed\n' "$id" "$role" | tee -a "$LOG/summary.tsv"; rc=1; continue; }
   if [[ $id == P3-07 || $id == P3-12 ]]; then
+    # Divergent candidate (parent main^, so not a descendant of main) carrying main's tree, so it still has the
+    # CI workflow and the required `test` check can turn green before the forced push.
     runuser -u "$uid" -- env -i HOME="$home" PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$clone" checkout -q -B trial-candidate origin/main^
+    runuser -u "$uid" -- env -i HOME="$home" PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$clone" checkout -q origin/main -- .
   else
     runuser -u "$uid" -- env -i HOME="$home" PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$clone" checkout -q -B trial-candidate origin/main
   fi

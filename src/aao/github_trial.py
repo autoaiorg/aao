@@ -211,16 +211,34 @@ def _push_rejection_pass(item: dict, unchanged: bool, expected: str = "protected
     return item.get("exit_code", 0) != 0 and item.get("server_rejected") is True and reason_matches and unchanged
 
 
+_REQUIRED_CHECKS_EXPECTED = re.compile(r"\d+ of \d+ required status checks? (?:is|are) expected")
+
+
 def _rejection_attributable(item: dict, rule: str) -> bool:
-    """Require explicit server text naming the rule under test, not generic GH013."""
+    """Require the server's own text for the rule under test, not generic GH013.
+
+    Restrict updates: its bullet ("Cannot update this protected ref") comes only from ruleset A (B and C have no
+    update rule), so it proves the actor has no bypass on A even when other rules are also listed (P3-01/P3-09
+    claim exactly that). Non-fast-forward and deletion must be the sole cause (checks green first)."""
     response = item.get("response", "").lower()
+    checks = _REQUIRED_CHECKS_EXPECTED.search(response) is not None
+    if rule == "restrict updates":
+        return "cannot update this protected ref" in response
+    if rule in {"required status checks", "required status check", "required_status_check", "required check"}:
+        return checks
+    if rule == "non-fast-forward":
+        return any(text in response for text in ("cannot force-push", "non-fast-forward", "non_fast_forward")) and not checks
+    if rule == "deletion":
+        return "cannot delete" in response and not checks
     if re.search(r"required (?:status )?checks?|status checks?|aao-audit|\btest\b", response):
         return False
-    if rule == "restrict updates":
-        return "restrict updates" in response or "restrict_updates" in response
-    if rule == "non-fast-forward":
-        return "non-fast-forward" in response or "non_fast_forward" in response
     return rule.lower() in response
+
+
+def _violated_rules(text: str) -> list[str]:
+    """Every rule bullet GitHub listed (GH013 '- ...' lines, or the 422 message body), for the evidence reason."""
+    lines = [re.sub(r"^remote:\s*", "", line).strip() for line in str(text).splitlines()]
+    return [line[2:].strip() for line in lines if line.startswith("- ")] or [l for l in lines if "expected" in l.lower()]
 
 
 def _denial_outcome(item: dict, unchanged: bool, rule: str, label: str) -> tuple[str, str]:
@@ -230,7 +248,7 @@ def _denial_outcome(item: dict, unchanged: bool, rule: str, label: str) -> tuple
         return "FAIL", f"{label} did not receive a server-side rejection"
     if not _rejection_attributable(item, rule):
         return "INCONCLUSIVE", f"server rejection was not attributable to {rule}"
-    return "PASS", f"server rejected {label} specifically for {rule}; protected ref unchanged"
+    return "PASS", f"server rejected {label} for {rule}; protected ref unchanged; rules listed by GitHub: {_violated_rules(item.get('response', ''))}"
 
 
 def _merge_trial_pr(client: GitHubAppClient, base: str, evidence: list[dict]) -> tuple[str, str, list[dict]]:
@@ -362,7 +380,7 @@ def _merge_trial_pr(client: GitHubAppClient, base: str, evidence: list[dict]) ->
     repository_id = repository.get("response", {}).get("node_id") if isinstance(repository.get("response"), dict) else None
     if repository["status"] != 200 or not repository_id:
         return "FAIL", "could not resolve repository node id for updateRefs", evidence
-    query = {"query": "mutation($input: UpdateRefsInput!) { updateRefs(input: $input) { refs { name } } }",
+    query = {"query": "mutation($input: UpdateRefsInput!) { updateRefs(input: $input) { clientMutationId } }",
              "variables": {"input": {"repositoryId": repository_id, "refUpdates": [{"name": "refs/heads/main", "oid": merge_sha,
                                                         "beforeOid": base_sha}]}}}
     update = _api(client, "POST", "/graphql", query)
@@ -646,7 +664,7 @@ def _run_test(test_id: str, owner: str, repo: str, role: str, client: GitHubAppC
         repository_id = repository.get("response", {}).get("node_id") if isinstance(repository.get("response"), dict) else None
         if repository["status"] != 200 or not repository_id:
             return "FAIL", "could not resolve repository node id for updateRefs", evidence
-        moved = _api(client, "POST", "/graphql", {"query": "mutation($input: UpdateRefsInput!) { updateRefs(input: $input) { refs { name } } }", "variables": {"input": {"repositoryId": repository_id, "refUpdates": [{"name": "refs/heads/main", "oid": local, "beforeOid": actual}]}}})
+        moved = _api(client, "POST", "/graphql", {"query": "mutation($input: UpdateRefsInput!) { updateRefs(input: $input) { clientMutationId } }", "variables": {"input": {"repositoryId": repository_id, "refUpdates": [{"name": "refs/heads/main", "oid": local, "beforeOid": actual}]}}})
         evidence.append(moved)
         moved_ok = moved["status"] == 200 and isinstance(moved["response"], dict) and not moved["response"].get("errors")
         if not moved_ok or _main_sha(client, base, evidence) != local:
@@ -689,9 +707,12 @@ def _run_test(test_id: str, owner: str, repo: str, role: str, client: GitHubAppC
             return "INCONCLUSIVE", "target is a fork but its configured canonical parent was not established", evidence
         if role in {"aao-impl-codex", "aao-impl-claude", "aao-impl-agy"} and not is_trial_fork:
             return "FAIL", "implementer App is installed on the trial canonical repository; it must be installed only on its verified fork", evidence
-        item = _api(client, "GET", "/installation")
-        evidence.append(item)
-        actual = item["response"].get("permissions", {}) if isinstance(item["response"], dict) else {}
+        item = client.app_request("GET", f"/repos/{owner}/{repo}/installation")
+        evidence.append({"method": "GET", "path": f"/repos/{owner}/{repo}/installation",
+                         "status": item.status, "response": _redact(item.body)})
+        if item.status != 200:
+            return "INCONCLUSIVE", f"App installation lookup returned HTTP {item.status}; permissions could not be verified", evidence
+        actual = item.body.get("permissions", {}) if isinstance(item.body, dict) else {}
         expected_table = FORK_PERMISSIONS if is_trial_fork else EXPECTED_PERMISSIONS
         if role not in expected_table:
             return "NOT RUN", "this App has no permission column for the verified repository class in P2 §4", evidence
@@ -760,7 +781,7 @@ def _run_test(test_id: str, owner: str, repo: str, role: str, client: GitHubAppC
         unchanged = after["status"] == 200 and after["response"].get("merged") is False and after["response"].get("state") == "open"
         if unchanged and item["status"] in (403, 405) and not expected:
             return "INCONCLUSIVE", "merge was denied but response did not attribute it to Restrict updates", evidence
-        return ("PASS", "CEO merge denied by Restrict updates; PR remains open", evidence) if expected and unchanged else ("FAIL", "CEO merge attempt was not denied by Restrict updates or PR state changed", evidence)
+        return ("PASS", f"CEO merge denied by Restrict updates; PR remains open; GitHub message: {message[:300]}", evidence) if expected and unchanged else ("FAIL", "CEO merge attempt was not denied by Restrict updates or PR state changed", evidence)
     if test_id == "A-02":
         pulls = _api(client, "GET", f"{base}/pulls?state=open&per_page=1")
         evidence.append(pulls)
@@ -797,13 +818,13 @@ def _run_test(test_id: str, owner: str, repo: str, role: str, client: GitHubAppC
         repository_id = repository.get("response", {}).get("node_id") if isinstance(repository.get("response"), dict) else None
         if repository["status"] != 200 or not repository_id:
             return "FAIL", "could not resolve repository node id for updateRefs", evidence
-        query = {"query": "mutation($input: UpdateRefsInput!) { updateRefs(input: $input) { refs { name } } }", "variables": {"input": {"repositoryId": repository_id, "refUpdates": [{"name": "refs/heads/main", "oid": candidate, "beforeOid": sha}]}}}
+        query = {"query": "mutation($input: UpdateRefsInput!) { updateRefs(input: $input) { clientMutationId } }", "variables": {"input": {"repositoryId": repository_id, "refUpdates": [{"name": "refs/heads/main", "oid": candidate, "beforeOid": sha}]}}}
         moved = _api(client, "POST", "/graphql", query)
         evidence.append(moved)
         moved_ok = moved["status"] == 200 and isinstance(moved["response"], dict) and not moved["response"].get("errors")
         if not moved_ok or _main_sha(client, base, evidence) != candidate:
             return "FAIL", "could not move main to distinct candidate before stale updateRefs attempt", evidence
-        query = {"query": "mutation($input: UpdateRefsInput!) { updateRefs(input: $input) { refs { name } } }",
+        query = {"query": "mutation($input: UpdateRefsInput!) { updateRefs(input: $input) { clientMutationId } }",
                  "variables": {"input": {"repositoryId": repository_id, "refUpdates": [{"name": "refs/heads/main", "oid": sha, "beforeOid": sha}]}}}
         item = _api(client, "POST", "/graphql", query)
         evidence.append(item)
@@ -918,9 +939,10 @@ def _run_test(test_id: str, owner: str, repo: str, role: str, client: GitHubAppC
         item = _api(client, "PATCH", f"{base}/git/refs/heads/main", {"sha": sha, "force": True})
         evidence.append(item)
         message = item["response"].get("message", "").lower() if isinstance(item["response"], dict) else ""
-        expected = item["status"] == 403 and ("protected branch" in message or "required status check" in message or "required check" in message)
+        expected = item["status"] in (403, 422) and _rejection_attributable(
+            {"response": message}, "required status check")
         unchanged = _verify_unchanged(client, base, before, evidence)
-        return ("PASS", "protected branch denied missing-check update with HTTP 403; main unchanged", evidence) if expected and unchanged else ("FAIL", "update was not rejected for required-check protection or main changed", evidence)
+        return ("PASS", f"protected branch denied missing-check update with HTTP {item['status']}; main unchanged", evidence) if expected and unchanged else ("FAIL", "update was not rejected for required-check protection or main changed", evidence)
     if test_id == "P3-04":
         return "NOT RUN", "Prepare a candidate whose aao-audit check/status was published by a non-auditor App, then run as aao-integrator and attempt the candidate ref update; the auditor app_id is not available cross-uid to this invocation.", evidence
     raise ValueError(f"unsupported test id: {test_id}")

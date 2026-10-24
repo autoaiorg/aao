@@ -102,11 +102,11 @@ def test_a11_pr_must_come_from_the_fork_and_be_opened_by_aao_pm(pr_env):
         assert fpt.open_pr(TRIAL, FakeClient([(lambda m, p, b: m == "POST", 201, wrong)]))[0] == "FAIL"
 
 
-def test_a11_retries_head_repo_format_only_after_422_and_records_both(pr_env):
-    client = FakeClient([(lambda m, p, b: b["head_repo"] == "aao-trial-codex", 422, {"message": "Validation Failed"}),
-                         (lambda m, p, b: b["head_repo"] == FORK, 201, pr_body())])
+def test_a11_sends_full_head_repo_and_requests_no_maintainer_edits(pr_env):
+    client = FakeClient([(lambda m, p, b: m == "POST", 201, pr_body())])
     assert fpt.open_pr(TRIAL, client)[0] == "PASS"
-    assert [c[2]["head_repo"] for c in client.calls] == ["aao-trial-codex", FORK]
+    (_m, _p, body), = client.calls
+    assert body["head_repo"] == FORK and body["maintainer_can_modify"] is False and body["head"] == "autoaiorg:aao-trial/a11-p310-x"
 
 
 @pytest.fixture

@@ -8,6 +8,7 @@ Este procedimiento es válido para cualquier revisión auditada. Necesitas tres 
 Todos los comandos usan `REV` de forma explícita, así que una fusión posterior en `main` no la cambia.
 
 **Historial:**
+- `0a55daf`: la primera aplicación se detuvo en `realpath: /root/aao-keys` porque el procedimiento añadía `--keys-dir`. Ese parámetro solo hace falta cuando falta alguna clave; aquí las claves ya estaban instaladas. Al repetirla sin `--keys-dir` terminó con `RESULT PASS`.
 - `b392750`: el paso 2 falló en la comprobación previa de identidades, porque `identity_separation.sh` no admitía los árboles congelados de un host ya instalado. No se cambió nada en el host. Se corrigió en la revisión siguiente.
 
 **Qué incluye:** solo las operaciones que requieren tus privilegios: sudo y la decisión de fijar la raíz de confianza.
@@ -51,7 +52,7 @@ La simulación no cambia nada. Comprueba en su salida:
 Si todo está bien:
 
 ```bash
-$B --apply --keys-dir /root/aao-keys --trust-root-upgrade --loop-repo autoaiorg/aao-governance-trial --audit-report-sha256 $RH
+$B --apply --trust-root-upgrade --loop-repo autoaiorg/aao-governance-trial --audit-report-sha256 $RH
 ```
 
 **Resultado esperado:**

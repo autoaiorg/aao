@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import os
 import re
@@ -10,14 +12,30 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from aao.authorization_issuer import issue_authorization
+from aao.authorization_issuer import TRUST_REGISTRY_PATH, issue_authorization
 from aao.github_app_auth import GitHubAppClient
-from aao.manifest_audit import ANCHOR_PATH, audit_manifest, verify_promotion
+from aao.governance_ledger import append as append_ledger
+from aao.integration_authorization import canonical
+from aao.manifest_audit import (
+    ANCHOR_PATH,
+    _ledger,
+    _ledger_keys,
+    audit_manifest,
+    ledger_rows,
+    load_anchor,
+    verify_promotion,
+)
 
 _ID = re.compile(r"^[0-9a-f]{64}$")
+_INCIDENT_NAME = re.compile(r"^incident-([0-9a-f]{40})\.json$")
+_SHA1 = re.compile(r"^[0-9a-f]{40}$")
+_INCIDENT_FIELDS = {"schema", "type", "id", "target_ref", "detail", "intended_sha", "observed_sha",
+                    "intended_tree_sha", "observed_tree_sha", "intended_parents", "observed_parents",
+                    "created_at", "signature", "key_id"}
 _MANIFEST_KEYS = {"schema", "repository", "target_ref", "target_sha", "candidate_sha",
                   "candidate_tree", "result_tree", "producer"}
 CONFIG_PATH = Path("/etc/aao-audit/dispatch.json")
@@ -110,7 +128,9 @@ def dispatch_once(inbox: str | Path, reports: str | Path, key: str | Path,
                   registry_owner_uids: tuple[int, ...] | None = None,
                   repository_root: Path | None = None,
                   expected_repo: str | None = None,
-                  runner: Callable[[Path, list[str]], tuple[int, str, str]] | None = None) -> list[dict[str, str]]:
+                  runner: Callable[[Path, list[str]], tuple[int, str, str]] | None = None,
+                  trust_registry_path: Path = TRUST_REGISTRY_PATH,
+                  trust_registry_owner_uids: tuple[int, ...] = (0,)) -> list[dict[str, str]]:
     """Process each valid request once. The inbox is data only; no command is run from it."""
     inbox, reports, key = Path(inbox), Path(reports), Path(key)
     reports.mkdir(mode=0o750, parents=True, exist_ok=True)
@@ -121,6 +141,85 @@ def dispatch_once(inbox: str | Path, reports: str | Path, key: str | Path,
     except OSError as error:
         return [{"status": "failed", "reason": f"inbox unavailable: {error}"}]
     for path in entries:
+        incident_name = _INCIDENT_NAME.fullmatch(path.name)
+        if incident_name:
+            request_id = incident_name.group(1)
+            try:
+                raw = _read_request(path)
+                request = json.loads(raw)
+                if not isinstance(request, dict) or set(request) != _INCIDENT_FIELDS:
+                    raise ValueError("invalid incident request fields")
+                if (request["schema"] != "aao.integrator-incident.v1" or request["type"] != "incident"
+                        or not isinstance(request["id"], str) or not request["id"] or len(request["id"]) > 256
+                        or not isinstance(request["target_ref"], str)
+                        or not request["target_ref"].startswith("refs/heads/")
+                        or not isinstance(request["detail"], str) or len(request["detail"]) > 4096):
+                    raise ValueError("invalid incident request values")
+                for field in ("intended_sha", "intended_tree_sha"):
+                    if not isinstance(request[field], str) or not _SHA1.fullmatch(request[field]):
+                        raise ValueError(f"invalid {field}")
+                for field in ("observed_sha", "observed_tree_sha"):
+                    if request[field] is not None and (not isinstance(request[field], str)
+                                                       or not _SHA1.fullmatch(request[field])):
+                        raise ValueError(f"invalid {field}")
+                for field in ("intended_parents", "observed_parents"):
+                    parents = request[field]
+                    if parents is not None and (not isinstance(parents, list) or len(parents) > 2
+                            or any(not isinstance(item, str) or not _SHA1.fullmatch(item) for item in parents)):
+                        raise ValueError(f"invalid {field}")
+                if request["intended_parents"] is None:
+                    raise ValueError("intended_parents must be a list")
+                if request["intended_sha"] != request_id:
+                    raise ValueError("incident filename does not match intended SHA")
+                if not isinstance(request["created_at"], str):
+                    raise TypeError("invalid created_at")
+                timestamp = datetime.fromisoformat(request["created_at"])
+                if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+                    raise ValueError("created_at must include a timezone")
+                if not isinstance(request["key_id"], str) or not request["key_id"]:
+                    raise ValueError("invalid key_id")
+                if not isinstance(request["signature"], str):
+                    raise TypeError("invalid signature")
+                signature = base64.b64decode(request["signature"], validate=True)
+                registry = json.loads(_read_owned(Path(trust_registry_path), trust_registry_owner_uids))
+                if not isinstance(registry, dict) or request["key_id"] != registry.get("integrator_key_id"):
+                    raise ValueError("incident signer is not the registered integrator")
+                trusted_keys = registry.get("ledger_keys")
+                if not isinstance(trusted_keys, dict):
+                    raise TypeError("integrator trust registry has no ledger key map")
+                signer = trusted_keys.get(request["key_id"])
+                if not isinstance(signer, dict) or not isinstance(signer.get("public_key"), str):
+                    raise TypeError("integrator public key is unavailable")
+                payload = {field: value for field, value in request.items() if field != "signature"}
+                with tempfile.TemporaryDirectory(prefix="aao-incident-verify-") as temporary:
+                    message = Path(temporary) / "message"
+                    sig = Path(temporary) / "signature"
+                    message.write_bytes(canonical(payload)); sig.write_bytes(signature)
+                    verified = subprocess.run(["openssl", "pkeyutl", "-verify", "-pubin", "-inkey",
+                        signer["public_key"], "-sigfile", str(sig), "-in", str(message), "-rawin"],
+                        check=False, capture_output=True).returncode == 0
+                if not verified:
+                    raise ValueError("integrator incident signature is invalid")
+                anchor = load_anchor(anchor_path, anchor_owner_uids)
+                rows = ledger_rows(anchor)
+                if any(row.get("type") == "integrator-incident"
+                       and isinstance(row.get("incident"), dict)
+                       and row["incident"].get("id") == request["id"] for row in rows):
+                    results.append({"id": request_id, "status": "ignored", "reason": "incident already recorded"})
+                    continue
+                auditor_id = anchor["policy"]["auditor_id"]
+                with tempfile.TemporaryDirectory(prefix="aao-ledger-keys-") as temporary:
+                    keys = _ledger_keys(anchor, Path(temporary))
+                    append_ledger(_ledger(anchor), {"type": "integrator-incident",
+                        "incident": payload,
+                        "integrator_signature_sha256": hashlib.sha256(signature).hexdigest()}, auditor_id,
+                        str(key), keys)
+                results.append({"id": request_id, "status": "recorded"})
+            except (OSError, ValueError, TypeError, KeyError, RuntimeError, subprocess.SubprocessError,
+                    json.JSONDecodeError) as error:
+                results.append({"id": request_id, "status": "failed",
+                                "reason": f"{type(error).__name__}: {error}"})
+            continue
         request_id = path.stem
         if path.suffix != ".json" or not _ID.fullmatch(request_id):
             results.append({"id": request_id, "status": "ignored", "reason": "invalid request id"}); continue

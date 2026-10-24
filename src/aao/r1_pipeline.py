@@ -79,7 +79,7 @@ def run_configured_tick(config: dict[str, Any], *, github_client: Any | None = N
     sources = TrustSources(Path(config["trust_registry"]), Path(config["ledger"]),
                            Path(config["ledger_anchor"]), Path(config["heartbeat"]),
                            Path(config["freeze"]), Path(config["integrator_private_key"]),
-                           Path(config["heartbeat_sequence"]))
+                           Path(config["heartbeat_sequence"]), incident_inbox=Path(config["inbox"]))
     identity_name = config["integrator_identity"]
     if not isinstance(identity_name, str) or not identity_name:
         raise ValueError("integrator config lacks integrator_identity")

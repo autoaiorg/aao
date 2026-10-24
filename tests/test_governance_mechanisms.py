@@ -854,7 +854,8 @@ def _git_fixture(tmp_path):
                            heartbeat_sequence=tmp_path / "heartbeat.sequence",
                            trust_verification=verification_path,
                            trust_verification_root=verification_dir,
-                           trust_verification_owner_uid=os.getuid())
+                           trust_verification_owner_uid=os.getuid(),
+                           incident_inbox=tmp_path / "audit-inbox")
     # Existing focused integrator cases exercise downstream gates with the
     # fixture's observed PR identity; dedicated coverage passes explicit
     # mismatching identities to the production entry point.
@@ -1932,7 +1933,7 @@ def test_integrator_records_incident_on_ambiguous_push_with_divergent_remote(
 ):
     from types import SimpleNamespace
 
-    from aao.governance_ledger import verify
+    from aao.integration_authorization import canonical
 
     promote, repo, bare, _base, _head, _tree, auth, sources, signature = _git_fixture(tmp_path)
     push_calls = []
@@ -1946,6 +1947,14 @@ def test_integrator_records_incident_on_ambiguous_push_with_divergent_remote(
         return SimpleNamespace(returncode=1, stderr="connection reset after send")
 
     monkeypatch.setattr("aao.integrator._conditional_push", ambiguous_push)
+    inbox = sources.incident_inbox
+    from aao import integrator
+    write_incident = integrator._write_incident_request
+    freeze_preceded_request = []
+    def assert_freeze_first(path, payload, private_key):
+        freeze_preceded_request.append(sources.freeze.exists())
+        return write_incident(path, payload, private_key)
+    monkeypatch.setattr(integrator, "_write_incident_request", assert_freeze_first)
     with pytest.raises(RuntimeError, match="post-publication incident; integrator frozen"):
         promote(
             repo, "origin", auth, signature, sources,
@@ -1958,14 +1967,27 @@ def test_integrator_records_incident_on_ambiguous_push_with_divergent_remote(
     assert _remote_main(bare) == auth["candidate_sha"]
     assert len(push_calls) == 1
     assert sources.freeze.exists()
-    rows = verify(sources.ledger, json.loads(sources.trust_registry.read_text())["ledger_keys"])
-    assert rows[-1]["type"] == "incident"
-    assert "differs from base" in rows[-1]["detail"]
+    assert sources.ledger.read_text() == ""
+    assert sources.ledger_anchor.read_text() == "0" * 64
+    request_path, = inbox.glob("incident-*.json")
+    request = json.loads(request_path.read_text())
+    assert request["schema"] == "aao.integrator-incident.v1"
+    assert request["type"] == "incident"
+    assert "differs from base" in request["detail"]
+    assert (request_path.stat().st_mode & 0o777) == 0o640
+    assert canonical({key: value for key, value in request.items() if key != "signature"})
+    assert freeze_preceded_request == [True]
+    registry = json.loads(sources.trust_registry.read_text())
+    sig = tmp_path / "incident.sig"; message = tmp_path / "incident.msg"
+    import base64
+    sig.write_bytes(base64.b64decode(request["signature"], validate=True))
+    message.write_bytes(canonical({key: value for key, value in request.items() if key != "signature"}))
+    assert subprocess.run(["openssl", "pkeyutl", "-verify", "-pubin", "-inkey",
+        registry["ledger_keys"][registry["integrator_key_id"]]["public_key"], "-sigfile", str(sig),
+        "-in", str(message), "-rawin"], check=False, capture_output=True).returncode == 0
 
 
 def test_integrator_freezes_and_records_incident_when_remote_ref_deleted_after_push(tmp_path):
-    from aao.governance_ledger import verify
-
     promote, repo, bare, _base, _head, _tree, auth, sources, signature = _git_fixture(tmp_path)
     def delete_ref():
         subprocess.run(["git", "--git-dir", str(bare), "update-ref", "-d", "refs/heads/main"],
@@ -1974,13 +1996,14 @@ def test_integrator_freezes_and_records_incident_when_remote_ref_deleted_after_p
         promote(repo, "origin", auth, signature, sources, identity_provider=_integrator_identity(),
                 now=lambda: __import__("datetime").datetime(2026, 1, 1, 1,
                     tzinfo=__import__("datetime").timezone.utc), after_push=delete_ref)
-    registry = json.loads(sources.trust_registry.read_text())
-    rows = verify(sources.ledger, registry["ledger_keys"])
     assert sources.freeze.exists()
-    assert rows[-1]["type"] == "incident"
-    assert rows[-1]["key_id"] == registry["integrator_key_id"]
-    assert rows[-1]["intended_sha"]
-    assert rows[-1]["observed_sha"] is None
+    assert sources.ledger.read_text() == ""
+    request_path, = sources.incident_inbox.glob("incident-*.json")
+    request = json.loads(request_path.read_text())
+    assert request["type"] == "incident"
+    assert len(request["intended_sha"]) == 40
+    assert request_path.name == f"incident-{request['intended_sha']}.json"
+    assert request["observed_sha"] is None
 
 
 def test_integrator_stays_blocked_when_freeze_file_deleted_but_incident_open(tmp_path):

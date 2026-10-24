@@ -211,27 +211,34 @@ def _push_rejection_pass(item: dict, unchanged: bool, expected: str = "protected
     return item.get("exit_code", 0) != 0 and item.get("server_rejected") is True and reason_matches and unchanged
 
 
+_REQUIRED_CHECKS_EXPECTED = re.compile(r"\d+ of \d+ required status checks? (?:is|are) expected")
+
+
 def _rejection_attributable(item: dict, rule: str) -> bool:
-    """Require explicit server text naming the rule under test, not generic GH013."""
+    """Require the server's own text for the rule under test, not generic GH013.
+
+    Restrict updates: its bullet ("Cannot update this protected ref") comes only from ruleset A (B and C have no
+    update rule), so it proves the actor has no bypass on A even when other rules are also listed (P3-01/P3-09
+    claim exactly that). Non-fast-forward and deletion must be the sole cause (checks green first)."""
     response = item.get("response", "").lower()
+    checks = _REQUIRED_CHECKS_EXPECTED.search(response) is not None
     if rule == "restrict updates":
         return "cannot update this protected ref" in response
     if rule in {"required status checks", "required status check", "required_status_check", "required check"}:
-        return re.search(r"required status checks? (?:is|are) expected|required status check", response) is not None
+        return checks
     if rule == "non-fast-forward":
-        has_non_fast_forward = any(text in response for text in (
-            "cannot force-push", "non-fast-forward", "non_fast_forward"))
-        has_required_checks = re.search(
-            r"required status checks? (?:is|are) expected|required status check", response) is not None
-        return has_non_fast_forward and not has_required_checks
+        return any(text in response for text in ("cannot force-push", "non-fast-forward", "non_fast_forward")) and not checks
     if rule == "deletion":
-        has_deletion = "cannot delete" in response or "deletion" in response
-        has_required_checks = re.search(
-            r"required status checks? (?:is|are) expected|required status check", response) is not None
-        return has_deletion and not has_required_checks
+        return "cannot delete" in response and not checks
     if re.search(r"required (?:status )?checks?|status checks?|aao-audit|\btest\b", response):
         return False
     return rule.lower() in response
+
+
+def _violated_rules(text: str) -> list[str]:
+    """Every rule bullet GitHub listed (GH013 '- ...' lines, or the 422 message body), for the evidence reason."""
+    lines = [re.sub(r"^remote:\s*", "", line).strip() for line in str(text).splitlines()]
+    return [line[2:].strip() for line in lines if line.startswith("- ")] or [l for l in lines if "expected" in l.lower()]
 
 
 def _denial_outcome(item: dict, unchanged: bool, rule: str, label: str) -> tuple[str, str]:
@@ -241,7 +248,7 @@ def _denial_outcome(item: dict, unchanged: bool, rule: str, label: str) -> tuple
         return "FAIL", f"{label} did not receive a server-side rejection"
     if not _rejection_attributable(item, rule):
         return "INCONCLUSIVE", f"server rejection was not attributable to {rule}"
-    return "PASS", f"server rejected {label} specifically for {rule}; protected ref unchanged"
+    return "PASS", f"server rejected {label} for {rule}; protected ref unchanged; rules listed by GitHub: {_violated_rules(item.get('response', ''))}"
 
 
 def _merge_trial_pr(client: GitHubAppClient, base: str, evidence: list[dict]) -> tuple[str, str, list[dict]]:
@@ -774,7 +781,7 @@ def _run_test(test_id: str, owner: str, repo: str, role: str, client: GitHubAppC
         unchanged = after["status"] == 200 and after["response"].get("merged") is False and after["response"].get("state") == "open"
         if unchanged and item["status"] in (403, 405) and not expected:
             return "INCONCLUSIVE", "merge was denied but response did not attribute it to Restrict updates", evidence
-        return ("PASS", "CEO merge denied by Restrict updates; PR remains open", evidence) if expected and unchanged else ("FAIL", "CEO merge attempt was not denied by Restrict updates or PR state changed", evidence)
+        return ("PASS", f"CEO merge denied by Restrict updates; PR remains open; GitHub message: {message[:300]}", evidence) if expected and unchanged else ("FAIL", "CEO merge attempt was not denied by Restrict updates or PR state changed", evidence)
     if test_id == "A-02":
         pulls = _api(client, "GET", f"{base}/pulls?state=open&per_page=1")
         evidence.append(pulls)

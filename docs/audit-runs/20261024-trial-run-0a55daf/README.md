@@ -46,3 +46,16 @@ Se excluyeron esas cuatro pruebas porque necesitan la PR de fixture, y el primer
 | P3-10 | NOT RUN | Depende de A-11. |
 
 **Ninguna protección falló.** En todos los casos con FAIL o INCONCLUSIVE, GitHub denegó correctamente y `main` quedó intacto, o bien la prueba no llegó a ejecutarse. Ninguno de estos resultados cuenta como PASS. Se repetirán todos con el arnés corregido, D1 a D6, y una nueva auditoría p2p3-trial. D6 es la fixture del árbol: `gh -f 'tree[0][path]'` crea un objeto en lugar de un array, y se corrige enviándolo con `--input`.
+
+## Regla de atribución adoptada en la corrección (para la auditoría)
+
+**Restrict updates (P3-01, P3-09).** Una prueba se atribuye a esta regla si GitHub muestra su viñeta, "Cannot update this protected ref", aunque aparezcan también otras reglas violadas. El motivo:
+- solo el ruleset A tiene la regla `update`. El ruleset B contiene `non_fast_forward`, `deletion` y `required_status_checks`, según consulta en vivo del 2026-10-24, y el C solo se aplica a tags;
+- GitHub lista cada regla violada en su propia viñeta;
+- por tanto, esa viñeta demuestra que A se aplica al CEO, que es lo que afirma el P3 ("rechazado por Restrict updates (el CEO no tiene exclusión)").
+
+El resultado PASS incluye todas las reglas que listó GitHub. La revisión de segunda línea de Codex (mismo uid, no independiente) la consideró un posible PASS falso. **El PM discrepa por el motivo anterior y somete esta regla a la auditoría independiente.**
+
+**Non-fast-forward y deletion.** Se mantiene la exigencia de causa única: no puede aparecer el texto de checks. P3-07 y P3-12 afirman que B bloquea una actualización completamente válida del integrador, con A eximido y los checks en verde, y ahora es posible demostrarlo.
+
+**Checks requeridos (P3-03).** Solo se acepta el texto observado, "N of M required status checks are expected". No basta una mención genérica a "required status check".

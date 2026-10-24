@@ -936,3 +936,18 @@ def test_all_update_refs_inputs_include_repository_id():
     source = (Path(__file__).parents[1] / "src/aao/github_trial.py").read_text()
     assert source.count('"refUpdates": [{"name": "refs/heads/main"') == source.count('"repositoryId": repository_id, "refUpdates": [{"name": "refs/heads/main"')
     assert "refs {" not in source
+
+
+def test_restrict_updates_attribution_lists_co_occurring_rules_and_checks_need_expected_phrase():
+    from aao.github_trial import _denial_outcome, _rejection_attributable
+    live = ("remote: error: GH013: Repository rule violations found for refs/heads/main.\nremote: \n"
+            "remote: - Cannot update this protected ref.\nremote: \nremote: - Changes must be made through a pull request.\n"
+            "remote: \nremote: - 2 of 2 required status checks are expected.\n")
+    item = {"exit_code": 1, "server_rejected": True, "response": live}
+    status, reason = _denial_outcome(item, True, "restrict updates", "CEO push")
+    assert status == "PASS" and "Cannot update this protected ref." in reason and "2 of 2 required status checks are expected." in reason
+    only_checks = {"exit_code": 1, "server_rejected": True, "response": "remote: - 2 of 2 required status checks are expected."}
+    assert _denial_outcome(only_checks, True, "restrict updates", "CEO push")[0] == "INCONCLUSIVE"
+    assert not _rejection_attributable({"response": "Validation failed: required status check context is invalid"}, "required status check")
+    assert not _rejection_attributable({"response": "deletion of this branch is not supported here"}, "deletion")
+    assert _rejection_attributable({"response": "Cannot delete this protected ref."}, "deletion")

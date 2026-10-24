@@ -2,13 +2,16 @@
 # The CEO's consolidated privileged steps, in order, stopping at the first failure. Run as the CEO (not root);
 # it uses sudo itself. Nothing here is decided by the script: every authorization is an argument the CEO gives.
 #
-#   ceo_session.sh audits <REV> <R1_BASE> <TRIAL_BASE>
+#   ceo_session.sh login-codex
+#       Only under CEO-DEC-AUDIT-CODEX-2026-10-24: installs the pinned Codex binary root-owned and logs aao-auditor-alt
+#       into its OWN Codex session (device auth, interactive). Never copies a credential.
+#   ceo_session.sh audits <REV> <R1_BASE> <TRIAL_BASE> [antigravity|codex]
 #       Independent Antigravity audits of REV (r1-chain and p2p3-trial), copies to ~/, verdict replay. Read-only
 #       for the trust root. Send the output to the PM; continue only with two APPROVE-TECHNICAL.
-#   ceo_session.sh apply <REV> <R1_REPORT_SHA256>
+#   ceo_session.sh apply <REV> <R1_REPORT_SHA256> [CEO-DEC-AUDIT-CODEX-2026-10-24]
 #       Root clone at REV, trust-root upgrade (dry run, then apply, PASS required), full P2/P3 trial (A-13 left
 #       running detached), evidence archive in ~/, and the canonical fork-PR approval policy (CEO-DEC-P2P3 §4).
-#   ceo_session.sh dictamen <REV> <BASE>
+#   ceo_session.sh dictamen <REV> <BASE> [antigravity|codex]
 #       Independent Antigravity dictamen on committed trial evidence (prompt p2p3-dictamen).
 #   ceo_session.sh a13 <REV> <RUN_ID>
 #       Collect the detached A-13 token-expiry result.
@@ -21,15 +24,16 @@ die(){ printf 'STOP: %s\nNothing after this step was run. Send %s/session.log to
 sha(){ [[ $1 =~ ^[0-9a-f]{40}$ ]] || die "$2 must be a full 40-hex SHA"; }
 fetch_rev(){ git -C "$REPO_DIR" fetch -q origin && git -C "$REPO_DIR" cat-file -e "$1^{commit}" || die "revision $1 not found in $REPO_DIR"; }
 install_audit_runner(){
-  for f in scripts/audit/run_agy_audit.sh:0755 docs/audit-prompts/r1-chain.md:0644 docs/audit-prompts/p2p3-trial.md:0644 \
+  for f in scripts/audit/run_agy_audit.sh:0755 scripts/audit/run_codex_audit.sh:0755 docs/audit-prompts/r1-chain.md:0644 docs/audit-prompts/p2p3-trial.md:0644 \
            docs/audit-prompts/p2p3-dictamen.md:0644; do
     git -C "$REPO_DIR" show "$1:${f%:*}" | sudo install -o root -g root -m "${f#*:}" /dev/stdin "/opt/aao-audit/$(basename "${f%:*}")"
   done
 }
-audit(){ # base head prompt
-  local suffix=""; [[ $3 == r1-chain ]] || suffix="-$3"
-  say "Antigravity audit $3 of $2 (10-20 min, silent: do not interrupt)"
-  sudo -u aao-auditor-alt -H /opt/aao-audit/run_agy_audit.sh "$1" "$2" "$3" 2>&1 | tee -a "$OUT/session.log" || die "audit $3 failed"
+audit(){ # base head prompt [tool]
+  local suffix="" runner=run_agy_audit.sh tool=${4:-antigravity}; [[ $3 == r1-chain ]] || suffix="-$3"
+  case $tool in antigravity) ;; codex) runner=run_codex_audit.sh;; *) die "unknown auditor tool $tool";; esac
+  say "$tool audit $3 of $2 (10-30 min, silent: do not interrupt)"
+  sudo -u aao-auditor-alt -H "/opt/aao-audit/$runner" "$1" "$2" "$3" 2>&1 | tee -a "$OUT/session.log" || die "audit $3 failed"
   sudo cat "/home/aao-auditor-alt/aao-audits/$2$suffix/report.md" > "$HOME/aao-agy-audit-$2$suffix.md"
   sudo cat "/home/aao-auditor-alt/aao-audits/$2$suffix/attestation.json" > "$HOME/aao-agy-attest-$2$suffix.json"
   python3 -I - "$HOME/aao-agy-attest-$2$suffix.json" "$HOME/aao-agy-audit-$2$suffix.md" "$2" <<'PY' | tee -a "$OUT/session.log"
@@ -38,18 +42,28 @@ att, report, rev = json.load(open(sys.argv[1])), open(sys.argv[2], "rb").read(),
 assert att["head"] == att["checked_out_head"] == rev and att["os_user"] == "aao-auditor-alt", "attestation is not for this REV"
 assert hashlib.sha256(report).hexdigest() == att["report_sha256"], "report does not match its attestation"
 verdicts = {re.sub(r"[\s*`]", "", l.split("Veredicto:", 1)[1]) for l in report.decode().splitlines() if "Veredicto:" in l}
-print(f"{att['prompt_name']}: verdict {sorted(verdicts)} report_sha256={att['report_sha256']}")
+print(f"{att['prompt_name']} ({att['auditor']}): verdict {sorted(verdicts)} report_sha256={att['report_sha256']}")
 PY
 }
 
+CODEX_SHA256=b93f6811d3f653f0fb83be4050d857fb9abbb111dfa2ce160563327daff7f306
 case ${1:-} in
+  login-codex)
+    src=$(readlink -f "$(command -v codex)") || die "no codex binary for this user"
+    tmpbin=$(mktemp); cp -- "$src" "$tmpbin"
+    [[ $(sha256sum "$tmpbin" | cut -d' ' -f1) == "$CODEX_SHA256" ]] || { rm -f "$tmpbin"; die "$src is not the pinned Codex 0.164.0 release binary"; }
+    sudo install -o root -g root -m 0755 "$tmpbin" /usr/local/bin/codex; rm -f "$tmpbin"
+    say "log aao-auditor-alt into its own Codex session: open the URL, enter the code"
+    sudo -u aao-auditor-alt -H /usr/local/bin/codex login --device-auth
+    sudo -u aao-auditor-alt -H /usr/local/bin/codex login status | tee -a "$OUT/session.log" ;;
   audits)
-    (($# == 4)) || die "usage: audits <REV> <R1_BASE> <TRIAL_BASE>"; sha "$2" REV; sha "$3" R1_BASE; sha "$4" TRIAL_BASE
+    (($# == 4 || $# == 5)) || die "usage: audits <REV> <R1_BASE> <TRIAL_BASE> [antigravity|codex]"; sha "$2" REV; sha "$3" R1_BASE; sha "$4" TRIAL_BASE
     fetch_rev "$2"; install_audit_runner "$2"
-    audit "$3" "$2" r1-chain; audit "$4" "$2" p2p3-trial
+    audit "$3" "$2" r1-chain "${5:-antigravity}"; audit "$4" "$2" p2p3-trial "${5:-antigravity}"
     say "DONE. Send this output to the PM. Do not run 'apply' unless both verdicts are ['APPROVE-TECHNICAL']." ;;
   apply)
-    (($# == 3)) || die "usage: apply <REV> <R1_REPORT_SHA256>"; sha "$2" REV; fetch_rev "$2"; [[ $3 =~ ^[0-9a-f]{64}$ ]] || die "R1_REPORT_SHA256 must be 64 hex"
+    (($# == 3 || $# == 4)) || die "usage: apply <REV> <R1_REPORT_SHA256> [CEO-DEC-AUDIT-CODEX-2026-10-24]"; sha "$2" REV; fetch_rev "$2";
+    EXC=(); [[ -z ${4:-} ]] || EXC=(--audit-exception "$4") [[ $3 =~ ^[0-9a-f]{64}$ ]] || die "R1_REPORT_SHA256 must be 64 hex"
     REV=$2 RH=$3
     say "1/5 root clone at $REV"
     if sudo test -e /root/aao-src; then sudo mv /root/aao-src "/root/aao-src.old-$(date +%Y%m%dT%H%M%S)"; fi
@@ -60,11 +74,11 @@ case ${1:-} in
     [[ $(sudo sha256sum "/home/aao-auditor-alt/aao-audits/$REV/report.md" | cut -d' ' -f1) == "$RH" ]] || die "the r1-chain report is not the one you pinned"
     B=(sudo /root/aao-src/scripts/bootstrap/host_bootstrap.sh --rev "$REV" --ceo-user "$USER")
     say "2/5 trust-root upgrade: dry run"
-    "${B[@]}" --trust-root-upgrade --loop-repo autoaiorg/aao-governance-trial --audit-report-sha256 "$RH" 2>&1 | tee "$OUT/upgrade-dry.log" \
+    "${B[@]}" --trust-root-upgrade --loop-repo autoaiorg/aao-governance-trial --audit-report-sha256 "$RH" "${EXC[@]}" 2>&1 | tee "$OUT/upgrade-dry.log" \
       || die "upgrade dry run failed"
     grep -q "audit verdict \['APPROVE-TECHNICAL'\]" "$OUT/upgrade-dry.log" || die "dry run did not accept the audit"
     say "3/5 trust-root upgrade: apply"
-    "${B[@]}" --apply --trust-root-upgrade --loop-repo autoaiorg/aao-governance-trial --audit-report-sha256 "$RH" 2>&1 | tee "$OUT/upgrade.log" \
+    "${B[@]}" --apply --trust-root-upgrade --loop-repo autoaiorg/aao-governance-trial --audit-report-sha256 "$RH" "${EXC[@]}" 2>&1 | tee "$OUT/upgrade.log" \
       || die "upgrade failed (see the rollback instructions printed above)"
     grep -q '^RESULT: PASS' "$OUT/upgrade.log" && grep -q "^upgraded .* -> $REV" "$OUT/upgrade.log" || die "upgrade did not end with verifier PASS"
     say "4/5 full P2/P3 trial (30-60 min; A-13 keeps running ~62 min detached)"
@@ -78,11 +92,11 @@ case ${1:-} in
       || die "approval policy not set"
     say "DONE. Send $OUT (session.log, trial.log, aao-trial-$TS.tgz) to the PM. A-13: '$0 a13 $REV $TS' in ~65 min." ;;
   dictamen)
-    (($# == 3)) || die "usage: dictamen <REV> <BASE>"; sha "$2" REV; sha "$3" BASE
-    fetch_rev "$2"; install_audit_runner "$2"; audit "$3" "$2" p2p3-dictamen
+    (($# == 3 || $# == 4)) || die "usage: dictamen <REV> <BASE> [antigravity|codex]"; sha "$2" REV; sha "$3" BASE
+    fetch_rev "$2"; install_audit_runner "$2"; audit "$3" "$2" p2p3-dictamen "${4:-antigravity}"
     say "DONE. Send this output to the PM." ;;
   a13)
     (($# == 3)) || die "usage: a13 <REV> <RUN_ID>"; sha "$2" REV
     sudo /root/aao-src/scripts/trial/run_trial.sh --rev "$2" --a13-collect "$3" 2>&1 | tee -a "$OUT/session.log" ;;
-  *) sed -n '2,16p' "$0"; exit 2 ;;
+  *) sed -n '2,20p' "$0"; exit 2 ;;
 esac

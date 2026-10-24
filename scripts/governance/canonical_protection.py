@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import subprocess
 import sys
 from collections.abc import Callable
@@ -25,6 +24,8 @@ INTEGRATOR_APP = 5447984
 AUDITOR_APP = 5448107
 ACTIONS_APP = 15368
 APPROVAL_POLICY = "all_external_contributors"
+ALLOWED_REPOS = {"autoaiorg/aao", "autoaiorg/aao-governance-trial"}
+CEO_LOGIN = "alessbarb"
 
 Gh = Callable[[str, str, Any], Any]
 
@@ -129,8 +130,14 @@ def main(argv: list[str] | None = None, gh: Gh = gh_cli) -> int:
     parser.add_argument("--repo", required=True)
     parser.add_argument("action", choices=("plan", "verify", "apply", "approval"))
     args = parser.parse_args(argv)
-    if not re.fullmatch(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+", args.repo):
-        parser.error("--repo must be OWNER/REPO")
+    if args.repo not in ALLOWED_REPOS:
+        parser.error(f"--repo must be one of {sorted(ALLOWED_REPOS)}")
+    if args.action in ("apply", "approval"):
+        # Writes only with the CEO's own login (repository admin); never an agent's or an App's token.
+        login = (gh("GET", "user", None) or {}).get("login")
+        if login != CEO_LOGIN:
+            print(f"refusing to write: gh is authenticated as {login!r}, not the CEO {CEO_LOGIN!r}")
+            return 2
     if args.action == "plan":
         print(json.dumps(desired(), indent=1))
         problems = verify(gh, args.repo)

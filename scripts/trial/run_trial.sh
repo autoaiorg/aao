@@ -114,8 +114,11 @@ collect_p4b(){
   python3 -I -c 'import json,sys;print(json.dumps({"ceo_login":sys.argv[3].lower(),"org_owners":sorted(x.lower() for x in sys.argv[1].splitlines() if x),"repo_admins":sorted(x.lower() for x in sys.argv[2].splitlines() if x)}))' "$owners" "$admins" "$login"
 }
 TS=$(date -u +%Y%m%dT%H%M%S.%NZ); export AAO_TRIAL_RUN_ID=$TS AAO_TRIAL_HARNESS_REV=$REV; LOG=/var/log/aao-trial/$TS; install -d -o root -g root -m 0750 "$LOG"
-capture_evidence(){
-  local uid=$1 home=$2 test_id=$3 role=${4:-} source dest
+capture_evidence(){ # uid home test_id role [observed_rc] [output_file]
+  # The role uid owns its evidence directory, so the file is only believed if root can tie it to the invocation it
+  # just ran: the exact path that invocation printed, this run and this harness revision, and a status consistent
+  # with the exit code root observed (PASS=0, FAIL=1, other=2). Otherwise the root copy is recorded as FAIL.
+  local uid=$1 home=$2 test_id=$3 role=${4:-} observed_rc=${5:-} outfile=${6:-} source dest announced verdict
   source=$(runuser -u "$uid" -- env -i HOME="$home" PATH=/usr/bin:/bin AAO_TRIAL_RUN_ID="$AAO_TRIAL_RUN_ID" AAO_TRIAL_ROLE="$role" /usr/bin/python3 -I -c 'import glob,json,os,sys; matches=[]
 for p in glob.glob(os.path.join(sys.argv[1], "aao-trial-evidence", sys.argv[2]+"-*.json")):
  try:
@@ -126,9 +129,40 @@ for p in glob.glob(os.path.join(sys.argv[1], "aao-trial-evidence", sys.argv[2]+"
  except (OSError,ValueError): pass
 print(max(matches)[1] if matches else "")' "$home" "$test_id") || return 1
   [[ -n $source ]] || return 1
+  if [[ -n $outfile ]]; then
+    announced=$(grep -Eo '^Evidence: .*' "$outfile" | tail -1 | cut -d' ' -f2-)
+    [[ $announced == "$home/aao-trial-evidence/$test_id-"*.json && $announced != *..* ]] || announced="<outside $home/aao-trial-evidence>"
+    [[ $announced == "$source" || $announced == "<"* ]] || source=$announced
+  fi
   dest=$LOG/collected-${uid}-${test_id}-${role:-role}.json
   runuser -u "$uid" -- env -i HOME="$home" PATH=/usr/bin:/bin /bin/cat -- "$source" >"$dest" || { rm -f -- "$dest"; return 1; }
-  chown root:root "$dest"; chmod 0640 "$dest"; printf '%s\n' "$dest"
+  chown root:root "$dest"; chmod 0640 "$dest"
+  verdict=$(python3 -I - "$dest" "$test_id" "${role}" "$AAO_TRIAL_RUN_ID" "$REV" "$observed_rc" "${announced-unchecked}" "$source" <<'PY'
+import json, sys
+path, test_id, role, run_id, rev, rc, announced, source = sys.argv[1:9]
+problems = []
+try:
+    d = json.load(open(path))
+    if not isinstance(d, dict): raise ValueError("not an object")
+except (OSError, ValueError) as error:
+    d, problems = {"test_id": test_id, "role": role}, [f"unreadable evidence ({type(error).__name__})"]
+if d.get("test_id") != test_id: problems.append("test_id")
+if role and d.get("role") != role: problems.append("role")
+if d.get("run_id") != run_id: problems.append("run_id")
+if d.get("harness_revision") != rev: problems.append("harness_revision")
+if announced != "unchecked" and announced != source: problems.append("not the file this invocation announced")
+if rc != "":
+    expected = {"PASS": "0", "FAIL": "1"}.get(d.get("status"), "2")
+    if rc != expected: problems.append(f"status {d.get('status')} vs observed exit {rc}")
+if problems:
+    d = {**d, "status": "FAIL", "reason": "evidence inconsistent with the root-observed invocation: " + ", ".join(problems),
+         "original_status": d.get("status"), "original_reason": d.get("reason")}
+    json.dump(d, open(path, "w"), indent=1)
+    print("inconsistent")
+PY
+)
+  [[ $verdict != inconsistent ]] || echo "WARNING: $test_id/$role evidence did not match the root-observed invocation; recorded as FAIL" >&2
+  printf '%s\n' "$dest"
 }
 fixture_num= fixture_head=
 need_pr=0; for id in "${ONLY[@]}"; do [[ $id != A-02 && $id != P3-09 && $id != A-05 && $id != P3-06 ]] || need_pr=1; done
@@ -154,7 +188,11 @@ declare -A ROLE=([P3-04]=aao-integrator [P3-08]=aao-integrator [A-01]=aao-impl-c
 declare -A APP_UID=(); for row in "${APPS[@]}"; do read -r app uid <<<"$row"; APP_UID[$app]=$uid; done
 if [[ -n $A13_COLLECT ]]; then
   iuid=${APP_UID[aao-integrator]}; ihome=$(getent passwd "$iuid" | cut -d: -f6)
-  ev=$(AAO_TRIAL_RUN_ID=$A13_COLLECT capture_evidence "$iuid" "$ihome" A-13 aao-integrator || true)
+  unit="aao-trial-a13-${A13_COLLECT//[^0-9A-Za-z]/-}"
+  [[ $(systemctl show -P SubState "$unit") == exited ]] || { echo "A-13 unit $unit has not finished (SubState=$(systemctl show -P SubState "$unit"))" >&2; exit 2; }
+  a13_rc=$(systemctl show -P ExecMainStatus "$unit"); journalctl -u "$unit" -o cat --no-pager > "$LOG/A-13-aao-integrator.out"
+  ev=$(AAO_TRIAL_RUN_ID=$A13_COLLECT capture_evidence "$iuid" "$ihome" A-13 aao-integrator "$a13_rc" "$LOG/A-13-aao-integrator.out" || true)
+  systemctl stop "$unit" 2>/dev/null || true
   state='NOT RUN (no A-13 evidence for that run yet: still waiting, or the detached unit failed)'; [[ -n $ev ]] && state=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status","FAIL"))' "$ev")
   printf 'A-13\taao-integrator\t%s\t%s\n' "$state" "${ev:-none}" | tee "$LOG/summary.tsv"
   (cd "$LOG" && find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS); chmod 0640 "$LOG"/*
@@ -251,7 +289,7 @@ for id in "${IDS[@]}"; do
   status=$?
   set -e
   cat "$LOG/$id-$role.out"
-  evidence=$(capture_evidence "$uid" "$home" "$id" "$role" || true)
+  evidence=$(capture_evidence "$uid" "$home" "$id" "$role" "$status" "$LOG/$id-$role.out" || true)
   state='NOT RUN (no evidence from this run)'; [[ -n $evidence ]] && state=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status","FAIL"))' "$evidence")
   if [[ ( $id == A-05 || $id == P3-06 ) && $state == STAGED ]]; then
     merge_sha=$(python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); print(next(x["sha"] for x in d["evidence"] if x.get("method")=="staged merge commit"))' "$evidence")
@@ -269,7 +307,7 @@ for id in "${IDS[@]}"; do
     status=$?
     set -e
     cat "$LOG/$id-$role-promote.out"
-    evidence=$(capture_evidence "$uid" "$home" "$id" "$role" || true)
+    evidence=$(capture_evidence "$uid" "$home" "$id" "$role" "$status" "$LOG/$id-$role-promote.out" || true)
     [[ -n $evidence ]] && state=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status","FAIL"))' "$evidence")
     fi
   fi
@@ -295,7 +333,7 @@ for id in "${IDS[@]}"; do
       extra_rc=$?
       set -e
       cat "$LOG/$id-$impl.out"
-      extra_ev=$(capture_evidence "$impl_uid" "$impl_home" "$id" "$impl" || true)
+      extra_ev=$(capture_evidence "$impl_uid" "$impl_home" "$id" "$impl" "$extra_rc" "$LOG/$id-$impl.out" || true)
       extra_state=NOT\ RUN; [[ -n $extra_ev ]] && extra_state=$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1])).get("status","FAIL"))' "$extra_ev")
       printf '%s\t%s\t%s\t%s\n' "$id" "$impl" "$extra_state" "${extra_ev:-none}" | tee -a "$LOG/summary.tsv"
       [[ $extra_state != FAIL && $extra_rc -ne 1 ]] || rc=1
@@ -322,7 +360,7 @@ for role in "${A10_ROLES[@]}"; do
   a10_rc=$?
   set -e
   cat "$LOG/A-10-$role.out"
-  ev=$(capture_evidence "$uid" "$home" A-10 "$role" || true)
+  ev=$(capture_evidence "$uid" "$home" A-10 "$role" "$a10_rc" "$LOG/A-10-$role.out" || true)
   state='NOT RUN (no evidence from this run)'; [[ -n $ev ]] && state=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status", "FAIL"))' "$ev")
   printf 'A-10\t%s\t%s\t%s\n' "$role" "$state" "${ev:-none}" | tee -a "$LOG/summary.tsv"
   [[ $state != FAIL && $a10_rc -ne 1 ]] || rc=1
@@ -338,7 +376,7 @@ fork_step(){
   step_rc=$?
   set -e
   cat "$LOG/$step-$role.out"
-  step_ev=$(capture_evidence "$uid" "$home" "$step" "$role" || true)
+  step_ev=$(capture_evidence "$uid" "$home" "$step" "$role" "$step_rc" "$LOG/$step-$role.out" || true)
   step_state='NOT RUN (no evidence from this run)'; [[ -n $step_ev ]] && step_state=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status","FAIL"))' "$step_ev")
   printf '%s\t%s\t%s\t%s\n' "$step" "$role" "$step_state" "${step_ev:-none}" | tee -a "$LOG/summary.tsv"
   [[ $step_state != FAIL && $step_rc -ne 1 ]] || rc=1
@@ -500,7 +538,7 @@ fi
 # integrator (token only in that process' memory) and is collected later with: run_trial.sh --rev REV --a13-collect <run_id>
 if wants A-13; then
   iuid=${APP_UID[aao-integrator]}; ihome=$(getent passwd "$iuid" | cut -d: -f6)
-  systemd-run --quiet --collect --unit "aao-trial-a13-${AAO_TRIAL_RUN_ID//[^0-9A-Za-z]/-}" --uid="$iuid" --gid="$(id -g "$iuid")" \
+  systemd-run --quiet --remain-after-exit --unit "aao-trial-a13-${AAO_TRIAL_RUN_ID//[^0-9A-Za-z]/-}" --uid="$iuid" --gid="$(id -g "$iuid")" \
     --working-directory="$ihome" /usr/bin/env -i HOME="$ihome" PATH=/usr/bin:/bin AAO_GITHUB_TRIAL_REPOS="$REPO" AAO_TRIAL_A13_WAIT=1 \
     AAO_TRIAL_RUN_ID="$AAO_TRIAL_RUN_ID" AAO_TRIAL_HARNESS_REV="$REV" /usr/bin/python3 -I -c "import sys;sys.path.insert(0,'$INSTALL/src');from aao.github_trial import main;raise SystemExit(main())" A-13 --repo "$REPO" --role aao-integrator \
     && printf 'A-13\taao-integrator\tPENDING\tdetached ~62 min; collect: run_trial.sh --rev %s --a13-collect %s\n' "$REV" "$AAO_TRIAL_RUN_ID" | tee -a "$LOG/summary.tsv" \

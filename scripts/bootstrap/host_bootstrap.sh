@@ -18,6 +18,7 @@
 #                backs up config + frozen trees, keeps keys, ledger and ledger.anchor, regenerates the
 #                registry (optionally --ra-status RA-0x=PASS, a CEO decision), verifier PASS, dispatch back on.
 #   integrator   OPT-IN (--enable-integrator): only if every RA in the installed registry is PASS.
+#   --audit-exception CEO-DEC-...: accept a substitute (codex) attestation only for that recorded CEO exception.
 #
 # Default is a dry run that prints what it would do. Fail closed. Phases 1-4 are re-runnable and never
 # regenerate an existing key; the trust-root phase runs only on a host with no trust-root artifact at all.
@@ -36,7 +37,7 @@ umask 022
 
 die() { echo "FAIL: $*" >&2; exit 1; }
 say() { echo "== $*"; }
-APPLY=0 REV="" CEO="" KEYS_DIR="" AGY_SRC="" AGY_SHA="" REPORT_SHA="" TRUST_ROOT=0 LOOP_REPO="" ENABLE_INTEGRATOR=0 UPGRADE=0 RA_ARGS=()
+APPLY=0 REV="" CEO="" KEYS_DIR="" AGY_SRC="" AGY_SHA="" REPORT_SHA="" AUDIT_EXCEPTION="" TRUST_ROOT=0 LOOP_REPO="" ENABLE_INTEGRATOR=0 UPGRADE=0 RA_ARGS=()
 while [[ $# -gt 0 ]]; do
   case $1 in
     --apply) APPLY=1;;
@@ -51,6 +52,7 @@ while [[ $# -gt 0 ]]; do
       [[ " ${RA_ARGS[*]} " != *" ${BASH_REMATCH[1]}="* ]] || die "duplicate --ra-status ${BASH_REMATCH[1]}"
       RA_ARGS+=(--ra-status "$2"); shift;;
     --audit-report-sha256) REPORT_SHA=$2; shift;;
+    --audit-exception) AUDIT_EXCEPTION=$2; shift;;
     --loop-repo) LOOP_REPO=$2; shift;;
     --enable-integrator) ENABLE_INTEGRATOR=1;;
     *) die "unknown option $1 (see the header of $0)";;
@@ -170,7 +172,7 @@ else
   echo "TODO no /usr/local/bin/agy: rerun with --agy <path> --agy-sha256 <hex>"
 fi
 run install -d -o root -g root -m 0755 /opt/aao-audit
-run install -o root -g root -m 0755 "$SRC/scripts/audit/run_agy_audit.sh" /opt/aao-audit/
+run install -o root -g root -m 0755 "$SRC/scripts/audit/run_agy_audit.sh" "$SRC/scripts/audit/run_codex_audit.sh" /opt/aao-audit/
 for pr in "$SRC"/docs/audit-prompts/*.md; do run install -o root -g root -m 0644 "$pr" /opt/aao-audit/; done
 alt_home=$(getent passwd aao-auditor-alt | cut -d: -f6 || true)
 [[ -n $alt_home ]] || { ((APPLY)) && die "no account aao-auditor-alt"; alt_home=/home/aao-auditor-alt; }
@@ -208,10 +210,21 @@ check_audit() {
   # One root-owned snapshot of both files; every check below reads only that snapshot (no swap in between).
   snap=$(mktemp -d); cat -- "$A/attestation.json" > "$snap/attestation.json"; cat -- "$A/report.md" > "$snap/report.md"
   [[ $(sha256sum "$snap/report.md" | cut -d' ' -f1) == "$REPORT_SHA" ]] || die "$A/report.md is not the report you pinned"
-  python3 -I - "$snap/attestation.json" "$snap/report.md" "$REV" <<'PY' || die "the audit of $REV does not authorize the trust root"
+  # The independent auditor is Antigravity. A substitute auditor is accepted only for a CEO exception that the
+  # CEO names explicitly here AND that is recorded at REV naming that auditor (CEO-DEC-AUDIT-CODEX-2026-10-24).
+  allowed=antigravity
+  if [[ -n $AUDIT_EXCEPTION ]]; then
+    [[ $AUDIT_EXCEPTION =~ ^CEO-DEC-[A-Z0-9-]+$ && -f $SRC/docs/decisions/$AUDIT_EXCEPTION.md ]] \
+      || die "--audit-exception $AUDIT_EXCEPTION is not a decision recorded at $REV"
+    grep -q '^auditor_sustituto: codex$' "$SRC/docs/decisions/$AUDIT_EXCEPTION.md" || die "$AUDIT_EXCEPTION does not name codex"
+    allowed=antigravity,codex; echo "AUDIT EXCEPTION $AUDIT_EXCEPTION: a codex attestation is accepted in place of antigravity"
+  fi
+  python3 -I - "$snap/attestation.json" "$snap/report.md" "$REV" "$allowed" "$AUDIT_EXCEPTION" <<'PY' || die "the audit of $REV does not authorize the trust root"
 import hashlib, json, re, sys
 att, report, rev = json.load(open(sys.argv[1])), open(sys.argv[2], "rb").read(), sys.argv[3]
-assert att["head"] == att["checked_out_head"] == rev and att["os_user"] == "aao-auditor-alt" and att["auditor"] == "antigravity", "attestation is not for this REV"
+allowed, exception = sys.argv[4].split(","), sys.argv[5]
+assert att["head"] == att["checked_out_head"] == rev and att["os_user"] == "aao-auditor-alt" and att["auditor"] in allowed, "attestation is not for this REV or auditor"
+assert att["auditor"] == "antigravity" or att.get("exception") == exception, "substitute attestation does not carry the CEO exception id"
 assert hashlib.sha256(report).hexdigest() == att["report_sha256"], "report.md does not match the attestation"
 # Every verdict line, whole: after "Veredicto:" only markdown (spaces, *, `) may surround the word.
 verdicts = {re.sub(r"[\s*`]", "", line.split("Veredicto:", 1)[1]) for line in report.decode().splitlines() if "Veredicto:" in line}

@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import json
 import os
+import pwd
 import re
 import stat
 import subprocess
@@ -131,9 +132,14 @@ def dispatch_once(inbox: str | Path, reports: str | Path, key: str | Path,
                   expected_repo: str | None = None,
                   runner: Callable[[Path, list[str]], tuple[int, str, str]] | None = None,
                   trust_registry_path: Path = TRUST_REGISTRY_PATH,
-                  trust_registry_owner_uids: tuple[int, ...] = (0,)) -> list[dict[str, str]]:
+                  trust_registry_owner_uids: tuple[int, ...] | None = None) -> list[dict[str, str]]:
     """Process each valid request once. The inbox is data only; no command is run from it."""
     inbox, reports, key = Path(inbox), Path(reports), Path(key)
+    if trust_registry_owner_uids is None:
+        try:
+            trust_registry_owner_uids = (0, pwd.getpwnam("aao-trust").pw_uid)
+        except KeyError:
+            trust_registry_owner_uids = (0,)
     reports.mkdir(mode=0o750, parents=True, exist_ok=True)
     reports.chmod(0o750)
     results: list[dict[str, str]] = []

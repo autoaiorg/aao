@@ -280,6 +280,8 @@ def _merge_trial_pr(client: GitHubAppClient, base: str, evidence: list[dict]) ->
     base_branch = pr.get("base", {}).get("ref")
     if not candidate or base_branch != "main":
         return "FAIL", "trial PR must have a head SHA and target main", evidence
+    if candidate != authorized_head:
+        return "FAIL", "trial PR head changed after the initial authorization read", evidence
     base_ref = _api(client, "GET", f"{base}/git/ref/heads/main")
     evidence.append(base_ref)
     base_sha = base_ref.get("response", {}).get("object", {}).get("sha") if isinstance(base_ref.get("response"), dict) else None
@@ -300,15 +302,16 @@ def _merge_trial_pr(client: GitHubAppClient, base: str, evidence: list[dict]) ->
         return "NOT RUN", "Set AAO_GITHUB_TRIAL_PHASE=stage, then run phase=promote with AAO_GITHUB_TRIAL_PROMOTE_SHA after audit publication.", evidence
     if phase == "stage":
         try:
-            tree = subprocess.run(["git", "merge-tree", "--write-tree", base_sha, candidate], check=True,
-                                  capture_output=True, text=True, timeout=60).stdout.splitlines()[0].strip()
+            expected_tree = subprocess.run(["git", "merge-tree", "--write-tree", base_sha, candidate], check=True,
+                                           capture_output=True, text=True, timeout=60).stdout.splitlines()[0].strip()
             merge_sha = subprocess.run(["git", "-c", "user.name=AAO Integrator", "-c",
                                         "user.email=aao-integrator@users.noreply.github.com", "commit-tree",
-                                        tree, "-p", base_sha, "-p", candidate], input="AAO trial staged merge\n",
+                                        expected_tree, "-p", base_sha, "-p", candidate], input="AAO trial staged merge\n",
                                        check=True, capture_output=True, text=True, timeout=30).stdout.strip()
         except (OSError, subprocess.SubprocessError, IndexError) as exc:
             evidence.append({"method": "git merge-tree/commit-tree", "status": "error", "response": type(exc).__name__})
             return "FAIL", "could not construct local merge commit", evidence
+        tree = expected_tree
         evidence.append({"method": "git merge-tree --write-tree + git commit-tree", "tree": tree,
                          "parents": [base_sha, candidate], "sha": merge_sha})
         if not re.fullmatch(r"[0-9a-f]{40,64}", tree) or not re.fullmatch(r"[0-9a-f]{40,64}", merge_sha):
@@ -317,13 +320,21 @@ def _merge_trial_pr(client: GitHubAppClient, base: str, evidence: list[dict]) ->
         merge_sha = os.environ.get("AAO_GITHUB_TRIAL_PROMOTE_SHA", "")
         if not re.fullmatch(r"[0-9a-f]{40}", merge_sha):
             return "FAIL", "promote phase requires AAO_GITHUB_TRIAL_PROMOTE_SHA with the staged full SHA", evidence
+        try:
+            expected_tree = subprocess.run(["git", "merge-tree", "--write-tree", base_sha, candidate], check=True,
+                                           capture_output=True, text=True, timeout=60).stdout.splitlines()[0].strip()
+        except (OSError, subprocess.SubprocessError, IndexError) as exc:
+            evidence.append({"method": "git merge-tree --write-tree", "status": "error", "response": type(exc).__name__})
+            return "FAIL", "could not recompute expected promotion tree", evidence
         commit_record = _api(client, "GET", f"{base}/git/commits/{merge_sha}")
         evidence.append(commit_record)
         data = commit_record.get("response", {}) if isinstance(commit_record.get("response"), dict) else {}
         parents = [item.get("sha") for item in data.get("parents", [])]
-        tree = data.get("tree", {}).get("sha")
-        if commit_record["status"] != 200 or parents != [base_sha, candidate] or not re.fullmatch(r"[0-9a-f]{40}", str(tree)):
+        received_tree = data.get("tree", {}).get("sha")
+        if (commit_record["status"] != 200 or parents != [base_sha, candidate]
+                or not re.fullmatch(r"[0-9a-f]{40}", str(received_tree)) or received_tree != expected_tree):
             return "FAIL", "supplied promotion SHA is not a merge of the current main and authorized PR head", evidence
+        tree = expected_tree  # every later check compares against the locally recomputed tree
     # B requires checks on aao-staging/**; seed the workflow on an unprotected
     # trial ref first, then move the same checked commit into staging.
     candidate_ref = f"refs/heads/aao-trial/merge-{number}-{candidate[:8]}"
@@ -429,7 +440,9 @@ def _wait_wrong_publisher(client: GitHubAppClient, base: str, sha: str, evidence
         tests = [r for r in runs if r.get("name") == "test"]
         if any(r.get("app", {}).get("id") == auditor_id for r in audits):
             return False, "an aao-audit run from the real auditor exists on the P3-04 candidate"
-        if audits and tests and all(r.get("status") == "completed" and r.get("conclusion") == "success" for r in tests):
+        if (audits and tests and
+                all(r.get("status") == "completed" and r.get("conclusion") == "success"
+                    for r in [*audits, *tests])):
             evidence.append({"method": "P3-04 precondition", "sha": sha, "test": "green",
                              "aao_audit_publishers": sorted({r.get("app", {}).get("id") for r in audits})})
             return True, "ready"
@@ -557,11 +570,23 @@ def _run_equivalence(owner: str, repo: str, role: str, client: GitHubAppClient) 
         return "FAIL", "positive-control candidate SHA unavailable in local clone", evidence
     if not re.fullmatch(r"[0-9a-f]{40,64}", sha):
         return "FAIL", "positive-control candidate SHA is malformed", evidence
-    ref = f"refs/heads/aao-trial/equivalence-{sha[:12]}"
+    run_id = os.environ.get("AAO_TRIAL_RUN_ID", "")
+    if not re.fullmatch(r"[A-Za-z0-9-]{1,64}", run_id):
+        return "FAIL", "AAO_TRIAL_RUN_ID is required for a unique fork positive-control branch", evidence
+    branch = f"aao-trial/equivalence-{run_id}-{sha[:12]}"
+    before_status, before_sha = _ref_sha(client, f"/repos/{fork}", branch, evidence)
+    if before_status not in (200, 404):
+        return "FAIL", "could not establish fork positive-control ref state", evidence
+    if before_status == 200:
+        return "FAIL", "fork positive-control branch already exists; refusing a no-op push", evidence
+    ref = f"refs/heads/{branch}"
     push = _git_push(client, fork, f"{sha}:{ref}")
     evidence.append(push)
     if push.get("status") != 0:
         return "FAIL", "positive-control push to own non-protected fork branch failed", evidence
+    after_status, after_sha = _ref_sha(client, f"/repos/{fork}", branch, evidence)
+    if after_status != 200 or after_sha != sha or before_sha is not None:
+        return "FAIL", "fork positive-control push did not create the expected ref update", evidence
     return "EQUIVALENCE-PENDING", "trial installation absent, configured fork scope exact, positive fork push accepted; CEO formal equivalence validation required before PASS", evidence
 
 

@@ -129,7 +129,7 @@ def verify(
         if e.get("type") == "authorization" and not _authority(key_entry, "can_authorize"):
             raise ValueError("authorization signer is not an enabled authority")
         if e.get("type") == "incident-resolution":
-            incident = next((r for r in rows if r.get("type") == "incident" and
+            incident = next((r for r in rows if r.get("type") in {"incident", "integrator-incident"} and
                              r.get("id") == e.get("target")), None)
             if (not _authority(key_entry, "can_resolve_incidents") or not incident or
                     incident.get("hash") != e.get("incident_hash")):
@@ -171,4 +171,5 @@ def _authority(entry: Any, capability: str) -> bool:
 def open_incidents(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return incidents without a later valid resolution (verified when rows are read)."""
     resolved = {row.get("incident_hash") for row in rows if row.get("type") == "incident-resolution"}
-    return [row for row in rows if row.get("type") == "incident" and row.get("hash") not in resolved]
+    return [row for row in rows if row.get("type") in {"incident", "integrator-incident"}
+            and row.get("hash") not in resolved]

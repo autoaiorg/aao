@@ -111,8 +111,7 @@ def _git_push(client: GitHubAppClient, repo: str, refspec: str, *, force_with_le
     env["GIT_TRACE_REDACT"] = "1"
     try:
         existing_count = int(env.get("GIT_CONFIG_COUNT", "0"))
-        if existing_count < 0:
-            existing_count = 0
+        existing_count = max(existing_count, 0)
     except ValueError:
         existing_count = 0
     env["GIT_CONFIG_COUNT"] = str(existing_count + len(config))

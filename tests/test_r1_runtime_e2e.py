@@ -11,7 +11,7 @@ from test_manifest_audit import env as _base_audit_env  # noqa: F401
 from test_manifest_audit import manifest as make_manifest
 from test_manifest_audit import ok_runner
 
-from aao import authorization_issuer, auditor_dispatch, r1_pipeline
+from aao import auditor_dispatch, authorization_issuer, r1_pipeline
 from aao.git_paths import changed_paths, path_matches_prefix
 from aao.integrator import TrustSources
 from aao.protected_routes import compare_copies, load_document, route_map, routes_digest

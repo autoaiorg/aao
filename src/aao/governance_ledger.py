@@ -63,12 +63,12 @@ def append(path: Path, payload: dict[str, Any], key_id: str, private_key: str,
         target = payload.get("target")
         if not target or not any(r.get("type") == "veto" and r.get("hash") == target for r in rows):
             raise ValueError("revocation must reference an exact existing veto")
-    if payload.get("type") == "incident" and not _authority(trusted_keys.get(key_id), "can_record_incidents"):
+    if payload.get("type") in {"incident", "integrator-incident"} and not _authority(trusted_keys.get(key_id), "can_record_incidents"):
         raise ValueError("incident signer is not an enabled authority")
     if payload.get("type") == "incident-resolution":
         if not _authority(trusted_keys.get(key_id), "can_resolve_incidents"):
             raise ValueError("incident-resolution signer is not an enabled authority")
-        incident = next((r for r in rows if r.get("type") == "incident" and
+        incident = next((r for r in rows if r.get("type") in {"incident", "integrator-incident"} and
                          r.get("id") == payload.get("target")), None)
         if not incident or incident.get("hash") != payload.get("incident_hash"):
             raise ValueError("incident-resolution must reference an exact existing incident")
@@ -124,7 +124,7 @@ def verify(
                 raise ValueError("revocation signer is not an enabled authority")
             if not e.get("target") or not any(r.get("type") == "veto" and r.get("hash") == e["target"] for r in rows):
                 raise ValueError("revocation must reference an exact existing veto")
-        if e.get("type") == "incident" and not _authority(key_entry, "can_record_incidents"):
+        if e.get("type") in {"incident", "integrator-incident"} and not _authority(key_entry, "can_record_incidents"):
             raise ValueError("incident signer is not an enabled authority")
         if e.get("type") == "authorization" and not _authority(key_entry, "can_authorize"):
             raise ValueError("authorization signer is not an enabled authority")

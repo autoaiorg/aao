@@ -823,9 +823,12 @@ def _git_fixture(tmp_path):
     resolver_dir.mkdir()
     _resolver_private, resolver_public = keypair(resolver_dir)
     ledger=tmp_path/"ledger.jsonl"; ledger.touch(); anchor=tmp_path/"anchor"; heartbeat=tmp_path/"heartbeat.json"; freeze=tmp_path/"freeze"
-    anchor.write_text("0"*64)
+    from aao.governance_ledger import append as append_ledger
     from aao.governance_ledger import verify
-    anchor.write_text(verify(ledger, {"ledger":str(ledger_public)})[-1]["hash"] if ledger.exists() and ledger.stat().st_size else "0"*64)
+    append_ledger(ledger, {"type": "audit-verdict", "candidate_sha": head,
+                          "report_sha256": d["expediente_sha256"], "verdict": "approve", "veto": False},
+                  "ledger", str(_ledger_private), {"ledger": str(ledger_public)})
+    anchor.write_text(verify(ledger, {"ledger":str(ledger_public)})[-1]["hash"])
     hb=signed_heartbeat(1,"2026-01-01T00:00:00+00:00",str(supervisor_private),key_id="supervisor",expires_at="2026-01-01T02:00:00+00:00",ledger_path=ledger,trusted_keys={"ledger":{"public_key":str(ledger_public)}}, state_path=tmp_path / "heartbeat-state.json", integrator_key_id="integrator")
     heartbeat.write_text(json.dumps(hb))
     registry={**state,"ledger_keys":{"ledger":{"public_key":str(ledger_public)}, "integrator":{"public_key":str(_integrator_public),"can_record_incidents":True}, "auditor":{"public_key":str(auditor_public),"can_resolve_pending":True}},"supervisor_key_id":"supervisor","supervisor_public_key":str(supervisor_public),"heartbeat_max_age_seconds":3600,
@@ -955,6 +958,28 @@ def test_integrator_blocks_on_active_veto_in_ledger(tmp_path):
     )
 
 
+def test_integrator_rejects_when_latest_candidate_decision_is_reject(tmp_path):
+    promote, repo, bare, _base, _head, _tree, auth, sources, signature = _git_fixture(tmp_path)
+    _append_bound_audit_decision(sources, auth, verdict="reject")
+
+    with pytest.raises(
+        ValueError,
+        match=r"^authorization is not bound to the current ledger audit decision$",
+    ):
+        promote(
+            repo,
+            "origin",
+            auth,
+            signature,
+            sources,
+            identity_provider=_integrator_identity(),
+            now=lambda: __import__("datetime").datetime(
+                2026, 1, 1, 1, tzinfo=__import__("datetime").timezone.utc
+            ),
+        )
+    assert _remote_main(bare) == auth["base_sha"]
+
+
 def _add_pending_veto_marker(sources, candidate_sha):
     directory = Path(str(sources.ledger) + ".pending-vetoes")
     directory.mkdir(mode=0o700, exist_ok=True)
@@ -968,9 +993,11 @@ def _add_pending_veto_marker(sources, candidate_sha):
     return digest
 
 
-def _set_supervisor_heartbeat(sources, candidate_sha, digests, *, ledger_head="0" * 64):
+def _set_supervisor_heartbeat(sources, candidate_sha, digests, *, ledger_head=None):
     from aao.supervisor import _sign, signed_heartbeat
     registry = json.loads(sources.trust_registry.read_text())
+    if ledger_head is None:
+        ledger_head = _current_ledger_head(sources, registry)
     state_path = sources.trust_registry.parent / "heartbeat-state.json"
     state_path.unlink(missing_ok=True)
     event = signed_heartbeat(2, "2026-01-01T00:00:00+00:00", registry["test_supervisor_private_key"],
@@ -984,6 +1011,27 @@ def _set_supervisor_heartbeat(sources, candidate_sha, digests, *, ledger_head="0
     sources.heartbeat.write_text(json.dumps(event))
     sequence_path = sources.heartbeat.with_suffix(sources.heartbeat.suffix + ".sequence")
     sequence_path.write_text("1")
+
+
+def _current_ledger_head(sources, registry):
+    from aao.governance_ledger import verify
+    rows = verify(sources.ledger, registry["ledger_keys"])
+    return rows[-1]["hash"] if rows else "0" * 64
+
+
+def _append_bound_audit_decision(sources, auth, *, verdict="approve", resolves_pending=()):
+    registry = json.loads(sources.trust_registry.read_text())
+    entry = append(sources.ledger, {
+        "type": "audit-verdict",
+        "candidate_sha": auth["candidate_sha"],
+        "report_sha256": auth["expediente_sha256"],
+        "verdict": verdict,
+        "veto": False,
+        **({"resolves_pending": list(resolves_pending)} if resolves_pending else {}),
+    }, "auditor", registry["test_auditor_private_key"], registry["ledger_keys"])
+    sources.ledger_anchor.write_text(entry["hash"])
+    _set_supervisor_heartbeat(sources, auth["candidate_sha"], [], ledger_head=entry["hash"])
+    return entry
 
 
 def test_integrator_blocks_on_unresolved_pending_veto_marker(tmp_path, monkeypatch):
@@ -1028,10 +1076,11 @@ def test_integrator_rejects_when_marker_seen_by_supervisor_is_deleted(tmp_path, 
 def test_integrator_rejects_truncated_ledger_against_supervisor_head(tmp_path):
     promote, repo, bare, _base, _head, _tree, auth, sources, signature = _git_fixture(tmp_path)
     registry = json.loads(sources.trust_registry.read_text())
-    entry = append(sources.ledger, {"type": "audit-verdict", "candidate_sha": auth["candidate_sha"]},
+    first_line = sources.ledger.read_bytes()
+    entry = append(sources.ledger, {"type": "audit-verdict", "candidate_sha": "f" * 40},
                    "auditor", registry["test_auditor_private_key"], registry["ledger_keys"])
     _set_supervisor_heartbeat(sources, auth["candidate_sha"], [], ledger_head=entry["hash"])
-    sources.ledger.write_bytes(b"")
+    sources.ledger.write_bytes(first_line)
     _assert_integrator_rejects_without_main_change(
         promote, repo, bare, auth, signature, sources, "ledger truncated or rewritten"
     )
@@ -1040,7 +1089,7 @@ def test_integrator_rejects_truncated_ledger_against_supervisor_head(tmp_path):
 def test_integrator_waits_when_ledger_has_unanchored_entries(tmp_path):
     promote, repo, bare, _base, _head, _tree, auth, sources, signature = _git_fixture(tmp_path)
     registry = json.loads(sources.trust_registry.read_text())
-    append(sources.ledger, {"type": "audit-verdict", "candidate_sha": auth["candidate_sha"]},
+    append(sources.ledger, {"type": "audit-verdict", "candidate_sha": "f" * 40},
            "auditor", registry["test_auditor_private_key"], registry["ledger_keys"])
     _assert_integrator_rejects_without_main_change(
         promote, repo, bare, auth, signature, sources, "ledger not yet anchored"
@@ -1050,10 +1099,9 @@ def test_integrator_waits_when_ledger_has_unanchored_entries(tmp_path):
 def test_integrator_waits_when_supervisor_head_is_an_older_ledger_row(tmp_path):
     promote, repo, bare, _base, _head, _tree, auth, sources, signature = _git_fixture(tmp_path)
     registry = json.loads(sources.trust_registry.read_text())
-    first = append(sources.ledger, {"type": "audit-verdict", "candidate_sha": auth["candidate_sha"]},
-                   "auditor", registry["test_auditor_private_key"], registry["ledger_keys"])
+    first = {"hash": _current_ledger_head(sources, registry)}
     _set_supervisor_heartbeat(sources, auth["candidate_sha"], [], ledger_head=first["hash"])
-    append(sources.ledger, {"type": "audit-verdict", "candidate_sha": auth["candidate_sha"]},
+    append(sources.ledger, {"type": "audit-verdict", "candidate_sha": "f" * 40},
            "auditor", registry["test_auditor_private_key"], registry["ledger_keys"])
     _assert_integrator_rejects_without_main_change(
         promote, repo, bare, auth, signature, sources, "ledger not yet anchored"
@@ -1064,9 +1112,7 @@ def test_integrator_proceeds_when_supervisor_head_matches_and_markers_present_or
     monkeypatch.setattr("aao.pending_veto._check_parents", lambda path, uid: None)
     promote, repo, _bare, _base, head, tree, auth, sources, signature = _git_fixture(tmp_path)
     digest = _add_pending_veto_marker(sources, head)
-    registry = json.loads(sources.trust_registry.read_text())
-    entry = append(sources.ledger, {"type": "audit-verdict", "candidate_sha": head,
-        "resolves_pending": [digest]}, "auditor", registry["test_auditor_private_key"], registry["ledger_keys"])
+    entry = _append_bound_audit_decision(sources, auth, resolves_pending=[digest])
     _set_supervisor_heartbeat(sources, head, [digest], ledger_head=entry["hash"])
     commit = promote(repo, "origin", auth, signature, sources,
         identity_provider=_integrator_identity(), now=lambda: __import__("datetime").datetime(
@@ -1093,7 +1139,7 @@ def test_supervisor_marker_registry_is_cumulative_and_signed(tmp_path, monkeypat
         trusted_keys=registry["ledger_keys"], state_path=state, integrator_key_id="integrator")
     assert second["state_sha256"] == hashlib.sha256(prior_state_bytes).hexdigest()
     assert second["pending_markers"][head] == marker_digests
-    assert second["ledger_head"] == "0" * 64
+    assert second["ledger_head"] == _current_ledger_head(sources, registry)
     assert second["signature"] != first["signature"]
     from aao.supervisor import _read_state
     assert _read_state(state, registry["test_supervisor_private_key"])["pending_markers"][head] == marker_digests
@@ -1179,11 +1225,7 @@ def test_integrator_proceeds_when_pending_veto_resolved_in_ledger(tmp_path, monk
             identity_provider=_integrator_identity(),
             now=lambda: __import__("datetime").datetime(2026, 1, 1, 1,
                 tzinfo=__import__("datetime").timezone.utc))
-    registry = json.loads(sources.trust_registry.read_text())
-    resolved = append(sources.ledger, {"type": "audit-verdict",
-        "candidate_sha": head, "resolves_pending": [digest]}, "auditor",
-        registry["test_auditor_private_key"], registry["ledger_keys"])
-    sources.ledger_anchor.write_text(resolved["hash"])
+    resolved = _append_bound_audit_decision(sources, auth, resolves_pending=[digest])
     next((Path(str(sources.ledger) + ".pending-vetoes")).glob("*.json")).unlink()
     _set_supervisor_heartbeat(sources, head, [digest], ledger_head=resolved["hash"])
 
@@ -1342,6 +1384,7 @@ def test_integrator_pending_veto_parent_custody_without_patch(tmp_path):
         pytest.skip(f"sandbox temporary tree has unsafe ancestors: {error}")
     registry = json.loads(sources.trust_registry.read_text())
     resolved = append(sources.ledger, {"type": "audit-verdict", "candidate_sha": head,
+        "report_sha256": auth["expediente_sha256"], "verdict": "approve", "veto": False,
         "resolves_pending": [digest]}, "auditor", registry["test_auditor_private_key"],
         registry["ledger_keys"])
     sources.ledger_anchor.write_text(resolved["hash"])
@@ -1590,6 +1633,7 @@ def test_integrator_rejects_rename_of_protected_path(tmp_path):
     registry["protected_routes"] = PROTECTED_ROUTES
     registry["protected_routes_sha256"] = PROTECTED_ROUTES_SHA256
     sources.trust_registry.write_text(json.dumps(registry))
+    _append_bound_audit_decision(sources, auth)
     with pytest.raises(ValueError, match="protected path risk class insufficient"):
         promote(repo, "origin", auth, sign(auth, registry["test_auditor_private_key"]), sources,
                 identity_provider=_integrator_identity(),
@@ -1916,6 +1960,44 @@ def test_integrator_refuses_when_frozen(tmp_path):
     with pytest.raises(RuntimeError,match="frozen"): promote(r,"origin",d,sig,sources,identity_provider=type("I",(),{"__call__":lambda self:"integrator","push_identity":lambda self,*a:True})())
 
 
+def test_integrator_rechecks_ledger_head_after_base_recheck_before_push(tmp_path):
+    from aao.governance_ledger import append as append_ledger
+
+    promote_fn, repo, bare, _base, _head, _tree, auth, sources, signature = _git_fixture(tmp_path)
+    registry = json.loads(sources.trust_registry.read_text())
+    def change_decision():
+        append_ledger(sources.ledger,
+                      {"type": "audit-verdict", "candidate_sha": auth["candidate_sha"],
+                       "report_sha256": "f" * 64, "verdict": "reject", "veto": True},
+                      "ledger", registry["test_ledger_private_key"], registry["ledger_keys"])
+    identity = type("I", (), {"__call__": lambda self: "integrator",
+                               "push_identity": lambda self, *_: True})()
+    with pytest.raises(RuntimeError, match="ledger changed during promotion"):
+        promote_fn(repo, "origin", auth, signature, sources, identity_provider=identity,
+                   now=lambda: __import__("datetime").datetime(2026, 1, 1, 1,
+                       tzinfo=__import__("datetime").timezone.utc), after_recheck=change_decision)
+    assert subprocess.run(["git", "--git-dir", str(bare), "rev-parse", "refs/heads/main"],
+                          check=True, capture_output=True, text=True).stdout.strip() == _base
+
+
+def test_integrator_requires_current_ledger_decision_for_candidate(tmp_path):
+    from aao.governance_ledger import append as append_ledger
+
+    promote_fn, repo, bare, base, _head, _tree, auth, sources, signature = _git_fixture(tmp_path)
+    registry = json.loads(sources.trust_registry.read_text())
+    rejected = append_ledger(sources.ledger,
+        {"type": "audit-verdict", "candidate_sha": auth["candidate_sha"],
+         "report_sha256": "f" * 64, "verdict": "reject", "veto": True},
+        "ledger", registry["test_ledger_private_key"], registry["ledger_keys"])
+    sources.ledger_anchor.write_text(rejected["hash"])
+    _set_supervisor_heartbeat(sources, auth["candidate_sha"], [], ledger_head=rejected["hash"])
+    with pytest.raises(ValueError, match="current ledger audit decision"):
+        promote_fn(repo, "origin", auth, signature, sources, identity_provider=_integrator_identity(),
+                   now=lambda: __import__("datetime").datetime(2026, 1, 1, 1,
+                       tzinfo=__import__("datetime").timezone.utc))
+    assert _remote_main(bare) == base
+
+
 @pytest.mark.nt("NT-03-2")
 def test_integrator_post_publish_divergence_freezes(tmp_path):
     promote,r,bare,_,_,_,d,sources,sig=_git_fixture(tmp_path)
@@ -1936,6 +2018,8 @@ def test_integrator_records_incident_on_ambiguous_push_with_divergent_remote(
     from aao.integration_authorization import canonical
 
     promote, repo, bare, _base, _head, _tree, auth, sources, signature = _git_fixture(tmp_path)
+    ledger_before = sources.ledger.read_text()
+    ledger_before_entry = json.loads(ledger_before.splitlines()[-1])
     push_calls = []
 
     def ambiguous_push(*_args, **_kwargs):
@@ -1967,8 +2051,8 @@ def test_integrator_records_incident_on_ambiguous_push_with_divergent_remote(
     assert _remote_main(bare) == auth["candidate_sha"]
     assert len(push_calls) == 1
     assert sources.freeze.exists()
-    assert sources.ledger.read_text() == ""
-    assert sources.ledger_anchor.read_text() == "0" * 64
+    assert sources.ledger.read_text() == ledger_before
+    assert sources.ledger_anchor.read_text() == ledger_before_entry["hash"]
     request_path, = inbox.glob("incident-*.json")
     request = json.loads(request_path.read_text())
     assert request["schema"] == "aao.integrator-incident.v1"
@@ -1989,6 +2073,8 @@ def test_integrator_records_incident_on_ambiguous_push_with_divergent_remote(
 
 def test_integrator_freezes_and_records_incident_when_remote_ref_deleted_after_push(tmp_path):
     promote, repo, bare, _base, _head, _tree, auth, sources, signature = _git_fixture(tmp_path)
+    ledger_before = sources.ledger.read_text()
+    ledger_before_entry = json.loads(ledger_before.splitlines()[-1])
     def delete_ref():
         subprocess.run(["git", "--git-dir", str(bare), "update-ref", "-d", "refs/heads/main"],
                        check=True, capture_output=True)
@@ -1997,7 +2083,8 @@ def test_integrator_freezes_and_records_incident_when_remote_ref_deleted_after_p
                 now=lambda: __import__("datetime").datetime(2026, 1, 1, 1,
                     tzinfo=__import__("datetime").timezone.utc), after_push=delete_ref)
     assert sources.freeze.exists()
-    assert sources.ledger.read_text() == ""
+    assert sources.ledger.read_text() == ledger_before
+    assert sources.ledger_anchor.read_text() == ledger_before_entry["hash"]
     request_path, = sources.incident_inbox.glob("incident-*.json")
     request = json.loads(request_path.read_text())
     assert request["type"] == "incident"

@@ -1,0 +1,5 @@
+{"auditor":"codex","exception":"CEO-DEC-AUDIT-CODEX-2026-10-24","os_user":"aao-auditor-alt","uid":1006,"base":"0a55daf5ee08c7f10c6c56224da145228c549011","head":"50033ae97701c4158588dd18c3488a19425ced0e",
+ "checked_out_head":"50033ae97701c4158588dd18c3488a19425ced0e","prompt_name":"r1-chain","prompt_template_sha256":"3ddba5375577292dc75bb0ce04634c7d63f03d20cd74bcf1fca1d232f9246ef9",
+ "codex_sha256":"b93f6811d3f653f0fb83be4050d857fb9abbb111dfa2ce160563327daff7f306","codex_code_mode_host_sha256":"8ee4f472e92ac226a189e98998633b2d07f989f208515750764db660369f2926","disabled_features":"plugins plugin_sharing browser_use browser_use_external browser_use_full_cdp_access in_app_browser computer_use image_generation memories apps","codex_version":"codex-cli 0.164.0",
+ "prompt_sha256":"164bf9998dc5a0339a714f3a64fc221d634f018e114c67a3954f33a742e6d178",
+ "report_sha256":"040fdd3c8fa0342b461ed2a4ac2fd4c385dc6b379953ec8c52536e4a0128c8bc","finished_at":"2026-10-24T22:23:16Z"}

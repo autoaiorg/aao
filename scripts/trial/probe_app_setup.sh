@@ -10,7 +10,8 @@ APP=aao-probe-noworkflows FORK=autoaiorg/aao-trial-probe
 if [[ ${1:-} == --teardown ]]; then
   echo "1. GitHub: Settings of $APP > Install App > Uninstall from $FORK, then Advanced > Delete GitHub App."
   read -r -p "Done on GitHub? [y/N] " ok; [[ $ok == y ]] || exit 1
-  sudo -u $APP -H sh -c 'shred -u ~/.config/aao/'$APP'.pem; rm -f ~/.config/aao/'$APP'.json'
+  # The key must be destroyed before the account goes; a failed shred stops the teardown (Codex audit 2b3e9c1 B-05).
+  sudo -u $APP -H sh -ec 'shred -u ~/.config/aao/'$APP'.pem && rm -f ~/.config/aao/'$APP'.json' || { echo "FAIL: key not destroyed" >&2; exit 1; }
   sudo userdel -r $APP && echo "uid removed"
   gh repo delete $FORK --yes && echo "fork deleted"
   exit 0

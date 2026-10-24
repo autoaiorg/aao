@@ -14,6 +14,21 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = sorted([*ROOT.glob(".github/workflows/*.y*ml"), *ROOT.glob("deploy/trial/*.y*ml")])
 
 
+def violations(text: str) -> list[str]:
+    """The single checker every workflow goes through (adversarial cases below use it too)."""
+    code = "\n".join(line.split("#", 1)[0] for line in text.splitlines())
+    found = []
+    if not re.search(r"(?m)^permissions:\s*$", code):
+        found.append("missing explicit top-level permissions block")
+    if re.search(r":\s*['\"]?write\b|write-all|read-all", code):
+        found.append("a permission is not read-only/explicit")
+    if re.search(r"\bpull_request_target\b|\bworkflow_run\b", code):
+        found.append("privileged trigger")
+    if "secrets." in code or "secrets[" in code:
+        found.append("secret reference")
+    return found
+
+
 def test_workflows_are_found():
     names = {p.relative_to(ROOT).as_posix() for p in WORKFLOWS}
     assert {".github/workflows/ci.yml", "deploy/trial/test.yml"} <= names
@@ -21,20 +36,22 @@ def test_workflows_are_found():
 
 @pytest.mark.parametrize("path", WORKFLOWS, ids=lambda p: p.relative_to(ROOT).as_posix())
 def test_workflow_is_safe_for_untrusted_pull_requests(path):
-    text = path.read_text()
-    code = "\n".join(line.split("#", 1)[0] for line in text.splitlines())
-    # Condition 2: explicit top-level permissions, nothing writable anywhere (top level or per job).
-    assert re.search(r"(?m)^permissions:\s*$", code), "missing explicit top-level permissions block"
-    assert not re.search(r":\s*['\"]?write\b|write-all|read-all", code), "a permission is not read-only/explicit"
-    # Condition 3: no trigger that runs untrusted content with base-repository privileges.
-    assert not re.search(r"\bpull_request_target\b|\bworkflow_run\b", code)
-    # Condition 1: no secrets referenced (GITHUB_TOKEN stays implicit and read-only).
-    assert "secrets." not in code and "secrets[" not in code
+    assert violations(path.read_text()) == []
 
 
-def test_inline_write_permission_is_caught():
-    # Codex audit 50033ae p2p3 B-03: `permissions: {contents: write}` inside a job must not pass.
-    pattern = r":\s*['\"]?write\b|write-all|read-all"
-    assert re.search(pattern, "    permissions: {contents: write}")
-    assert re.search(pattern, "  contents: 'write'")
-    assert not re.search(pattern, "permissions:\n  contents: read")
+SAFE = "on: pull_request\npermissions:\n  contents: read\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: true\n"
+
+
+@pytest.mark.parametrize("bad, reason", [
+    (SAFE.replace("      - run: true", "    permissions: {contents: write}\n      - run: true"), "not read-only"),
+    (SAFE.replace("contents: read", "contents: 'write'"), "not read-only"),
+    (SAFE.replace("contents: read", "write-all"), "not read-only"),
+    (SAFE.replace("permissions:\n  contents: read\n", ""), "missing explicit"),
+    (SAFE.replace("on: pull_request", "on: pull_request_target"), "privileged trigger"),
+    (SAFE.replace("on: pull_request", "on:\n  workflow_run:"), "privileged trigger"),
+    (SAFE.replace("run: true", "run: echo ${{ secrets.TOKEN }}"), "secret reference"),
+])
+def test_checker_rejects_each_adversarial_workflow(bad, reason):
+    # Codex audit 2b3e9c1 B-04/C-01: the adversarial cases go through the same checker as the real files.
+    assert any(reason in v for v in violations(bad)), violations(bad)
+    assert violations(SAFE) == []

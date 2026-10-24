@@ -58,6 +58,7 @@ def _fixture(tmp_path):
         "protected_routes": route_map(routes),
         "protected_routes_sha256": routes_digest(routes["routes"]),
         "required_check_publishers": {"aao-audit": [5448107], "test": [15368]},
+        "ledger_keys": {},
         "push_principals": routes["push_principals"],
     }))
     registered = json.loads(trust.trust_registry.read_text())
@@ -110,6 +111,7 @@ def test_stage2_and4_alternating_ticks_promote_the_exact_staged_commit(tmp_path,
 
     def fake_audit(manifest_path, output, key, **kwargs):
         output.mkdir(parents=True)
+        (output / "report.json").write_text('{"verdict":"approve"}')
         return {"verdict": "approve"}
 
     def fake_issue(report_dir, repo, pr_number, key, output, **kwargs):
@@ -120,6 +122,9 @@ def test_stage2_and4_alternating_ticks_promote_the_exact_staged_commit(tmp_path,
     monkeypatch.setattr(auditor_dispatch, "audit_manifest", fake_audit)
     monkeypatch.setattr(auditor_dispatch, "issue_authorization", fake_issue)
     monkeypatch.setattr(auditor_dispatch, "verify_promotion", lambda *a, **k: (True, ()))
+    monkeypatch.setattr(auditor_dispatch, "load_anchor", lambda *_: {})
+    monkeypatch.setattr(auditor_dispatch, "ledger_rows", lambda _anchor: [{"hash": "f" * 64}])
+    monkeypatch.setattr(r1_pipeline, "verify_ledger", lambda *_: [{"hash": "f" * 64}])
     first = _tick(remote, mirror, gh, inbox, reports, state, trust)
     assert first[0]["status"] == "queued"
     audit = _request(inbox, "audit")
@@ -158,11 +163,15 @@ def test_stage2_and4_alternating_ticks_promote_the_exact_staged_commit(tmp_path,
 
 def test_stage2_red_test_check_never_promotes(tmp_path, monkeypatch):
     remote, mirror, gh, inbox, reports, state, trust, _base, _head = _fixture(tmp_path)
+    ledger_state = {"head": "f" * 64}
+    monkeypatch.setattr(r1_pipeline, "verify_ledger", lambda *_: [{"hash": ledger_state["head"]}])
     _tick(remote, mirror, gh, inbox, reports, state, trust)
     request = _request(inbox, "audit")
     audit_id = next(p.stem for p in inbox.glob("*.json") if json.loads(p.read_text()) == request)
     report = reports / audit_id
     report.mkdir(parents=True)
+    (report / "audit").mkdir()
+    (report / "audit" / "report.json").write_text('{"verdict":"approve"}')
     (report / "authorization.json").write_text("{}")
     (report / "authorization.sig").write_text("signature")
     staged_state = _tick(remote, mirror, gh, inbox, reports, state, trust)[0]
@@ -170,13 +179,20 @@ def test_stage2_red_test_check_never_promotes(tmp_path, monkeypatch):
     gate = _request(inbox, "gate")
     gate_id = next(p.stem for p in inbox.glob("*.json") if json.loads(p.read_text()) == gate)
     (reports / gate_id).mkdir(parents=True)
-    (reports / gate_id / "gate.json").write_text('{"conformant":true}')
+    (reports / gate_id / "gate.json").write_text(json.dumps({"conformant": True,
+        "ledger_head": "f" * 64,
+        "audit_decision_sha256": hashlib.sha256((report / "audit" / "report.json").read_bytes()).hexdigest()}))
     gh.checks[(staged, "test")] = "failure"
     gh.checks[(staged, "aao-audit")] = "success"
     monkeypatch.setattr(r1_pipeline, "promote", lambda *a, **k: (_ for _ in ()).throw(AssertionError("promoted")))
     result = _tick(remote, mirror, gh, inbox, reports, state, trust)
     assert result[0]["status"] == "gated"
     assert _run("git", "--git-dir", str(remote), "rev-parse", "refs/heads/main") == staged_state["base_sha"]
+    ledger_state["head"] = "e" * 64
+    invalidated = _tick(remote, mirror, gh, inbox, reports, state, trust)[0]
+    assert invalidated["status"] == "audited"
+    assert json.loads((reports / gate_id / "gate.json").read_text())["ledger_head"] == "f" * 64
+    assert _request(inbox, "gate")["promoted_sha"] == staged
 
 
 def test_stage3_invalid_inbox_id_is_ignored_and_failed_gate_is_not_success(tmp_path, monkeypatch):
@@ -184,9 +200,16 @@ def test_stage3_invalid_inbox_id_is_ignored_and_failed_gate_is_not_success(tmp_p
     inbox.mkdir(); reports.mkdir()
     (inbox / "invalid.json").write_text("{}")
     valid_id = "a" * 64
+    audit_dir = reports / ("b" * 64) / "audit"
+    audit_dir.mkdir(parents=True)
+    (audit_dir / "report.json").write_text("{}")
+    (reports / ("b" * 64) / "manifest.json").write_text("{}")
+    (audit_dir / "report.sig").write_text("sig")
     (inbox / f"{valid_id}.json").write_text(json.dumps({"schema": "aao.audit-request.v1", "type": "gate",
         "id": "b" * 64, "promoted_sha": "c" * 40, "repo": "owner/project", "pr_number": 1}))
     monkeypatch.setattr(auditor_dispatch, "verify_promotion", lambda *a, **k: (False, ("not conformant",)))
+    monkeypatch.setattr(auditor_dispatch, "load_anchor", lambda *_: {})
+    monkeypatch.setattr(auditor_dispatch, "ledger_rows", lambda _anchor: [{"hash": "f" * 64}])
     client = FakeGitHub("d" * 40, "e" * 40)
     result = auditor_dispatch.dispatch_once(inbox, reports, tmp_path / "key", client)
     assert any(item["status"] == "ignored" for item in result)
@@ -299,8 +322,13 @@ def test_real_r1_authorizes_and_promotes_over_alternating_ticks(tmp_path, audit_
 
     # The heartbeat must include the real audit's appended ledger row before authorization is issued.
     real_issue = auditor_dispatch.issue_authorization
+    issue_attempts = 0
 
     def issue_after_anchoring(*args, **kwargs):
+        nonlocal issue_attempts
+        issue_attempts += 1
+        if issue_attempts == 1:
+            return real_issue(*args, **kwargs)  # expected to fail before supervisor anchors the decision
         env["heartbeat"]()
         return real_issue(*args, **kwargs)
 
@@ -309,7 +337,13 @@ def test_real_r1_authorizes_and_promotes_over_alternating_ticks(tmp_path, audit_
         anchor_path=env["anchor"], anchor_owner_uids=(env["anchor"].stat().st_uid,),
         registry_owner_uids=(os.getuid(),),
         repository_root=mirror, runner=ok_runner)
+    assert result[0]["status"] == "failed", result
+    # Report persists; the same audit request must retry the missing authorization next tick.
+    result = auditor_dispatch.dispatch_once(inbox, reports, env["key"], github,
+        anchor_path=env["anchor"], anchor_owner_uids=(env["anchor"].stat().st_uid,),
+        registry_owner_uids=(os.getuid(),), repository_root=mirror, runner=ok_runner)
     assert result[0]["status"] == "approve", result
+    assert issue_attempts == 2
     assert audit_file.exists()
     output.mkdir()
     (output / "authorization.json").write_bytes((reports / audit_file.stem / "authorization.json").read_bytes())
@@ -393,7 +427,7 @@ def test_real_r1_authorizes_and_promotes_over_alternating_ticks(tmp_path, audit_
         repository_root=mirror,
     )
     assert any(item.get("id") == second_gate_id and item["status"] == "ignored"
-               and item.get("reason") == "gate already published for promoted SHA"
+               and item.get("reason") == "gate already published for current decision and promoted SHA"
                for item in repeated_gate_result)
     assert github.published == published_before_repeat
 

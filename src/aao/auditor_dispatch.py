@@ -212,15 +212,14 @@ def dispatch_once(inbox: str | Path, reports: str | Path, key: str | Path,
                 with Path(str(_ledger(anchor)) + ".lock").open("a") as ledger_lock:
                     fcntl.flock(ledger_lock, fcntl.LOCK_EX)
                     rows = ledger_rows(anchor)
-                    if any(row.get("type") == "integrator-incident"
-                           and isinstance(row.get("incident"), dict)
-                           and row["incident"].get("id") == request["id"] for row in rows):
+                    if any(row.get("type") == "integrator-incident" and row.get("id") == request["id"]
+                           for row in rows):
                         results.append({"id": request_id, "status": "ignored", "reason": "incident already recorded"})
                         continue
                     auditor_id = anchor["policy"]["auditor_id"]
                     with tempfile.TemporaryDirectory(prefix="aao-ledger-keys-") as temporary:
                         keys = _ledger_keys(anchor, Path(temporary))
-                        append_ledger(_ledger(anchor), {"type": "integrator-incident",
+                        append_ledger(_ledger(anchor), {"type": "integrator-incident", "id": request["id"],
                             "incident": payload,
                             "integrator_signature_sha256": hashlib.sha256(signature).hexdigest()}, auditor_id,
                             str(key), keys)
@@ -245,6 +244,23 @@ def dispatch_once(inbox: str | Path, reports: str | Path, key: str | Path,
             kind = request.get("type")
             if kind == "audit":
                 if (audit_dir / "report.json").is_file():
+                    report = json.loads((audit_dir / "report.json").read_text())
+                    if (report.get("verdict") == "approve" and
+                            not ((reports / request_id / "authorization.json").is_file() and
+                                 (reports / request_id / "authorization.sig").is_file())):
+                        # A previous issuance may have raced the supervisor's ledger anchor.
+                        # Retry issuance from the already signed report on the next dispatch tick.
+                        auth_dir = reports / request_id / "authorization"
+                        issue_authorization(audit_dir, request["repo"], request["pr_number"], key,
+                                            auth_dir, anchor_path=anchor_path,
+                                            anchor_owner_uids=anchor_owner_uids,
+                                            registry_owner_uids=registry_owner_uids)
+                        for name in ("authorization.json", "authorization.sig"):
+                            target = reports / request_id / name
+                            target.write_bytes((auth_dir / name).read_bytes())
+                            target.chmod(0o640)
+                        results.append({"id": request_id, "status": "approve",
+                                        "reason": "authorization issuance retried"}); continue
                     results.append({"id": request_id, "status": "ignored",
                                     "reason": "request already has a report"}); continue
                 if set(request) != {"schema", "type", "repo", "pr_number", "manifest"}:
@@ -283,14 +299,6 @@ def dispatch_once(inbox: str | Path, reports: str | Path, key: str | Path,
                 if set(request) != {"schema", "type", "id", "promoted_sha", "repo", "pr_number"}:
                     raise ValueError("unexpected gate request fields")
                 audit_id, sha, repo = request["id"], request["promoted_sha"], request["repo"]
-                if gate_path.is_file():
-                    try:
-                        previous_gate = json.loads(gate_path.read_text())
-                    except (OSError, ValueError):
-                        previous_gate = None
-                    if isinstance(previous_gate, dict) and previous_gate.get("promoted_sha") == sha:
-                        results.append({"id": request_id, "status": "ignored",
-                                        "reason": "gate already published for promoted SHA"}); continue
                 if not isinstance(audit_id, str) or not _ID.fullmatch(audit_id):
                     raise ValueError("invalid audit id")
                 if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
@@ -299,14 +307,32 @@ def dispatch_once(inbox: str | Path, reports: str | Path, key: str | Path,
                     raise ValueError("invalid repository")
                 if expected_repo is not None and repo != expected_repo:
                     raise ValueError("request repository does not match configured repository")
+                current_anchor = load_anchor(anchor_path, anchor_owner_uids)
+                current_rows = ledger_rows(current_anchor)
+                current_head = current_rows[-1]["hash"] if current_rows else "0" * 64
+                if gate_path.is_file():
+                    try:
+                        previous_gate = json.loads(gate_path.read_text())
+                    except (OSError, ValueError):
+                        previous_gate = None
+                    decision_path = reports / audit_id / "audit" / "report.json"
+                    current_decision = hashlib.sha256(decision_path.read_bytes()).hexdigest()
+                    if (isinstance(previous_gate, dict) and previous_gate.get("promoted_sha") == sha and
+                            previous_gate.get("ledger_head") == current_head and
+                            previous_gate.get("audit_decision_sha256") == current_decision):
+                        results.append({"id": request_id, "status": "ignored",
+                                        "reason": "gate already published for current decision and promoted SHA"}); continue
                 root = reports / audit_id
                 conformant, reasons = verify_promotion(root / "manifest.json", root / "audit/report.json",
                     root / "audit/report.sig", sha, anchor_path=anchor_path,
                     anchor_owner_uids=anchor_owner_uids)
+                decision_sha = hashlib.sha256((root / "audit/report.json").read_bytes()).hexdigest()
+                ledger_head = current_rows[-1]["hash"] if current_rows else "0" * 64
                 _publish(github_auditor_client, repo, sha, "success" if conformant else "failure",
                          "promotion gate passed" if conformant else "; ".join(reasons))
                 _atomic(gate_path, {"schema": "aao.promotion-gate.v1", "conformant": conformant,
-                                    "promoted_sha": sha, "reasons": list(reasons)})
+                                    "promoted_sha": sha, "audit_decision_sha256": decision_sha,
+                                    "ledger_head": ledger_head, "reasons": list(reasons)})
                 results.append({"id": request_id, "status": "success" if conformant else "failure"})
             else:
                 raise ValueError("unknown request type")

@@ -3,12 +3,14 @@ set -euo pipefail
 [[ $- == *p* ]] || { echo 'FAIL: invoke directly as root' >&2; exit 2; }
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root LANG=C.UTF-8
 unset BASH_ENV ENV CDPATH GLOBIGNORE PYTHONPATH PYTHONHOME PYTHONSTARTUP LD_PRELOAD LD_LIBRARY_PATH
-REV= ONLY=()
+REV= ONLY=() A13_COLLECT=
 while (($#)); do case $1 in
   --rev) (($# >= 2)) || exit 2; REV=$2; shift;;
   --only) (($# >= 2)) || exit 2; IFS=, read -r -a ONLY <<<"$2"; shift;;
+  --a13-collect) (($# >= 2)) || exit 2; A13_COLLECT=$2; shift;;
   *) echo "unknown argument: $1" >&2; exit 2;; esac; shift; done
 [[ $EUID == 0 && $REV =~ ^[0-9a-f]{40}$ ]] || { echo 'FAIL: root and --rev <40-hex> required' >&2; exit 2; }
+if [[ -n $A13_COLLECT ]]; then [[ $A13_COLLECT =~ ^[0-9]{8}T[0-9]{6}\.[0-9]{9}Z$ ]] || { echo 'FAIL: --a13-collect <run_id>' >&2; exit 2; }; ONLY=(A-13-collect); fi
 CEO=${SUDO_USER:-}; [[ -n $CEO && $CEO != root ]] || { echo 'FAIL: run via sudo from the CEO login' >&2; exit 2; }
 [[ $CEO == alessbarb ]] || { echo 'FAIL: SUDO_USER must be the configured CEO alessbarb' >&2; exit 2; }
 SRC=/root/aao-src; REPO=autoaiorg/aao-governance-trial
@@ -147,10 +149,47 @@ make_fixture_pr(){
   fixture_head=$(python3 -I -c 'import json,sys;d=json.loads(sys.stdin.read());print(d["headRefOid"])' <<<"$pr")
 }
 if ((need_pr)); then make_fixture_pr; fi
-declare -a IDS=(A-01 A-02 A-03 A-04 A-05 A-06 A-09 A-12 A-14 P3-01 P3-02 P3-03 P3-05 P3-06 P3-07 P3-09 P3-12)
-declare -A ROLE=([A-01]=aao-impl-codex [A-02]=aao-impl-codex [A-03]=aao-integrator [A-04]=aao-integrator [A-05]=aao-integrator [A-06]=aao-auditor [A-09]=aao-notifier [A-12]=aao-integrator [A-14]=aao-probe-noworkflows [P3-01]=ceo [P3-02]=aao-impl-codex [P3-03]=aao-integrator [P3-05]=aao-integrator [P3-06]=aao-integrator [P3-07]=aao-integrator [P3-09]=ceo [P3-12]=aao-integrator)
+declare -a IDS=(A-01 A-02 A-03 A-04 A-05 A-06 A-09 A-12 A-14 P3-01 P3-02 P3-03 P3-04 P3-05 P3-06 P3-07 P3-08 P3-09 P3-12)
+declare -A ROLE=([P3-04]=aao-integrator [P3-08]=aao-integrator [A-01]=aao-impl-codex [A-02]=aao-impl-codex [A-03]=aao-integrator [A-04]=aao-integrator [A-05]=aao-integrator [A-06]=aao-auditor [A-09]=aao-notifier [A-12]=aao-integrator [A-14]=aao-probe-noworkflows [P3-01]=ceo [P3-02]=aao-impl-codex [P3-03]=aao-integrator [P3-05]=aao-integrator [P3-06]=aao-integrator [P3-07]=aao-integrator [P3-09]=ceo [P3-12]=aao-integrator)
 declare -A APP_UID=(); for row in "${APPS[@]}"; do read -r app uid <<<"$row"; APP_UID[$app]=$uid; done
+if [[ -n $A13_COLLECT ]]; then
+  iuid=${APP_UID[aao-integrator]}; ihome=$(getent passwd "$iuid" | cut -d: -f6)
+  ev=$(AAO_TRIAL_RUN_ID=$A13_COLLECT capture_evidence "$iuid" "$ihome" A-13 aao-integrator || true)
+  state='NOT RUN (no A-13 evidence for that run yet: still waiting, or the detached unit failed)'; [[ -n $ev ]] && state=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status","FAIL"))' "$ev")
+  printf 'A-13\taao-integrator\t%s\t%s\n' "$state" "${ev:-none}" | tee "$LOG/summary.tsv"
+  (cd "$LOG" && find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS); chmod 0640 "$LOG"/*
+  echo "Evidence: $LOG"; [[ $state == PASS ]]; exit $?
+fi
 APP_UID[aao-probe-noworkflows]=aao-probe-noworkflows
+# Stage the local candidate (integrator) and publish `aao-audit` on it (auditor; aao-auditor-alt for the
+# P3-04 wrong-publisher fixture). Sets $candidate. Records FAIL and returns 1 on any helper failure.
+seed_candidate(){
+  local id=$1 uid=$2 home=$3 clone=$4 pub=$5 role=${6:-$5} pub_uid helper_rc staged_sha helper_reason auditor_home auditor_work auditor_clone
+  pub_uid=${APP_UID[$pub]}
+  candidate=$(runuser -u "$uid" -- env -i HOME="$home" PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$clone" rev-parse HEAD)
+  set +e
+  (cd "$clone" && runuser -u "$uid" -- env -i HOME="$home" PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null GIT_CONFIG_KEY_1=core.fsmonitor GIT_CONFIG_VALUE_1=false AAO_GITHUB_TRIAL_REPOS="$REPO" AAO_GITHUB_TRIAL_BRANCH="aao-trial/required-$id-$TS" AAO_GITHUB_TRIAL_EXPECTED_SHA="$candidate" AAO_TRIAL_CANDIDATE_SHA="$candidate" AAO_TRIAL_RUN_ID="$AAO_TRIAL_RUN_ID" AAO_TRIAL_HARNESS_REV="$REV" /usr/bin/python3 -I -c "import sys;sys.path.insert(0,'$INSTALL/src');from aao.github_trial import main;raise SystemExit(main())" STAGE-COMMIT --repo "$REPO" --role aao-integrator --branch "aao-trial/required-$id-$TS") >"$LOG/$id-STAGE-COMMIT.out" 2>&1
+  helper_rc=$?
+  set -e
+  cat "$LOG/$id-STAGE-COMMIT.out"
+  if ((helper_rc != 0)); then helper_reason=$(head -n 1 "$LOG/$id-STAGE-COMMIT.out"); printf '%s\t%s\tFAIL\t%s\n' "$id" "$role" "$helper_reason" | tee -a "$LOG/summary.tsv"; rc=1; return 1; fi
+  staged_sha=$(grep -Eo 'staged local commit [0-9a-f]{40}' "$LOG/$id-STAGE-COMMIT.out" | awk '{print $4}' | tail -1)
+  if [[ $staged_sha != "$candidate" ]]; then printf '%s\t%s\tFAIL\tSTAGE-COMMIT SHA mismatch\n' "$id" "$role" | tee -a "$LOG/summary.tsv"; rc=1; return 1; fi
+  auditor_home=$(getent passwd "$pub_uid" | cut -d: -f6)
+  auditor_work=$WORK_ROOT/$pub_uid; [[ ! -L $auditor_work ]] || die 'auditor work directory is a symlink'
+  if [[ ! -e $auditor_work ]]; then install -d -o "$pub_uid" -g "$(id -gn "$pub_uid")" -m 0700 "$auditor_work"; fi
+  role_work_safe "$auditor_work" "$pub_uid" || die 'unsafe auditor work directory'
+  runuser -u "$pub_uid" -- env -i HOME="$auditor_home" PATH=/usr/bin:/bin mkdir -p "$auditor_work/$TS"
+  auditor_clone=$auditor_work/$TS/trial
+  if [[ ! -d $auditor_clone/.git ]]; then runuser -u "$pub_uid" -- env -i HOME="$auditor_home" PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c core.hooksPath=/dev/null -c core.fsmonitor=false clone --quiet "https://github.com/$REPO.git" "$auditor_clone"; fi
+  set +e
+  (cd "$auditor_clone" && runuser -u "$pub_uid" -- env -i HOME="$auditor_home" PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null GIT_CONFIG_KEY_1=core.fsmonitor GIT_CONFIG_VALUE_1=false AAO_GITHUB_TRIAL_REPOS="$REPO" AAO_GITHUB_TRIAL_SHA="$candidate" AAO_TRIAL_CANDIDATE_SHA="$candidate" AAO_TRIAL_RUN_ID="$AAO_TRIAL_RUN_ID" AAO_TRIAL_HARNESS_REV="$REV" /usr/bin/python3 -I -c "import sys;sys.path.insert(0,'$INSTALL/src');from aao.github_trial import main;raise SystemExit(main())" PUBLISH-AUDIT --repo "$REPO" --role "$pub") >"$LOG/$id-PUBLISH-AUDIT.out" 2>&1
+  helper_rc=$?
+  set -e
+  cat "$LOG/$id-PUBLISH-AUDIT.out"
+  if ((helper_rc != 0)); then helper_reason=$(head -n 1 "$LOG/$id-PUBLISH-AUDIT.out"); printf '%s\t%s\tFAIL\t%s\n' "$id" "$role" "$helper_reason" | tee -a "$LOG/summary.tsv"; rc=1; return 1; fi
+
+}
 printf 'test\trole\tstatus\tevidence\n' | tee "$LOG/summary.tsv"
 rc=0
 for id in "${IDS[@]}"; do
@@ -202,29 +241,9 @@ for id in "${IDS[@]}"; do
   esac
   case $id in A-05|P3-06) envs+=(AAO_GITHUB_TRIAL_PHASE=stage);; esac
   # Seed the exact required audit check only after the candidate exists in the trial repo.
-  if [[ $id == A-03 || $id == A-04 || $id == P3-05 || $id == P3-07 || $id == P3-12 ]]; then
-    candidate=$(runuser -u "$uid" -- env -i HOME="$home" PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$clone" rev-parse HEAD)
-    set +e
-    (cd "$clone" && runuser -u "$uid" -- env -i HOME="$home" PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null GIT_CONFIG_KEY_1=core.fsmonitor GIT_CONFIG_VALUE_1=false AAO_GITHUB_TRIAL_REPOS="$REPO" AAO_GITHUB_TRIAL_BRANCH="aao-trial/required-$id-$TS" AAO_GITHUB_TRIAL_EXPECTED_SHA="$candidate" AAO_TRIAL_CANDIDATE_SHA="$candidate" AAO_TRIAL_RUN_ID="$AAO_TRIAL_RUN_ID" AAO_TRIAL_HARNESS_REV="$REV" /usr/bin/python3 -I -c "import sys;sys.path.insert(0,'$INSTALL/src');from aao.github_trial import main;raise SystemExit(main())" STAGE-COMMIT --repo "$REPO" --role aao-integrator --branch "aao-trial/required-$id") >"$LOG/$id-STAGE-COMMIT.out" 2>&1
-    helper_rc=$?
-    set -e
-    cat "$LOG/$id-STAGE-COMMIT.out"
-    if ((helper_rc != 0)); then helper_reason=$(head -n 1 "$LOG/$id-STAGE-COMMIT.out"); printf '%s\t%s\tFAIL\t%s\n' "$id" "$role" "$helper_reason" | tee -a "$LOG/summary.tsv"; rc=1; continue; fi
-    staged_sha=$(grep -Eo 'staged local commit [0-9a-f]{40}' "$LOG/$id-STAGE-COMMIT.out" | awk '{print $4}' | tail -1)
-    if [[ $staged_sha != "$candidate" ]]; then printf '%s\t%s\tFAIL\tSTAGE-COMMIT SHA mismatch\n' "$id" "$role" | tee -a "$LOG/summary.tsv"; rc=1; continue; fi
-    auditor_home=$(getent passwd "${APP_UID[aao-auditor]}" | cut -d: -f6)
-    auditor_work=$WORK_ROOT/${APP_UID[aao-auditor]}; [[ ! -L $auditor_work ]] || die 'auditor work directory is a symlink'
-    if [[ ! -e $auditor_work ]]; then install -d -o "${APP_UID[aao-auditor]}" -g "$(id -gn "${APP_UID[aao-auditor]}")" -m 0700 "$auditor_work"; fi
-    role_work_safe "$auditor_work" "${APP_UID[aao-auditor]}" || die 'unsafe auditor work directory'
-    runuser -u "${APP_UID[aao-auditor]}" -- env -i HOME="$auditor_home" PATH=/usr/bin:/bin mkdir -p "$auditor_work/$TS"
-    auditor_clone=$auditor_work/$TS/trial
-    if [[ ! -d $auditor_clone/.git ]]; then runuser -u "${APP_UID[aao-auditor]}" -- env -i HOME="$auditor_home" PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c core.hooksPath=/dev/null -c core.fsmonitor=false clone --quiet "https://github.com/$REPO.git" "$auditor_clone"; fi
-    set +e
-    (cd "$auditor_clone" && runuser -u "${APP_UID[aao-auditor]}" -- env -i HOME="$auditor_home" PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null GIT_CONFIG_KEY_1=core.fsmonitor GIT_CONFIG_VALUE_1=false AAO_GITHUB_TRIAL_REPOS="$REPO" AAO_GITHUB_TRIAL_SHA="$candidate" AAO_TRIAL_CANDIDATE_SHA="$candidate" AAO_TRIAL_RUN_ID="$AAO_TRIAL_RUN_ID" AAO_TRIAL_HARNESS_REV="$REV" /usr/bin/python3 -I -c "import sys;sys.path.insert(0,'$INSTALL/src');from aao.github_trial import main;raise SystemExit(main())" PUBLISH-AUDIT --repo "$REPO" --role aao-auditor) >"$LOG/$id-PUBLISH-AUDIT.out" 2>&1
-    helper_rc=$?
-    set -e
-    cat "$LOG/$id-PUBLISH-AUDIT.out"
-    if ((helper_rc != 0)); then helper_reason=$(head -n 1 "$LOG/$id-PUBLISH-AUDIT.out"); printf '%s\t%s\tFAIL\t%s\n' "$id" "$role" "$helper_reason" | tee -a "$LOG/summary.tsv"; rc=1; continue; fi
+  if [[ $id == A-03 || $id == A-04 || $id == P3-04 || $id == P3-05 || $id == P3-07 || $id == P3-08 || $id == P3-12 ]]; then
+    pub=aao-auditor; [[ $id != P3-04 ]] || pub=aao-auditor-alt
+    seed_candidate "$id" "$uid" "$home" "$clone" "$pub" "$role" || continue
   fi
   if [[ $id == A-05 || $id == P3-06 ]]; then runuser -u "$uid" -- env -i HOME="$home" PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$clone" fetch --quiet origin "refs/pull/$fixture_num/head"; fi
   set +e
@@ -358,10 +377,129 @@ if ((${#ONLY[@]} == 0)) || [[ " ${ONLY[*]} " =~ " A-11 " || " ${ONLY[*]} " =~ " 
     printf 'P3-10\taao-supervisor\tNOT RUN\tno fork PR was created in this run\n' | tee -a "$LOG/summary.tsv"
   fi
 fi
-# Manual tests remain explicit, never silently omitted.
-for id in A-07 A-08 A-13 P3-04 P3-08 P3-11; do
-  if ((${#ONLY[@]} == 0)) || [[ " ${ONLY[*]} " =~ " $id " ]]; then printf '%s\tmanual\tNOT RUN\tmanual step documented in trial setup\n' "$id" | tee -a "$LOG/summary.tsv"; fi
-done
+wants(){ ((${#ONLY[@]} == 0)) || [[ " ${ONLY[*]} " =~ " $1 " ]]; }
+record(){ # id role status reason [json-evidence-file]: a root-side evidence record bound to this run
+  python3 -I -c 'import json,sys; ev=json.load(open(sys.argv[5])) if len(sys.argv) > 5 and sys.argv[5] else []
+json.dump({"test_id":sys.argv[1],"role":sys.argv[2],"status":sys.argv[3],"reason":sys.argv[4],"run_id":sys.argv[6],"harness_revision":sys.argv[7],"evidence":ev},open(sys.argv[8],"w"),indent=1)' \
+    "$1" "$2" "$3" "$4" "${5:-}" "$AAO_TRIAL_RUN_ID" "$REV" "$LOG/root-$1.json"
+  printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$LOG/root-$1.json" | tee -a "$LOG/summary.tsv"; [[ $3 != FAIL ]] || rc=1
+}
+SUP_CONFIG=/etc/aao-supervisor/config.json
+sup_cfg(){ python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], sys.argv[3]))' "$SUP_CONFIG" "$1" "$2"; }
+
+# A-08: the supervisor attributes the fork PR head to the implementer that pushed it (authenticated PushEvent
+# chain in the fork), not to the PR author (aao-pm[bot]). Uses the installed supervisor unit, triggered by root.
+if wants A-08; then
+  if [[ ${fork_head:-} =~ ^[0-9a-f]{40}$ && -n ${fork_pr:-} ]]; then
+    attribution=$(sup_cfg attribution_path /var/lib/aao-supervisor/attribution.json); a08=; deadline=$((SECONDS + 420))
+    while ((SECONDS < deadline)); do
+      systemctl start aao-supervisor-attribution.service || true
+      a08=$(python3 -I -c 'import json,sys
+try: print(json.dumps(json.load(open(sys.argv[1]))["candidates"].get(sys.argv[2])))
+except (OSError, ValueError, KeyError): print("null")' "$attribution" "$fork_head")
+      [[ $a08 == null ]] || break; sleep 30
+    done
+    printf '%s\n' "{\"pr\": $fork_pr, \"head\": \"$fork_head\", \"principals\": $a08}" > "$LOG/A-08-attribution.json"
+    if [[ $a08 == '["aao-impl-codex[bot]"]' ]]; then record A-08 aao-supervisor PASS "PR #$fork_pr head attributed only to the pushing implementer aao-impl-codex[bot], not to the PR author aao-pm[bot]"
+    elif [[ $a08 == null ]]; then record A-08 aao-supervisor INCONCLUSIVE "no attribution for $fork_head within 420s"
+    else record A-08 aao-supervisor FAIL "unexpected principals for $fork_head: $a08"; fi
+  else
+    record A-08 aao-supervisor "NOT RUN" "no fork PR from A-11 in this run"
+  fi
+fi
+
+# A-07 + P3-11: the CEO disables ruleset A (emergency), lands a fully checked commit on main, and the supervisor
+# must report both the ruleset drift and the non-integrator push; ruleset A is then restored and re-verified.
+# Ruleset A is restored on ANY exit while disabled; if restoration cannot be verified the run fails loudly.
+A_ID=25776805; A_DISABLED=0
+ceo_gh(){ runuser -u "$CEO" -- env -i HOME="$(getent passwd "$CEO"|cut -d: -f6)" PATH=/usr/bin:/bin gh "$@"; }
+restore_a(){
+  ((A_DISABLED)) || return 0
+  ceo_gh api -X PUT "repos/$REPO/rulesets/$A_ID" -f enforcement=active >/dev/null && check_rulesets && A_DISABLED=0 && return 0
+  echo "CRITICAL: ruleset A of $REPO could not be restored/verified. Re-enable it by hand NOW: gh api -X PUT repos/$REPO/rulesets/$A_ID -f enforcement=active" >&2
+  return 1
+}
+trap 'restore_a || true; rm -rf "$tmp"' EXIT
+sup_events(){ # newer than marker, of a type: prints matching event JSON lines
+  python3 -I -c 'import json,os,sys
+d,marker,kind=sys.argv[1],float(sys.argv[2]),sys.argv[3]
+for n in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+  p=os.path.join(d,n)
+  try:
+    if os.path.getmtime(p) < marker: continue
+    e=json.load(open(p))
+  except (OSError, ValueError): continue
+  if e.get("type")==kind: print(json.dumps(e))' "$1" "$2" "$3"
+}
+if wants A-07 || wants P3-11; then
+  iuid=${APP_UID[aao-integrator]}; ihome=$(getent passwd "$iuid" | cut -d: -f6); iwork=$WORK_ROOT/$iuid
+  role_work_safe "$iwork" "$iuid" || die "unsafe role work directory: $iwork"
+  runuser -u "$iuid" -- env -i HOME="$ihome" PATH=/usr/bin:/bin mkdir -p "$iwork/$TS"; a07_clone=$iwork/$TS/a07
+  IG=(runuser -u "$iuid" -- env -i HOME="$ihome" PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c core.hooksPath=/dev/null -c core.fsmonitor=false)
+  "${IG[@]}" clone --quiet "https://github.com/$REPO.git" "$a07_clone"
+  "${IG[@]}" -C "$a07_clone" -c user.name='AAO Trial Fixture' -c user.email=trial-fixture@users.noreply.github.com commit -q --allow-empty -m "AAO trial A-07 $TS"
+  if seed_candidate A-07 "$iuid" "$ihome" "$a07_clone" aao-auditor ceo; then
+    a07_sha=$candidate; green=0; deadline=$((SECONDS + 420))
+    while ((SECONDS < deadline)); do
+      green=$(ceo_gh api "repos/$REPO/commits/$a07_sha/check-runs?per_page=100" | python3 -I -c 'import json,sys; r=json.load(sys.stdin)["check_runs"]
+ok=lambda n,app=None: any(x["name"]==n and x["status"]=="completed" and x["conclusion"]=="success" and (app is None or x["app"]["id"]==app) for x in r)
+print(1 if ok("test") and ok("aao-audit",5448107) else 0)' || echo 0)
+      ((green)) && break; sleep 20
+    done
+    if ((green)); then
+      marker=$(date +%s.%N); events_dir=$(sup_cfg events_path /var/lib/aao-supervisor/events)
+      ceo_gh api "repos/$REPO/rulesets/$A_ID" > "$LOG/P3-11-ruleset-A.before.json"
+      A_DISABLED=1; ceo_gh api -X PUT "repos/$REPO/rulesets/$A_ID" -f enforcement=disabled > "$LOG/P3-11-ruleset-A.disabled.json"
+      ceo_home=$(getent passwd "$CEO" | cut -d: -f6); ceo_clone=$WORK_ROOT/$CEO/$TS/a07
+      runuser -u "$CEO" -- env -i HOME="$ceo_home" PATH=/usr/bin:/bin mkdir -p "$ceo_clone"
+      CG=(runuser -u "$CEO" -- env -i HOME="$ceo_home" PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c core.hooksPath=/dev/null -c core.fsmonitor=false)
+      "${CG[@]}" clone --quiet "https://github.com/$REPO.git" "$ceo_clone/trial" && "${CG[@]}" -C "$ceo_clone/trial" fetch --quiet origin "aao-trial/required-A-07-$TS" && "${CG[@]}" -C "$ceo_clone/trial" checkout -q --detach "$a07_sha"
+      set +e
+      (cd "$ceo_clone/trial" && runuser -u "$CEO" -- env -i HOME="$ceo_home" PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null GIT_CONFIG_KEY_1=core.fsmonitor GIT_CONFIG_VALUE_1=false AAO_GITHUB_TRIAL_REPOS="$REPO" AAO_TRIAL_CANDIDATE_SHA="$a07_sha" AAO_TRIAL_RUN_ID="$AAO_TRIAL_RUN_ID" AAO_TRIAL_HARNESS_REV="$REV" /usr/bin/python3 -I -c "import sys;sys.path.insert(0,'$INSTALL/src');from aao.github_trial import main;raise SystemExit(main())" A-07 --repo "$REPO" --role ceo) >"$LOG/A-07-ceo.out" 2>&1
+      set -e
+      cat "$LOG/A-07-ceo.out"
+      violation= drift=; deadline=$((SECONDS + 420))
+      while ((SECONDS < deadline)) && [[ -z $violation || -z $drift ]]; do
+        systemctl start aao-supervisor-watch.service || true
+        violation=$(sup_events "$events_dir" "$marker" governance-violation | python3 -I -c 'import json,sys; print(next((l for l in sys.stdin if json.loads(l).get("head")==sys.argv[1] and json.loads(l).get("actor")==sys.argv[2]),""),end="")' "$a07_sha" "$CEO")
+        drift=$(sup_events "$events_dir" "$marker" ruleset-drift | python3 -I -c 'import json,sys; print(next((l for l in sys.stdin if "update" in json.loads(l).get("missing",[])),""),end="")')
+        [[ -n $violation && -n $drift ]] || sleep 30
+      done
+      restore_a || { record P3-11 ceo FAIL "ruleset A could not be restored and verified"; exit 1; }
+      restored=; deadline=$((SECONDS + 300))
+      while ((SECONDS < deadline)) && [[ -z $restored ]]; do
+        systemctl start aao-supervisor-watch.service || true
+        restored=$(sup_events "$events_dir" "$marker" ruleset-restored | head -1); [[ -n $restored ]] || sleep 30
+      done
+      printf '%s\n' "${violation:-null}" > "$LOG/A-07-event.json"; printf '[%s,%s]\n' "${drift:-null}" "${restored:-null}" > "$LOG/P3-11-events.json"
+      landed=$(ceo_gh api "repos/$REPO/git/ref/heads/main" --jq .object.sha 2>/dev/null || true)
+      if wants A-07; then
+        if [[ $landed != "$a07_sha" ]]; then record A-07 ceo INCONCLUSIVE "the CEO push did not land on main (main=$landed); see A-07-ceo.out"
+        elif [[ -n $violation ]]; then record A-07 aao-supervisor PASS "supervisor reported governance-violation for the CEO push $a07_sha to main" "$LOG/A-07-event.json"
+        else record A-07 aao-supervisor FAIL "non-integrator push $a07_sha landed on main and no governance-violation was reported within 420s"; fi
+      fi
+      if wants P3-11; then
+        if [[ -n $drift && -n $restored ]]; then record P3-11 aao-supervisor PASS "supervisor reported ruleset A drift (update missing) and its restoration; ruleset A re-verified active" "$LOG/P3-11-events.json"
+        elif [[ -n $drift ]]; then record P3-11 aao-supervisor INCONCLUSIVE "drift reported; restoration event not seen within 300s (ruleset A itself re-verified active)" "$LOG/P3-11-events.json"
+        else record P3-11 aao-supervisor FAIL "ruleset A was disabled and no ruleset-drift alert was reported within 420s"; fi
+      fi
+    else
+      record A-07 ceo INCONCLUSIVE "A-07 candidate checks did not turn green within 420s; ruleset A was not touched"
+      record P3-11 ceo INCONCLUSIVE "skipped with A-07: ruleset A was not touched"
+    fi
+  fi
+fi
+
+# A-13: an installation token used after expiry must get 401. It needs ~62 minutes, so it runs detached as the
+# integrator (token only in that process' memory) and is collected later with: run_trial.sh --rev REV --a13-collect <run_id>
+if wants A-13; then
+  iuid=${APP_UID[aao-integrator]}; ihome=$(getent passwd "$iuid" | cut -d: -f6)
+  systemd-run --quiet --collect --unit "aao-trial-a13-${AAO_TRIAL_RUN_ID//[^0-9A-Za-z]/-}" --uid="$iuid" --gid="$(id -g "$iuid")" \
+    --working-directory="$ihome" /usr/bin/env -i HOME="$ihome" PATH=/usr/bin:/bin AAO_GITHUB_TRIAL_REPOS="$REPO" AAO_TRIAL_A13_WAIT=1 \
+    AAO_TRIAL_RUN_ID="$AAO_TRIAL_RUN_ID" AAO_TRIAL_HARNESS_REV="$REV" /usr/bin/python3 -I -c "import sys;sys.path.insert(0,'$INSTALL/src');from aao.github_trial import main;raise SystemExit(main())" A-13 --repo "$REPO" --role aao-integrator \
+    && printf 'A-13\taao-integrator\tPENDING\tdetached ~62 min; collect: run_trial.sh --rev %s --a13-collect %s\n' "$REV" "$AAO_TRIAL_RUN_ID" | tee -a "$LOG/summary.tsv" \
+    || record A-13 aao-integrator FAIL "could not start the detached A-13 expiry check"
+fi
 declare -A HOMES=(); HOMES[$CEO]=$(getent passwd "$CEO" | cut -d: -f6)
 for app in "${!APP_UID[@]}"; do user=${APP_UID[$app]}; HOMES[$user]=$(getent passwd "$user" | cut -d: -f6); done
 check_rulesets || { echo 'FAIL: trial rulesets changed or are no longer active at end' >&2; rc=1; }

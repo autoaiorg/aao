@@ -2,16 +2,17 @@
 # Independent audit by Antigravity (agy) as the alternate auditor (delegated resolution, #25).
 # Run ONLY as aao-auditor-alt (never as the CEO, never as aao-impl-ag):
 #   sudo -u aao-auditor-alt -H /opt/aao-audit/run_agy_audit.sh <base_sha> <head_sha> [prompt]
-# prompt: r1-chain (default) or p2p3-trial; each is pinned by its reviewed sha256 below.
+# prompt: r1-chain (default), p2p3-trial or p2p3-dictamen; each is pinned by its reviewed sha256 below.
 # Read-only: public clone at the frozen SHA, plan mode, sandbox, clean environment, the reviewed prompt only.
 # Writes ~/aao-audits/<head_sha>/{prompt.txt,report.md,attestation.json} and prints their sha256.
 set -euo pipefail
 umask 022   # report/attestation must not be group-writable: the bootstrap refuses them otherwise
 AGY=/usr/local/bin/agy   # root-owned copy; never a binary another account can write
 declare -A PROMPTS=([r1-chain]=3ddba5375577292dc75bb0ce04634c7d63f03d20cd74bcf1fca1d232f9246ef9   # reviewed docs/audit-prompts/r1-chain.md
-                   [p2p3-trial]=6272f2160ba4281f23b4f9aa32a7a9f3819a8559ee74361beddeb132795b4fb5) # reviewed docs/audit-prompts/p2p3-trial.md
+                   [p2p3-trial]=6272f2160ba4281f23b4f9aa32a7a9f3819a8559ee74361beddeb132795b4fb5   # reviewed docs/audit-prompts/p2p3-trial.md
+                   [p2p3-dictamen]=a9b2acf1d0b88353d630efcdddffe41605f136f30defa7cfad557e62463c6e66) # reviewed docs/audit-prompts/p2p3-dictamen.md
 me=$(id -un); [[ $me == aao-auditor-alt ]] || { echo "refusing: must run as aao-auditor-alt, not $me" >&2; exit 1; }
-[[ $# -eq 2 || $# -eq 3 ]] || { echo "usage: $0 <base_sha> <head_sha> [r1-chain|p2p3-trial]" >&2; exit 2; }
+[[ $# -eq 2 || $# -eq 3 ]] || { echo "usage: $0 <base_sha> <head_sha> [r1-chain|p2p3-trial|p2p3-dictamen]" >&2; exit 2; }
 base=$1 head=$2 pname=${3:-r1-chain}
 [[ -n ${PROMPTS[$pname]:-} ]] || { echo "unknown prompt $pname" >&2; exit 2; }
 PROMPT=/opt/aao-audit/$pname.md PROMPT_SHA256=${PROMPTS[$pname]}

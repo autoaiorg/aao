@@ -125,3 +125,52 @@ def test_fixture_tree_is_sent_as_json_and_p3_07_candidate_keeps_main_tree():
 def test_stage_branch_is_unique_per_run():
     # A fixed aao-trial/required-<id> branch from an earlier run makes the next STAGE-COMMIT a rejected non-fast-forward.
     assert 'AAO_GITHUB_TRIAL_BRANCH="aao-trial/required-$id-$TS"' in RUNNER.read_text()
+
+
+def _seed_body():
+    source = RUNNER.read_text()
+    return source.split("seed_candidate(){", 1)[1].split("\n}\n", 1)[0]
+
+
+def test_stage_commit_cli_branch_is_unique_per_run():
+    # Live defect: the CLI --branch overrides AAO_GITHUB_TRIAL_BRANCH, so both must carry the run id.
+    body = _seed_body()
+    assert '--branch "aao-trial/required-$id-$TS"' in body and '--branch "aao-trial/required-$id")' not in body
+    assert 'AAO_GITHUB_TRIAL_BRANCH="aao-trial/required-$id-$TS"' in body
+
+
+def test_p3_04_fixture_uses_the_wrong_publisher_and_others_the_auditor():
+    source = RUNNER.read_text()
+    assert "pub=aao-auditor; [[ $id != P3-04 ]] || pub=aao-auditor-alt" in source
+    assert '--role "$pub")' in _seed_body()
+
+
+def test_ruleset_a_is_restored_on_any_exit_and_marked_disabled_before_it_is_disabled():
+    source = RUNNER.read_text()
+    assert "trap 'restore_a || true; rm -rf \"$tmp\"' EXIT" in source
+    block = source.split("if wants A-07 || wants P3-11; then", 1)[1]
+    assert block.index("A_DISABLED=1") < block.index("enforcement=disabled") < block.index("restore_a ||")
+    assert "check_rulesets && A_DISABLED=0" in source
+
+
+def test_p3_07_candidate_is_divergent_and_keeps_the_workflow(tmp_path):
+    """Run the runner's exact git steps on a real repository."""
+    import subprocess
+
+    def git(*args, cwd=tmp_path):
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "core.hooksPath=/dev/null", *args],
+                              cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+    git("init", "-q", "-b", "main")
+    (tmp_path / "README.md").write_text("x")
+    git("add", "."); git("commit", "-qm", "base")
+    (tmp_path / ".github" / "workflows").mkdir(parents=True)
+    (tmp_path / ".github/workflows/test.yml").write_text("on: push\n")
+    git("add", "."); git("commit", "-qm", "seed CI")
+    main = git("rev-parse", "main")
+    git("checkout", "-q", "-B", "trial-candidate", "main^")
+    git("checkout", "-q", "main", "--", ".")
+    git("commit", "-q", "--allow-empty", "-m", "AAO trial fixture P3-07")
+    candidate = git("rev-parse", "HEAD")
+    ancestor = subprocess.run(["git", "merge-base", "--is-ancestor", main, candidate], cwd=tmp_path).returncode
+    assert ancestor == 1  # main is not an ancestor: the push is non-fast-forward
+    assert ".github/workflows/test.yml" in git("ls-tree", "-r", "--name-only", candidate).split()

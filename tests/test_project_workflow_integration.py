@@ -908,8 +908,9 @@ def test_w2a_agent_run_produces_a_tested_candidate_retries_after_failure_and_is_
         restaged = client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run)
         assert restaged.status_code == 202, restaged.text
         assert restaged.json()["execution_id"] != staged.json()["execution_id"]
-        assert run_one(identity, token, project_id=project, seconds=400)["status"] == "SUCCEEDED"
-
+        outcome = run_one(identity, token, project_id=project, seconds=400)
+        board = client.get(f"/v1/projects/{project}/board", headers=agent).json()
+        assert outcome["status"] == "SUCCEEDED", next(i for i in board if i["id"] == work)["executions"][-1]["result"]
         board = client.get(f"/v1/projects/{project}/board", headers=agent).json()
         item = next(item for item in board if item["id"] == work)
         failed, succeeded = item["executions"]

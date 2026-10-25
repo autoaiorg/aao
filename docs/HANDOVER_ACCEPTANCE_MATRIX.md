@@ -21,9 +21,8 @@ Estado inicial de esta matriz: revisión base `95d8427cea3d5748ca7041ee054cfc99a
 
 | Revisión / SHA | Incremento | Evidencia | Limitación |
 |---|---|---|---|
-| Rama `feat/agents-office-aa-integration`, cambios aún sin commit | Agents Office diferencial, inspiración registrada y F0 `/v1/organization` derivado de PostgreSQL | Prueba PostgreSQL focal `1 passed`; `649 passed` suite backend completa; `compileall`, Ruff, `pip check`, `git diff --check`; frontend TypeScript y 139 tests pasan | Sin CI remota ni merge observados; no independiente; F0 no crea perfiles de departamento ni heartbeat |
-| `e807a5f8f9b3863609065ab9fb5a49ac6ff7a4dd` | PR #129 fusionada; F0 y documentación/matriz incorporados | CI de PR verde (backend + frontend) y CI de `main` verde en `e807a5f`; ver URL PR #129 | No independiente; F0 sigue siendo proyección de observaciones, no organigrama canónico |
-| `feat/office-work-navigation`, trabajo local no commit | F1: navegar desde una asignación real al Kanban con su `projectId` | TypeScript y `frontend/app/src/test/office.test.tsx`: 18 passed | Falta suite completa, CI remota y merge |
+| `e807a5f8f9b3863609065ab9fb5a49ac6ff7a4dd` | PR #129 fusionada; análisis conceptual, inspiración registrada y F0 `/v1/organization` | PostgreSQL: `649 passed`; frontend: TypeScript y 139 tests; CI de PR verde y CI de `main` verde en `e807a5f`; [PR #129](https://github.com/autoaiorg/aao/pull/129), [CI main](https://github.com/autoaiorg/aao/actions/runs/40230785332) | No independiente; F0 sigue siendo proyección de observaciones, no organigrama canónico |
+| `cf8b3975c6ee52595d18ca45f5317f49eefce110` | PR #130 fusionada; F1 navegación desde asignación al Kanban del proyecto por su `projectId` | TypeScript y 139 tests frontend; CI de PR verde y CI de `main` verde en `cf8b397`; test `office.test.tsx` verifica el ID de proyecto; [PR #130](https://github.com/autoaiorg/aao/pull/130), [CI main](https://github.com/autoaiorg/aao/actions/runs/40231180714) | No independiente; no crea/edita trabajo, solo navega a datos ya existentes |
 
 ## Reglas de mantenimiento
 

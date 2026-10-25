@@ -74,6 +74,33 @@ describe('CEO HttpOnly browser session adapter', () => {
     }
   });
 
+  it('clears local CEO auth when the server rejects a restored cookie session', async () => {
+    const onUnauthorized = vi.fn();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ detail: 'rejected' }, 403) as Response);
+    const adapter = new HttpAaoLiveAdapter({
+      requireAuth: true, getAuthRole: () => 'CEO', getCeoCookieSession: () => true,
+      onUnauthorized,
+    });
+
+    const principal = await adapter.getCurrentPrincipal();
+
+    expect(principal.kind).toBe('forbidden');
+    expect(onUnauthorized).toHaveBeenCalledOnce();
+  });
+
+  it('keeps ordinary agent permission denials from resetting authentication', async () => {
+    const onUnauthorized = vi.fn();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ detail: 'denied' }, 403) as Response);
+    const adapter = new HttpAaoLiveAdapter({
+      requireAuth: true, getAuthRole: () => 'AGENT', getToken: () => 'agent-token', onUnauthorized,
+    });
+
+    const projects = await adapter.listProjects();
+
+    expect(projects.kind).toBe('forbidden');
+    expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+
   it('requests server-side revocation with the in-memory CSRF token', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ logged_out: true }) as Response);
     const result = await new HttpAaoLiveAdapter().revokeCeoBrowserSession('c'.repeat(48));

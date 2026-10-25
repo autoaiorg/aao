@@ -291,10 +291,43 @@ export const AgentDetailDrawer: React.FC<AgentDetailDrawerProps> = ({
           </div>
         </div>
 
+        {/* Project Grants */}
+        {agent.grants && agent.grants.length > 0 && (
+          <div>
+            <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px', color: 'var(--text-primary)' }}>
+              Concesiones y Permisos de Proyecto ({agent.grants.length})
+            </h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              {agent.grants.map((g, idx) => (
+                <div
+                  key={`grant-${idx}`}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '8px 12px',
+                    backgroundColor: 'var(--bg-surface)',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: 'var(--radius-sm)',
+                    fontSize: '12px',
+                  }}
+                >
+                  <span style={{ fontWeight: 500, color: 'var(--text-primary)' }}>
+                    🔑 {g.permission} <span style={{ color: 'var(--text-muted)' }}>({g.projectId})</span>
+                  </span>
+                  <Badge variant={g.active ? 'success' : 'neutral'}>
+                    {g.active ? 'Activo' : 'Inactivo'}
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Capabilities */}
         <div>
           <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px', color: 'var(--text-primary)' }}>
-            Matriz de Capacidades ({agent.capabilities.length})
+            Matriz de Capacidades Técnicas ({agent.capabilities.length})
           </h3>
           {agent.capabilities.length === 0 ? (
             <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Sin capacidades registradas.</p>

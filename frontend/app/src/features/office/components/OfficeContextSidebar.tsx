@@ -329,7 +329,21 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
                       fontWeight: 700,
                     }}
                   >
-                    ⚡ Ejecutando Tarea (Vigente)
+                    ⚡ Ejecutando Tarea (Lease vigente)
+                  </span>
+                ) : activeAgent.operationalState === 'DESCONOCIDO' ? (
+                  <span
+                    style={{
+                      padding: '2px 7px',
+                      borderRadius: 'var(--radius-sm, 4px)',
+                      backgroundColor: 'var(--status-warning-bg)',
+                      color: 'var(--status-warning-text)',
+                      border: '1px solid var(--status-warning-border)',
+                      fontSize: '10px',
+                      fontWeight: 700,
+                    }}
+                  >
+                    ⚠️ Vigencia Desconocida (Sin lease acreditado)
                   </span>
                 ) : activeAgent.operationalState === 'ASIGNADO' ? (
                   <span
@@ -482,10 +496,52 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
             </div>
           </div>
 
+          {/* Project Grants / Concessions */}
+          {activeAgent.grants && activeAgent.grants.length > 0 && (
+            <div>
+              <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px' }}>
+                Concesiones y Permisos de Proyecto ({activeAgent.grants.length}):
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                {activeAgent.grants.map((g, idx) => (
+                  <div
+                    key={`grant-${idx}`}
+                    style={{
+                      padding: '4px 8px',
+                      borderRadius: 'var(--radius-sm, 4px)',
+                      backgroundColor: 'var(--bg-surface)',
+                      border: '1px solid var(--border-subtle)',
+                      fontSize: '10px',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+                      🔑 {g.permission}{' '}
+                      <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>({g.projectId})</span>
+                    </span>
+                    <span
+                      style={{
+                        padding: '1px 5px',
+                        borderRadius: '3px',
+                        backgroundColor: g.active ? 'var(--status-success-bg)' : 'var(--bg-muted)',
+                        color: g.active ? 'var(--status-success-text)' : 'var(--text-muted)',
+                        fontWeight: 600,
+                      }}
+                    >
+                      {g.active ? 'Activo' : 'Inactivo'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Capabilities */}
           <div>
             <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px' }}>
-              Capacidades Certificadas ({activeAgent.capabilities.length}):
+              Capacidades Técnicas Registradas ({activeAgent.capabilities.length}):
             </div>
             {activeAgent.capabilities.length === 0 ? (
               <div
@@ -498,7 +554,7 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
                   color: 'var(--text-muted)',
                 }}
               >
-                Sin capacidades certificadas registradas formalmente.
+                Sin capacidades certificadas ni declaradas formalmente.
               </div>
             ) : (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
@@ -549,6 +605,8 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 {activeAgent.currentAssignments.map((asg) => {
                   const isActive = asg.status === 'ACTIVE';
+                  const isUnknown = asg.status === 'UNKNOWN';
+                  const isExpired = asg.status === 'EXPIRED';
                   return (
                     <div
                       key={asg.id}
@@ -556,7 +614,11 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
                         padding: '10px 12px',
                         backgroundColor: 'var(--bg-surface)',
                         borderRadius: 'var(--radius-md, 6px)',
-                        border: isActive ? '1px solid var(--accent)' : '1px solid var(--border-subtle)',
+                        border: isActive
+                          ? '1px solid var(--accent)'
+                          : isUnknown
+                          ? '1px solid var(--status-warning-border)'
+                          : '1px solid var(--border-subtle)',
                         fontSize: '11px',
                         display: 'flex',
                         flexDirection: 'column',
@@ -564,7 +626,16 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
                       }}
                     >
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <strong style={{ color: isActive ? 'var(--accent)' : 'var(--text-primary)', fontSize: '12px' }}>
+                        <strong
+                          style={{
+                            color: isActive
+                              ? 'var(--accent)'
+                              : isUnknown
+                              ? 'var(--status-warning-text)'
+                              : 'var(--text-primary)',
+                            fontSize: '12px',
+                          }}
+                        >
                           {asg.projectName}
                         </strong>
                         <span
@@ -573,12 +644,36 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
                             fontWeight: 700,
                             padding: '1px 5px',
                             borderRadius: '3px',
-                            backgroundColor: isActive ? 'var(--status-info-bg)' : 'var(--bg-muted)',
-                            color: isActive ? 'var(--status-info-text)' : 'var(--text-muted)',
-                            border: isActive ? '1px solid var(--status-info-border)' : '1px solid var(--border-subtle)',
+                            backgroundColor: isActive
+                              ? 'var(--status-info-bg)'
+                              : isUnknown
+                              ? 'var(--status-warning-bg)'
+                              : isExpired
+                              ? 'var(--status-danger-bg, #fee2e2)'
+                              : 'var(--bg-muted)',
+                            color: isActive
+                              ? 'var(--status-info-text)'
+                              : isUnknown
+                              ? 'var(--status-warning-text)'
+                              : isExpired
+                              ? 'var(--status-danger-text, #991b1b)'
+                              : 'var(--text-muted)',
+                            border: isActive
+                              ? '1px solid var(--status-info-border)'
+                              : isUnknown
+                              ? '1px solid var(--status-warning-border)'
+                              : isExpired
+                              ? '1px solid var(--status-danger-border, #fca5a5)'
+                              : '1px solid var(--border-subtle)',
                           }}
                         >
-                          {isActive ? 'EJECUCIÓN VIGENTE' : 'HISTÓRICO REGISTRADO'}
+                          {isActive
+                            ? 'EJECUCIÓN VIGENTE'
+                            : isUnknown
+                            ? 'VIGENCIA DESCONOCIDA (SIN LEASE)'
+                            : isExpired
+                            ? 'LEASE EXPIRADO'
+                            : 'HISTÓRICO REGISTRADO'}
                         </span>
                       </div>
                       {asg.taskTitle && <span style={{ color: 'var(--text-primary)' }}>{asg.taskTitle}</span>}

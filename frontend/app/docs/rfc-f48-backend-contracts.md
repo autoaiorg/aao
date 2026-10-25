@@ -206,6 +206,52 @@ Retrieves the individual agent profile, capabilities, and active assignments.
 
 ---
 
+---
+
+### 2.4 `GET /v1/projects/{project_id}/board` (Execution Lease Field Addition)
+
+To enable client verification of active execution vigency without relying on heuristic time windows (`created_at`), the execution records returned in the board endpoint should include `lease_expires_at`:
+
+- **Path:** `/v1/projects/{project_id}/board`
+- **Current `execution_queue` JSON aggregation:**
+  ```sql
+  json_build_object(
+    'id', q.id,
+    'status', q.status,
+    'worker_id', q.worker_id,
+    'attempts', q.attempts,
+    'created_at', q.created_at,
+    'result', q.result_json
+  )
+  ```
+- **Proposed addition:**
+  ```sql
+  json_build_object(
+    'id', q.id,
+    'status', q.status,
+    'worker_id', q.worker_id,
+    'attempts', q.attempts,
+    'created_at', q.created_at,
+    'lease_expires_at', q.lease_expires_at,
+    'result', q.result_json
+  )
+  ```
+With `lease_expires_at` present, the frontend evaluates vigency as:
+- `status === 'RUNNING'` AND `lease_expires_at > clock_timestamp()` => `EJECUTANDO` (Lease vigente).
+- `status === 'RUNNING'` AND `lease_expires_at <= clock_timestamp()` => `EXPIRED` (Arrendamiento expirado).
+- `status === 'RUNNING'` AND `lease_expires_at == null` => `DESCONOCIDO` (Vigencia desconocida: backend no acredita lease).
+
+---
+
+### 2.5 Separation of Permissions (`grants`) from Technical Capabilities
+
+AAO distinguishes:
+1. **Concesiones / Permisos (`grants`):** Registrados en `/v1/principals/me/grants` o `/v1/projects/{id}/grants`. Representan autorización por proyecto (`project.read`, `work.claim`, etc.). **Nunca deben ser homologados a capacidades técnicas certificadas**.
+2. **Capacidades Declaradas:** Entradas del catálogo de capacidades que el agente o su entorno reportan.
+3. **Capacidades Certificadas:** Habilidades o contratos tipados formalmente auditados y atestados por una revisión independiente de seguridad.
+
+---
+
 ## 3. Frontend Adapter Compatibility (Fail-Closed & Verifiable Evidence)
 
 In `HttpAaoLiveAdapter.ts`, the frontend enforces strict factual grounding:
@@ -215,9 +261,11 @@ In `HttpAaoLiveAdapter.ts`, the frontend enforces strict factual grounding:
    - `GET /v1/projects`
    - `GET /v1/projects/{id}/board`
    - `GET /v1/principals/me`
-3. **No Department or Type Heuristics:** The frontend never infers departments or types (`STANDING`/`EPHEMERAL`) from substrings in `worker_id`. Unassigned workers are explicitly attributed to `«Departamento desconocido»` (`unit-unassigned`), and their type is set to `UNKNOWN`.
-4. **Execution Vigency Required:** A task marked `IN_PROGRESS` on the kanban board does NOT imply the agent is `EJECUTANDO`. Active execution requires demonstrable vigency (`status === 'RUNNING'`, valid execution ID, and timestamp within the active validity window). Historical executions are marked as `HISTÓRICO REGISTRADO`.
-5. **No Synthetic Capabilities:** Task reviews recorded on candidate PRs are treated purely as audit events, never converted into certified capabilities. Capabilities require formal grants.
+3. **No Department or Type Heuristics:** The frontend never infers departments or types (`STANDING`/`EPHEMERAL`) from substrings in `worker_id` or from authenticated roles (`CEO`/`AUDITOR`). Unassigned workers and authenticated principals without canonical unit placement are explicitly attributed to `«Departamento desconocido»` (`unit-unassigned`), and their type is set to `UNKNOWN`.
+4. **Execution Vigency Strictly Verified (No 5-Minute Window):** The frontend strictly refuses to treat `created_at` and an arbitrary 5-minute fixed window as proof of active execution. Demonstrable active execution requires both `status === 'RUNNING'` and a valid, future `lease_expires_at` accredited by the backend. Without an unexpired lease, execution vigency is represented as `DESCONOCIDO` (`UNKNOWN`).
+5. **No Synthetic Capabilities from Grants or Reviews:**
+   - Concesiones de proyecto (`grants`) se presentan como permisos de proyecto, jamás como capacidades `CERTIFIED`.
+   - Revisiones de tareas registradas se tratan puramente como eventos de auditoría.
 6. **No Fabricated Evidence Timestamps:** `fetchedAt` (client query time) is strictly distinguished from `lastEvidenceAt` (backend event timestamp). If no backend evidence timestamp exists, `lastEvidenceAt` is `null`.
 7. **Complete Project Coverage:** All projects are inspected without silent truncation limits; any failed queries are explicitly reported in `coverage.failedProjects` and `coverage.isPartial`.
 
@@ -228,4 +276,4 @@ In `HttpAaoLiveAdapter.ts`, the frontend enforces strict factual grounding:
 1. **Constitutional Units:** Endpoints must maintain the canonical AAO units (`EXEC`, `GOV`, `AUDIT`, `ARCH`, `ENG`, `OPS`) and provide explicit departmental mapping for registered principals.
 2. **Authority & Separation:** Telemetry and organization queries must be read-only without state mutation privileges.
 3. **Verifiable Leases:** Only agents with currently active, unexpired PostgreSQL worker leases (`lease_expires_at > now`) may be reported with `heartbeat_status: "HEALTHY"` and `operational_state: "EJECUTANDO"`.
-4. **Distinction of Reviews vs Grants:** Audit reviews on tasks must remain recorded as activity events; formal capabilities must be backed by valid project capability grants.
+4. **Distinction of Grants vs Capabilities:** Audit reviews on tasks must remain recorded as activity events; project permissions (`grants`) must remain separate from technical capability matrices.

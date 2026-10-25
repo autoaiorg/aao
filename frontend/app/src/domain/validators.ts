@@ -71,7 +71,7 @@ export const PrincipalSchema = z.object({
 });
 
 export const GrantSchema = z.object({
-  principal_id: z.string(),
+  principal_id: z.string().optional(),
   project_id: z.string(),
   capability: z.string(),
   expires_at: z.string().nullable().optional(),
@@ -119,6 +119,7 @@ export const AgentOperationalStatusSchema = z.enum([
   'PAUSED',
   'OFFLINE',
   'DECOMMISSIONED',
+  'UNKNOWN',
 ]);
 
 export const AgentCapabilitySchema = z.object({
@@ -126,6 +127,14 @@ export const AgentCapabilitySchema = z.object({
   name: z.string(),
   level: z.enum(['BASIC', 'ADVANCED', 'CERTIFIED']),
   verified: z.boolean().default(false),
+  kind: z.enum(['PERMISSION', 'DECLARED', 'CERTIFIED']).optional(),
+});
+
+export const AgentGrantSchema = z.object({
+  projectId: z.string(),
+  permission: z.string(),
+  active: z.boolean(),
+  expiresAt: z.string().nullable().optional(),
 });
 
 export const AgentAssignmentSchema = z.object({
@@ -136,7 +145,7 @@ export const AgentAssignmentSchema = z.object({
   taskTitle: z.string().optional(),
   assignedAt: z.string(),
   leaseExpiresAt: z.string().nullable().optional(),
-  status: z.enum(['ACTIVE', 'EXPIRED', 'COMPLETED']),
+  status: z.enum(['ACTIVE', 'EXPIRED', 'COMPLETED', 'UNKNOWN']),
 });
 
 export const AgentOperationalStateSchema = z.enum([
@@ -157,6 +166,7 @@ export const AgentIdentitySchema = z.object({
   unitId: z.string(),
   unitName: z.string().optional(),
   capabilities: z.array(AgentCapabilitySchema).default([]),
+  grants: z.array(AgentGrantSchema).optional(),
   heartbeatStatus: AgentHeartbeatStatusSchema,
   lastHeartbeatAt: z.string().nullable().default(null),
   status: AgentOperationalStatusSchema,

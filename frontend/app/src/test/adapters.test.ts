@@ -342,13 +342,18 @@ describe('HttpAaoLiveAdapter F3 & F4.8 Live Aggregation Handling (Negative Regre
         expect(unit.leadAgentId).toBeNull();
       }
 
-      // 4. Point 6 Negative Check: principal lastEvidenceAt must be null (no synthetic new Date())
+      // 4. CEO Point 3 (PR #122 review): CEO principal MUST NOT be deduced to unit-exec or STANDING
       const ceo = org.data.agents.find((a) => a.id === 'ceo-user');
+      expect(ceo).toBeDefined();
+      expect(ceo?.unitId).toBe('unit-unassigned');
+      expect(ceo?.unitName).toBe('Departamento desconocido');
+      expect(ceo?.type).toBe('UNKNOWN');
+      expect(ceo?.roleTitle).toContain('CEO');
       expect(ceo?.lastEvidenceAt).toBeNull();
     }
   });
 
-  it('strictly validates execution vigency: historical RUNNING or task IN_PROGRESS does NOT produce EJECUTANDO', async () => {
+  it('strictly validates execution vigency: no fixed 5-minute window; requires backend accredited active lease', async () => {
     const live = new HttpAaoLiveAdapter({ getToken: () => 'test-token' });
 
     vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
@@ -372,30 +377,46 @@ describe('HttpAaoLiveAdapter F3 & F4.8 Live Aggregation Handling (Negative Regre
           ok: true,
           json: async () => [
             {
-              id: 'task-in-progress',
-              title: 'Task marked IN_PROGRESS on board',
-              status: 'IN_PROGRESS', // Board status is IN_PROGRESS, but execution is historical!
+              id: 'task-no-lease',
+              title: 'Task marked IN_PROGRESS with recent execution but NO lease accredited',
+              status: 'IN_PROGRESS',
               executions: [
                 {
-                  id: 'exec-old-1',
-                  status: 'RUNNING', // Historical RUNNING status from 2 hours ago
-                  worker_id: 'worker-historical-running',
+                  id: 'exec-no-lease-1',
+                  status: 'RUNNING',
+                  worker_id: 'worker-no-lease',
                   attempts: 1,
-                  created_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+                  created_at: new Date(Date.now() - 30 * 1000).toISOString(), // 30s ago, but NO lease_expires_at!
                 },
               ],
             },
             {
-              id: 'task-active-vigente',
-              title: 'Task currently executing with fresh timestamp',
+              id: 'task-active-lease',
+              title: 'Task executing with valid accredited lease',
               status: 'IN_PROGRESS',
               executions: [
                 {
-                  id: 'exec-fresh-2',
-                  status: 'RUNNING', // Fresh execution created 30 seconds ago
-                  worker_id: 'worker-fresh-active',
+                  id: 'exec-lease-active',
+                  status: 'RUNNING',
+                  worker_id: 'worker-active-lease',
                   attempts: 1,
-                  created_at: new Date(Date.now() - 30 * 1000).toISOString(),
+                  created_at: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
+                  lease_expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(), // Valid unexpired lease
+                },
+              ],
+            },
+            {
+              id: 'task-expired-lease',
+              title: 'Task with expired lease',
+              status: 'IN_PROGRESS',
+              executions: [
+                {
+                  id: 'exec-lease-expired',
+                  status: 'RUNNING',
+                  worker_id: 'worker-expired-lease',
+                  attempts: 1,
+                  created_at: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+                  lease_expires_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(), // Expired lease
                 },
               ],
             },
@@ -408,22 +429,106 @@ describe('HttpAaoLiveAdapter F3 & F4.8 Live Aggregation Handling (Negative Regre
     const org = await live.getOrganizationStructure();
     expect(org.kind).toBe('ready');
     if (org.kind === 'ready') {
-      // Historical worker MUST NOT be EJECUTANDO; assignment status MUST NOT be ACTIVE
-      const historicalWorker = org.data.agents.find((a) => a.id === 'worker-historical-running');
-      expect(historicalWorker).toBeDefined();
-      expect(historicalWorker?.operationalState).toBe('ASIGNADO'); // Assigned to open task, but NOT currently executing
-      expect(historicalWorker?.status).toBe('IDLE');
-      expect(historicalWorker?.currentAssignments[0].status).toBe('COMPLETED');
+      // 1. Worker with RUNNING status but NO lease accredited: must be UNKNOWN vigency, NOT EJECUTANDO
+      const workerNoLease = org.data.agents.find((a) => a.id === 'worker-no-lease');
+      expect(workerNoLease).toBeDefined();
+      expect(workerNoLease?.operationalState).toBe('DESCONOCIDO');
+      expect(workerNoLease?.status).toBe('UNKNOWN');
+      expect(workerNoLease?.currentAssignments[0].status).toBe('UNKNOWN');
 
-      // Fresh worker with verifiable vigency IS EJECUTANDO; assignment IS ACTIVE
-      const freshWorker = org.data.agents.find((a) => a.id === 'worker-fresh-active');
-      expect(freshWorker).toBeDefined();
-      expect(freshWorker?.operationalState).toBe('EJECUTANDO');
-      expect(freshWorker?.status).toBe('BUSY');
-      expect(freshWorker?.currentAssignments[0].status).toBe('ACTIVE');
+      // 2. Worker with RUNNING status and accredited unexpired lease: IS EJECUTANDO and ACTIVE
+      const workerActiveLease = org.data.agents.find((a) => a.id === 'worker-active-lease');
+      expect(workerActiveLease).toBeDefined();
+      expect(workerActiveLease?.operationalState).toBe('EJECUTANDO');
+      expect(workerActiveLease?.status).toBe('BUSY');
+      expect(workerActiveLease?.currentAssignments[0].status).toBe('ACTIVE');
 
-      // Only fresh active assignments count in activeAssignmentsCount
+      // 3. Worker with RUNNING status but expired lease: must be EXPIRED assignment
+      const workerExpiredLease = org.data.agents.find((a) => a.id === 'worker-expired-lease');
+      expect(workerExpiredLease).toBeDefined();
+      expect(workerExpiredLease?.currentAssignments[0].status).toBe('EXPIRED');
+
+      // 4. Only accredited active assignments count in activeAssignmentsCount
       expect(org.data.activeAssignmentsCount).toBe(1);
+    }
+  });
+
+  it('strictly separates project grants from technical capabilities: grants do NOT produce certified capabilities', async () => {
+    const live = new HttpAaoLiveAdapter({ getToken: () => 'test-token' });
+
+    vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.includes('/v1/organization')) {
+        return { status: 404, ok: false, json: async () => ({}) } as Response;
+      }
+      if (u.includes('/v1/principals/me/grants')) {
+        return {
+          status: 200,
+          ok: true,
+          json: async () => [
+            {
+              project_id: 'p1',
+              capability: 'project.read',
+              active: true,
+              expires_at: '2026-10-26T00:00:00Z',
+            },
+            {
+              project_id: 'p1',
+              capability: 'work.claim',
+              active: true,
+              expires_at: null,
+            },
+          ],
+        } as Response;
+      }
+      if (u.includes('/v1/principals/me')) {
+        return {
+          status: 200,
+          ok: true,
+          json: async () => ({
+            principal_id: 'agent-grantee',
+            kind: 'AGENT',
+            auth_method: 'token',
+            enabled: true,
+            grants: [
+              {
+                project_id: 'p1',
+                capability: 'project.read',
+                active: true,
+                expires_at: '2026-10-26T00:00:00Z',
+              },
+              {
+                project_id: 'p1',
+                capability: 'work.claim',
+                active: true,
+                expires_at: null,
+              },
+            ],
+          }),
+        } as Response;
+      }
+      if (u.endsWith('/v1/projects')) {
+        return { status: 200, ok: true, json: async () => [{ id: 'p1', name: 'P1' }] } as Response;
+      }
+      if (u.includes('/board')) {
+        return { status: 200, ok: true, json: async () => [] } as Response;
+      }
+      return { status: 404, ok: false, json: async () => ({}) } as Response;
+    });
+
+    const org = await live.getOrganizationStructure();
+    expect(org.kind).toBe('ready');
+    if (org.kind === 'ready') {
+      const agent = org.data.agents.find((a) => a.id === 'agent-grantee');
+      expect(agent).toBeDefined();
+      // CEO Point 2: grants MUST NOT be translated to capabilities as CERTIFIED!
+      expect(agent?.capabilities).toEqual([]);
+      // Must be recorded in grants as permissions
+      expect(agent?.grants).toBeDefined();
+      expect(agent?.grants?.length).toBe(2);
+      expect(agent?.grants?.[0].permission).toBe('project.read');
+      expect(agent?.grants?.[0].active).toBe(true);
+      expect(agent?.grants?.[1].permission).toBe('work.claim');
     }
   });
 
@@ -548,8 +653,9 @@ describe('HttpAaoLiveAdapter F3 & F4.8 Live Aggregation Handling (Negative Regre
     expect(details.kind).toBe('ready');
     if (details.kind === 'ready') {
       expect(details.data.id).toBe('ceo-user');
-      expect(details.data.unitId).toBe('unit-exec');
-      expect(details.data.type).toBe('STANDING');
+      // CEO Point 3: Must NOT deduce unit-exec or STANDING
+      expect(details.data.unitId).toBe('unit-unassigned');
+      expect(details.data.type).toBe('UNKNOWN');
     }
 
     // Missing agent

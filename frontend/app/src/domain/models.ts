@@ -63,6 +63,8 @@ export interface TaskExecutionRecord {
   worker_id?: string;
   attempts: number;
   created_at: string;
+  lease_expires_at?: string | null;
+  lease_token?: string | null;
   result?: unknown;
 }
 
@@ -267,13 +269,24 @@ export type AgentOperationalStatus =
   | 'BUSY'
   | 'PAUSED'
   | 'OFFLINE'
-  | 'DECOMMISSIONED';
+  | 'DECOMMISSIONED'
+  | 'UNKNOWN';
+
+export type CapabilityKind = 'PERMISSION' | 'DECLARED' | 'CERTIFIED';
 
 export interface AgentCapability {
   id: string;
   name: string;
   level: 'BASIC' | 'ADVANCED' | 'CERTIFIED';
   verified: boolean;
+  kind?: CapabilityKind;
+}
+
+export interface AgentGrant {
+  projectId: string;
+  permission: string;
+  active: boolean;
+  expiresAt?: string | null;
 }
 
 export interface AgentAssignment {
@@ -284,7 +297,7 @@ export interface AgentAssignment {
   taskTitle?: string;
   assignedAt: string;
   leaseExpiresAt?: string | null;
-  status: 'ACTIVE' | 'EXPIRED' | 'COMPLETED';
+  status: 'ACTIVE' | 'EXPIRED' | 'COMPLETED' | 'UNKNOWN';
 }
 
 export interface AgentIdentity {
@@ -295,6 +308,7 @@ export interface AgentIdentity {
   unitId: string;
   unitName?: string;
   capabilities: AgentCapability[];
+  grants?: AgentGrant[];
   heartbeatStatus: AgentHeartbeatStatus;
   lastHeartbeatAt: string | null;
   status: AgentOperationalStatus;

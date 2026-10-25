@@ -122,6 +122,25 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
     }
   };
 
+  const retryPendingTurn = async (message: ProjectConversationMessage) => {
+    if (!projectId || !conversationId || sendingTurn || !message.turn_idempotency_key) return;
+    setPendingUserMessage(message.body);
+    setStreamingReply('');
+    setSendingTurn(true);
+    const result = await port.streamCEOConversationTurn(
+      projectId, conversationId, message.body, message.turn_idempotency_key,
+      (delta) => setStreamingReply((current) => current + delta),
+    );
+    setSendingTurn(false);
+    setPendingUserMessage('');
+    setStreamingReply('');
+    setNotice(result.kind === 'ready'
+      ? 'Respuesta recuperada y persistida.'
+      : result.kind === 'error' ? `${result.code}: ${result.message}`
+        : result.kind === 'forbidden' ? result.reason : 'No se pudo recuperar la respuesta.');
+    await queryClient.invalidateQueries({ queryKey: ['office-conversation-messages', sessionId, projectId, conversationId] });
+  };
+
   const stateMessage = (state: DataState<unknown> | undefined) => {
     if (!state) return 'Cargando…';
     if (state.kind === 'error') return `${state.code}: ${state.message}`;
@@ -205,7 +224,15 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
         <small>Proveedor: {message.provider}{message.model ? ` · modelo ${message.model}` : ''}</small>
       )}
       {message.turn_status === 'FAILED' && <p role="alert">La respuesta de AAO falló ({message.turn_error_code ?? 'ERROR'}). Puedes reenviar el mensaje para reintentar.</p>}
-      {message.turn_status === 'PENDING' && <p role="status">AAO está procesando esta respuesta.</p>}
+      {message.turn_status === 'PENDING' && (
+        <div role="status">
+          <span>AAO está procesando esta respuesta.</span>{' '}
+          <Button type="button" variant="secondary" size="sm" disabled={sendingTurn || !message.turn_idempotency_key}
+            onClick={() => void retryPendingTurn(message)}>
+            Reintentar si quedó interrumpida
+          </Button>
+        </div>
+      )}
       {message.related_work_id ? (
         <div className="office-conversation-message__work-link">
           <Button type="button" size="sm" onClick={() => onOpenBoard(projectId)}>

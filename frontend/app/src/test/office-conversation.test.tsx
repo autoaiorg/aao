@@ -71,6 +71,24 @@ describe('office persistent project conversation', () => {
     expect(second[3]).toBe(first[3]);
   });
 
+  it('lets the CEO retry a persisted pending turn after reopening the thread', async () => {
+    const pending = { ...message, turn_status: 'PENDING' as const, turn_idempotency_key: 'b7f4938a-98d3-45a7-a5d7-2bb3e2b4de34' };
+    const port: AaoConversationPort = {
+      listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
+      listConversationMessages: vi.fn().mockResolvedValue(ready([pending])),
+      createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(),
+      streamCEOConversationTurn: vi.fn().mockResolvedValue(ready({ message_id: 'reply-recovered' })),
+      createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(),
+      createWorkGroupFromConversation: vi.fn(), proposeWorkGroupFromConversation: vi.fn(),
+    };
+    setup(port);
+    await screen.findByText('Preparar el plan');
+    fireEvent.click(screen.getByRole('button', { name: 'Reintentar si quedó interrumpida' }));
+    await waitFor(() => expect(port.streamCEOConversationTurn).toHaveBeenCalledWith(
+      'project-active', 'conversation-1', 'Preparar el plan', pending.turn_idempotency_key, expect.any(Function),
+    ));
+  });
+
   it('structures CEO-confirmed parent and dependent tasks from the conversation thread', async () => {
     const port: AaoConversationPort = {
       listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),

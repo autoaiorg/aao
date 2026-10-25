@@ -158,6 +158,35 @@ export const AgentOperationalStateSchema = z.enum([
   'NO_DISPONIBLE',
 ]);
 
+export const AgentExecutionRecordSchema = z.object({
+  id: z.string(),
+  taskId: z.string(),
+  taskTitle: z.string(),
+  projectId: z.string(),
+  projectName: z.string(),
+  status: z.string(),
+  attempts: z.number().default(1),
+  createdAt: z.string(),
+  leaseExpiresAt: z.string().nullable().optional(),
+  workerId: z.string().optional(),
+  provider: z.string().nullable().optional(),
+  model: z.string().nullable().optional(),
+  backendVersion: z.string().nullable().optional(),
+  capabilityId: z.string().nullable().optional(),
+  capabilityVersion: z.string().nullable().optional(),
+  backendSource: z.string().nullable().optional(),
+  costEstimateUsd: z.number().nullable().optional(),
+  candidateSha: z.string().nullable().optional(),
+  conclusion: z.string().nullable().optional(),
+  check: z.string().nullable().optional(),
+  checkDetails: z.string().nullable().optional(),
+  error: z.string().nullable().optional(),
+  alert: z.string().nullable().optional(),
+  isNoProgressRetry: z.boolean().optional(),
+  isBudgetExceeded: z.boolean().optional(),
+  rawResult: z.unknown().optional(),
+});
+
 export const AgentIdentitySchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -172,6 +201,7 @@ export const AgentIdentitySchema = z.object({
   status: AgentOperationalStatusSchema,
   operationalState: AgentOperationalStateSchema.optional(),
   currentAssignments: z.array(AgentAssignmentSchema).default([]),
+  executionHistory: z.array(AgentExecutionRecordSchema).optional(),
   authorityBoundary: z.string(),
   isSyntheticDemo: z.boolean().optional(),
   lastEvidenceAt: z.string().nullable().optional(),

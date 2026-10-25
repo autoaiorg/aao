@@ -30,8 +30,15 @@ import type {
   BoardStage,
   TaskItem,
   TaskExecutionRecord,
+  AgentExecutionRecord,
   ActivityEvent,
 } from '../../../domain/models';
+import {
+  parseRunSummary,
+  parseModelProfile,
+  parseRoutingDecision,
+  type ModelRoutingRecord,
+} from '../../../features/ronin/modelProfile';
 import {
   ActivityEventSchema,
   ProjectsListSchema,
@@ -466,6 +473,15 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
         const isCanonical = canonicalStages.includes(normalizedUpper);
         const canonicalStage = isCanonical ? (normalizedUpper as BoardStage) : null;
 
+        const rawRouting = Array.isArray(itemObj.routing_decisions)
+          ? itemObj.routing_decisions
+          : Array.isArray(itemObj.routingDecisions)
+          ? itemObj.routingDecisions
+          : [];
+        const taskRoutingDecisions = rawRouting
+          .map((r) => parseRoutingDecision(r, id))
+          .filter((d): d is ModelRoutingRecord => d !== null);
+
         const taskItem: TaskItem = {
           id,
           title,
@@ -489,6 +505,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
             typeof itemObj.resolution === 'object' && itemObj.resolution !== null
               ? (itemObj.resolution as TaskItem['resolution'])
               : null,
+          routingDecisions: taskRoutingDecisions.length > 0 ? taskRoutingDecisions : undefined,
         };
 
         if (canonicalStage) {
@@ -555,6 +572,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
         status: c.status,
         provenance: c.provenance,
         contract: c.contract,
+        modelProfile: parseModelProfile(c.contract),
         required_permissions: c.required_permissions,
         risks: c.risks,
         dependencies: c.dependencies,
@@ -1014,6 +1032,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
                       status: agentStatus,
                       operationalState: opState,
                       currentAssignments: [],
+                      executionHistory: [],
                       authorityBoundary: `Delimitado por el mandato del proyecto ${project.name || project.id}.`,
                       isSyntheticDemo: false,
                       evidenceDescription:
@@ -1036,6 +1055,39 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
                     if (exec.created_at && (!agent.lastEvidenceAt || exec.created_at > agent.lastEvidenceAt)) {
                       agent.lastEvidenceAt = exec.created_at;
                     }
+                  }
+
+                  // RONIN I1-I6: Record execution attempt and observed model identity in agent history
+                  const run = parseRunSummary(exec.result);
+                  const execHistoryItem: AgentExecutionRecord = {
+                    id: exec.id,
+                    taskId: task.id,
+                    taskTitle: task.title,
+                    projectId: project.id,
+                    projectName: project.name || project.id,
+                    status: exec.status,
+                    attempts: exec.attempts || 1,
+                    createdAt: exec.created_at || task.createdAt || '',
+                    leaseExpiresAt: execRecord.lease_expires_at || null,
+                    provider: run.provider,
+                    model: run.model,
+                    backendVersion: run.backend_version,
+                    capabilityId: run.capability_id,
+                    capabilityVersion: run.capability_version,
+                    backendSource: run.backend_source,
+                    costEstimateUsd: run.cost_estimate_usd,
+                    candidateSha: run.candidate_sha,
+                    conclusion: run.conclusion,
+                    check: run.check,
+                    error: run.error,
+                    rawResult: exec.result,
+                  };
+
+                  if (!agent.executionHistory) {
+                    agent.executionHistory = [];
+                  }
+                  if (!agent.executionHistory.some((e) => e.id === exec.id)) {
+                    agent.executionHistory.push(execHistoryItem);
                   }
 
                   if (!agent.currentAssignments.some((a) => a.taskId === task.id)) {

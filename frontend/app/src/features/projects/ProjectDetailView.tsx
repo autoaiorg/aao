@@ -10,6 +10,9 @@ import { Card } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import { SectionHeading, PermissionNotice } from '../../components/ui/SectionHeading';
 import { DataStatePanel } from '../../components/ui/DataStatePanel';
+import { parseModelProfile, parseRoutingDecision } from '../ronin/modelProfile';
+import { ModelProfileBadge } from '../ronin/components/ModelProfileBadge';
+import { RoutingDecisionCard } from '../ronin/components/RoutingDecisionCard';
 
 export interface ProjectDetailViewProps {
   project: ProjectSummary;
@@ -290,6 +293,17 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
                         </div>
                       )}
 
+                      {/* Model Profile (RONIN I3 / I5) */}
+                      {(() => {
+                        const profile = cap.modelProfile ?? parseModelProfile(cap.contract);
+                        if (!profile) return null;
+                        return (
+                          <div style={{ marginTop: '8px' }}>
+                            <ModelProfileBadge profile={profile} />
+                          </div>
+                        );
+                      })()}
+
                       {Boolean(cap.provenance) && (
                         <div
                           style={{
@@ -366,19 +380,28 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
                     <div style={{ fontSize: '11px', fontFamily: 'monospace', color: 'var(--text-muted)', marginTop: '2px' }}>
                       {ev.subject_id}
                     </div>
-                    <pre
-                      style={{
-                        fontSize: '11px',
-                        fontFamily: 'monospace',
-                        backgroundColor: 'var(--bg-muted)',
-                        padding: '8px',
-                        marginTop: '6px',
-                        borderRadius: 'var(--radius-sm)',
-                        overflowX: 'auto',
-                      }}
-                    >
-                      {JSON.stringify(ev.details, null, 2)}
-                    </pre>
+                    {ev.kind === 'model.routed' ? (
+                      <div style={{ marginTop: '8px' }}>
+                        {(() => {
+                          const decision = parseRoutingDecision(ev.details, ev.subject_id, ev.id, ev.created_at);
+                          return decision ? <RoutingDecisionCard decision={decision} /> : null;
+                        })()}
+                      </div>
+                    ) : (
+                      <pre
+                        style={{
+                          fontSize: '11px',
+                          fontFamily: 'monospace',
+                          backgroundColor: 'var(--bg-muted)',
+                          padding: '8px',
+                          marginTop: '6px',
+                          borderRadius: 'var(--radius-sm)',
+                          overflowX: 'auto',
+                        }}
+                      >
+                        {JSON.stringify(ev.details, null, 2)}
+                      </pre>
+                    )}
                   </Card>
                 </li>
               ))}

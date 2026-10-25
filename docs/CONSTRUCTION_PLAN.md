@@ -1,0 +1,51 @@
+# Plan de construcción de AAO (régimen CEO-DEC-AAO-CONSTRUCTION-2026-10-25)
+
+**Objetivo:** cumplir el criterio de éxito de [`CEO_MANDATE_AAO_SELF_DEVELOPMENT_20261019.md`](CEO_MANDATE_AAO_SELF_DEVELOPMENT_20261019.md). Un cambio pequeño, real y útil a AAO tiene que recorrer este camino, y el Control Center tiene que mostrarlo con el estado real del backend:
+
+`AAO → proyecto → objetivo → tarea → agente ejecutor → ejecución acotada → tests → auditoría independiente → PR → resultado`
+
+**Régimen:**
+- Claude, Codex y Antigravity trabajan como equipo constructor externo.
+- La integración es la ordinaria: el CEO fusiona.
+- Los controles de calidad son proporcionados: CI completo (compileall, ruff, pytest `-W error`) y una revisión de segunda línea en los cambios delicados.
+- No hay gates de gobierno por PR.
+- La certificación se hace sobre el candidato de traspaso: [criterios del §4](decisions/CEO-DEC-AAO-CONSTRUCTION-2026-10-25.md).
+
+## Estado de cada tramo (inventario del 2026-10-25, `main` ce6caf0)
+
+| Tramo | Estado | Dónde |
+|---|---|---|
+| Mandato, proyecto y objetivo | **Existe** | `POST/GET /v1/mandates`, `/v1/projects`, `confirm`, `state` |
+| Tarea (work) | **Existe** | `POST /v1/projects/{id}/work`, `admit`, `progress` |
+| Agente ejecutor (la tarea produce un parche) | **Falta.** La cola y el *claim* existen, pero el worker es inerte: solo marcas y un check fijo | `execution_queue.py`, `inert_execution_worker.py` |
+| Ejecución acotada y tests | **Existe**, con checks fijos en sandbox bwrap | `sandboxed_repository_checks.py`, `stage-repository-check` |
+| Propuesta de parche y validación | **Existe** | `patch-proposals`, `validate`, `patch_proposals.py` |
+| Auditoría independiente | **Existe** en dos piezas: reviews en la API y el servicio de auditoría de manifiestos | `reviews`, `independent_audit.py`, `manifest_audit.py`, `auditor_dispatch.py` |
+| De la propuesta aprobada a la PR | **Falta.** Hay que convertir el parche en un commit en el fork del implementador y que `aao-pm` abra la PR. Hoy `request_promotion` es un stub | `local_candidate_controller.py` |
+| De la PR a `main` (R1) | **Existe**, pero desactivado hasta el traspaso | `r1_pipeline.py`, `integrator.py` |
+| Resultado visible en el Control Center | **Parcial.** Tablero, tareas, propuestas, ejecuciones y auditorías, sí. Actividad y agentes asignables, no. La vista del ciclo Git está en una rama sin fusionar | `frontend/`, rama `feat/control-center-daily-ui` (967dc73 y cambios locales) |
+
+## Frentes de trabajo, por prioridad
+
+| # | Frente | Responsable | Entregable |
+|---|---|---|---|
+| W1 | **Agente ejecutor.** Un worker toma una tarea admitida, ejecuta un agente (Codex/Claude) en sandbox sobre un clon en el SHA base, registra un parche como propuesta y registra la ejecución | Codex (backend) y Claude (sandbox y diseño) | Una tarea genera una propuesta real, con evidencia en la cola |
+| W2 | **De la propuesta a la PR.** Con la propuesta aprobada, commit y push al fork del implementador con su App, y servicio `aao-pm` que abre la PR fork → canónico. Es el paso 2 de [E2E_PR_PIPELINE](E2E_PR_PIPELINE.md) | Codex (backend) y Claude (scripts y unidades) | PR abierta por `aao-pm[bot]` desde una propuesta, enlazada a la tarea |
+| W3 | **Resultado y trazabilidad.** El estado de la PR (checks, auditoría y fusión) vuelve a la tarea, y endpoint de actividad | Codex | La tarea pasa a DONE con enlace a la PR y al SHA final |
+| W4 | **Control Center.** Integrar la rama pendiente de Antigravity rebasada sobre #20, añadir la vista de actividad y la vista de la PR/resultado desde el estado real | Antigravity; Codex o Claude mientras Antigravity no tenga cuota (hasta el ~30-10) | Recorrido completo visible en la web |
+| W5 | **Demostración E2E.** Un cambio real pequeño a AAO por todo el camino | Claude (coordinación) | Evidencia para el criterio 9 del traspaso |
+
+**Única decisión estratégica prevista:** para que W1 y W5 ejecuten un modelo real dentro de AAO hay que activar un proveedor de modelos, con su coste y sus credenciales. El mandato lo reserva al CEO («model/provider activation»). Se le planteará cuando W1 esté listo, sin bloquear su construcción.
+
+## Fuera de la construcción (se hará en el traspaso)
+
+Todo esto se hará sobre el candidato de aceptación:
+- separación de identidades de los agentes;
+- reglas del repositorio canónico;
+- actualización de la raíz de confianza;
+- ensayo P2/P3 completo y dictamen de equivalencia;
+- RA en PASS;
+- auditoría independiente;
+- activación del integrador.
+
+Los planes anteriores (M2-A en `CLOSURE_PLAN.md`, F4 en `F4_PENDING_WORK.md`) quedan como referencia de requisitos, no como orden de trabajo.

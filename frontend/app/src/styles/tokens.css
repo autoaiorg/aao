@@ -1,0 +1,131 @@
+/**
+ * Design Tokens for AAO Control Center
+ * Spec: AAO-FE-ARCH-2026-10-25 Section 8
+ * WCAG 2.2 AA compliant palette & typography
+ */
+
+:root {
+  /* Surface colors (Light Mode) */
+  --bg-app: #f8fafc;
+  --bg-surface: #ffffff;
+  --bg-surface-elevated: #ffffff;
+  --bg-muted: #f1f5f9;
+  --bg-subtle: #e2e8f0;
+
+  /* Borders */
+  --border-subtle: #e2e8f0;
+  --border-strong: #cbd5e1;
+  --border-focus: #0284c7;
+
+  /* Typography */
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #64748b;
+  --text-inverse: #ffffff;
+
+  /* Brand / Deep Blue */
+  --primary: #0f172a;
+  --primary-hover: #1e293b;
+  --accent: #0284c7;
+  --accent-hover: #0369a1;
+  --accent-light: #e0f2fe;
+
+  /* Semantic Statuses */
+  --status-success-bg: #ecfdf5;
+  --status-success-text: #065f46;
+  --status-success-border: #a7f3d0;
+
+  --status-warning-bg: #fffbeb;
+  --status-warning-text: #92400e;
+  --status-warning-border: #fde68a;
+
+  --status-error-bg: #fef2f2;
+  --status-error-text: #991b1b;
+  --status-error-border: #fecaca;
+
+  --status-info-bg: #f0f9ff;
+  --status-info-text: #075985;
+  --status-info-border: #bae6fd;
+
+  --status-demo-bg: #fff7ed;
+  --status-demo-text: #9a3412;
+  --status-demo-border: #fed7aa;
+
+  /* Kanban Lifecycle Colors */
+  --stage-inbox: #64748b;
+  --stage-ready: #0284c7;
+  --stage-in-progress: #d97706;
+  --stage-in-review: #7c3aed;
+  --stage-verified: #059669;
+  --stage-done: #10b981;
+
+  /* Spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  /* Border Radii */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 9999px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+
+  /* Layout */
+  --sidebar-width: 250px;
+  --header-height: 64px;
+}
+
+/* Dark Mode Tokens */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-app: #0b0f17;
+    --bg-surface: #111827;
+    --bg-surface-elevated: #1f2937;
+    --bg-muted: #1e293b;
+    --bg-subtle: #334155;
+
+    --border-subtle: #1e293b;
+    --border-strong: #334155;
+
+    --text-primary: #f8fafc;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+    --text-inverse: #0f172a;
+
+    --primary: #38bdf8;
+    --primary-hover: #7dd3fc;
+    --accent: #38bdf8;
+    --accent-hover: #0284c7;
+    --accent-light: #082f49;
+
+    --status-success-bg: #064e3b;
+    --status-success-text: #a7f3d0;
+    --status-success-border: #047857;
+
+    --status-warning-bg: #78350f;
+    --status-warning-text: #fde68a;
+    --status-warning-border: #b45309;
+
+    --status-error-bg: #7f1d1d;
+    --status-error-text: #fecaca;
+    --status-error-border: #b91c1c;
+
+    --status-info-bg: #0c4a6e;
+    --status-info-text: #bae6fd;
+    --status-info-border: #0284c7;
+
+    --status-demo-bg: #7c2d12;
+    --status-demo-text: #ffedd5;
+    --status-demo-border: #c2410c;
+  }
+}

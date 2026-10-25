@@ -78,6 +78,82 @@ def test_postgres_mandate_project_grant_work_admission(monkeypatch):
     os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
     reason="PostgreSQL integration requires an explicitly disposable test database",
 )
+def test_ceo_work_request_creates_only_audited_inbox_item(monkeypatch):
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "work-request-ceo")
+    ceo = {"X-CEO-Token": "work-request-ceo"}
+    payload = {
+        "title": "CEO direction " + str(uuid4()),
+        "description": "Persist the request without admitting execution.",
+        "acceptance_criteria": ["Visible on the canonical project board"],
+    }
+    with TestClient(app) as client:
+        agent_credential = client.post(
+            "/v1/principals/credentials", headers=ceo,
+            json={"principal_id": "request-agent-" + str(uuid4()), "kind": "AGENT"},
+        )
+        assert agent_credential.status_code == 201
+        worker = {"X-Agent-Token": agent_credential.json()["token"]}
+        assert client.post(
+            "/v1/projects/not-a-project/work-requests", json=payload,
+        ).status_code == 403
+
+        mandate = client.post("/v1/mandates", headers=ceo, json={
+            "title": "CEO request mandate " + str(uuid4()), "objective": "Test request path",
+        }).json()["id"]
+        assert client.post(f"/v1/mandates/{mandate}/confirm", headers=ceo).status_code == 200
+        project = client.post("/v1/projects", headers=ceo, json={
+            "name": "CEO request project", "mandate_id": mandate,
+        }).json()["id"]
+        assert client.post(f"/v1/projects/{project}/work", headers=worker, json={
+            "title": payload["title"], "description": payload["description"],
+            "author_id": agent_credential.json()["principal_id"],
+            "acceptance_criteria": payload["acceptance_criteria"],
+        }).status_code == 403
+        created = client.post(f"/v1/projects/{project}/work-requests", headers=ceo, json=payload)
+        assert created.status_code == 201, created.text
+        work_id = created.json()["id"]
+        assert created.json()["status"] == "INBOX"
+
+        board = client.get(f"/v1/projects/{project}/board", headers=ceo)
+        assert board.status_code == 200
+        row = next(item for item in board.json() if item["id"] == work_id)
+        assert row["status"] == "INBOX"
+        with connect_postgres() as db:
+            author = db.execute(
+                "SELECT author_id FROM work_items WHERE id=%s", (work_id,),
+            ).fetchone()[0]
+            event = db.execute(
+                "SELECT kind,details FROM events WHERE subject_id=%s AND kind='work.requested'",
+                (work_id,),
+            ).fetchone()
+            execution_count = db.execute(
+                "SELECT count(*) FROM execution_queue WHERE work_id=%s", (work_id,),
+            ).fetchone()[0]
+            grant_count = db.execute(
+                "SELECT count(*) FROM project_grants WHERE project_id=%s", (project,),
+            ).fetchone()[0]
+        assert author == "ceo"
+        assert event[0] == "work.requested"
+        assert event[1]["actor"] == "ceo"
+        assert event[1]["admitted"] is False
+        assert execution_count == 0
+        assert grant_count == 0
+
+        assert client.post(f"/v1/projects/{project}/state", headers=ceo,
+                           json={"action": "pause"}).status_code == 200
+        paused = client.post(f"/v1/projects/{project}/work-requests", headers=ceo, json=payload)
+        assert paused.status_code == 409
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or
+    os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="PostgreSQL integration requires an explicitly disposable test database",
+)
 def test_organization_projection_is_authenticated_and_project_scoped(monkeypatch):
     from aao.work_management_api import app
     monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])

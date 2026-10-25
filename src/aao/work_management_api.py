@@ -98,6 +98,12 @@ class WorkRequest(BaseModel):
     description: str = Field(default="", max_length=5000)
 
 
+class CEOWorkRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    acceptance_criteria: list[str] = Field(min_length=1)
+    description: str = Field(default="", max_length=5000)
+
+
 class ReviewRequest(BaseModel):
     decision: str = Field(pattern="^(APPROVE|REJECT|VETO)$")
     candidate_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
@@ -979,6 +985,35 @@ def create_work(project_id: str, payload: WorkRequest,
         )
         audit(db, wid, "work.created", {"project_id": project_id})
     return {"id": wid, "status": "INBOX"}
+
+
+@app.post("/v1/projects/{project_id}/work-requests", status_code=201)
+def create_ceo_work_request(
+    project_id: str,
+    payload: CEOWorkRequest,
+    _: str = Depends(require_ceo),
+):
+    """Record CEO direction as canonical INBOX work; it does not admit or execute it."""
+    work_id = str(uuid4())
+    with tx() as db:
+        row = db.execute(
+            "SELECT state FROM projects WHERE id=%s FOR UPDATE", (project_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Project not found")
+        if row[0] != "ACTIVE":
+            raise HTTPException(409, "Project not active")
+        db.execute(
+            "INSERT INTO work_items(id,project_id,title,description,author_id,status,acceptance_criteria) "
+            "VALUES (%s,%s,%s,%s,'ceo','INBOX',%s::jsonb)",
+            (work_id, project_id, payload.title, payload.description,
+             json.dumps(payload.acceptance_criteria)),
+        )
+        audit(db, work_id, "work.requested", {
+            "project_id": project_id, "actor": "ceo", "status": "INBOX",
+            "admitted": False,
+        })
+    return {"id": work_id, "status": "INBOX"}
 
 
 @app.get("/v1/projects/{project_id}/board")

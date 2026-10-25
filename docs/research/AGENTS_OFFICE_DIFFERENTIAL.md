@@ -77,7 +77,7 @@ A SHA `95d8427` no existía `/v1/organization`; se implementó en PR #129 (`e807
 
 - Telemetría de presencia/heartbeat y feed de actividad unificado en la oficina. Estado de ejecución sigue siendo evidencia de trabajo, no presencia general del agente.
 - Conversación CEO-agente persistente en el producto; equipos temporales padre/hijos durables; calendario/rutinas con ejecución servidor; visualización de conocimiento corporativo unificada; feedback/skills versionadas asociadas al catálogo.
-- Dirección de proyectos desde la oficina: hoy existe navegación a Kanban desde asignaciones, pero no creación de trabajo desde la oficina. El endpoint existente `POST /v1/projects/{id}/work` exige principal AGENT con `work.create`; no se debe eludir ese límite ni fingir una identidad de agente para el CEO.
+- Dirección de proyectos desde la oficina: ya se puede registrar una solicitud CEO en un proyecto activo. La ruta nueva crea un `work_item` canónico `INBOX`, con autor `ceo` y evento `work.requested`; no lo admite ni ejecuta. El endpoint de creación AGENT existente sigue exigiendo `work.create` y no se suplanta esa identidad.
 
 ## 5. Propuesta incremental
 
@@ -100,9 +100,11 @@ A SHA `95d8427` no existía `/v1/organization`; se implementó en PR #129 (`e807
 
 **Frontend:** en detalle de agente/unidad mostrar resumen de asignaciones, recientes y decisiones relacionadas, con CTA a proyecto, Kanban y Activity ya disponibles. La oficina es un mapa de navegación, no un segundo tablero.
 
-**Backend:** reutilizar endpoints actuales (`POST /v1/projects/{id}/work`, admisión y stages autorizados), sin ejecución directa por la escena. La API de creación requiere hoy un principal AGENT con grant `work.create`; para habilitar dirección CEO desde la oficina hay que diseñar/implementar una ruta de solicitud autorizada que conserve actor y proyecto y no conceda ejecución. No impersonar un agente ni crear un estado paralelo a `work_items`.
+**Backend:** las solicitudes CEO se registran mediante `POST /v1/projects/{id}/work-requests`, con credencial CEO, en el mismo `work_items` como `INBOX`, autor `ceo` y evento auditable `work.requested`. Solo admite proyectos activos. La ruta no concede grants, no añade fila de ejecución ni cambia admisión; la creación AGENT normal conserva su autorización `work.create`. No impersonar un agente ni crear estado paralelo a `work_items`.
 
-**Aceptación:** desde un agente se llega a un trabajo existente; una solicitud de trabajo creada por la vía aprobada aparece inmediatamente en el board y la oficina a partir del mismo registro. Usuario sin grant no ve ni crea trabajo en ese proyecto.
+**Frontend:** en LIVE, solo la sesión CEO autenticada ve el formulario de dirección de proyecto; usa la lista real de proyectos activos, exige criterios de aceptación y muestra el ID canónico devuelto. Tras registrar, permite abrir el tablero del mismo proyecto. DEMO, AGENT y datos de proyectos no disponibles no habilitan la acción.
+
+**Aceptación:** desde un agente se llega a un trabajo existente; una solicitud CEO creada desde oficina aparece en el board con el mismo ID y `INBOX`; la actividad registra actor y proyecto. Tests de API verifican que la ruta deniega sin CEO, exige proyecto activo, no crea grant ni ejecución y no afecta el endpoint AGENT; tests frontend verifican LIVE/CEO, proyecto activo, criterios, ID y navegación. Usuario AGENT sin grant no puede crear trabajo vía endpoint AGENT.
 
 ### F2 — Conversación orientada a proyectos, no a proveedor
 
@@ -161,7 +163,7 @@ Los perfiles/unidades persistidos y la edición CEO ya están construidos (#134/
 - **F0 implementado por backend y cerrado en el adapter:** `GET /v1/organization` proyecta desde PostgreSQL los proyectos visibles, ejecuciones/revisiones y para AGENT valida credencial activa y `project.read` en SQL. El agente autenticado puede aparecer como identidad desconocida; el CEO ve identidades observadas en ejecuciones/revisiones. No escribe estado ni inventa adscripciones, heartbeat o capacidades. La unidad `unit-unassigned` solo es agrupación visual. El adapter no reconstituye departamentos ni hace fan-out si falla el contrato.
 - **Evidencia local inicial:** prueba PostgreSQL `tests/test_project_workflow_integration.py::test_organization_projection_is_authenticated_and_project_scoped` pasó (`1 passed`) contra el contenedor desechable; `compileall`, Ruff focal y `git diff --check` pasaron. Esto no valida aún el conjunto completo ni CI.
 - **Límite de cobertura en ese incremento inicial:** aún no había perfiles ni heartbeat, y el endpoint no concede permisos. Los estados se deducen únicamente de filas de ejecución; un `RUNNING` sin lease vigente demostrable permanece desconocido/no activo. La interfaz ya no conserva la ruta de agregación anterior: si el backend no entrega un contrato válido, muestra unavailable/forbidden/error. Los perfiles llegaron después (#134/#137); heartbeat sigue pendiente.
-- **Siguiente trabajo (actualizado):** cerrar la dirección de trabajo de F1 sin ampliar grants por una interacción visual ni suplantar identidades; después abordar conversación persistente F2. No inventar presencia/heartbeat. F3/F4 siguen después de F1/F2.
+- **F1 dirección CEO construida (siguiente incremento):** endpoint autenticado CEO y formulario LIVE de oficina escriben el `work_item` canónico en `INBOX`, vinculado al proyecto activo, con autor/evento CEO; no admiten ni ejecutan. Prueba Postgres desechable y pruebas de adapter/UI registran los límites. Después abordar conversación persistente F2. No inventar presencia/heartbeat. F3/F4 siguen después de F1/F2.
 - **F1 implementado en incremento posterior:** desde la ficha de un agente, cada asignación abre el Kanban del proyecto real seleccionado en el Control Center. El vínculo usa el `projectId` de la respuesta; no crea ni replica tareas. Test de interacción `office.test.tsx` verifica navegación con el mismo ID. PR #130, merge `cf8b397`; suite frontend y CI de main verdes.
 
 - Esta investigación es referencia conceptual, no revisión de seguridad ni certificación de AAO.

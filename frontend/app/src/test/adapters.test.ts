@@ -344,4 +344,27 @@ describe('HttpAaoLiveAdapter organization projection', () => {
       body: JSON.stringify({ id: 'unit-rnd', name: 'Research', code: 'RND', parent_id: null, lead_principal_id: null, enabled: true }),
     }));
   });
+
+  it('creates canonical work requests only from CEO session and sends no execution grant', async () => {
+    const fetch = vi.spyOn(global, 'fetch');
+    const agentSession = new HttpAaoLiveAdapter({ getToken: () => 'agent-token', getAuthRole: () => 'AGENT' });
+    expect((await agentSession.createCEOWorkRequest('project-1', {
+      title: 'Should be blocked', description: '', acceptance_criteria: ['Never sent'],
+    })).kind).toBe('forbidden');
+    expect(fetch).not.toHaveBeenCalled();
+
+    const workId = '00000000-0000-4000-8000-000000000001';
+    fetch.mockResolvedValueOnce({
+      status: 201, ok: true, json: async () => ({ id: workId, status: 'INBOX' }),
+    } as Response);
+    const ceoSession = new HttpAaoLiveAdapter({ getToken: () => 'ceo-token', getAuthRole: () => 'CEO', requireAuth: true });
+    const input = { title: 'Improve project', description: 'Context', acceptance_criteria: ['Tested'] };
+    const result = await ceoSession.createCEOWorkRequest('project/1', input);
+    expect(result.kind).toBe('ready');
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('/v1/projects/project%2F1/work-requests'), expect.objectContaining({
+      method: 'POST',
+      headers: expect.objectContaining({ 'X-CEO-Token': 'ceo-token', 'Content-Type': 'application/json' }),
+      body: JSON.stringify(input),
+    }));
+  });
 });

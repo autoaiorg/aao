@@ -395,6 +395,19 @@ export const App: React.FC = () => {
                   retryable: false,
                 }
               }
+              projects={projectsQuery.data || {
+                kind: 'unavailable',
+                reason: 'Lista de proyectos no disponible.',
+                retryable: true,
+              }}
+              canCreateWorkRequest={origin === 'live' && role === 'CEO' && port instanceof HttpAaoLiveAdapter}
+              onCreateWorkRequest={port instanceof HttpAaoLiveAdapter
+                ? async (projectId, input) => {
+                    const result = await port.createCEOWorkRequest(projectId, input);
+                    if (result.kind === 'ready') handleRefresh();
+                    return result;
+                  }
+                : undefined}
               onNavigate={(target, projectId) => {
                 if (projectId) setSelectedProjectId(projectId);
                 if (target === 'organization') setActiveNav('organization');

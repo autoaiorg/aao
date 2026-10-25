@@ -816,9 +816,10 @@ def test_registered_repository_check_requires_task_selection_before_queue_claim(
     not os.getenv("AAO_TEST_POSTGRES_URL") or os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
     reason="Explicit disposable PostgreSQL database required",
 )
-def test_w2a_agent_run_produces_a_tested_candidate_retries_after_failure_and_is_reviewable(monkeypatch, tmp_path):
-    """W1+W2a end to end: an agent run turns an admitted task into a patch proposal and a candidate commit,
-    tests it in the sandbox, a failed attempt can be re-run, and the auditor approves the tested candidate SHA."""
+def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp_path):
+    """W1-W3 end to end: an agent run turns an admitted task into a proposal and a candidate commit tested in
+    the sandbox; failed attempts can be re-run; the auditor approves the tested SHA; a separate publisher pushes
+    exactly that SHA and opens the PR; the merged PR makes the task DONE; the activity feed shows each step."""
     import subprocess
 
     from aao.inert_execution_worker import run_one
@@ -1011,4 +1012,26 @@ def test_w2a_agent_run_produces_a_tested_candidate_retries_after_failure_and_is_
         board = client.get(f"/v1/projects/{project}/board", headers=agent).json()
         prs = next(item for item in board if item["id"] == work)["pull_requests"]
         assert [(pr["pr_number"], pr["candidate_sha"], pr["publisher"]) for pr in prs] == [(7, candidate_sha, publisher_id)]
+
+        # W3: the task becomes DONE only once the PR is merged with the approved SHA as its head.
+        from aao.pr_publisher import reconcile
+        pr_state = {"state": "open", "merged": False, "merge_commit_sha": None, "head_sha": candidate_sha}
+        assert reconcile(work, publisher, get_pr=lambda n: pr_state)["status"] == "OPEN"
+        with pytest.raises(PublishError, match="head no longer matches"):
+            reconcile(work, publisher, get_pr=lambda n: {**pr_state, "head_sha": "f" * 40})
+        merge_sha = "e" * 40
+        pr_state.update(state="closed", merged=True, merge_commit_sha=merge_sha)
+        done = reconcile(work, publisher, get_pr=lambda n: pr_state)
+        assert done["status"] == "DONE" and done["merge_commit_sha"] == merge_sha
+        assert reconcile(work, publisher, get_pr=lambda n: pr_state) == {"status": "DONE"}
+        board = client.get(f"/v1/projects/{project}/board", headers=ceo).json()
+        assert next(item for item in board if item["id"] == work)["status"] == "DONE"
+        activity = client.get(f"/v1/projects/{project}/activity", headers=agent)
+        assert activity.status_code == 200, activity.text
+        kinds = [event["kind"] for event in activity.json()]
+        assert kinds[0] == "work.completed" and activity.json()[0]["details"]["merge_commit_sha"] == merge_sha
+        for kind in ("work.admitted", "execution.staged", "execution.claimed", "execution.completed",
+                     "work.patch_proposed", "work.reviewed", "work.pr_opened"):
+            assert kind in kinds, kind
+        assert client.get(f"/v1/projects/{project}/activity?limit=0", headers=ceo).status_code == 422
     assert subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True, check=True).stdout == ""

@@ -187,8 +187,26 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         assert message.json()["sender"] == "CEO"
         assert message.json()["related_work_id"] is None
 
-        # Reopening the project thread returns the same persisted objects. No
-        # synthetic AAO answer, work item, execution or grant is introduced.
+        conversion_url = (
+            f"/v1/projects/{project}/conversations/{conversation_id}/messages/"
+            f"{message.json()['id']}/work-request"
+        )
+        conversion = {"title": "Investigate evidence", "acceptance_criteria": ["Evidence linked"]}
+        assert client.post(conversion_url, json=conversion).status_code == 403
+        other_mandate = client.post("/v1/mandates", headers=ceo, json={
+            "title": "Other conversation mandate " + str(uuid4()), "objective": "Scope test",
+        }).json()["id"]
+        assert client.post(f"/v1/mandates/{other_mandate}/confirm", headers=ceo).status_code == 200
+        other_project = client.post("/v1/projects", headers=ceo, json={
+            "name": "Other conversation project", "mandate_id": other_mandate,
+        }).json()["id"]
+        assert client.post(
+            f"/v1/projects/{other_project}/conversations/{conversation_id}/messages/"
+            f"{message.json()['id']}/work-request", headers=ceo, json=conversion,
+        ).status_code == 404
+
+        # Reopening returns the same persisted objects, without a synthetic
+        # AAO reply or implicit work conversion.
         listed = client.get(f"/v1/projects/{project}/conversations", headers=ceo)
         assert listed.status_code == 200
         assert [item["id"] for item in listed.json()] == [conversation_id]
@@ -202,19 +220,69 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         assert client.get(
             f"/v1/projects/{uuid4()}/conversations/{conversation_id}/messages", headers=ceo,
         ).status_code == 404
+        converted = client.post(conversion_url, headers=ceo, json=conversion)
+        assert converted.status_code == 200, converted.text
+        work_id = converted.json()["id"]
+        assert converted.json()["status"] == "INBOX"
+        assert converted.json()["created"] is True
+        retry = client.post(conversion_url, headers=ceo, json={
+            "title": "Ignored retry payload", "acceptance_criteria": ["Must not duplicate"],
+        })
+        assert retry.status_code == 200
+        assert retry.json() == {"id": work_id, "status": "INBOX", "created": False}
+
+        reopened = client.get(
+            f"/v1/projects/{project}/conversations/{conversation_id}/messages", headers=ceo,
+        )
+        assert reopened.json()[0]["related_work_id"] == work_id
+        board = client.get(f"/v1/projects/{project}/board", headers=ceo)
+        assert any(item["id"] == work_id and item["status"] == "INBOX" for item in board.json())
         with connect_postgres() as db:
             counts = db.execute(
                 "SELECT (SELECT count(*) FROM work_items WHERE project_id=%s),"
                 "(SELECT count(*) FROM execution_queue e JOIN work_items w ON w.id=e.work_id "
-                "WHERE w.project_id=%s)", (project, project),
+                "WHERE w.project_id=%s),"
+                "(SELECT count(*) FROM project_grants WHERE project_id=%s)",
+                (project, project, project),
+            ).fetchone()
+            linked_work = db.execute(
+                "SELECT w.project_id,w.author_id,w.description,w.acceptance_criteria "
+                "FROM work_items w JOIN project_conversation_messages m ON m.related_work_id=w.id "
+                "WHERE m.id=%s", (message.json()["id"],),
             ).fetchone()
             audit_event = db.execute(
                 "SELECT details FROM events WHERE subject_id=%s "
                 "AND kind='conversation.message.created'", (conversation_id,),
             ).fetchone()
-        assert counts[0] == 0
-        assert counts[1] == 0
+            work_audit = db.execute(
+                "SELECT details FROM events WHERE subject_id=%s AND kind='work.requested'",
+                (work_id,),
+            ).fetchone()
+            link_audit = db.execute(
+                "SELECT details FROM events WHERE subject_id=%s "
+                "AND kind='conversation.message.work_requested'", (message.json()["id"],),
+            ).fetchone()
+        assert counts == (1, 0, 0)
+        assert str(linked_work[0]) == project
+        assert linked_work[1] == "ceo"
+        assert linked_work[2] == "Please investigate the real execution evidence."
+        assert linked_work[3] == ["Evidence linked"]
         assert audit_event and audit_event[0]["actor"] == "ceo"
+        assert work_audit[0]["source_message_id"] == message.json()["id"]
+        assert work_audit[0]["admitted"] is False
+        assert link_audit[0]["work_id"] == work_id
+
+        pending_message = client.post(
+            f"/v1/projects/{project}/conversations/{conversation_id}/messages",
+            headers=ceo, json={"body": "A second request"},
+        ).json()
+        assert client.post(f"/v1/projects/{project}/state", headers=ceo,
+                           json={"action": "pause"}).status_code == 200
+        paused_url = (
+            f"/v1/projects/{project}/conversations/{conversation_id}/messages/"
+            f"{pending_message['id']}/work-request"
+        )
+        assert client.post(paused_url, headers=ceo, json=conversion).status_code == 409
 
 
 @pytest.mark.skipif(

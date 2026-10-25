@@ -367,4 +367,22 @@ describe('HttpAaoLiveAdapter organization projection', () => {
       body: JSON.stringify(input),
     }));
   });
+
+  it('converts a persisted conversation message only from CEO session', async () => {
+    const fetch = vi.spyOn(global, 'fetch');
+    const input = { title: 'Analyze run', acceptance_criteria: ['Evidence linked'] };
+    const agent = new HttpAaoLiveAdapter({ getToken: () => 'agent-token', getAuthRole: () => 'AGENT' });
+    expect((await agent.createWorkRequestFromMessage('p', 'c', 'm', input)).kind).toBe('forbidden');
+    expect(fetch).not.toHaveBeenCalled();
+
+    const workId = '00000000-0000-4000-8000-000000000042';
+    fetch.mockResolvedValueOnce({ status: 200, ok: true, json: async () => ({ id: workId, status: 'INBOX', created: true }) } as Response);
+    const ceo = new HttpAaoLiveAdapter({ getToken: () => 'ceo-token', getAuthRole: () => 'CEO', requireAuth: true });
+    const result = await ceo.createWorkRequestFromMessage('p/1', 'c/1', 'm/1', input);
+    expect(result.kind).toBe('ready');
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('/v1/projects/p%2F1/conversations/c%2F1/messages/m%2F1/work-request'), expect.objectContaining({
+      method: 'POST', headers: expect.objectContaining({ 'X-CEO-Token': 'ceo-token', 'Content-Type': 'application/json' }),
+      body: JSON.stringify(input),
+    }));
+  });
 });

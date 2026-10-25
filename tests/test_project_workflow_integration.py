@@ -74,6 +74,47 @@ def test_postgres_mandate_project_grant_work_admission(monkeypatch):
 
 
 @pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or
+    os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="PostgreSQL integration requires an explicitly disposable test database",
+)
+def test_organization_projection_is_authenticated_and_project_scoped(monkeypatch):
+    from aao.work_management_api import app
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "organization-ceo")
+    ceo = {"X-CEO-Token": "organization-ceo"}
+    with TestClient(app) as client:
+        assert client.get("/v1/organization").status_code == 403
+        principal = "org-agent-" + str(uuid4())
+        token = client.post("/v1/principals/credentials", headers=ceo, json={
+            "principal_id": principal, "kind": "AGENT",
+        }).json()["token"]
+        agent = {"X-Agent-Token": token}
+        project_ids = []
+        for name in ("visible", "hidden"):
+            mandate = client.post("/v1/mandates", headers=ceo, json={
+                "title": name + str(uuid4()), "objective": "Projection scope test",
+            }).json()["id"]
+            client.post(f"/v1/mandates/{mandate}/confirm", headers=ceo)
+            project_ids.append(client.post("/v1/projects", headers=ceo, json={
+                "name": name, "mandate_id": mandate,
+            }).json()["id"])
+        grant = client.post(f"/v1/projects/{project_ids[0]}/grants", headers=ceo, json={
+            "principal_id": principal, "capability": "project.read",
+        })
+        assert grant.status_code == 201
+        visible = client.get("/v1/organization", headers=agent)
+        assert visible.status_code == 200
+        payload = visible.json()
+        assert payload["coverage"]["totalProjects"] == 1
+        assert [agent["id"] for agent in payload["agents"]] == [principal]
+        assert payload["agents"][0]["status"] == "UNKNOWN"
+        assert payload["agents"][0]["currentAssignments"] == []
+        assert payload["units"][0]["id"] == "unit-unassigned"
+        assert client.get("/v1/organization", headers=ceo).json()["coverage"]["totalProjects"] >= 2
+
+
+@pytest.mark.skipif(
     not os.getenv("AAO_TEST_POSTGRES_URL") or os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
     reason="Explicit disposable PostgreSQL test database required",
 )

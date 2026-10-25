@@ -1,13 +1,16 @@
 # Inspiraciones y código de terceros
 
-Este fichero agradece a los proyectos de terceros que han influido en AAO y deja trazabilidad de esa influencia. Cada entrada distingue dos casos:
+Registro de procedencia para código y conceptos externos relacionados con AAO.
 
-- **Código copiado o adaptado:** fragmentos de terceros incorporados al repositorio. Hay que conservar la licencia y el aviso de copyright, e indicar la ruta de AAO donde está cada fragmento.
-- **Inspiración:** ideas o diseños tomados como referencia y reimplementados desde cero. El código de AAO es original y no arrastra obligaciones de licencia, pero se reconoce el origen.
+## Política y clasificación
 
-**Política:**
-- Antes de fusionar cualquier código copiado de un tercero, se añade aquí su entrada con el repositorio, el commit, la licencia, los ficheros de origen y las rutas de AAO afectadas, y se incluye su aviso de licencia.
-- Las inspiraciones se registran en cuanto una idea de un tercero se implementa en AAO.
+- **Código copiado o adaptado:** requiere identificar repositorio, commit, licencia, ficheros de origen y rutas de AAO afectadas; conservar los avisos aplicables. No se incorpora código de terceros sin revisar antes los términos.
+- **Inspiración conceptual:** registrar la referencia y las ideas funcionales que influyen en AAO. Una idea se acredita como implementada solo cuando el cambio AAO existe; las ideas meramente estudiadas o planificadas se etiquetan como tales.
+- El registro no sustituye la licencia del tercero ni concede permiso para usos que esta prohíba.
+
+## Inspiraciones conceptuales
+
+### RONIN Orchestration Engine — ideas implementadas y planificadas
 
 ---
 
@@ -41,7 +44,7 @@ Este fichero agradece a los proyectos de terceros que han influido en AAO y deja
 | Límites y clases de datos por modelo | `config/modelConfig.mjs` (`maxTokens`) | Ampliar `model_profile` con `limits` y `data_classes` cuando haga falta (`quality` y `cost_per_attempt_usd` ya existen) |
 | Árbol de tareas y cronología del ciclo | `forge/forgeTaskTree.mjs`, `api/cycleManager.mjs`, `dashboard/index.html` | Presentación de los intentos en el Control Center sobre los datos que AAO ya persiste |
 
-Cuando alguna de estas ideas se implemente, la fila pasará a la tabla de inspiraciones implementadas con su PR.
+Cuando alguna idea planificada se implemente, se actualizará su estado con la evidencia de AAO correspondiente.
 
 **Descartado de forma expresa:**
 - el modelo oculto;
@@ -54,3 +57,27 @@ Cuando alguna de estas ideas se implemente, la fila pasará a la tabla de inspir
 Los motivos están en el análisis, §2.9.
 
 Gracias al autor de RONIN por publicar su trabajo con licencia abierta.
+
+### Agents Office — referencia conceptual estudiada; sin adaptación
+
+| Campo | Valor |
+|---|---|
+| Repositorio | <https://github.com/ajsahni/agents-office> |
+| Autor | Ajsahni / Sahni.ai (según los metadatos del repositorio) |
+| Revisión consultada | `3773c9b6aed6a1d2c3ab2765d113c644261c2019` |
+| Licencia | PolyForm Noncommercial con términos adicionales de Sahni.ai; consultar el texto licenciado antes de cualquier uso |
+| Consultado | 2026-10-25, a petición del CEO; revisión de código sin ejecutarlo |
+| Análisis | [`docs/research/AGENTS_OFFICE_DIFFERENTIAL.md`](docs/research/AGENTS_OFFICE_DIFFERENTIAL.md) |
+
+**Código, texto y recursos adaptados: ninguno.** La licencia restringe expresamente adaptar Agents Office para conducir, mostrar o servir de frontend a otra plataforma de agentes sin permiso escrito. La implementación de AAO debe ser original e independiente; esta entrada no pretende afirmar que la licencia permita reutilizar sus diseños.
+
+**Ideas funcionales estudiadas, no atribuidas como implementadas:**
+
+| Idea observada | Evolución independiente propuesta para AAO | Estado |
+|---|---|---|
+| Un espacio visual que enlaza organización, personas y trabajo | Proyección original de solo lectura `/v1/organization`, derivada de proyectos, ejecuciones y revisiones persistidos; identidad organizativa no persistida se marca desconocida | F0 implementado en `feat/agents-office-aa-integration`; validación inicial backend PostgreSQL y test del adapter, pendiente CI/merge |
+| Actividad visual asociada a trabajos | Mostrar solo estados y eventos de PostgreSQL/API con IDs, hora y procedencia; reutilizar board y Activity del Control Center | Propuesta |
+| Chat, equipos temporales y síntesis | En su caso, convertir órdenes en trabajo AAO persistente y autorizado; los equipos requieren trabajos padre/hijos en backend | Diferido; no copiar prompts ni protocolo de `teams.mjs` |
+| Calendario, conocimiento, skills y correcciones | Usar estado y evidencia canónicos; cualquier scheduler, conocimiento o skill futura debe ser persistente, versionada y gobernada por los flujos AAO | Diferido; no copiar almacenamiento local, grafo, skills, briefs o aprendizaje del proyecto externo |
+
+**Elementos expresamente no trasladados:** código, arquitectura interna, prompts, textos, apariencia 3D, composición visual, gráficos, iconos, recursos artísticos, roster, scheduler, sistema de skills, implementación de chat/equipos o almacenamiento JSON. Se agradece al autor por compartir una referencia que permitió estudiar estos patrones de producto.

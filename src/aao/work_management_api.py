@@ -549,6 +549,153 @@ def projects(principal: str = Depends(read_principal)):
         return [{"id": r[0], "name": r[1], "state": r[2]} for r in rows]
 
 
+@app.get("/v1/organization")
+def organization(principal: str = Depends(read_principal)):
+    """Read-only office projection from persisted principals, work, and executions.
+
+    Organizational placement and heartbeat are intentionally unknown until AAO
+    has canonical persisted sources for them.
+    """
+    with tx() as db:
+        if principal is _CEO_PRINCIPAL:
+            projects_rows = db.execute(
+                "SELECT id,name FROM projects ORDER BY id",
+            ).fetchall()
+        else:
+            if not isinstance(principal, AuthenticatedPrincipal):
+                raise HTTPException(403, "Individual reader credential required")
+            credential = db.execute(
+                "SELECT kind,enabled FROM principal_credentials "
+                "WHERE principal_id=%s AND token_digest=%s FOR SHARE",
+                (principal, principal.token_digest),
+            ).fetchone()
+            if not credential or credential[0] != "AGENT" or not credential[1]:
+                raise HTTPException(403, "Individual reader invalid or revoked")
+            projects_rows = db.execute(
+                "SELECT p.id,p.name FROM projects p JOIN project_grants g "
+                "ON g.project_id=p.id WHERE g.principal_id=%s "
+                "AND g.capability='project.read' AND "
+                "(g.expires_at IS NULL OR g.expires_at > clock_timestamp()) "
+                "ORDER BY p.id FOR SHARE OF g",
+                (principal,),
+            ).fetchall()
+
+        projects_by_id = {str(row[0]): row[1] for row in projects_rows}
+        project_ids = list(projects_by_id)
+        units = [{
+            "id": "unit-unassigned", "name": "Adscripción desconocida",
+            "code": "UNKNOWN", "parentId": None, "leadRole": "Desconocido",
+            "leadAgentId": None,
+            "description": "Agrupación visual; no representa un departamento persistido.",
+            "standingCount": 0, "ephemeralCount": 0, "activeProjectsCount": 0,
+        }]
+        if not project_ids:
+            return {"units": units, "agents": [], "totalStandingAgents": 0,
+                    "totalEphemeralAgents": 0, "totalUnknownAgents": 0,
+                    "activeAssignmentsCount": 0,
+                    "coverage": {"totalProjects": 0, "inspectedProjects": 0,
+                                 "failedProjects": 0, "isPartial": False}}
+
+        placeholders = ",".join(["%s"] * len(project_ids))
+        rows = db.execute(
+            "SELECT q.id,q.work_id,q.project_id,w.title,q.status,q.attempts,"
+            "q.created_at,q.worker_id,q.lease_expires_at,q.result_json "
+            "FROM execution_queue q JOIN work_items w ON w.id=q.work_id "
+            f"WHERE q.project_id IN ({placeholders}) ORDER BY q.created_at,q.id",
+            tuple(project_ids),
+        ).fetchall()
+        review_rows = db.execute(
+            "SELECT r.reviewer_id,r.created_at "
+            "FROM reviews r JOIN work_items w ON w.id=r.work_id "
+            "JOIN projects p ON p.id=w.project_id "
+            f"WHERE w.project_id IN ({placeholders}) ORDER BY r.created_at",
+            tuple(project_ids),
+        ).fetchall()
+
+    agents: dict[str, dict] = {}
+    active_count = 0
+    for row in rows:
+        execution_id, work_id, project_id = str(row[0]), str(row[1]), str(row[2])
+        title, status, attempts, created, worker_id, lease, result = row[3:]
+        if not worker_id:
+            continue
+        worker_id = str(worker_id)
+        agent = agents.setdefault(worker_id, {
+            "id": worker_id, "name": worker_id, "type": "UNKNOWN",
+            "roleTitle": "Principal observado en ejecución",
+            "unitId": "unit-unassigned", "unitName": "Adscripción desconocida",
+            "capabilities": [], "heartbeatStatus": "UNKNOWN",
+            "lastHeartbeatAt": None, "status": "UNKNOWN",
+            "operationalState": "DESCONOCIDO", "currentAssignments": [],
+            "executionHistory": [],
+            "authorityBoundary": "La autoridad depende de grants por proyecto; identidad organizativa desconocida.",
+            "isSyntheticDemo": False,
+            "evidenceDescription": "Identidad derivada de ejecuciones persistidas.",
+            "lastEvidenceAt": None,
+        })
+        active = status == "RUNNING" and lease is not None and lease > datetime.now(UTC)
+        assignment_status = "ACTIVE" if active else "EXPIRED" if status == "RUNNING" and lease else "COMPLETED" if status != "RUNNING" else "UNKNOWN"
+        if active:
+            active_count += 1
+            agent["status"], agent["operationalState"] = "BUSY", "EJECUTANDO"
+        agent["currentAssignments"].append({
+            "id": execution_id, "projectId": project_id,
+            "projectName": projects_by_id[project_id], "taskId": str(work_id),
+            "taskTitle": title, "assignedAt": created.isoformat(),
+            "leaseExpiresAt": lease.isoformat() if lease else None,
+            "status": assignment_status,
+        })
+        parsed_result = result if isinstance(result, dict) else {}
+        agent["executionHistory"].append({
+            "id": execution_id, "taskId": str(work_id), "taskTitle": title,
+            "projectId": project_id, "projectName": projects_by_id[project_id],
+            "status": status, "attempts": attempts,
+            "createdAt": created.isoformat(),
+            "leaseExpiresAt": lease.isoformat() if lease else None,
+            "workerId": worker_id,
+            "provider": parsed_result.get("provider"),
+            "model": parsed_result.get("model"), "rawResult": result,
+        })
+        if not agent["lastEvidenceAt"] or created.isoformat() > agent["lastEvidenceAt"]:
+            agent["lastEvidenceAt"] = created.isoformat()
+    for row in review_rows:
+        reviewer, created = row
+        reviewer = str(reviewer)
+        agents.setdefault(reviewer, {
+            "id": reviewer, "name": reviewer, "type": "UNKNOWN",
+            "roleTitle": "Principal observado como revisor",
+            "unitId": "unit-unassigned", "unitName": "Adscripción desconocida",
+            "capabilities": [], "heartbeatStatus": "UNKNOWN",
+            "lastHeartbeatAt": None, "status": "UNKNOWN",
+            "operationalState": "DESCONOCIDO", "currentAssignments": [],
+            "executionHistory": [],
+            "authorityBoundary": "La revisión registrada no implica rol organizativo ni autoridad vigente.",
+            "isSyntheticDemo": False, "evidenceDescription": "Identidad derivada de una revisión persistida.",
+            "lastEvidenceAt": created.isoformat(),
+        })
+    if principal is not _CEO_PRINCIPAL:
+        principal_id = str(principal)
+        agents.setdefault(principal_id, {
+            "id": principal_id, "name": principal_id, "type": "UNKNOWN",
+            "roleTitle": "Principal autenticado; perfil organizativo desconocido",
+            "unitId": "unit-unassigned", "unitName": "Adscripción desconocida",
+            "capabilities": [], "heartbeatStatus": "UNKNOWN",
+            "lastHeartbeatAt": None, "status": "UNKNOWN",
+            "operationalState": "REGISTRADO", "currentAssignments": [],
+            "executionHistory": [],
+            "authorityBoundary": "La autenticación no amplía los grants ni determina adscripción organizativa.",
+            "isSyntheticDemo": False,
+            "evidenceDescription": "Principal autenticado por credencial individual activa.",
+            "lastEvidenceAt": None,
+        })
+    return {"units": units, "agents": list(agents.values()),
+            "totalStandingAgents": 0, "totalEphemeralAgents": 0,
+            "totalUnknownAgents": len(agents), "activeAssignmentsCount": active_count,
+            "coverage": {"totalProjects": len(project_ids),
+                         "inspectedProjects": len(project_ids),
+                         "failedProjects": 0, "isPartial": False}}
+
+
 @app.get("/v1/projects/{project_id}/grants")
 def project_grants(project_id: str, _: str = Depends(require_ceo)):
     """CEO-only inventory of project-scoped grants; never returns credential material."""

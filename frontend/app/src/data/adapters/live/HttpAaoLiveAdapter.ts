@@ -478,6 +478,10 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
           pullRequests: Array.isArray(itemObj.pull_requests)
             ? (itemObj.pull_requests as TaskItem['pullRequests'])
             : [],
+          resolution:
+            typeof itemObj.resolution === 'object' && itemObj.resolution !== null
+              ? (itemObj.resolution as TaskItem['resolution'])
+              : null,
         };
 
         if (canonicalStage) {

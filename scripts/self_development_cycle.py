@@ -6,6 +6,7 @@
   task    (implementer)  create a task, select the capability, admit it and stage an agent run
   submit  (implementer)  after a SUCCEEDED run: register its check output as evidence, move to review
   review  (auditor)      APPROVE or REJECT exactly the tested candidate SHA
+  verify  (read-only)    print the task's whole chain from PostgreSQL and check its consistency
 
 The agent run itself is scripts/run_self_development_worker.py; publication and the result are
 scripts/publish_candidate.py --step push|open|reconcile. Everything goes through the same API and
@@ -151,6 +152,60 @@ def review(project_id: str, work_id: str, decision: str, evidence: str) -> None:
     print(json.dumps(reviewed))
 
 
+def verify(project_id: str, work_id: str) -> int:
+    """Read the whole chain for one task straight from PostgreSQL and check that it is consistent."""
+    from aao.postgresql_connection import connect_postgres
+    problems: list[str] = []
+    with connect_postgres() as db:
+        work = db.execute("SELECT w.title,w.status,w.author_id,c.kind FROM work_items w LEFT JOIN principal_credentials c "
+                          "ON c.principal_id=w.author_id WHERE w.id=%s AND w.project_id=%s", (work_id, project_id)).fetchone()
+        if not work:
+            raise SystemExit("work not found in this project")
+        kinds = dict(db.execute("SELECT principal_id,kind FROM principal_credentials").fetchall())
+        runs = db.execute("SELECT id,status,worker_id,result_json,created_at FROM execution_queue WHERE work_id=%s "
+                          "ORDER BY created_at", (work_id,)).fetchall()
+        proposals = db.execute("SELECT id,proposer_id,base_sha,patch_sha256,changed_paths FROM patch_proposals "
+                               "WHERE work_id=%s ORDER BY created_at", (work_id,)).fetchall()
+        reviews = db.execute("SELECT id,reviewer_id,decision,candidate_sha,evidence FROM reviews WHERE work_id=%s "
+                             "ORDER BY created_at", (work_id,)).fetchall()
+        evidence = {d: (s, m) for d, s, m in db.execute(
+            "SELECT digest,submitted_by,media_type FROM evidence_artifacts WHERE project_id=%s", (project_id,)).fetchall()}
+        events = db.execute("SELECT kind,details,created_at FROM events WHERE subject_id=%s AND kind IN "
+                            "('work.candidate_pushed','work.pr_opened','work.pr_closed','work.completed',"
+                            "'work.resolved_outside_cycle') ORDER BY created_at", (work_id,)).fetchall()
+    title, status, author, author_kind = work
+    print(f"TASK {work_id} [{status}] {title}\n  author {author} ({author_kind})")
+    for rid, rstatus, worker, result, _ in runs:
+        result = result or {}
+        check = result.get("check") or {}
+        print(f"  EXECUTION {rid} {rstatus} worker={worker} ({kinds.get(worker)}) backend={result.get('backend')} "
+              f"candidate={result.get('candidate_sha')} check={check.get('conclusion')} proposal={result.get('proposal_id')}")
+    for pid, proposer, base, digest, paths in proposals:
+        print(f"  PROPOSAL {pid} by {proposer} base={base[:12]} patch_sha256={digest[:16]} paths={paths}")
+    for rid, reviewer, decision, sha, refs in reviews:
+        print(f"  REVIEW {rid} {decision} by {reviewer} ({kinds.get(reviewer)}) candidate={sha}")
+        for ref in refs or []:
+            stored = evidence.get(str(ref).removeprefix("sha256:"))
+            print(f"    evidence {ref}: " + (f"stored, submitted by {stored[0]} ({stored[1]})" if stored else "MISSING"))
+            if not stored:
+                problems.append(f"review {rid} cites missing evidence {ref}")
+        if decision == "APPROVE" and not any(r[1] == "SUCCEEDED" and (r[3] or {}).get("candidate_sha") == sha for r in runs):
+            problems.append(f"approval {rid} has no SUCCEEDED execution of {sha}")
+    for kind, details, created in events:
+        keys = {k: details.get(k) for k in ("pr_number", "candidate_sha", "merge_commit_sha", "publisher", "pusher",
+                                            "reconciled_by", "resolved_by", "reason") if k in details}
+        print(f"  EVENT {created:%Y-%m-%d %H:%M:%S} {kind} {json.dumps(keys)}")
+    completed = [d for k, d, _ in events if k == "work.completed"]
+    if status == "DONE" and not completed and not any(k == "work.resolved_outside_cycle" for k, _, _ in events):
+        problems.append("DONE without work.completed or a CEO resolution")
+    for done in completed:
+        approved = [r[3] for r in reviews if r[2] == "APPROVE"]
+        if not approved or done.get("candidate_sha") != approved[-1]:
+            problems.append("completed candidate is not the latest approved SHA")
+    print("CONSISTENT" if not problems else "INCONSISTENT:\n  " + "\n  ".join(problems))
+    return 0 if not problems else 1
+
+
 def main() -> int:
     os.environ.setdefault("AAO_ENV", "development")
     os.environ.setdefault("AAO_ENV_FILE", ".env.local")
@@ -172,7 +227,11 @@ def main() -> int:
     r.add_argument("--work-id", required=True)
     r.add_argument("--decision", choices=("APPROVE", "REJECT"), required=True)
     r.add_argument("--evidence", required=True)
+    v = sub.add_parser("verify")
+    v.add_argument("--work-id", required=True)
     args = parser.parse_args()
+    if args.step == "verify":
+        return verify(args.project_id, args.work_id)
     if args.step == "setup":
         setup(args.project_id)
     elif args.step == "task":

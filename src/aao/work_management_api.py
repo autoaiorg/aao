@@ -178,6 +178,12 @@ class AgentRunRequest(BaseModel):
     base_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
 
 
+class ExternalResolutionRequest(BaseModel):
+    reason: str = Field(min_length=10, max_length=2000)
+    pr_number: int = Field(ge=1)
+    merge_commit_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+
+
 class RepositoryCheckRequest(BaseModel):
     capability_id: str = Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9._-]+$")
     version: str = Field(min_length=1, max_length=64)
@@ -725,12 +731,24 @@ def board(project_id: str, principal: str = Depends(read_principal)):
                 "created_at": validation_row[4].isoformat(),
             })
         prs_by_work: dict[str, list[dict]] = {}
-        for subject, details, created in db.execute(
-            "SELECT subject_id,details,created_at FROM events WHERE kind='work.pr_opened' "
+        resolutions: dict[str, dict] = {}
+        for subject, kind, details, created in db.execute(
+            "SELECT subject_id,kind,details,created_at FROM events WHERE kind IN "
+            "('work.pr_opened','work.pr_closed','work.completed','work.resolved_outside_cycle') "
             "AND subject_id IN (SELECT id FROM work_items WHERE project_id=%s) ORDER BY created_at",
             (project_id,),
         ).fetchall():
-            prs_by_work.setdefault(str(subject), []).append({**details, "created_at": created.isoformat()})
+            prs = prs_by_work.setdefault(str(subject), [])
+            if kind == "work.pr_opened":
+                prs.append({**details, "state": "OPEN", "created_at": created.isoformat()})
+            elif kind == "work.resolved_outside_cycle":
+                resolutions[str(subject)] = {**details, "created_at": created.isoformat()}
+            else:  # closed or merged: annotate the PR it refers to
+                for pr in prs:
+                    if pr.get("pr_number") == details.get("pr_number"):
+                        pr["state"] = "MERGED" if kind == "work.completed" else "CLOSED_UNMERGED"
+                        if kind == "work.completed":
+                            pr["merge_commit_sha"] = details.get("merge_commit_sha")
         patches_by_work: dict[str, list[dict]] = {}
         for patch_row in patch_rows:
             proposal_id = str(patch_row[0])
@@ -747,7 +765,8 @@ def board(project_id: str, principal: str = Depends(read_principal)):
              "acceptance_criteria": r[3], "evidence": r[4],
              "executions": r[5], "reviews": reviews_by_work.get(str(r[0]), []),
              "patch_proposals": patches_by_work.get(str(r[0]), []),
-             "pull_requests": prs_by_work.get(str(r[0]), [])}
+             "pull_requests": prs_by_work.get(str(r[0]), []),
+             "resolution": resolutions.get(str(r[0]))}
             for r in rows
         ]
 
@@ -939,6 +958,26 @@ def list_capability_evaluations(
         return [{"task_id": str(row[0]), "details": row[1],
                  "created_at": row[2].isoformat(), "task_title": row[3]}
                 for row in rows]
+
+
+@app.post("/v1/work/{work_id}/resolve-outside-cycle")
+def resolve_outside_cycle(work_id: str, payload: ExternalResolutionRequest, principal: str = Depends(require_ceo)):
+    """CEO-only: close work whose change reached main outside the agent cycle, keeping that fact explicit."""
+    with tx() as db:
+        row = db.execute("SELECT status FROM work_items WHERE id=%s FOR UPDATE", (work_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Work not found")
+        if row[0] == "DONE":
+            raise HTTPException(409, "Work is already DONE")
+        if db.execute("SELECT 1 FROM execution_queue WHERE work_id=%s AND status IN ('QUEUED','RUNNING','UNCERTAIN')",
+                      (work_id,)).fetchone():
+            raise HTTPException(409, "An execution is still active for this work")
+        db.execute("UPDATE work_items SET status='DONE' WHERE id=%s", (work_id,))
+        audit(db, work_id, "work.resolved_outside_cycle", {
+            "from": row[0], "reason": payload.reason, "pr_number": payload.pr_number,
+            "merge_commit_sha": payload.merge_commit_sha, "resolved_by": principal,
+            "agent_cycle": False})
+    return {"id": work_id, "status": "DONE", "resolved_outside_cycle": True}
 
 
 @app.post("/v1/work/{work_id}/admit")
@@ -1390,6 +1429,12 @@ def stage_agent_run(work_id: str, payload: AgentRunRequest, principal: str = Dep
             if existing[2] != job:
                 raise HTTPException(409, "A different execution is still active for this work")
             return {"execution_id": str(existing[0]), "status": existing[1]}
+        # Effective retry limit: every agent attempt for this work counts, whatever its outcome.
+        attempts = db.execute("SELECT count(*) FROM execution_queue WHERE work_id=%s "
+                              "AND input_json->>'type'='aao.agent-patch.v1'", (work_id,)).fetchone()[0]
+        limit = int(os.getenv("AAO_AGENT_MAX_ATTEMPTS", "3"))
+        if attempts >= limit:
+            raise HTTPException(409, f"Agent attempt limit reached ({attempts}/{limit}); CEO or PM decision required")
         execution_id = str(uuid4())
         db.execute("INSERT INTO execution_queue(id,work_id,project_id,status,input_json) VALUES (%s,%s,%s,'QUEUED',%s::jsonb)", (execution_id, work_id, project_id, json.dumps(job)))
         audit(db, execution_id, "execution.staged", {"work_id": work_id, "capability_id": payload.capability_id, "version": payload.version, "base_sha": payload.base_sha})

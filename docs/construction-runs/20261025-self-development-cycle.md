@@ -33,3 +33,7 @@ Antes de recomendar la fusión se comprobó también que `core-unit`, con la lis
 2. El runner ejecutaba en el sandbox los tests modificados, que pueden requerir el host. Ahora solo ejecuta los añadidos.
 3. Había una carrera en el cliente de veto (`manifest_audit._report_veto_to_supervisor`): si el supervisor rechazaba y cerraba la conexión antes de leer, se perdía su respuesta («Broken pipe»). Hacía fallar `test_supervisor_intake_rejects_a_peer_that_is_not_the_auditor_uid` en la CI de #104.
 4. Una carencia del proceso, no del código: el check del sandbox no sustituye a la suite completa. El auditor ejecuta la suite sobre el candidato antes de aprobar, y la CI de la PR sigue siendo la puerta.
+
+## Regularización de la tarea 1 (`ac0724c9`), 2026-10-25 16:46 UTC
+
+Por instrucción del CEO, la tarea pasó a DONE mediante `POST /v1/work/{id}/resolve-outside-cycle`, un endpoint exclusivo del CEO. Queda el evento `work.resolved_outside_cycle` con el estado anterior (IN_PROGRESS), el motivo, la PR #107, el merge commit `f1e0c6cb03595c7eb3c5f4d7358124bc7fb424cf`, `resolved_by: ceo` y `agent_cycle: false`. El intento FAILED `040cdade` se conserva. `self_development_cycle.py verify` da la cadena como CONSISTENT. Fue una actuación humana: la ejecutó Claude con el token CEO de desarrollo, por instrucción expresa del CEO.

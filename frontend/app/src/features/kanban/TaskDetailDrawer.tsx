@@ -20,6 +20,12 @@ function runSummary(result: unknown): { conclusion?: string; candidate?: string;
   };
 }
 
+const PR_STATE_LABELS: Record<string, string> = {
+  OPEN: 'Abierta',
+  CLOSED_UNMERGED: 'Cerrada sin fusionar',
+  MERGED: 'Fusionada',
+};
+
 export interface TaskDetailDrawerProps {
   task: TaskItem | null;
   onClose: () => void;
@@ -247,6 +253,16 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
                   <a href={pr.pr_url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>
                     PR #{pr.pr_number}
                   </a>
+                  {pr.state && (
+                    <span style={{ marginLeft: '8px', color: 'var(--text-secondary)' }}>
+                      {PR_STATE_LABELS[pr.state] ?? pr.state}
+                    </span>
+                  )}
+                  {pr.merge_commit_sha && (
+                    <div style={{ fontFamily: 'monospace', color: 'var(--text-muted)', marginTop: '2px' }}>
+                      Merge: {pr.merge_commit_sha}
+                    </div>
+                  )}
                   <div style={{ fontFamily: 'monospace', color: 'var(--text-muted)', marginTop: '2px' }}>
                     SHA: {pr.candidate_sha}
                   </div>
@@ -262,6 +278,29 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
             </p>
           )}
         </div>
+
+        {task.resolution && (
+          <div>
+            <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px' }}>Resuelta fuera del ciclo del agente</h3>
+            <div
+              style={{
+                padding: '8px 12px',
+                borderRadius: 'var(--radius-sm)',
+                backgroundColor: 'var(--bg-muted)',
+                fontSize: '12px',
+                color: 'var(--text-secondary)',
+              }}
+            >
+              <div>
+                Cerrada por: {task.resolution.resolved_by} · PR #{task.resolution.pr_number}
+              </div>
+              <div style={{ fontFamily: 'monospace', color: 'var(--text-muted)', marginTop: '2px' }}>
+                Merge: {task.resolution.merge_commit_sha}
+              </div>
+              <div style={{ marginTop: '4px' }}>{task.resolution.reason}</div>
+            </div>
+          </div>
+        )}
 
         {/* Patch Proposal Diff Security Boundary Notice */}
         <div

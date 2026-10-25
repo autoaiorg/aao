@@ -87,6 +87,18 @@ export interface TaskPullRequest {
   pusher?: string;
   review_id?: string;
   created_at?: string;
+  /** OPEN, CLOSED_UNMERGED or MERGED, derived by the backend from work.pr_closed / work.completed. */
+  state?: string;
+  merge_commit_sha?: string;
+}
+
+/** CEO closure of work completed outside the agent cycle (event work.resolved_outside_cycle). */
+export interface TaskResolution {
+  reason: string;
+  pr_number: number;
+  merge_commit_sha: string;
+  resolved_by: string;
+  created_at?: string;
 }
 
 /** One entry of GET /v1/projects/{id}/activity (audit events and execution journal). */
@@ -109,6 +121,7 @@ export interface TaskItem {
   executions?: TaskExecutionRecord[];
   reviews?: TaskReviewRecord[];
   pullRequests?: TaskPullRequest[];
+  resolution?: TaskResolution | null;
   authorId?: string;
   createdAt?: string;
 }

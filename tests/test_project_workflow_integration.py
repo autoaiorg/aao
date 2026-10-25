@@ -1023,6 +1023,11 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         # A PR closed without merge sends the task back to IN_PROGRESS; a new attempt gets its own PR.
         closed = reconcile(work, publisher, get_pr=lambda n: {**pr_state, "state": "closed"})
         assert closed["status"] == "CLOSED_UNMERGED" and closed["work_status"] == "IN_PROGRESS"
+        # Effective retry limit: 3 attempts already ran; with a limit of 3 a fourth is refused at staging.
+        monkeypatch.setenv("AAO_AGENT_MAX_ATTEMPTS", "3")
+        refused = client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run)
+        assert refused.status_code == 409 and "attempt limit" in refused.text
+        monkeypatch.setenv("AAO_AGENT_MAX_ATTEMPTS", "4")
         assert client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run).status_code == 202
         assert run_one(identity, token, project_id=project, seconds=400)["status"] == "SUCCEEDED"
         assert client.post(f"/v1/work/{work}/progress", headers=agent).status_code == 200
@@ -1040,7 +1045,10 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         assert done["status"] == "DONE" and done["merge_commit_sha"] == merge_sha
         assert reconcile(work, publisher, get_pr=lambda n: pr_state) == {"status": "DONE"}
         board = client.get(f"/v1/projects/{project}/board", headers=ceo).json()
-        assert next(item for item in board if item["id"] == work)["status"] == "DONE"
+        done_item = next(item for item in board if item["id"] == work)
+        assert done_item["status"] == "DONE"
+        assert [(pr["pr_number"], pr["state"]) for pr in done_item["pull_requests"]] == [(7, "CLOSED_UNMERGED"), (8, "MERGED")]
+        assert done_item["pull_requests"][1]["merge_commit_sha"] == merge_sha and done_item["resolution"] is None
         activity = client.get(f"/v1/projects/{project}/activity", headers=agent)
         assert activity.status_code == 200, activity.text
         kinds = [event["kind"] for event in activity.json()]
@@ -1049,4 +1057,18 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
                      "work.patch_proposed", "work.reviewed", "work.pr_opened", "work.pr_closed"):
             assert kind in kinds, kind
         assert client.get(f"/v1/projects/{project}/activity?limit=0", headers=ceo).status_code == 422
+
+        # A task completed outside the agent cycle is closed only by the CEO, with that fact recorded.
+        side = client.post(f"/v1/projects/{project}/work", headers=agent, json={
+            "title": "Docs change merged by hand", "author_id": identity, "acceptance_criteria": ["merged"]}).json()["id"]
+        resolution = {"reason": "Merged by hand in PR #107; agent policy forbids docs/",
+                      "pr_number": 107, "merge_commit_sha": merge_sha}
+        assert client.post(f"/v1/work/{side}/resolve-outside-cycle", headers=agent, json=resolution).status_code == 403
+        resolved = client.post(f"/v1/work/{side}/resolve-outside-cycle", headers=ceo, json=resolution)
+        assert resolved.status_code == 200 and resolved.json()["resolved_outside_cycle"] is True
+        assert client.post(f"/v1/work/{side}/resolve-outside-cycle", headers=ceo, json=resolution).status_code == 409
+        side_item = next(i for i in client.get(f"/v1/projects/{project}/board", headers=ceo).json() if i["id"] == side)
+        assert side_item["resolution"]["pr_number"] == 107 and side_item["resolution"]["agent_cycle"] is False
+        last = client.get(f"/v1/projects/{project}/activity?limit=1", headers=ceo).json()[0]
+        assert last["kind"] == "work.resolved_outside_cycle" and last["details"]["agent_cycle"] is False
     assert subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True, check=True).stdout == ""

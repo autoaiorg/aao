@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -29,6 +30,47 @@ def _git(repo: Path, *args: str, timeout: int = 30) -> str:
     if p.returncode:
         raise AgentRunnerError(f"isolated git {args[0]} failed: configured repository or revision unavailable")
     return p.stdout
+
+# Codex's own sandbox for model-run commands: writes only in the workspace, no network (set explicitly).
+CODEX_SANDBOX_FLAGS = ("-c", "sandbox_mode=workspace-write", "-c", "sandbox_workspace_write.network_access=false",
+                       "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
+                       "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true")
+
+
+def codex_release() -> Path:
+    """The real codex install directory (``.../releases/<version>``), resolved from PATH."""
+    found = shutil.which("codex")
+    if not found:
+        raise AgentRunnerError("codex CLI not found")
+    binary = Path(found).resolve()
+    return binary.parents[1]
+
+
+def agent_jail(argv: list[str], *, workdir: Path, codex_home: Path, release: Path,
+               cwd: Path | None = None) -> list[str]:
+    """Outer bwrap around the codex CLI so that neither it nor the model's commands can read the operator's
+    credentials: /home, /run (runtime tokens, docker socket), /tmp, /var/tmp and /srv are replaced by empty
+    tmpfs; only the disposable workdir, the dedicated CODEX_HOME and the codex release are mounted back.
+    Network stays shared for the CLI's own API calls; model commands are cut off by CODEX_SANDBOX_FLAGS."""
+    bwrap = shutil.which("bwrap")
+    if not bwrap:
+        raise AgentRunnerError("bubblewrap is required for the codex backend")
+    return [bwrap, "--die-with-parent", "--new-session", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
+            "--ro-bind", "/", "/", "--tmpfs", "/home", "--tmpfs", "/run",
+            "--ro-bind-try", "/run/systemd/resolve", "/run/systemd/resolve",
+            "--tmpfs", "/tmp", "--tmpfs", "/var/tmp", "--tmpfs", "/srv", "--dev", "/dev", "--proc", "/proc",
+            "--bind", str(workdir), str(workdir), "--bind", str(codex_home), str(codex_home),
+            "--ro-bind", str(release), str(release),
+            "--clearenv", "--setenv", "PATH", "/usr/local/bin:/usr/bin:/bin", "--setenv", "LANG", "C.UTF-8",
+            "--setenv", "HOME", str(workdir / "home"), "--setenv", "CODEX_HOME", str(codex_home),
+            "--setenv", "TMPDIR", str(workdir / "scratch"),
+            "--chdir", str(cwd or workdir), "--", *argv]
+
+
+def codex_sandbox_flags(workdir: Path) -> tuple[str, ...]:
+    """CODEX_SANDBOX_FLAGS plus the workdir's private scratch (TMPDIR) as the only extra writable root."""
+    return (*CODEX_SANDBOX_FLAGS, "-c", f'sandbox_workspace_write.writable_roots=["{workdir / "scratch"}"]')
+
 
 _EMAIL = re.compile(r"^[A-Za-z0-9._+-]{1,64}@[A-Za-z0-9.-]{1,128}$")
 
@@ -123,12 +165,16 @@ def run_agent_patch(repository, base_sha: str, instructions: str, *, backend: st
             codex_home = os.getenv("AAO_AGENT_CODEX_HOME")
             if not codex_home or not Path(codex_home).is_dir():
                 raise AgentRunnerError("codex backend requires a dedicated AAO_AGENT_CODEX_HOME")
-            env = {**env, "CODEX_HOME": codex_home}
-            command = ["codex", "exec", "--sandbox", "workspace-write", "--ephemeral", "--skip-git-repo-check",
-                       "--ignore-user-config",
-                       "-C", str(clone), "-c", "model_reasoning_effort=medium", "--disable=plugins",
-                       "--disable=browser_use", "--disable=computer_use", "--disable=memories",
-                       "--output-last-message", str(output), "-"]
+            release = codex_release()
+            (Path(tmp) / "scratch").mkdir(mode=0o700)
+            command = agent_jail(
+                [str(release / "bin" / "codex"), "exec", "--sandbox", "workspace-write",
+                 *codex_sandbox_flags(Path(tmp))[2:],
+                 "--ephemeral", "--skip-git-repo-check", "--ignore-user-config",
+                 "-C", str(clone), "-c", "model_reasoning_effort=medium", "--disable=plugins",
+                 "--disable=browser_use", "--disable=computer_use", "--disable=memories",
+                 "--output-last-message", str(output), "-"],
+                workdir=Path(tmp), codex_home=Path(codex_home).resolve(), release=release)
             try:
                 proc = subprocess.run(command, input=prompt, text=True, capture_output=True, timeout=timeout,
                                       env=env, cwd="/", check=False)

@@ -137,3 +137,33 @@
     align-items: stretch;
   }
 }
+
+.office-conversation-message__work-link {
+  margin-top: 8px;
+}
+
+.office-conversation-message__work-request {
+  margin-top: 8px;
+}
+
+.office-conversation-work-request-form {
+  display: grid;
+  gap: 8px;
+  max-width: 600px;
+  padding: 10px;
+  border: 1px solid var(--border-subtle, #cbd5e1);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--bg-surface, #fff);
+}
+
+.office-conversation-work-request-form__note {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.office-conversation-work-request-form__actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}

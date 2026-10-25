@@ -537,6 +537,30 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         assert work_count_after_proposal == work_count_before_proposal
         assert proposal_event[0]["persisted_as_work"] is False
         assert proposal_event[0]["admitted"] is False
+        # A generated plan may not be confirmed after the persisted transcript changes.
+        late_message = client.post(
+            f"/v1/projects/{project}/conversations/{conversation_id}/messages",
+            headers=ceo, json={"body": "Añadir una nueva restricción"},
+        )
+        assert late_message.status_code == 201
+        stale_group = {
+            "idempotency_key": str(uuid4()),
+            "based_on_message_ids": proposal_body["based_on_message_ids"],
+            "title": proposal_body["proposal"]["title"],
+            "description": proposal_body["proposal"]["description"],
+            "acceptance_criteria": proposal_body["proposal"]["acceptance_criteria"],
+            "tasks": proposal_body["proposal"]["tasks"],
+        }
+        stale_confirmation = client.post(
+            f"/v1/projects/{project}/conversations/{conversation_id}/work-groups",
+            headers=ceo, json=stale_group,
+        )
+        assert stale_confirmation.status_code == 409
+        assert "Conversation changed" in stale_confirmation.text
+        with connect_postgres() as db:
+            assert db.execute(
+                "SELECT count(*) FROM work_items WHERE project_id=%s", (project,),
+            ).fetchone()[0] == work_count_before_proposal
         monkeypatch.setattr(conversation_provider, "stream_reply", lambda _messages: iter(["not json"]))
         assert client.post(proposal_url, headers=ceo).status_code == 502
 

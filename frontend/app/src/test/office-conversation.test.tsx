@@ -87,7 +87,7 @@ describe('office persistent project conversation', () => {
         proposal: {
           title: 'Plan acordado', description: 'Resultado del hilo',
           acceptance_criteria: ['Criterios trazables'],
-          tasks: [{ key: 'research', title: 'Investigar', description: 'Revisar fuentes', acceptance_criteria: ['Fuentes registradas'], depends_on: [] }],
+          tasks: [{ key: 'task-1', title: 'Investigar', description: 'Revisar fuentes', acceptance_criteria: ['Fuentes registradas'], depends_on: [] }],
         },
         based_on_message_ids: ['message-1', 'message-2'], provider: 'openai-compatible', model: 'test-model', persisted_as_work: false,
       })),
@@ -95,6 +95,8 @@ describe('office persistent project conversation', () => {
     setup(port);
     await screen.findByText('Propongo documentar los hallazgos.');
     expect(screen.queryByRole('button', { name: /Convertir en solicitud/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Proponer desglose con AAO' }));
+    await screen.findByText(/AAO propuso 1 tareas a partir de 2 mensajes/);
     fireEvent.change(screen.getByLabelText('Título de tarea desde conversación'), { target: { value: 'Documentar hallazgos' } });
     fireEvent.change(screen.getByLabelText('Descripción de tarea desde conversación'), { target: { value: 'A partir del hilo, documentar los hallazgos acordados.' } });
     fireEvent.change(screen.getByLabelText('Criterios de aceptación de tarea desde conversación'), { target: { value: 'Hallazgos documentados\nCEO puede revisarlos' } });
@@ -107,9 +109,10 @@ describe('office persistent project conversation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirmar desglose y crear en Entrada' }));
     await waitFor(() => expect(port.createWorkGroupFromConversation).toHaveBeenCalledWith('project-active', 'conversation-1', {
       idempotency_key: expect.any(String),
+      based_on_message_ids: ['message-1', 'message-2'],
       title: 'Documentar hallazgos', description: 'A partir del hilo, documentar los hallazgos acordados.', acceptance_criteria: ['Hallazgos documentados', 'CEO puede revisarlos'],
       tasks: [
-        { key: 'task-1', title: 'Documentar hallazgos', description: '', acceptance_criteria: ['Hallazgos documentados'], depends_on: [] },
+        { key: 'task-1', title: 'Documentar hallazgos', description: 'Revisar fuentes', acceptance_criteria: ['Hallazgos documentados'], depends_on: [] },
         { key: 'task-2', title: 'Revisar documentación', description: '', acceptance_criteria: ['CEO puede revisarlos'], depends_on: ['task-1'] },
       ],
     }));

@@ -39,6 +39,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
   const [requestingMessageId, setRequestingMessageId] = useState(false);
   const [proposingWorkGroup, setProposingWorkGroup] = useState(false);
   const [proposalGenerated, setProposalGenerated] = useState(false);
+  const [proposalSourceMessageIds, setProposalSourceMessageIds] = useState<string[] | null>(null);
   const [workTasks, setWorkTasks] = useState<WorkTaskDraft[]>([{ key: 'task-1', title: '', description: '', acceptanceCriteria: '', dependsOn: [] }]);
   const [nextTaskNumber, setNextTaskNumber] = useState(2);
   const [workGroupIdempotencyKey, setWorkGroupIdempotencyKey] = useState('');
@@ -96,7 +97,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
     if (proposalGenerated) {
       setRequestTitle(''); setRequestDescription(''); setRequestCriteria('');
       setWorkTasks([{ key: 'task-1', title: '', description: '', acceptanceCriteria: '', dependsOn: [] }]);
-      setNextTaskNumber(2); setWorkGroupIdempotencyKey(''); setProposalGenerated(false);
+      setNextTaskNumber(2); setWorkGroupIdempotencyKey(''); setProposalGenerated(false); setProposalSourceMessageIds(null);
     }
     const idempotencyKey = turnIdempotencyKey || crypto.randomUUID();
     setTurnIdempotencyKey(idempotencyKey);
@@ -153,12 +154,13 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
       idempotency_key: idempotencyKey,
       title: requestTitle.trim(), description: requestDescription.trim(),
       acceptance_criteria: criteria, tasks,
+      ...(proposalSourceMessageIds ? { based_on_message_ids: proposalSourceMessageIds } : {}),
     });
     setRequestingMessageId(false);
     if (result.kind === 'ready') {
       setRequestTitle(''); setRequestDescription(''); setRequestCriteria('');
       setWorkTasks([{ key: 'task-1', title: '', description: '', acceptanceCriteria: '', dependsOn: [] }]);
-      setNextTaskNumber(2); setWorkGroupIdempotencyKey(''); setProposalGenerated(false);
+      setNextTaskNumber(2); setWorkGroupIdempotencyKey(''); setProposalGenerated(false); setProposalSourceMessageIds(null);
       setNotice(`Desglose ${result.data.id} (${result.data.tasks.length} tareas) registrado en Entrada; no se ha admitido ni ejecutado.`);
       await queryClient.invalidateQueries({ queryKey: ['board'] });
     } else {
@@ -186,6 +188,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
       setNextTaskNumber(proposal.tasks.length + 1);
       setWorkGroupIdempotencyKey('');
       setProposalGenerated(true);
+      setProposalSourceMessageIds(result.data.based_on_message_ids);
       setNotice(`AAO propuso ${proposal.tasks.length} tareas a partir de ${result.data.based_on_message_ids.length} mensajes (${result.data.provider}${result.data.model ? ` / ${result.data.model}` : ''}). Revísalas y edítalas antes de confirmar.`);
     } else {
       setNotice(result.kind === 'error' ? `${result.code}: ${result.message}` : result.kind === 'forbidden' ? result.reason : 'No se pudo proponer el desglose desde la conversación.');
@@ -233,7 +236,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
       ) : (
         <div className="office-conversation-content">
           <label className="office-form-field office-conversation-project">Proyecto activo
-            <select className="office-form-control" aria-label="Proyecto de conversación" value={projectId} onChange={(event) => { setProjectId(event.target.value); setConversationId(''); }}>
+            <select className="office-form-control" aria-label="Proyecto de conversación" value={projectId} onChange={(event) => { setProjectId(event.target.value); setConversationId(''); setProposalGenerated(false); setProposalSourceMessageIds(null); }}>
               {activeProjects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
             </select>
           </label>
@@ -245,7 +248,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
           </form>
           {conversations.length > 0 && (
             <label className="office-form-field office-conversation-project">Hilo guardado
-              <select className="office-form-control" aria-label="Hilo guardado" value={conversationId} onChange={(event) => setConversationId(event.target.value)}>
+              <select className="office-form-control" aria-label="Hilo guardado" value={conversationId} onChange={(event) => { setConversationId(event.target.value); setProposalGenerated(false); setProposalSourceMessageIds(null); }}>
                 {conversations.map((conversation) => <option key={conversation.id} value={conversation.id}>{conversation.title}</option>)}
               </select>
             </label>

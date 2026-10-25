@@ -37,6 +37,9 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
   const [requestDescription, setRequestDescription] = useState('');
   const [requestCriteria, setRequestCriteria] = useState('');
   const [requestingMessageId, setRequestingMessageId] = useState(false);
+  const [proposingWorkGroup, setProposingWorkGroup] = useState(false);
+  const [proposalGenerated, setProposalGenerated] = useState(false);
+  const [proposalSourceMessageIds, setProposalSourceMessageIds] = useState<string[] | null>(null);
   const [workTasks, setWorkTasks] = useState<WorkTaskDraft[]>([{ key: 'task-1', title: '', description: '', acceptanceCriteria: '', dependsOn: [] }]);
   const [nextTaskNumber, setNextTaskNumber] = useState(2);
   const [workGroupIdempotencyKey, setWorkGroupIdempotencyKey] = useState('');
@@ -91,6 +94,11 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
     setPendingUserMessage(message);
     setStreamingReply('');
     setSendingTurn(true);
+    if (proposalGenerated) {
+      setRequestTitle(''); setRequestDescription(''); setRequestCriteria('');
+      setWorkTasks([{ key: 'task-1', title: '', description: '', acceptanceCriteria: '', dependsOn: [] }]);
+      setNextTaskNumber(2); setWorkGroupIdempotencyKey(''); setProposalGenerated(false); setProposalSourceMessageIds(null);
+    }
     const idempotencyKey = turnIdempotencyKey || crypto.randomUUID();
     setTurnIdempotencyKey(idempotencyKey);
     const result = await port.streamCEOConversationTurn(projectId, conversationId, message, idempotencyKey, (delta) => {
@@ -101,7 +109,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
       setStreamingReply('');
       setPendingUserMessage('');
       setTurnIdempotencyKey('');
-      setNotice('Respuesta AAO recibida y persistida. No se ha creado ni ejecutado trabajo.');
+      setNotice('Respuesta AAO recibida y persistida. Revisa de nuevo el desglose tras continuar la conversación; no se ha creado ni ejecutado trabajo.');
       await queryClient.invalidateQueries({ queryKey: ['office-conversation-messages', sessionId, projectId, conversationId] });
       await queryClient.invalidateQueries({ queryKey: ['office-conversations', sessionId, projectId] });
     } else {
@@ -146,16 +154,44 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
       idempotency_key: idempotencyKey,
       title: requestTitle.trim(), description: requestDescription.trim(),
       acceptance_criteria: criteria, tasks,
+      ...(proposalSourceMessageIds ? { based_on_message_ids: proposalSourceMessageIds } : {}),
     });
     setRequestingMessageId(false);
     if (result.kind === 'ready') {
       setRequestTitle(''); setRequestDescription(''); setRequestCriteria('');
       setWorkTasks([{ key: 'task-1', title: '', description: '', acceptanceCriteria: '', dependsOn: [] }]);
-      setNextTaskNumber(2); setWorkGroupIdempotencyKey('');
+      setNextTaskNumber(2); setWorkGroupIdempotencyKey(''); setProposalGenerated(false); setProposalSourceMessageIds(null);
       setNotice(`Desglose ${result.data.id} (${result.data.tasks.length} tareas) registrado en Entrada; no se ha admitido ni ejecutado.`);
       await queryClient.invalidateQueries({ queryKey: ['board'] });
     } else {
       setNotice(result.kind === 'error' ? `${result.code}: ${result.message}` : result.kind === 'forbidden' ? result.reason : 'No se pudo estructurar el desglose.');
+    }
+  };
+
+  const proposeWorkGroup = async () => {
+    if (!projectId || !conversationId || proposingWorkGroup || sendingTurn) return;
+    setProposingWorkGroup(true);
+    const result = await port.proposeWorkGroupFromConversation(projectId, conversationId);
+    setProposingWorkGroup(false);
+    if (result.kind === 'ready') {
+      const proposal = result.data.proposal;
+      setRequestTitle(proposal.title);
+      setRequestDescription(proposal.description);
+      setRequestCriteria(proposal.acceptance_criteria.join('\n'));
+      setWorkTasks(proposal.tasks.map((task) => ({
+        key: task.key,
+        title: task.title,
+        description: task.description,
+        acceptanceCriteria: task.acceptance_criteria.join('\n'),
+        dependsOn: task.depends_on,
+      })));
+      setNextTaskNumber(proposal.tasks.length + 1);
+      setWorkGroupIdempotencyKey('');
+      setProposalGenerated(true);
+      setProposalSourceMessageIds(result.data.based_on_message_ids);
+      setNotice(`AAO propuso ${proposal.tasks.length} tareas a partir de ${result.data.based_on_message_ids.length} mensajes (${result.data.provider}${result.data.model ? ` / ${result.data.model}` : ''}). Revísalas y edítalas antes de confirmar.`);
+    } else {
+      setNotice(result.kind === 'error' ? `${result.code}: ${result.message}` : result.kind === 'forbidden' ? result.reason : 'No se pudo proponer el desglose desde la conversación.');
     }
   };
 
@@ -200,7 +236,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
       ) : (
         <div className="office-conversation-content">
           <label className="office-form-field office-conversation-project">Proyecto activo
-            <select className="office-form-control" aria-label="Proyecto de conversación" value={projectId} onChange={(event) => { setProjectId(event.target.value); setConversationId(''); }}>
+            <select className="office-form-control" aria-label="Proyecto de conversación" value={projectId} onChange={(event) => { setProjectId(event.target.value); setConversationId(''); setProposalGenerated(false); setProposalSourceMessageIds(null); }}>
               {activeProjects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
             </select>
           </label>
@@ -212,7 +248,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
           </form>
           {conversations.length > 0 && (
             <label className="office-form-field office-conversation-project">Hilo guardado
-              <select className="office-form-control" aria-label="Hilo guardado" value={conversationId} onChange={(event) => setConversationId(event.target.value)}>
+              <select className="office-form-control" aria-label="Hilo guardado" value={conversationId} onChange={(event) => { setConversationId(event.target.value); setProposalGenerated(false); setProposalSourceMessageIds(null); }}>
                 {conversations.map((conversation) => <option key={conversation.id} value={conversation.id}>{conversation.title}</option>)}
               </select>
             </label>
@@ -237,7 +273,10 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
               </form>
               <form onSubmit={(event) => void submitWorkGroup(event)} className="office-conversation-work-request-form">
                 <strong>Estructurar tareas a partir del hilo</strong>
-                <p className="office-conversation-work-request-form__note">Resume el resultado y desglosa las tareas dependientes. Todo se guarda como trabajo canónico en Entrada tras confirmarlo; no se admite ni ejecuta automáticamente.</p>
+                <p className="office-conversation-work-request-form__note">Pide a AAO una propuesta basada en todo el hilo, revísala y edítala. Solo al confirmarla se guarda como trabajo canónico en Entrada; no se admite ni ejecuta automáticamente.</p>
+                <Button type="button" variant="secondary" onClick={() => void proposeWorkGroup()} disabled={proposingWorkGroup || sendingTurn || messages.length === 0}>
+                  {proposingWorkGroup ? 'AAO está estructurando el hilo…' : 'Proponer desglose con AAO'}
+                </Button>
                 <label className="office-form-field">Título
                   <input className="office-form-control" aria-label="Título de tarea desde conversación" required maxLength={200} value={requestTitle} onChange={(event) => { setWorkGroupIdempotencyKey(''); setRequestTitle(event.target.value); }} />
                 </label>

@@ -42,6 +42,7 @@ export interface ConversationWorkRequestResult {
 
 export interface ConversationWorkGroupInput extends ConversationWorkRequestInput {
   idempotency_key: string;
+  based_on_message_ids?: string[];
   tasks: Array<{
     key: string;
     title: string;
@@ -59,6 +60,14 @@ export interface ConversationWorkGroupResult {
   status: string;
   created: boolean;
   tasks: Array<{ id: string; title: string; status: string; depends_on: string[] }>;
+}
+
+export interface ConversationWorkGroupProposal {
+  proposal: Omit<ConversationWorkGroupInput, 'idempotency_key'>;
+  based_on_message_ids: string[];
+  provider: string;
+  model: string;
+  persisted_as_work: false;
 }
 
 export interface AaoConversationPort {
@@ -89,4 +98,8 @@ export interface AaoConversationPort {
     conversationId: string,
     input: ConversationWorkGroupInput,
   ): Promise<DataState<ConversationWorkGroupResult>>;
+  proposeWorkGroupFromConversation(
+    projectId: string,
+    conversationId: string,
+  ): Promise<DataState<ConversationWorkGroupProposal>>;
 }

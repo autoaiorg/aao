@@ -403,4 +403,26 @@ describe('HttpAaoLiveAdapter organization projection', () => {
       body: JSON.stringify(input),
     }));
   });
+
+  it('requests a reviewable task proposal only from a CEO session', async () => {
+    const fetch = vi.spyOn(global, 'fetch');
+    const agent = new HttpAaoLiveAdapter({ getToken: () => 'agent-token', getAuthRole: () => 'AGENT' });
+    expect((await agent.proposeWorkGroupFromConversation('p', 'c')).kind).toBe('forbidden');
+    expect(fetch).not.toHaveBeenCalled();
+
+    fetch.mockResolvedValueOnce({ status: 200, ok: true, json: async () => ({
+      proposal: {
+        title: 'Plan', description: 'Agreed outcome', acceptance_criteria: ['Verified'],
+        tasks: [{ key: 'inspect', title: 'Inspect', description: '', acceptance_criteria: ['Sources recorded'], depends_on: [] }],
+      },
+      based_on_message_ids: ['00000000-0000-4000-8000-000000000041'],
+      provider: 'openai-compatible', model: 'test-model', persisted_as_work: false,
+    }) } as Response);
+    const ceo = new HttpAaoLiveAdapter({ getToken: () => 'ceo-token', getAuthRole: () => 'CEO', requireAuth: true });
+    const result = await ceo.proposeWorkGroupFromConversation('p/1', 'c/1');
+    expect(result.kind).toBe('ready');
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('/v1/projects/p%2F1/conversations/c%2F1/work-group-proposals'), expect.objectContaining({
+      method: 'POST', headers: expect.objectContaining({ 'X-CEO-Token': 'ceo-token' }),
+    }));
+  });
 });

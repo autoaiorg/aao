@@ -492,6 +492,78 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
             for message in turn_messages
         )
 
+        proposal_url = f"/v1/projects/{project}/conversations/{conversation_id}/work-group-proposals"
+        proposal_calls = []
+        proposal_json = json.dumps({
+            "title": "Reviewed outcome", "description": "Deliver the agreed result",
+            "acceptance_criteria": ["Results linked to evidence"],
+            "tasks": [
+                {"key": "inspect", "title": "Inspect evidence", "description": "Review inputs",
+                 "acceptance_criteria": ["Evidence recorded"], "depends_on": []},
+                {"key": "summarize", "title": "Summarize", "description": "Consolidate results",
+                 "acceptance_criteria": ["Summary reviewed"], "depends_on": ["inspect"]},
+            ],
+        })
+        def proposal_provider(messages):
+            proposal_calls.append(messages)
+            yield proposal_json
+        monkeypatch.setenv("AAO_CONVERSATION_PROVIDER", "openai-compatible")
+        monkeypatch.setenv("AAO_CONVERSATION_MODEL", "proposal-test-model")
+        monkeypatch.setattr(conversation_provider, "stream_reply", proposal_provider)
+        assert client.post(proposal_url).status_code == 403
+        with connect_postgres() as db:
+            work_count_before_proposal = db.execute(
+                "SELECT count(*) FROM work_items WHERE project_id=%s", (project,),
+            ).fetchone()[0]
+        proposed = client.post(proposal_url, headers=ceo)
+        assert proposed.status_code == 200, proposed.text
+        proposal_body = proposed.json()
+        assert proposal_body["proposal"]["title"] == "Reviewed outcome"
+        assert len(proposal_body["proposal"]["tasks"]) == 2
+        assert proposal_body["provider"] == "openai-compatible"
+        assert proposal_body["model"] == "proposal-test-model"
+        assert proposal_body["persisted_as_work"] is False
+        assert len(proposal_body["based_on_message_ids"]) == len(turn_messages)
+        assert any(item["content"] == turn["body"] for item in proposal_calls[0])
+        assert any(item["content"] == "Conversación persistida." for item in proposal_calls[0])
+        with connect_postgres() as db:
+            work_count_after_proposal = db.execute(
+                "SELECT count(*) FROM work_items WHERE project_id=%s", (project,),
+            ).fetchone()[0]
+            proposal_event = db.execute(
+                "SELECT details FROM events WHERE subject_id=%s AND kind='conversation.work_group.proposed'",
+                (conversation_id,),
+            ).fetchone()
+        assert work_count_after_proposal == work_count_before_proposal
+        assert proposal_event[0]["persisted_as_work"] is False
+        assert proposal_event[0]["admitted"] is False
+        # A generated plan may not be confirmed after the persisted transcript changes.
+        late_message = client.post(
+            f"/v1/projects/{project}/conversations/{conversation_id}/messages",
+            headers=ceo, json={"body": "Añadir una nueva restricción"},
+        )
+        assert late_message.status_code == 201
+        stale_group = {
+            "idempotency_key": str(uuid4()),
+            "based_on_message_ids": proposal_body["based_on_message_ids"],
+            "title": proposal_body["proposal"]["title"],
+            "description": proposal_body["proposal"]["description"],
+            "acceptance_criteria": proposal_body["proposal"]["acceptance_criteria"],
+            "tasks": proposal_body["proposal"]["tasks"],
+        }
+        stale_confirmation = client.post(
+            f"/v1/projects/{project}/conversations/{conversation_id}/work-groups",
+            headers=ceo, json=stale_group,
+        )
+        assert stale_confirmation.status_code == 409
+        assert "Conversation changed" in stale_confirmation.text
+        with connect_postgres() as db:
+            assert db.execute(
+                "SELECT count(*) FROM work_items WHERE project_id=%s", (project,),
+            ).fetchone()[0] == work_count_before_proposal
+        monkeypatch.setattr(conversation_provider, "stream_reply", lambda _messages: iter(["not json"]))
+        assert client.post(proposal_url, headers=ceo).status_code == 502
+
         failure_key = str(uuid4())
         failure_calls = 0
         def fails_once(_messages):

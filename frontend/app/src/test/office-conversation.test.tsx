@@ -32,6 +32,7 @@ describe('office persistent project conversation', () => {
       createWorkRequestFromMessage: vi.fn(),
       createWorkRequestFromConversation: vi.fn(),
       createWorkGroupFromConversation: vi.fn(),
+      proposeWorkGroupFromConversation: vi.fn(),
     };
     setup(port);
     await screen.findByText('Preparar el plan');
@@ -54,7 +55,7 @@ describe('office persistent project conversation', () => {
       streamCEOConversationTurn: vi.fn()
         .mockResolvedValueOnce(interrupted)
         .mockResolvedValueOnce(ready({ message_id: 'reply-1' })),
-      createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(), createWorkGroupFromConversation: vi.fn(),
+      createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(), createWorkGroupFromConversation: vi.fn(), proposeWorkGroupFromConversation: vi.fn(),
     };
     setup(port);
     await screen.findByText('Preparar el plan');
@@ -82,10 +83,20 @@ describe('office persistent project conversation', () => {
         parent_work_id: 'work-parent', status: 'INBOX', created: true,
         tasks: [{ id: 'work-child', title: 'Documentar', status: 'INBOX', depends_on: [] }],
       })),
+      proposeWorkGroupFromConversation: vi.fn().mockResolvedValue(ready({
+        proposal: {
+          title: 'Plan acordado', description: 'Resultado del hilo',
+          acceptance_criteria: ['Criterios trazables'],
+          tasks: [{ key: 'task-1', title: 'Investigar', description: 'Revisar fuentes', acceptance_criteria: ['Fuentes registradas'], depends_on: [] }],
+        },
+        based_on_message_ids: ['message-1', 'message-2'], provider: 'openai-compatible', model: 'test-model', persisted_as_work: false,
+      })),
     };
     setup(port);
     await screen.findByText('Propongo documentar los hallazgos.');
     expect(screen.queryByRole('button', { name: /Convertir en solicitud/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Proponer desglose con AAO' }));
+    await screen.findByText(/AAO propuso 1 tareas a partir de 2 mensajes/);
     fireEvent.change(screen.getByLabelText('Título de tarea desde conversación'), { target: { value: 'Documentar hallazgos' } });
     fireEvent.change(screen.getByLabelText('Descripción de tarea desde conversación'), { target: { value: 'A partir del hilo, documentar los hallazgos acordados.' } });
     fireEvent.change(screen.getByLabelText('Criterios de aceptación de tarea desde conversación'), { target: { value: 'Hallazgos documentados\nCEO puede revisarlos' } });
@@ -98,13 +109,41 @@ describe('office persistent project conversation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirmar desglose y crear en Entrada' }));
     await waitFor(() => expect(port.createWorkGroupFromConversation).toHaveBeenCalledWith('project-active', 'conversation-1', {
       idempotency_key: expect.any(String),
+      based_on_message_ids: ['message-1', 'message-2'],
       title: 'Documentar hallazgos', description: 'A partir del hilo, documentar los hallazgos acordados.', acceptance_criteria: ['Hallazgos documentados', 'CEO puede revisarlos'],
       tasks: [
-        { key: 'task-1', title: 'Documentar hallazgos', description: '', acceptance_criteria: ['Hallazgos documentados'], depends_on: [] },
+        { key: 'task-1', title: 'Documentar hallazgos', description: 'Revisar fuentes', acceptance_criteria: ['Hallazgos documentados'], depends_on: [] },
         { key: 'task-2', title: 'Revisar documentación', description: '', acceptance_criteria: ['CEO puede revisarlos'], depends_on: ['task-1'] },
       ],
     }));
     expect(await screen.findByText(/no se ha admitido ni ejecutado/)).toBeInTheDocument();
     expect(port.createWorkRequestFromMessage).not.toHaveBeenCalled();
+  });
+
+  it('asks AAO for a reviewable breakdown based on the whole persisted thread', async () => {
+    const port: AaoConversationPort = {
+      listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
+      listConversationMessages: vi.fn().mockResolvedValue(ready([
+        message, { ...message, id: 'message-2', sender: 'AAO', body: 'Acuerdo del hilo.' },
+      ])),
+      createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(), streamCEOConversationTurn: vi.fn(),
+      createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(), createWorkGroupFromConversation: vi.fn(),
+      proposeWorkGroupFromConversation: vi.fn().mockResolvedValue(ready({
+        proposal: {
+          title: 'Plan acordado', description: 'Resultado del hilo',
+          acceptance_criteria: ['Criterios trazables'],
+          tasks: [{ key: 'research', title: 'Investigar', description: 'Revisar fuentes', acceptance_criteria: ['Fuentes registradas'], depends_on: [] }],
+        },
+        based_on_message_ids: ['message-1', 'message-2'], provider: 'openai-compatible', model: 'test-model', persisted_as_work: false,
+      })),
+    };
+    setup(port);
+    await screen.findByText('Acuerdo del hilo.');
+    fireEvent.click(screen.getByRole('button', { name: 'Proponer desglose con AAO' }));
+    expect(await screen.findByDisplayValue('Plan acordado')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('Investigar')).toBeInTheDocument();
+    expect(await screen.findByText(/a partir de 2 mensajes/)).toBeInTheDocument();
+    expect(port.proposeWorkGroupFromConversation).toHaveBeenCalledWith('project-active', 'conversation-1');
+    expect(port.createWorkGroupFromConversation).not.toHaveBeenCalled();
   });
 });

@@ -15,6 +15,7 @@
 import type { AaoReadPort } from '../../ports/AaoReadPort';
 import type { AaoOrganizationCommandPort, OrganizationProfileCommand, OrganizationUnitCommand } from '../../ports/AaoOrganizationCommandPort';
 import type { AaoWorkCommandPort, CEOWorkRequest, CreatedWorkRequest } from '../../ports/AaoWorkCommandPort';
+import type { AaoConversationPort, ProjectConversation, ProjectConversationMessage } from '../../ports/AaoConversationPort';
 import type {
   PrincipalSummary,
   ProjectSummary,
@@ -55,7 +56,7 @@ export interface HttpLiveAdapterConfig {
   requireAuth?: boolean;
 }
 
-export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPort, AaoWorkCommandPort {
+export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPort, AaoWorkCommandPort, AaoConversationPort {
   private baseUrl: string;
   private timeoutMs: number;
   private getToken: () => string | null;
@@ -798,6 +799,37 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
         body: JSON.stringify(input),
       },
     );
+  }
+
+  async listProjectConversations(projectId: string): Promise<DataState<ProjectConversation[]>> {
+    if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede leer conversaciones de proyecto.' };
+    return this.request(`/v1/projects/${encodeURIComponent(projectId)}/conversations`, z.array(z.object({
+      id: z.string().uuid(), project_id: z.string().uuid(), title: z.string(),
+      created_at: z.string(), updated_at: z.string(),
+    })), { method: 'GET' });
+  }
+
+  async listConversationMessages(projectId: string, conversationId: string): Promise<DataState<ProjectConversationMessage[]>> {
+    if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede leer conversaciones de proyecto.' };
+    return this.request(`/v1/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/messages`, z.array(z.object({
+      id: z.string().uuid(), sender: z.enum(['CEO', 'AAO']), body: z.string(),
+      related_work_id: z.string().uuid().nullable(), created_at: z.string(),
+    })), { method: 'GET' });
+  }
+
+  async createProjectConversation(projectId: string, title: string): Promise<DataState<Pick<ProjectConversation, 'id' | 'project_id' | 'title'>>> {
+    if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede crear conversaciones de proyecto.' };
+    return this.request(`/v1/projects/${encodeURIComponent(projectId)}/conversations`, z.object({
+      id: z.string().uuid(), project_id: z.string().uuid(), title: z.string(),
+    }), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title }) });
+  }
+
+  async appendCEOConversationMessage(projectId: string, conversationId: string, body: string): Promise<DataState<ProjectConversationMessage>> {
+    if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede escribir en conversaciones de proyecto.' };
+    return this.request(`/v1/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/messages`, z.object({
+      id: z.string().uuid(), sender: z.literal('CEO'), body: z.string(),
+      related_work_id: z.string().uuid().nullable(), created_at: z.string(),
+    }), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }) });
   }
 
   async getAgentDetails(agentId: string): Promise<DataState<AgentIdentity>> {

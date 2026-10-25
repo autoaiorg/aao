@@ -7,11 +7,14 @@ import { Office2DPlan } from './components/Office2DPlan';
 import { OfficeContextSidebar } from './components/OfficeContextSidebar';
 import { AgentDetailDrawer } from '../organization/AgentDetailDrawer';
 import { OfficeWorkRequestPanel } from './components/OfficeWorkRequestPanel';
+import { OfficeConversationPanel } from './components/OfficeConversationPanel';
 
 export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
   organization,
   projects = { kind: 'unavailable', reason: 'Lista de proyectos no disponible.', retryable: true },
   canCreateWorkRequest = false,
+  conversationPort,
+  conversationSessionId,
   onCreateWorkRequest,
   onNavigate,
   onRefresh,
@@ -262,6 +265,15 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
         <OfficeWorkRequestPanel
           projects={projects}
           onCreate={onCreateWorkRequest}
+          onOpenBoard={(projectId) => onNavigate?.('kanban', projectId)}
+        />
+      )}
+
+      {conversationPort && conversationSessionId && !isDemo && (
+        <OfficeConversationPanel
+          projects={projects}
+          port={conversationPort}
+          sessionId={conversationSessionId}
           onOpenBoard={(projectId) => onNavigate?.('kanban', projectId)}
         />
       )}

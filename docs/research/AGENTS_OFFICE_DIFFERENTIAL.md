@@ -161,7 +161,8 @@ Los perfiles/unidades persistidos y la edición CEO ya están construidos (#134/
 ### F2 — primer incremento de persistencia de conversaciones (en construcción)
 
 - **Backend:** migración `016_project_conversations.sql` introduce hilos ligados a proyectos activos y mensajes durables con emisor, hora del servidor y referencia opcional a un `work_item`. Rutas CEO-only permiten crear/listar hilos, recuperar mensajes al reabrirlos y persistir un mensaje CEO. Se auditan creación y mensajes. No ejecutan modelos, no fabrican respuestas AAO ni crean/admiten trabajo por enviar texto.
-- **Límite deliberado:** este es solo el contrato persistente inicial. Falta conectarlo a la Oficina Virtual, definir cómo órdenes explícitas producen `work_id` canónico y cómo respuestas AAO se producen bajo la autorización vigente con evidencia de ejecución/modelo. Las solicitudes ambiguas no se convierten automáticamente en trabajo; no hay fallback conversacional simulado.
+- **UI en construcción (rama `feat/office-conversation-ui`):** el panel LIVE CEO consume esos endpoints para crear/reabrir hilos por proyecto y persistir mensajes CEO; la caché se aísla por sesión frontend. Solo muestra mensajes devueltos por el backend. No aparece en DEMO ni en la vista AGENT.
+- **Límite deliberado:** el panel no es todavía chat AAO: no hay respuesta del modelo ni vínculo automático intención→`work_id`. Las solicitudes ambiguas no se convierten automáticamente en trabajo; no hay fallback conversacional simulado.
 - **Aceptación focal:** integración PostgreSQL prueba autenticación CEO, creación y reapertura del mismo hilo/mensaje, aislamiento por proyecto y que el mensaje por sí solo no genera tareas ni ejecuciones.
 
 ### Seguimiento de construcción (rama `feat/agents-office-aa-integration`)

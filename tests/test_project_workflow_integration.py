@@ -335,7 +335,8 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         turn_url = f"/v1/projects/{project}/conversations/{conversation_id}/turns"
         first_turn = client.post(turn_url, headers=ceo, json=turn)
         assert first_turn.status_code == 200
-        assert "Conversación persistida." in first_turn.text
+        # SSE data is JSON-escaped by json.dumps (including non-ASCII text).
+        assert '"delta": "Conversaci\\u00f3n persistida."' in first_turn.text
         replayed_turn = client.post(turn_url, headers=ceo, json=turn)
         assert replayed_turn.status_code == 200
         assert replayed_turn.text == first_turn.text

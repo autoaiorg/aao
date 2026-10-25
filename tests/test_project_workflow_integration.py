@@ -315,7 +315,9 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
                 "SELECT kind,details FROM events WHERE subject_id=%s AND kind='work.requested_from_conversation'",
                 (thread_work_id,),
             ).fetchone()
-        assert thread_work == (project, "ceo", "INBOX", "CEO-reviewed outcome of the discussion")
+        assert (str(thread_work[0]), *thread_work[1:]) == (
+            project, "ceo", "INBOX", "CEO-reviewed outcome of the discussion",
+        )
         assert thread_audit[1]["conversation_id"] == conversation_id
         assert thread_audit[1]["admitted"] is False
 

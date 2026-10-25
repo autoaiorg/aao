@@ -8,6 +8,7 @@ describe('KanbanView Six Canonical Lifecycle States', () => {
     projectId: 'test-proj',
     projectName: 'Proyecto de Prueba',
     totalCount: 3,
+    unrecognizedItems: [],
     stages: {
       INBOX: [{ id: 'task-1', title: 'Tarea Entrada', status: 'INBOX' }],
       READY: [{ id: 'task-2', title: 'Tarea Preparada', status: 'READY' }],

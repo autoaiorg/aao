@@ -73,6 +73,7 @@ export class MockAaoDemoAdapter implements AaoReadPort {
       projectId,
       projectName: proj?.name || `Proyecto Demo (${projectId})`,
       totalCount: 0,
+      unrecognizedItems: [],
       stages: {
         INBOX: [],
         READY: [],

@@ -1,10 +1,11 @@
 /**
  * AuthContext
- * Enforces memory-only credential retention.
+ * Enforces memory-only credential retention and strict session isolation.
  *
  * Rules:
  * - NO localStorage, sessionStorage, cookies, or URL storage.
- * - Logout completely purges the token and clears client query caches.
+ * - Rotates sessionId on login, logout, and credential updates.
+ * - Logout completely purges the token, aborts pending queries, and cleans caches.
  * - Token is never logged or exposed in error messages.
  */
 
@@ -13,40 +14,61 @@ import type { AuthState, AuthContextValue, AuthRole } from './types';
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+function generateSessionId(): string {
+  return `sess-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+}
+
 export interface AuthProviderProps {
   children: React.ReactNode;
   onLogoutCleanup?: () => void;
+  onCredentialsChange?: () => void;
 }
 
-export const AuthProvider: React.FC<AuthProviderProps> = ({ children, onLogoutCleanup }) => {
+export const AuthProvider: React.FC<AuthProviderProps> = ({
+  children,
+  onLogoutCleanup,
+  onCredentialsChange,
+}) => {
   const [auth, setAuth] = useState<AuthState>({
     token: null,
     role: 'AGENT',
     isAuthenticated: false,
     principalId: null,
+    sessionId: generateSessionId(),
   });
 
-  const setCredentials = useCallback((token: string, role: AuthRole, principalId?: string) => {
-    const trimmed = token.trim();
-    if (!trimmed) return;
-    setAuth({
-      token: trimmed,
-      role,
-      isAuthenticated: true,
-      principalId: principalId || null,
-    });
-  }, []);
+  const setCredentials = useCallback(
+    (token: string, role: AuthRole, principalId?: string) => {
+      const trimmed = token.trim();
+      if (!trimmed) return;
+
+      if (onCredentialsChange) {
+        onCredentialsChange();
+      }
+
+      setAuth({
+        token: trimmed,
+        role,
+        isAuthenticated: true,
+        principalId: principalId || null,
+        sessionId: generateSessionId(),
+      });
+    },
+    [onCredentialsChange]
+  );
 
   const logout = useCallback(() => {
+    if (onLogoutCleanup) {
+      onLogoutCleanup();
+    }
+
     setAuth({
       token: null,
       role: 'AGENT',
       isAuthenticated: false,
       principalId: null,
+      sessionId: generateSessionId(),
     });
-    if (onLogoutCleanup) {
-      onLogoutCleanup();
-    }
   }, [onLogoutCleanup]);
 
   const value = useMemo(

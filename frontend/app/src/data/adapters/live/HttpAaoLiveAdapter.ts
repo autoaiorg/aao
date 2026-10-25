@@ -4,7 +4,12 @@
  *
  * Implements AaoReadPort over live HTTP endpoints.
  * Handles timeouts, network errors, HTTP 401/403/404/5xx, defensive Zod parsing,
- * and memory-only token authentication.
+ * pending query abortion, and memory-only token authentication.
+ *
+ * Findings addressed:
+ * - P0 (Finding 1): Real CEO credential verification against /v1/mandates (NO synthetic fabrication).
+ * - P0 (Finding 2): In-flight query abortion via abortAll() and session-scoped request tracking.
+ * - P1 (Finding 3): Elimination of silent conversion to INBOX; preserves exact raw status and routes unrecognized items to unrecognizedItems.
  */
 
 import type { AaoReadPort } from '../../ports/AaoReadPort';
@@ -42,6 +47,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
   private getToken: () => string | null;
   private getAuthRole: () => 'AGENT' | 'CEO';
   private onUnauthorized?: () => void;
+  private activeControllers: Set<AbortController> = new Set();
 
   constructor(config: HttpLiveAdapterConfig = {}) {
     this.baseUrl = config.baseUrl ?? '';
@@ -51,12 +57,29 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
     this.onUnauthorized = config.onUnauthorized;
   }
 
+  /**
+   * P0 Finding 2: Aborts all in-flight HTTP requests immediately.
+   * Invoked upon logout, credential change, or session switch.
+   */
+  public abortAll(): void {
+    for (const controller of this.activeControllers) {
+      try {
+        controller.abort();
+      } catch {
+        // Ignored
+      }
+    }
+    this.activeControllers.clear();
+  }
+
   private async request<T>(
     endpoint: string,
     schema?: z.ZodType<T>,
     options: RequestInit = {}
   ): Promise<DataState<T>> {
     const controller = new AbortController();
+    this.activeControllers.add(controller);
+
     const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
 
     const headers: Record<string, string> = {
@@ -146,7 +169,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
         return {
           kind: 'error',
           code: 'TIMEOUT',
-          message: `La solicitud a ${endpoint} excedió el tiempo límite (${this.timeoutMs}ms)`,
+          message: `La solicitud a ${endpoint} fue cancelada o excedió el tiempo límite (${this.timeoutMs}ms)`,
           retryable: true,
         };
       }
@@ -159,24 +182,101 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
       };
     } finally {
       clearTimeout(timeoutId);
+      this.activeControllers.delete(controller);
     }
   }
 
+  /**
+   * P0 Finding 1 Fix: Differentiates declared role, verified authentication, and effective authority.
+   * For CEO role: tests X-CEO-Token against /v1/mandates to prove real authentication.
+   * For AGENT role: tests X-Agent-Token against /v1/principals/me and /v1/principals/me/grants.
+   * NO synthetic fabrication of CEO identity without backend verification!
+   */
   async getCurrentPrincipal(): Promise<DataState<PrincipalSummary>> {
     const role = this.getAuthRole();
-    if (role === 'CEO') {
+    const token = this.getToken();
+
+    if (!token) {
       return {
-        kind: 'ready',
-        origin: 'live',
-        data: {
-          principal_id: 'ceo',
-          kind: 'CEO',
-          enabled: true,
-        },
-        fetchedAt: new Date().toISOString(),
+        kind: 'forbidden',
+        reason: 'Credencial no suministrada en memoria. Se requiere autenticación.',
       };
     }
 
+    if (role === 'CEO') {
+      const controller = new AbortController();
+      this.activeControllers.add(controller);
+      const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+
+      try {
+        // Attempt verification on CEO-only mandate endpoint to check if token is accepted
+        const response = await fetch(`${this.baseUrl}/v1/mandates`, {
+          headers: {
+            'X-CEO-Token': token,
+            Accept: 'application/json',
+          },
+          signal: controller.signal,
+        });
+
+        if (response.status === 401 || response.status === 403) {
+          return {
+            kind: 'forbidden',
+            reason: 'Credencial de desarrollo CEO rechazada por el backend (HTTP 403). Autenticación no comprobada.',
+          };
+        }
+
+        if (response.status === 503) {
+          return {
+            kind: 'unavailable',
+            reason: 'Bearer de desarrollo CEO no disponible o no configurado en este entorno (HTTP 503).',
+            retryable: false,
+          };
+        }
+
+        if (!response.ok) {
+          return {
+            kind: 'error',
+            code: `HTTP_${response.status}`,
+            message: `Error al verificar credencial CEO: HTTP ${response.status}`,
+            retryable: response.status >= 500,
+          };
+        }
+
+        // Successfully verified against /v1/mandates
+        return {
+          kind: 'ready',
+          origin: 'live',
+          data: {
+            principal_id: 'ceo (bearer de desarrollo verificado)',
+            kind: 'CEO',
+            enabled: true,
+            verificationStatus: 'verified',
+            authMethod: 'X-CEO-Token comprobado vía GET /v1/mandates',
+          },
+          fetchedAt: new Date().toISOString(),
+        };
+      } catch (err: unknown) {
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          return {
+            kind: 'error',
+            code: 'TIMEOUT',
+            message: 'Tiempo de espera agotado al verificar credencial CEO',
+            retryable: true,
+          };
+        }
+        return {
+          kind: 'error',
+          code: 'NETWORK_ERROR',
+          message: err instanceof Error ? err.message : 'Error de red al verificar credencial CEO',
+          retryable: true,
+        };
+      } finally {
+        clearTimeout(timeoutId);
+        this.activeControllers.delete(controller);
+      }
+    }
+
+    // AGENT role verification
     const principalResult = await this.request('/v1/principals/me', PrincipalSchema);
     if (principalResult.kind !== 'ready') {
       return principalResult;
@@ -193,6 +293,8 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
         principal_id: principalResult.data.principal_id,
         kind: principalResult.data.kind,
         enabled: principalResult.data.enabled,
+        verificationStatus: 'verified',
+        authMethod: 'X-Agent-Token verificado vía GET /v1/principals/me',
         grants: grants.map((g: z.infer<typeof GrantSchema>) => ({
           project_id: g.project_id,
           capability: g.capability,
@@ -234,8 +336,14 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
     };
   }
 
+  /**
+   * P1 Finding 3 Fix: Preserves exact semantic status of every received task.
+   * Tasks with status outside canonical 6 stages are segregated into unrecognizedItems,
+   * completely preventing silent conversion to INBOX!
+   */
   async getProjectBoard(projectId: string): Promise<DataState<ProjectBoard>> {
     const controller = new AbortController();
+    this.activeControllers.add(controller);
     const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
 
     const headers: Record<string, string> = { Accept: 'application/json' };
@@ -303,29 +411,35 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
         DONE: [],
       };
 
+      const unrecognizedItems: TaskItem[] = [];
       const allItems: TaskItem[] = [];
+
+      const canonicalStages: readonly string[] = [
+        'INBOX',
+        'READY',
+        'IN_PROGRESS',
+        'IN_REVIEW',
+        'VERIFIED',
+        'DONE',
+      ];
 
       for (const rawItem of rawJson) {
         if (typeof rawItem !== 'object' || rawItem === null) continue;
         const itemObj = rawItem as Record<string, unknown>;
         const id = String(itemObj.id || '');
         const title = String(itemObj.title || 'Sin título');
-        const rawStatus = String(itemObj.status || 'INBOX').toUpperCase();
-        const status: BoardStage = [
-          'INBOX',
-          'READY',
-          'IN_PROGRESS',
-          'IN_REVIEW',
-          'VERIFIED',
-          'DONE',
-        ].includes(rawStatus)
-          ? (rawStatus as BoardStage)
-          : 'INBOX';
+        const rawStatus = String(itemObj.status || '');
+        const normalizedUpper = rawStatus.toUpperCase();
+
+        const isCanonical = canonicalStages.includes(normalizedUpper);
+        const canonicalStage = isCanonical ? (normalizedUpper as BoardStage) : null;
 
         const taskItem: TaskItem = {
           id,
           title,
-          status,
+          status: rawStatus, // PRESERVES RAW SEMANTIC STATUS WITHOUT MUTATION
+          rawStatus,
+          isUnrecognizedStatus: !isCanonical,
           acceptanceCriteria: Array.isArray(itemObj.acceptance_criteria)
             ? (itemObj.acceptance_criteria as string[])
             : [],
@@ -338,7 +452,13 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
             : [],
         };
 
-        stagesMap[status].push(taskItem);
+        if (canonicalStage) {
+          stagesMap[canonicalStage].push(taskItem);
+        } else {
+          // P1 Finding 3: Do NOT push to INBOX! Retain in unrecognizedItems
+          unrecognizedItems.push(taskItem);
+        }
+
         allItems.push(taskItem);
       }
 
@@ -349,6 +469,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
           projectId,
           items: allItems,
           stages: stagesMap,
+          unrecognizedItems,
           totalCount: allItems.length,
         },
         fetchedAt: new Date().toISOString(),
@@ -358,7 +479,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
         return {
           kind: 'error',
           code: 'TIMEOUT',
-          message: 'Tiempo de espera agotado al consultar el tablero',
+          message: 'Tiempo de espera agotado o consulta cancelada al consultar el tablero',
           retryable: true,
         };
       }
@@ -370,6 +491,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
       };
     } finally {
       clearTimeout(timeoutId);
+      this.activeControllers.delete(controller);
     }
   }
 
@@ -495,6 +617,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
           data: {
             totalTasks: board.totalCount,
             byStage,
+            unrecognizedCount: board.unrecognizedItems.length,
             inReviewCount: byStage.IN_REVIEW,
             blockedCount: 0,
           },

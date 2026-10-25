@@ -29,6 +29,7 @@ describe('CeoDashboard Honest Metrics & State Reporting', () => {
           VERIFIED: 1,
           DONE: 2,
         },
+        unrecognizedCount: 0,
         inReviewCount: 2,
         blockedCount: 0,
       },

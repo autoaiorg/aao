@@ -64,32 +64,166 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
         onRetry={onRefresh}
         title="Tablero de Trabajo"
         renderReady={(board) => (
-          <div
-            id="board"
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(6, minmax(220px, 1fr))',
-              gap: '12px',
-              overflowX: 'auto',
-              paddingBottom: '16px',
-            }}
-          >
-            {BOARD_STAGES.map((stage) => {
-              const tasks = board.stages[stage] || [];
-              return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            {/* Warning banner if any tasks have unrecognized non-canonical states */}
+            {board.unrecognizedItems && board.unrecognizedItems.length > 0 && (
+              <div
+                role="alert"
+                style={{
+                  padding: '12px 16px',
+                  borderRadius: 'var(--radius-md)',
+                  backgroundColor: 'var(--status-warning-bg)',
+                  border: '1px solid var(--status-warning-border)',
+                  color: 'var(--status-warning-text)',
+                  fontSize: '13px',
+                }}
+              >
+                <strong>Atención:</strong> Se detectaron {board.unrecognizedItems.length} tarea(s) con estados no reconocidos en el ciclo canónico. Se presentan con su estado semántico original sin conversión forzada a INBOX.
+              </div>
+            )}
+
+            <div
+              id="board"
+              style={{
+                display: 'grid',
+                gridTemplateColumns: `repeat(${BOARD_STAGES.length + (board.unrecognizedItems?.length ? 1 : 0)}, minmax(220px, 1fr))`,
+                gap: '12px',
+                overflowX: 'auto',
+                paddingBottom: '16px',
+              }}
+            >
+              {BOARD_STAGES.map((stage) => {
+                const tasks = board.stages[stage] || [];
+                return (
+                  <div
+                    key={stage}
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      backgroundColor: 'var(--bg-muted)',
+                      borderRadius: 'var(--radius-lg)',
+                      padding: '12px',
+                      minHeight: '480px',
+                      borderTop: `4px solid ${stageBorderColors[stage]}`,
+                    }}
+                  >
+                    {/* Column Header */}
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        marginBottom: '12px',
+                        paddingBottom: '8px',
+                        borderBottom: '1px solid var(--border-subtle)',
+                      }}
+                    >
+                      <span style={{ fontWeight: 700, fontSize: '13px', color: 'var(--text-primary)' }}>
+                        {BOARD_STAGE_LABELS[stage]}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: '11px',
+                          padding: '1px 6px',
+                          borderRadius: 'var(--radius-full)',
+                          backgroundColor: 'var(--bg-surface)',
+                          fontWeight: 700,
+                          color: 'var(--text-secondary)',
+                        }}
+                      >
+                        {tasks.length}
+                      </span>
+                    </div>
+
+                    {/* Tasks List with keyboard-accessible semantic buttons */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: 1 }}>
+                      {tasks.map((task) => (
+                        <button
+                          key={task.id}
+                          type="button"
+                          onClick={() => setSelectedTask(task)}
+                          aria-haspopup="dialog"
+                          aria-label={`Ver detalles de la tarea ${task.id}: ${task.title}`}
+                          style={{
+                            width: '100%',
+                            textAlign: 'left',
+                            backgroundColor: 'var(--bg-surface)',
+                            borderRadius: 'var(--radius-md)',
+                            padding: '10px 12px',
+                            border: '1px solid var(--border-subtle)',
+                            boxShadow: 'var(--shadow-sm)',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '6px',
+                            transition: 'border-color 0.15s ease',
+                            fontFamily: 'inherit',
+                          }}
+                        >
+                          <span
+                            style={{
+                              fontSize: '11px',
+                              fontFamily: 'monospace',
+                              color: 'var(--text-muted)',
+                            }}
+                          >
+                            {task.id}
+                          </span>
+                          <strong
+                            style={{
+                              fontSize: '13px',
+                              fontWeight: 600,
+                              color: 'var(--text-primary)',
+                              lineHeight: 1.3,
+                            }}
+                          >
+                            {task.title}
+                          </strong>
+
+                          {task.executions && task.executions.length > 0 && (
+                            <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                              ⚙ {task.executions.length} ejecución(es)
+                            </div>
+                          )}
+                          {task.reviews && task.reviews.length > 0 && (
+                            <div style={{ fontSize: '11px', color: 'var(--accent)' }}>
+                              ✓ {task.reviews.length} revisión(es)
+                            </div>
+                          )}
+                        </button>
+                      ))}
+
+                      {tasks.length === 0 && (
+                        <div
+                          style={{
+                            textAlign: 'center',
+                            padding: '24px 8px',
+                            color: 'var(--text-muted)',
+                            fontSize: '12px',
+                            fontStyle: 'italic',
+                          }}
+                        >
+                          Sin tareas en {BOARD_STAGE_LABELS[stage].toLowerCase()}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* Dedicated column for Unrecognized/Non-canonical states */}
+              {board.unrecognizedItems && board.unrecognizedItems.length > 0 && (
                 <div
-                  key={stage}
                   style={{
                     display: 'flex',
                     flexDirection: 'column',
-                    backgroundColor: 'var(--bg-muted)',
+                    backgroundColor: 'var(--status-warning-bg)',
                     borderRadius: 'var(--radius-lg)',
                     padding: '12px',
                     minHeight: '480px',
-                    borderTop: `4px solid ${stageBorderColors[stage]}`,
+                    borderTop: '4px solid var(--status-warning-border)',
                   }}
                 >
-                  {/* Column Header */}
                   <div
                     style={{
                       display: 'flex',
@@ -97,11 +231,11 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                       alignItems: 'center',
                       marginBottom: '12px',
                       paddingBottom: '8px',
-                      borderBottom: '1px solid var(--border-subtle)',
+                      borderBottom: '1px solid var(--status-warning-border)',
                     }}
                   >
-                    <span style={{ fontWeight: 700, fontSize: '13px', color: 'var(--text-primary)' }}>
-                      {BOARD_STAGE_LABELS[stage]}
+                    <span style={{ fontWeight: 700, fontSize: '13px', color: 'var(--status-warning-text)' }}>
+                      Estado No Reconocido
                     </span>
                     <span
                       style={{
@@ -110,41 +244,53 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                         borderRadius: 'var(--radius-full)',
                         backgroundColor: 'var(--bg-surface)',
                         fontWeight: 700,
-                        color: 'var(--text-secondary)',
+                        color: 'var(--status-warning-text)',
                       }}
                     >
-                      {tasks.length}
+                      {board.unrecognizedItems.length}
                     </span>
                   </div>
 
-                  {/* Tasks List */}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: 1 }}>
-                    {tasks.map((task) => (
-                      <div
+                    {board.unrecognizedItems.map((task) => (
+                      <button
                         key={task.id}
+                        type="button"
                         onClick={() => setSelectedTask(task)}
+                        aria-haspopup="dialog"
+                        aria-label={`Ver detalles de la tarea con estado no reconocido ${task.id}: ${task.title}`}
                         style={{
+                          width: '100%',
+                          textAlign: 'left',
                           backgroundColor: 'var(--bg-surface)',
                           borderRadius: 'var(--radius-md)',
                           padding: '10px 12px',
-                          border: '1px solid var(--border-subtle)',
+                          border: '1px solid var(--status-warning-border)',
                           boxShadow: 'var(--shadow-sm)',
                           cursor: 'pointer',
                           display: 'flex',
                           flexDirection: 'column',
                           gap: '6px',
-                          transition: 'border-color 0.15s ease',
+                          fontFamily: 'inherit',
                         }}
                       >
-                        <span
-                          style={{
-                            fontSize: '11px',
-                            fontFamily: 'monospace',
-                            color: 'var(--text-muted)',
-                          }}
-                        >
-                          {task.id}
-                        </span>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ fontSize: '11px', fontFamily: 'monospace', color: 'var(--text-muted)' }}>
+                            {task.id}
+                          </span>
+                          <span
+                            style={{
+                              fontSize: '10px',
+                              padding: '1px 5px',
+                              borderRadius: 'var(--radius-sm)',
+                              backgroundColor: 'var(--status-warning-bg)',
+                              color: 'var(--status-warning-text)',
+                              fontWeight: 700,
+                            }}
+                          >
+                            {task.status || 'SIN_ESTADO'}
+                          </span>
+                        </div>
                         <strong
                           style={{
                             fontSize: '13px',
@@ -155,37 +301,12 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
                         >
                           {task.title}
                         </strong>
-
-                        {task.executions && task.executions.length > 0 && (
-                          <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
-                            ⚙ {task.executions.length} ejecución(es)
-                          </div>
-                        )}
-                        {task.reviews && task.reviews.length > 0 && (
-                          <div style={{ fontSize: '11px', color: 'var(--accent)' }}>
-                            ✓ {task.reviews.length} revisión(es)
-                          </div>
-                        )}
-                      </div>
+                      </button>
                     ))}
-
-                    {tasks.length === 0 && (
-                      <div
-                        style={{
-                          textAlign: 'center',
-                          padding: '24px 8px',
-                          color: 'var(--text-muted)',
-                          fontSize: '12px',
-                          fontStyle: 'italic',
-                        }}
-                      >
-                        Sin tareas en {BOARD_STAGE_LABELS[stage].toLowerCase()}
-                      </div>
-                    )}
                   </div>
                 </div>
-              );
-            })}
+              )}
+            </div>
           </div>
         )}
       />

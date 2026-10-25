@@ -197,10 +197,14 @@ export const CeoDashboard: React.FC<CeoDashboardProps> = ({
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 {projects.map((p) => (
-                  <div
+                  <button
                     key={p.id}
+                    type="button"
                     onClick={() => onSelectProject(p.id)}
+                    aria-pressed={selectedProjectId === p.id}
                     style={{
+                      width: '100%',
+                      textAlign: 'left',
                       padding: '12px',
                       borderRadius: 'var(--radius-md)',
                       backgroundColor:
@@ -213,6 +217,8 @@ export const CeoDashboard: React.FC<CeoDashboardProps> = ({
                       display: 'flex',
                       justifyContent: 'space-between',
                       alignItems: 'center',
+                      fontFamily: 'inherit',
+                      fontSize: 'inherit',
                     }}
                   >
                     <div>
@@ -237,7 +243,7 @@ export const CeoDashboard: React.FC<CeoDashboardProps> = ({
                     >
                       {p.status || 'ACTIVO'}
                     </span>
-                  </div>
+                  </button>
                 ))}
               </div>
             )}

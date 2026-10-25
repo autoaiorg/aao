@@ -4,7 +4,6 @@
  */
 
 import { z } from 'zod';
-import type { BoardStage } from './models';
 
 export const BoardStageSchema = z.enum([
   'INBOX',
@@ -45,16 +44,11 @@ export const ReviewRecordSchema = z.object({
   created_at: z.string(),
 });
 
+// P1 Finding 3 Fix: Preserves exact status string from backend; NO silent mutation to INBOX!
 export const WorkItemSchema = z.object({
   id: z.string(),
   title: z.string(),
-  status: z.string().transform((val): BoardStage => {
-    const upper = val.toUpperCase();
-    if (['INBOX', 'READY', 'IN_PROGRESS', 'IN_REVIEW', 'VERIFIED', 'DONE'].includes(upper)) {
-      return upper as BoardStage;
-    }
-    return 'INBOX';
-  }),
+  status: z.string(), // Preserves exact string without silent conversion
   acceptance_criteria: z.array(z.string()).optional(),
   evidence: z.array(z.unknown()).optional(),
   executions: z.array(ExecutionRecordSchema).optional(),

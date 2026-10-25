@@ -53,7 +53,10 @@ describe('HttpAaoLiveAdapter Contract & Error Handling', () => {
       statusText: 'Unauthorized',
     } as Response);
 
-    const adapter = new HttpAaoLiveAdapter({ onUnauthorized });
+    const adapter = new HttpAaoLiveAdapter({
+      onUnauthorized,
+      getToken: () => 'expired-token',
+    });
     const result = await adapter.getCurrentPrincipal();
 
     expect(onUnauthorized).toHaveBeenCalled();

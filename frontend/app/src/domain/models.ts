@@ -79,7 +79,9 @@ export interface TaskReviewRecord {
 export interface TaskItem {
   id: string;
   title: string;
-  status: BoardStage;
+  status: string; // Preserves exact semantic status from backend without silent conversion
+  rawStatus?: string;
+  isUnrecognizedStatus?: boolean;
   acceptanceCriteria?: string[];
   evidence?: unknown[];
   executions?: TaskExecutionRecord[];
@@ -93,12 +95,14 @@ export interface ProjectBoard {
   projectName?: string;
   items: TaskItem[];
   stages: Record<BoardStage, TaskItem[]>;
+  unrecognizedItems: TaskItem[]; // Tasks with unrecognized/unanchored status outside canonical 6
   totalCount: number;
 }
 
 export interface WorkSummary {
   totalTasks: number;
   byStage: Record<BoardStage, number>;
+  unrecognizedCount: number;
   activeWorkersCount?: number;
   inReviewCount: number;
   blockedCount: number;
@@ -171,10 +175,18 @@ export interface EvaluationSummary {
   task_title?: string;
 }
 
+export type PrincipalVerificationStatus =
+  | 'verified'      // Backend HTTP verification passed with valid credential
+  | 'declared'      // Role/identity declared by client without independent backend proof
+  | 'rejected'      // Backend explicitly rejected credential (401/403)
+  | 'unsupported';  // Backend does not expose an identity/verification endpoint for this role
+
 export interface PrincipalSummary {
   principal_id: string;
   kind: 'AGENT' | 'AUDITOR' | 'CEO';
   enabled: boolean;
+  verificationStatus: PrincipalVerificationStatus;
+  authMethod: string;
   grants?: Array<{
     project_id: string;
     capability: string;

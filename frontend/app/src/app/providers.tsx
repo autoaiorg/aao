@@ -2,7 +2,7 @@ import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider } from '../auth/AuthContext';
 
-const queryClient = new QueryClient({
+export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       retry: (failureCount, error) => {
@@ -13,14 +13,24 @@ const queryClient = new QueryClient({
       },
       refetchOnWindowFocus: false,
       staleTime: 15 * 1000,
+      gcTime: 5 * 60 * 1000,
     },
   },
 });
 
 export const Providers: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const handleSessionReset = () => {
+    // P0 Finding 2: Immediately abort all pending queries and wipe cache
+    queryClient.cancelQueries();
+    queryClient.clear();
+  };
+
   return (
     <QueryClientProvider client={queryClient}>
-      <AuthProvider onLogoutCleanup={() => queryClient.clear()}>
+      <AuthProvider
+        onLogoutCleanup={handleSessionReset}
+        onCredentialsChange={handleSessionReset}
+      >
         {children}
       </AuthProvider>
     </QueryClientProvider>

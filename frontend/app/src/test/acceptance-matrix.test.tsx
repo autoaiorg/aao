@@ -110,7 +110,10 @@ describe('Specification Acceptance Matrix (T01 - T20)', () => {
       statusText: 'Unauthorized',
     } as Response);
 
-    const adapter = new HttpAaoLiveAdapter({ onUnauthorized });
+    const adapter = new HttpAaoLiveAdapter({
+      onUnauthorized,
+      getToken: () => 'expired-token',
+    });
     const res = await adapter.getCurrentPrincipal();
 
     expect(onUnauthorized).toHaveBeenCalled();

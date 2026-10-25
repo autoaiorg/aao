@@ -40,7 +40,7 @@ describe('Defensive Schema Validation', () => {
     }
   });
 
-  it('normalizes work item lifecycle status to canonical uppercase', () => {
+  it('preserves work item lifecycle status string exactly as received from backend', () => {
     const raw = {
       id: 'task-01',
       title: 'Fix issue',
@@ -49,11 +49,11 @@ describe('Defensive Schema Validation', () => {
     const parsed = WorkItemSchema.safeParse(raw);
     expect(parsed.success).toBe(true);
     if (parsed.success) {
-      expect(parsed.data.status).toBe('IN_REVIEW');
+      expect(parsed.data.status).toBe('in_review');
     }
   });
 
-  it('defaults invalid work item status to INBOX safely', () => {
+  it('preserves unrecognized work item status without mutating to INBOX', () => {
     const raw = {
       id: 'task-02',
       title: 'Unrecognized stage',
@@ -62,7 +62,7 @@ describe('Defensive Schema Validation', () => {
     const parsed = WorkItemSchema.safeParse(raw);
     expect(parsed.success).toBe(true);
     if (parsed.success) {
-      expect(parsed.data.status).toBe('INBOX');
+      expect(parsed.data.status).toBe('UNKNOWN_CUSTOM_STAGE');
     }
   });
 

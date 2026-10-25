@@ -24,23 +24,13 @@ import { ViewSettingsView } from '../features/future/ViewSettingsView';
 
 export const App: React.FC = () => {
   const queryClient = useQueryClient();
-  const { token, role, isAuthenticated, setCredentials, logout } = useAuth();
+  const { token, role, isAuthenticated, sessionId, setCredentials, logout } = useAuth();
 
   const [origin, setOrigin] = useState<DataOrigin>('live');
   const [activeNav, setActiveNav] = useState<ActiveNavKey>('dashboard');
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [detailedProjectId, setDetailedProjectId] = useState<string | null>(null);
   const [staleTimeSeconds, setStaleTimeSeconds] = useState<number>(15);
-
-  // Switch origin cleanly with complete cache purge
-  const handleOriginChange = useCallback(
-    (newOrigin: DataOrigin) => {
-      if (newOrigin === origin) return;
-      queryClient.clear();
-      setOrigin(newOrigin);
-    },
-    [origin, queryClient]
-  );
 
   // Initialize Port Adapter depending on origin
   const port: AaoReadPort = useMemo(() => {
@@ -52,21 +42,52 @@ export const App: React.FC = () => {
       getAuthRole: () => role,
       onUnauthorized: () => {
         logout();
+        queryClient.cancelQueries();
         queryClient.clear();
       },
     });
   }, [origin, token, role, logout, queryClient]);
 
+  // P0 Finding 2: Switch origin cleanly with immediate cancellation of in-flight queries & cache purge
+  const handleOriginChange = useCallback(
+    (newOrigin: DataOrigin) => {
+      if (newOrigin === origin) return;
+
+      if (port instanceof HttpAaoLiveAdapter) {
+        port.abortAll();
+      }
+      queryClient.cancelQueries();
+      queryClient.clear();
+
+      setSelectedProjectId(null);
+      setDetailedProjectId(null);
+      setOrigin(newOrigin);
+    },
+    [origin, port, queryClient]
+  );
+
+  const handleLogout = useCallback(() => {
+    if (port instanceof HttpAaoLiveAdapter) {
+      port.abortAll();
+    }
+    queryClient.cancelQueries();
+    queryClient.clear();
+    setSelectedProjectId(null);
+    setDetailedProjectId(null);
+    logout();
+  }, [port, queryClient, logout]);
+
+  // P0 Finding 2: Query keys strictly bound to sessionId, origin, and credentials
   // Query: Principal
   const principalQuery = useQuery({
-    queryKey: ['principal', origin, isAuthenticated, role],
+    queryKey: ['principal', origin, isAuthenticated, role, sessionId],
     queryFn: () => port.getCurrentPrincipal(),
     staleTime: staleTimeSeconds * 1000,
   });
 
   // Query: Projects List
   const projectsQuery = useQuery({
-    queryKey: ['projects', origin, isAuthenticated],
+    queryKey: ['projects', origin, isAuthenticated, sessionId],
     queryFn: () => port.listProjects(),
     staleTime: staleTimeSeconds * 1000,
   });
@@ -80,14 +101,14 @@ export const App: React.FC = () => {
 
   // Query: CEO Overview
   const overviewQuery = useQuery({
-    queryKey: ['ceo-overview', origin, selectedProjectId, isAuthenticated],
+    queryKey: ['ceo-overview', origin, selectedProjectId, isAuthenticated, sessionId],
     queryFn: () => port.getCeoOverview(selectedProjectId || undefined),
     staleTime: staleTimeSeconds * 1000,
   });
 
   // Query: Selected Project Board (for Kanban)
   const boardQuery = useQuery({
-    queryKey: ['board', origin, selectedProjectId, isAuthenticated],
+    queryKey: ['board', origin, selectedProjectId, isAuthenticated, sessionId],
     queryFn: () => {
       if (!selectedProjectId) {
         return Promise.resolve({
@@ -104,7 +125,7 @@ export const App: React.FC = () => {
 
   // Query: Detailed Project Capabilities
   const capabilitiesQuery = useQuery({
-    queryKey: ['capabilities', origin, detailedProjectId, isAuthenticated],
+    queryKey: ['capabilities', origin, detailedProjectId, isAuthenticated, sessionId],
     queryFn: () => {
       if (!detailedProjectId) {
         return Promise.resolve({
@@ -121,7 +142,7 @@ export const App: React.FC = () => {
 
   // Query: Detailed Project Evaluations
   const evaluationsQuery = useQuery({
-    queryKey: ['evaluations', origin, detailedProjectId, isAuthenticated],
+    queryKey: ['evaluations', origin, detailedProjectId, isAuthenticated, sessionId],
     queryFn: () => {
       if (!detailedProjectId) {
         return Promise.resolve({
@@ -157,7 +178,7 @@ export const App: React.FC = () => {
       principal={principalData}
       isAuthenticated={isAuthenticated}
       onLogin={setCredentials}
-      onLogout={logout}
+      onLogout={handleLogout}
       activeNav={activeNav}
       onNavSelect={(nav) => {
         setDetailedProjectId(null);
@@ -254,7 +275,10 @@ export const App: React.FC = () => {
           <ViewSettingsView
             staleTimeSeconds={staleTimeSeconds}
             onStaleTimeChange={setStaleTimeSeconds}
-            onClearCache={() => queryClient.clear()}
+            onClearCache={() => {
+              queryClient.cancelQueries();
+              queryClient.clear();
+            }}
           />
         )}
       </ErrorBoundary>

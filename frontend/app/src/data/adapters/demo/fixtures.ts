@@ -67,6 +67,8 @@ export const DEMO_PRINCIPAL: PrincipalSummary = {
   principal_id: 'demo-agent-simulated-01',
   kind: 'AGENT',
   enabled: true,
+  verificationStatus: 'verified',
+  authMethod: 'Fixture sintética de demostración',
   grants: [
     { project_id: 'demo-proj-orion', capability: 'project.read', expires_at: null, active: true },
     { project_id: 'demo-proj-polaris', capability: 'project.read', expires_at: null, active: true },
@@ -77,6 +79,7 @@ export const DEMO_BOARD_ORION: ProjectBoard = {
   projectId: 'demo-proj-orion',
   projectName: 'Proyecto Orión (Demo)',
   totalCount: 18,
+  unrecognizedItems: [],
   stages: {
     INBOX: [
       {
@@ -354,6 +357,7 @@ export const DEMO_WORK_SUMMARY: WorkSummary = {
     VERIFIED: 1,
     DONE: 6,
   },
+  unrecognizedCount: 0,
   activeWorkersCount: 3,
   inReviewCount: 2,
   blockedCount: 0,

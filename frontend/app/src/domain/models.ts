@@ -124,6 +124,7 @@ export interface TaskItem {
   reviews?: TaskReviewRecord[];
   pullRequests?: TaskPullRequest[];
   resolution?: TaskResolution | null;
+  routingDecisions?: import('../features/ronin/modelProfile').ModelRoutingRecord[];
   authorId?: string;
   createdAt?: string;
 }
@@ -195,6 +196,7 @@ export interface CapabilitySummary {
   status: string;
   provenance: unknown;
   contract: unknown;
+  modelProfile?: import('../features/ronin/modelProfile').ModelProfile | null;
   required_permissions?: string[];
   risks?: string[];
   dependencies?: string[];
@@ -300,6 +302,36 @@ export interface AgentAssignment {
   status: 'ACTIVE' | 'EXPIRED' | 'COMPLETED' | 'UNKNOWN';
 }
 
+export interface AgentExecutionRecord {
+  id: string;
+  taskId: string;
+  taskTitle: string;
+  projectId: string;
+  projectName: string;
+  status: string;
+  attempts: number;
+  createdAt: string;
+  leaseExpiresAt?: string | null;
+  workerId?: string;
+  // RONIN evidence fields (I1-I6)
+  provider?: string | null;
+  model?: string | null;
+  backendVersion?: string | null;
+  capabilityId?: string | null;
+  capabilityVersion?: string | null;
+  backendSource?: string | null;
+  costEstimateUsd?: number | null;
+  candidateSha?: string | null;
+  conclusion?: string | null;
+  check?: string | null;
+  checkDetails?: string | null;
+  error?: string | null;
+  alert?: string | null;
+  isNoProgressRetry?: boolean;
+  isBudgetExceeded?: boolean;
+  rawResult?: unknown;
+}
+
 export interface AgentIdentity {
   id: string;
   name: string;
@@ -314,6 +346,7 @@ export interface AgentIdentity {
   status: AgentOperationalStatus;
   operationalState?: AgentOperationalState;
   currentAssignments: AgentAssignment[];
+  executionHistory?: AgentExecutionRecord[];
   authorityBoundary: string;
   isSyntheticDemo?: boolean;
   lastEvidenceAt?: string | null;

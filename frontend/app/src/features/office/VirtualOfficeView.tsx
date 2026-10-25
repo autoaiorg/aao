@@ -1,9 +1,11 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import type { VirtualOfficeViewProps, OfficeViewMode } from './types';
+import type { AgentIdentity } from '../../domain/models';
 import { OfficeToolbar } from './components/OfficeToolbar';
 import { Office3DCanvas, type WebGLCanvasHandle } from './components/Office3DCanvas';
 import { Office2DPlan } from './components/Office2DPlan';
 import { OfficeContextSidebar } from './components/OfficeContextSidebar';
+import { AgentDetailDrawer } from '../organization/AgentDetailDrawer';
 
 export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
   organization,
@@ -13,6 +15,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
   const [viewMode, setViewMode] = useState<OfficeViewMode>('3d');
   const [selectedRoomId, setSelectedRoomId] = useState<string>('unit-exec');
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [drawerAgent, setDrawerAgent] = useState<AgentIdentity | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [typeFilter, setTypeFilter] = useState<'ALL' | 'STANDING' | 'EPHEMERAL'>('ALL');
   const [reducedMotion, setReducedMotion] = useState<boolean>(() => {
@@ -222,9 +225,13 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
           agents={filteredAgents}
           onSelectAgent={handleSelectAgent}
           onNavigate={onNavigate}
+          onOpenAgentDetail={(agent) => setDrawerAgent(agent)}
           isDemo={isDemo}
         />
       </div>
+
+      {/* Enriched Agent Drawer */}
+      <AgentDetailDrawer agent={drawerAgent} onClose={() => setDrawerAgent(null)} />
     </div>
   );
 };

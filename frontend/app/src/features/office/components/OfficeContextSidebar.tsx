@@ -9,6 +9,7 @@ export interface OfficeContextSidebarProps {
   agents: AgentIdentity[];
   onSelectAgent: (agentId: string | null) => void;
   onNavigate?: (target: 'organization' | 'kanban' | 'projects') => void;
+  onOpenAgentDetail?: (agent: AgentIdentity) => void;
   isDemo?: boolean;
 }
 
@@ -19,6 +20,7 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
   agents,
   onSelectAgent,
   onNavigate,
+  onOpenAgentDetail,
   isDemo = false,
 }) => {
   const isUnassignedRoom = selectedRoomId === 'unit-unassigned';
@@ -701,6 +703,122 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
               </div>
             )}
           </div>
+
+          {/* RONIN Execution & Model History (I1-I6) */}
+          {activeAgent.executionHistory && activeAgent.executionHistory.length > 0 && (
+            <div>
+              <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px' }}>
+                Historial de Ejecuciones y Modelos RONIN ({activeAgent.executionHistory.length}):
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {activeAgent.executionHistory.map((exec) => (
+                  <div
+                    key={exec.id}
+                    style={{
+                      padding: '8px 10px',
+                      borderRadius: 'var(--radius-md, 6px)',
+                      backgroundColor: 'var(--bg-surface)',
+                      border: '1px solid var(--border-subtle)',
+                      fontSize: '11px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '3px',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <strong style={{ fontSize: '11px', color: 'var(--text-primary)' }}>
+                        {exec.taskTitle}
+                      </strong>
+                      <span
+                        style={{
+                          fontSize: '9px',
+                          fontWeight: 700,
+                          padding: '1px 5px',
+                          borderRadius: '3px',
+                          backgroundColor:
+                            exec.status === 'SUCCEEDED'
+                              ? 'var(--status-success-bg)'
+                              : exec.status === 'RUNNING'
+                              ? 'var(--status-info-bg)'
+                              : 'var(--bg-muted)',
+                          color:
+                            exec.status === 'SUCCEEDED'
+                              ? 'var(--status-success-text)'
+                              : exec.status === 'RUNNING'
+                              ? 'var(--status-info-text)'
+                              : 'var(--text-secondary)',
+                          border: '1px solid var(--border-subtle)',
+                        }}
+                      >
+                        {exec.status}
+                      </span>
+                    </div>
+
+                    <div style={{ fontSize: '10px', color: 'var(--text-secondary)', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                      <span>Intento #{exec.attempts}</span>
+                      {exec.provider && (
+                        <span>
+                          🤖 <strong>{exec.provider}</strong> · {exec.model ?? 'modelo por defecto'}
+                        </span>
+                      )}
+                      {exec.costEstimateUsd !== undefined && (
+                        <span style={{ color: 'var(--accent)', fontWeight: 600 }}>
+                          ~${exec.costEstimateUsd} USD
+                        </span>
+                      )}
+                    </div>
+
+                    {exec.capabilityId && (
+                      <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
+                        Capacidad: {exec.capabilityId}@{exec.capabilityVersion ?? '?'} ({exec.backendSource === 'capability' ? 'por capacidad' : 'por entorno'})
+                      </div>
+                    )}
+
+                    {exec.candidateSha && (
+                      <div style={{ fontSize: '9px', fontFamily: 'monospace', color: 'var(--text-muted)' }}>
+                        SHA: {exec.candidateSha}
+                      </div>
+                    )}
+
+                    {exec.check && (
+                      <div style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>
+                        🧪 {exec.check}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Cross-navigation button */}
+          {(onOpenAgentDetail || onNavigate) && (
+            <button
+              type="button"
+              onClick={() => {
+                if (onOpenAgentDetail && activeAgent) {
+                  onOpenAgentDetail(activeAgent);
+                } else if (onNavigate) {
+                  onNavigate('organization');
+                }
+              }}
+              style={{
+                width: '100%',
+                padding: '8px',
+                borderRadius: 'var(--radius-md, 6px)',
+                backgroundColor: 'var(--bg-surface)',
+                border: '1px solid var(--accent)',
+                color: 'var(--accent)',
+                fontSize: '11px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                textAlign: 'center',
+                marginTop: '4px',
+              }}
+            >
+              👥 Ver Ficha Completa en Organización
+            </button>
+          )}
         </div>
       ) : (
         /* 3. Room Agents List */

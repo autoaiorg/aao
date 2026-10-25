@@ -423,6 +423,67 @@ export const AgentDetailDrawer: React.FC<AgentDetailDrawerProps> = ({
             </div>
           )}
         </div>
+
+        {/* RONIN Execution History */}
+        {agent.executionHistory && agent.executionHistory.length > 0 && (
+          <div>
+            <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px', color: 'var(--text-primary)' }}>
+              Historial de Intentos y Modelos RONIN ({agent.executionHistory.length})
+            </h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {agent.executionHistory.map((exec) => (
+                <div
+                  key={exec.id}
+                  style={{
+                    padding: '10px 12px',
+                    backgroundColor: 'var(--bg-surface)',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: 'var(--radius-md)',
+                    fontSize: '12px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <strong style={{ color: 'var(--text-primary)' }}>{exec.taskTitle}</strong>
+                    <Badge variant={exec.status === 'SUCCEEDED' ? 'success' : exec.status === 'RUNNING' ? 'info' : 'neutral'}>
+                      {exec.status}
+                    </Badge>
+                  </div>
+                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                    Proyecto: {exec.projectName} · Intento #{exec.attempts}
+                  </div>
+                  {exec.provider && (
+                    <div style={{ fontSize: '11px', color: 'var(--text-primary)' }}>
+                      Modelo observado: <span style={{ fontFamily: 'monospace' }}>{exec.provider} · {exec.model ?? 'modelo por defecto'} · {exec.backendVersion || ''}</span>
+                    </div>
+                  )}
+                  {exec.capabilityId && (
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                      Capacidad: {exec.capabilityId}@{exec.capabilityVersion ?? '?'} ({exec.backendSource === 'capability' ? 'por capacidad' : 'por entorno'})
+                      {exec.costEstimateUsd !== undefined && (
+                        <span style={{ marginLeft: '8px', color: 'var(--accent)', fontWeight: 600 }}>
+                          ~${exec.costEstimateUsd} USD
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {exec.candidateSha && (
+                    <div style={{ fontSize: '10px', fontFamily: 'monospace', color: 'var(--text-muted)' }}>
+                      Candidato SHA: {exec.candidateSha}
+                    </div>
+                  )}
+                  {exec.check && (
+                    <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                      🧪 Pruebas: {exec.check}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

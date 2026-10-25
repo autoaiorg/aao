@@ -3,35 +3,13 @@ import type { TaskItem } from '../../domain/models';
 import { BOARD_STAGE_LABELS } from '../../domain/models';
 import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Card';
+import { parseRunSummary, type RunExecutionSummary } from '../ronin/modelProfile';
+import { ExecutionTimeline } from '../ronin/components/ExecutionTimeline';
+import { RoutingDecisionCard } from '../ronin/components/RoutingDecisionCard';
 
-/** Reads the fields the backend records for an agent run; anything else is left out, never invented. */
-export function runSummary(result: unknown): {
-  conclusion?: string; candidate?: string; check?: string; agent?: string; selection?: string; error?: string;
-} {
-  if (typeof result !== 'object' || result === null) return {};
-  const r = result as Record<string, unknown>;
-  const check = typeof r.check === 'object' && r.check !== null ? (r.check as Record<string, unknown>) : null;
-  const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
-  return {
-    conclusion: str(r.conclusion),
-    candidate: str(r.candidate_sha),
-    check: check
-      ? `${str(check.check_id) ?? 'check'}: ${str(check.conclusion) ?? '?'} (exit ${String(check.exit_code ?? '?')})`
-      : undefined,
-    // Provider, pinned model and CLI release as recorded; an unpinned model shows as the CLI default.
-    agent: str(r.provider)
-      ? [str(r.provider), str(r.model) ?? 'modelo por defecto del CLI', str(r.backend_version)].filter(Boolean).join(' · ')
-      : undefined,
-    // Which catalog entry ran and why (capability or environment), with its estimated cost when recorded.
-    selection: str(r.capability_id)
-      ? [
-          `${str(r.capability_id)}@${str(r.capability_version) ?? '?'}`,
-          r.backend_source === 'capability' ? 'elegido por la capacidad' : r.backend_source === 'environment' ? 'elegido por el entorno' : undefined,
-          typeof r.cost_estimate_usd === 'number' ? `coste estimado ${r.cost_estimate_usd} USD` : undefined,
-        ].filter(Boolean).join(' · ')
-      : undefined,
-    error: str(r.error),
-  };
+/** Reads the fields the backend records for an agent run; re-exports pure parser for backwards compatibility. */
+export function runSummary(result: unknown): RunExecutionSummary {
+  return parseRunSummary(result);
 }
 
 const PR_STATE_LABELS: Record<string, string> = {
@@ -159,64 +137,26 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
           )}
         </div>
 
-        {/* Ejecuciones */}
-        <div>
-          <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px' }}>
-            Registro de Ejecuciones
-          </h3>
-          {task.executions && task.executions.length > 0 ? (
+        {/* RONIN Routing Decisions (if recorded) */}
+        {task.routingDecisions && task.routingDecisions.length > 0 && (
+          <div>
+            <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px' }}>
+              Enrutamiento de Modelos RONIN (Recomendación)
+            </h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              {task.executions.map((exec) => (
-                <div
-                  key={exec.id}
-                  style={{
-                    padding: '8px 12px',
-                    borderRadius: 'var(--radius-sm)',
-                    backgroundColor: 'var(--bg-muted)',
-                    fontSize: '12px',
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <strong style={{ fontFamily: 'monospace' }}>{exec.id}</strong>
-                    <span>Estado: {exec.status}</span>
-                  </div>
-                  {exec.worker_id && (
-                    <div style={{ color: 'var(--text-secondary)', marginTop: '2px' }}>
-                      Worker: {exec.worker_id} · Intentos: {exec.attempts}
-                    </div>
-                  )}
-                  {(() => {
-                    const run = runSummary(exec.result);
-                    return (
-                      <>
-                        {run.candidate && (
-                          <div style={{ fontFamily: 'monospace', color: 'var(--text-muted)', marginTop: '2px' }}>
-                            Candidato: {run.candidate}
-                          </div>
-                        )}
-                        {run.agent && (
-                          <div style={{ color: 'var(--text-secondary)', marginTop: '2px' }}>Agente: {run.agent}</div>
-                        )}
-                        {run.selection && (
-                          <div style={{ color: 'var(--text-secondary)', marginTop: '2px' }}>Capacidad: {run.selection}</div>
-                        )}
-                        {run.check && (
-                          <div style={{ color: 'var(--text-secondary)', marginTop: '2px' }}>Pruebas: {run.check}</div>
-                        )}
-                        {run.error && (
-                          <div style={{ color: 'var(--text-secondary)', marginTop: '2px' }}>Error: {run.error}</div>
-                        )}
-                      </>
-                    );
-                  })()}
-                </div>
+              {task.routingDecisions.map((decision, idx) => (
+                <RoutingDecisionCard key={decision.id || idx} decision={decision} />
               ))}
             </div>
-          ) : (
-            <p style={{ fontSize: '13px', color: 'var(--text-muted)', fontStyle: 'italic' }}>
-              Sin ejecuciones registradas en cola.
-            </p>
-          )}
+          </div>
+        )}
+
+        {/* Cronología de Intentos y Ejecuciones */}
+        <div>
+          <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px' }}>
+            Cronología de Intentos y Ejecuciones ({task.executions?.length || 0})
+          </h3>
+          <ExecutionTimeline executions={task.executions} />
         </div>
 
         {/* Revisiones y Auditoría */}

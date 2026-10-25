@@ -6,6 +6,7 @@ APPROVE on an exact SHA, no veto, a SUCCEEDED execution of that SHA and its prop
 and re-checks in the candidate store that the commit's only parent is the proposal's
 base and that its tree equals base + the stored patch. It pushes exactly that SHA.
 
+Two steps, one per identity: ``push_candidate`` (implementer) and ``open_pull_request`` (PM).
 GitHub access is injected: ``push(sha, branch)`` and ``open_pr(branch, title, body)``.
 ``github_publisher`` builds them from GitHub Apps; tests use local bare remotes.
 Run it as a one-shot process (scripts/publish_candidate.py) so App keys never reach the API.
@@ -54,16 +55,15 @@ def verify_candidate(store: Path, candidate_sha: str, base_sha: str, patch: byte
         raise PublishError("candidate tree does not match base + proposal patch")
 
 
-def publish(work_id: str, publisher_credential: str, *, store: str | Path,
-            push: Callable[[str, str], None], open_pr: Callable[[str, str, str], dict]) -> dict:
+def _approved_candidate(work_id: str, credential: str, kind_of_step: str) -> dict:
+    """Re-derive the approved candidate from the database; never from the agent's result_json."""
     from fastapi import HTTPException
 
     from aao.principal_credentials import PrincipalDenied
-    from aao.work_management_api import _authenticate_request_principal, audit, require_grant, tx
+    from aao.work_management_api import _authenticate_request_principal, require_grant, tx
 
-    store = Path(store).resolve()
     try:
-        publisher = _authenticate_request_principal(publisher_credential, "AGENT")
+        principal = _authenticate_request_principal(credential, "AGENT")
     except PrincipalDenied as exc:
         raise PublishError("active publisher credential required") from exc
     with tx() as db:
@@ -73,15 +73,16 @@ def publish(work_id: str, publisher_credential: str, *, store: str | Path,
             raise PublishError("work not found")
         project_id, status, author_id, title = work
         try:
-            require_grant(db, publisher, project_id, "code.publish")
+            require_grant(db, principal, project_id, "code.publish")
         except HTTPException as exc:
             raise PublishError(str(exc.detail)) from exc
-        if publisher == author_id:
+        if principal == author_id:
             raise PublishError("the implementing agent cannot publish its own work")
-        published = db.execute("SELECT details FROM events WHERE subject_id=%s AND kind='work.pr_opened' "
-                               "ORDER BY created_at DESC LIMIT 1", (work_id,)).fetchone()
-        if published:
-            return {**published[0], "status": "ALREADY_PUBLISHED"}
+        events = {kind: details for kind, details in db.execute(
+            "SELECT kind,details FROM events WHERE subject_id=%s AND kind IN ('work.candidate_pushed','work.pr_opened') "
+            "ORDER BY created_at", (work_id,)).fetchall()}
+        if kind_of_step in events:
+            return {"done": events[kind_of_step]}
         if status != "VERIFIED":
             raise PublishError("only VERIFIED work can be published")
         if db.execute("SELECT 1 FROM reviews WHERE work_id=%s AND decision='VETO' LIMIT 1", (work_id,)).fetchone():
@@ -98,18 +99,46 @@ def publish(work_id: str, publisher_credential: str, *, store: str | Path,
             "ORDER BY q.created_at DESC LIMIT 1", (work_id, candidate_sha)).fetchone()
         if not proposal:
             raise PublishError("approved SHA has no succeeded execution with a proposal")
-        proposal_id, base_sha, patch = str(proposal[0]), proposal[1], bytes(proposal[2])
-    verify_candidate(store, candidate_sha, base_sha, patch)
-    branch = f"aao/work-{work_id}-{candidate_sha[:12]}"
-    body = (f"AAO work `{work_id}`\n\n- candidate: `{candidate_sha}` on base `{base_sha}`\n"
-            f"- proposal: `{proposal_id}`\n- approval review: `{review_id}`\n- published by: `{publisher}`\n")
-    # ponytail: push/open are idempotent at GitHub (same SHA, same branch, existing PR is reused), so a crash
-    # before the event below is recovered by re-running; use external_effects if UNCERTAIN tracking is needed.
-    push(candidate_sha, branch)
-    pr = open_pr(branch, f"aao: {title}", body)
-    record = {"candidate_sha": candidate_sha, "base_sha": base_sha, "branch": branch, "proposal_id": proposal_id,
-              "review_id": review_id, "publisher": publisher,
-              "pr_number": int(pr["number"]), "pr_url": str(pr["url"])}
+    return {"principal": str(principal), "title": title, "candidate_sha": candidate_sha, "review_id": review_id,
+            "proposal_id": str(proposal[0]), "base_sha": proposal[1], "patch": bytes(proposal[2]),
+            "pushed": events.get("work.candidate_pushed")}
+
+
+def push_candidate(work_id: str, credential: str, *, store: str | Path,
+                   push: Callable[[str, str], None]) -> dict:
+    """Step 1 (implementer identity): verify the approved commit in the store and push exactly that SHA."""
+    from aao.work_management_api import audit, tx
+
+    c = _approved_candidate(work_id, credential, "work.candidate_pushed")
+    if "done" in c:
+        return {**c["done"], "status": "ALREADY_PUSHED"}
+    verify_candidate(Path(store).resolve(), c["candidate_sha"], c["base_sha"], c["patch"])
+    branch = f"aao/work-{work_id}-{c['candidate_sha'][:12]}"
+    # ponytail: pushing the same SHA to the same branch is idempotent, so a crash before the event is
+    # recovered by re-running; move to external_effects if UNCERTAIN tracking becomes necessary.
+    push(c["candidate_sha"], branch)
+    record = {"candidate_sha": c["candidate_sha"], "base_sha": c["base_sha"], "branch": branch,
+              "proposal_id": c["proposal_id"], "review_id": c["review_id"], "pusher": c["principal"]}
+    with tx() as db:
+        audit(db, work_id, "work.candidate_pushed", record)
+    return {**record, "status": "PUSHED"}
+
+
+def open_pull_request(work_id: str, credential: str, *, open_pr: Callable[[str, str, str], dict]) -> dict:
+    """Step 2 (PM identity): open the PR for the branch pushed in step 1, if it still holds the approved SHA."""
+    from aao.work_management_api import audit, tx
+
+    c = _approved_candidate(work_id, credential, "work.pr_opened")
+    if "done" in c:
+        return {**c["done"], "status": "ALREADY_PUBLISHED"}
+    pushed = c["pushed"]
+    if not pushed or pushed["candidate_sha"] != c["candidate_sha"]:
+        raise PublishError("the approved candidate has not been pushed")
+    body = (f"AAO work `{work_id}`\n\n- candidate: `{c['candidate_sha']}` on base `{c['base_sha']}`\n"
+            f"- proposal: `{c['proposal_id']}`\n- approval review: `{c['review_id']}`\n"
+            f"- pushed by: `{pushed['pusher']}`; opened by: `{c['principal']}`\n")
+    pr = open_pr(pushed["branch"], f"aao: {c['title']}", body)
+    record = {**pushed, "publisher": c["principal"], "pr_number": int(pr["number"]), "pr_url": str(pr["url"])}
     with tx() as db:
         audit(db, work_id, "work.pr_opened", record)
     return {**record, "status": "PUBLISHED"}
@@ -118,8 +147,10 @@ def publish(work_id: str, publisher_credential: str, *, store: str | Path,
 def github_publisher(store: str | Path) -> tuple[Callable[[str, str], None], Callable[[str, str, str], dict]]:
     """Real GitHub effects: the implementer App pushes to its fork, the PM App opens the PR.
 
+    Each App key is readable only by its own uid (github_app_auth.load_app), so ``push`` must run
+    as the implementer's uid and ``open_pr`` as aao-pm's: two processes, one per step.
     Configuration: AAO_PUBLISH_BASE_REPO (owner/repo, PR target), AAO_PUBLISH_HEAD_REPO (fork),
-    AAO_PUBLISH_PUSH_APP and AAO_PUBLISH_PR_APP (App names whose keys this uid can read).
+    AAO_PUBLISH_PUSH_APP and AAO_PUBLISH_PR_APP. Clients are created lazily, per step.
     """
     from aao.github_app_auth import GitHubAppClient
 

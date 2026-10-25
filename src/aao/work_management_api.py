@@ -165,6 +165,7 @@ class WorkGroupTaskRequest(BaseModel):
 class ConversationWorkGroupRequest(BaseModel):
     """CEO-reviewed breakdown of one conversation into canonical inbox work."""
     idempotency_key: UUID
+    based_on_message_ids: list[UUID] | None = None
     title: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=5000)
     acceptance_criteria: list[str] = Field(min_length=1, max_length=20)
@@ -1489,6 +1490,14 @@ def create_conversation_work_group(
                 raise HTTPException(409, "Idempotency key was used with a different breakdown")
             group_id, parent_work_id, created = str(existing[0]), str(existing[2]), False
         else:
+            if payload.based_on_message_ids is not None:
+                current_message_ids = [row[0] for row in db.execute(
+                    "SELECT id FROM project_conversation_messages "
+                    "WHERE conversation_id=%s ORDER BY created_at,id",
+                    (conversation_id,),
+                ).fetchall()]
+                if current_message_ids != payload.based_on_message_ids:
+                    raise HTTPException(409, "Conversation changed; regenerate the proposal before confirming")
             group_id = str(uuid4())
             parent_work_id = _insert_ceo_work_request(
                 db, project_id, payload.title, payload.description,
@@ -1520,6 +1529,8 @@ def create_conversation_work_group(
                 "conversation_id": conversation_id, "actor": "ceo",
                 "child_work_ids": list(task_ids.values()), "admitted": False,
                 "execution_created": False,
+                "based_on_message_ids": [str(item) for item in payload.based_on_message_ids]
+                if payload.based_on_message_ids is not None else None,
             })
             created = True
 

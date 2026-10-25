@@ -42,6 +42,7 @@ export interface ConversationWorkRequestResult {
 
 export interface ConversationWorkGroupInput extends ConversationWorkRequestInput {
   idempotency_key: string;
+  based_on_message_ids?: string[];
   tasks: Array<{
     key: string;
     title: string;

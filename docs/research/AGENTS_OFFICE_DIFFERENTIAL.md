@@ -158,12 +158,13 @@ Los perfiles/unidades persistidos y la edición CEO ya están construidos (#134/
 
 ## 8. Límites y siguientes responsables
 
-### F2 — primer incremento de persistencia de conversaciones (en construcción)
+### F2 — primer incremento de conversación persistente (UI conectada; alcance parcial)
 
 - **Backend:** migración `016_project_conversations.sql` introduce hilos ligados a proyectos activos y mensajes durables con emisor, hora del servidor y referencia opcional a un `work_item`. Rutas CEO-only permiten crear/listar hilos, recuperar mensajes al reabrirlos y persistir un mensaje CEO. Se auditan creación y mensajes. No ejecutan modelos, no fabrican respuestas AAO ni crean/admiten trabajo por enviar texto.
-- **UI en construcción (rama `feat/office-conversation-ui`):** el panel LIVE CEO consume esos endpoints para crear/reabrir hilos por proyecto y persistir mensajes CEO; la caché se aísla por sesión frontend. Solo muestra mensajes devueltos por el backend. No aparece en DEMO ni en la vista AGENT.
+- **UI construida:** el panel LIVE CEO consume esos endpoints para crear/reabrir hilos por proyecto y persistir mensajes CEO; la caché se aísla por sesión frontend. Solo muestra mensajes devueltos por el backend. No aparece en DEMO ni en la vista AGENT. PR #144, merge `b88781cc84067264a3ddaae7a485269a6114e911`; validación local: 144 tests frontend y TypeScript/build; PR CI frontend y backend verdes en runs [40237738594](https://github.com/autoaiorg/aao/actions/runs/40237738594) y [40237742228](https://github.com/autoaiorg/aao/actions/runs/40237742228). CI de `main` tras merge sigue pendiente de completar al registrar esta actualización.
 - **Límite deliberado:** el panel no es todavía chat AAO: no hay respuesta del modelo ni vínculo automático intención→`work_id`. Las solicitudes ambiguas no se convierten automáticamente en trabajo; no hay fallback conversacional simulado.
-- **Aceptación focal:** integración PostgreSQL prueba autenticación CEO, creación y reapertura del mismo hilo/mensaje, aislamiento por proyecto y que el mensaje por sí solo no genera tareas ni ejecuciones.
+- **Evidencia backend:** PR #143 añadió la migración `016_project_conversations.sql` y pruebas PostgreSQL CEO-only de creación/reapertura, scope, no respuesta AAO y no creación de trabajo/ejecución; CI pasó. PR #144 añade cobertura frontend de persistencia CEO, relectura de mensajes y ausencia de respuesta inventada.
+- **Límite deliberado:** esto no es todavía chat AAO: no hay respuesta del modelo ni vínculo automático intención→`work_id`. Las solicitudes ambiguas no se convierten automáticamente en trabajo; no hay fallback conversacional simulado. F2 permanece parcial.
 
 ### Seguimiento de construcción (rama `feat/agents-office-aa-integration`)
 

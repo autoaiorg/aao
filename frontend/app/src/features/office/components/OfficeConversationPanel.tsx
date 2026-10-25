@@ -21,6 +21,9 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
   const [conversationId, setConversationId] = useState('');
   const [newTitle, setNewTitle] = useState('');
   const [draft, setDraft] = useState('');
+  const [streamingReply, setStreamingReply] = useState('');
+  const [pendingUserMessage, setPendingUserMessage] = useState('');
+  const [sendingTurn, setSendingTurn] = useState(false);
   const [requestMessageId, setRequestMessageId] = useState<string | null>(null);
   const [requestTitle, setRequestTitle] = useState('');
   const [requestCriteria, setRequestCriteria] = useState('');
@@ -70,15 +73,29 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
 
   const sendMessage = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!projectId || !conversationId || !draft.trim()) return;
-    const result = await port.appendCEOConversationMessage(projectId, conversationId, draft.trim());
+    if (!projectId || !conversationId || !draft.trim() || sendingTurn) return;
+    const message = draft.trim();
+    setDraft('');
+    setPendingUserMessage(message);
+    setStreamingReply('');
+    setSendingTurn(true);
+    const result = await port.streamCEOConversationTurn(projectId, conversationId, message, (delta) => {
+      setStreamingReply((current) => current + delta);
+    });
+    setSendingTurn(false);
     if (result.kind === 'ready') {
-      setDraft('');
-      setNotice('Mensaje CEO persistido. Aún no hay respuesta AAO conectada a una ejecución.');
+      setStreamingReply('');
+      setPendingUserMessage('');
+      setNotice('Respuesta AAO recibida y persistida. No se ha creado ni ejecutado trabajo.');
       await queryClient.invalidateQueries({ queryKey: ['office-conversation-messages', sessionId, projectId, conversationId] });
       await queryClient.invalidateQueries({ queryKey: ['office-conversations', sessionId, projectId] });
     } else {
+      setStreamingReply('');
+      setPendingUserMessage('');
+      setDraft(message);
       setNotice(result.kind === 'error' ? `${result.code}: ${result.message}` : result.kind === 'forbidden' ? result.reason : 'No se pudo persistir el mensaje.');
+      await queryClient.invalidateQueries({ queryKey: ['office-conversation-messages', sessionId, projectId, conversationId] });
+      await queryClient.invalidateQueries({ queryKey: ['office-conversations', sessionId, projectId] });
     }
   };
 
@@ -120,6 +137,9 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
         <strong>{message.sender}</strong><time dateTime={message.created_at}>{new Date(message.created_at).toLocaleString()}</time>
       </div>
       <p className="office-conversation-message__body">{message.body}</p>
+      {message.sender === 'AAO' && message.provider && (
+        <small>Proveedor: {message.provider}{message.model ? ` · modelo ${message.model}` : ''}</small>
+      )}
       {message.related_work_id ? (
         <div className="office-conversation-message__work-link">
           <Button type="button" size="sm" onClick={() => onOpenBoard(projectId)}>
@@ -133,7 +153,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
             </small>
           )}
         </div>
-      ) : message.sender === 'CEO' ? (
+      ) : (
         <div className="office-conversation-message__work-request">
           {requestMessageId !== message.id ? (
             <Button type="button" size="sm" variant="outline" onClick={() => {
@@ -162,15 +182,15 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
             </form>
           )}
         </div>
-      ) : null}
+      )}
     </li>
   );
 
   return (
     <section aria-labelledby="office-conversation-title" className="office-form-panel">
       <h3 id="office-conversation-title" className="office-form-panel__title">Conversación de proyecto (persistente)</h3>
-      <p className="office-form-panel__description">
-        Los mensajes se guardan en AAO. Este incremento no genera respuestas ni ejecuta instrucciones; las órdenes de trabajo deben registrarse explícitamente en Entrada.
+        <p className="office-form-panel__description">
+        Conversación persistente con respuesta incremental. Las tareas se estructuran explícitamente desde la conversación; hablar con AAO no admite ni ejecuta trabajo.
       </p>
       {projects.kind !== 'ready' ? (
         <p role="status">{projects.kind === 'error' ? projects.message : projects.kind === 'forbidden' ? projects.reason : 'Proyectos LIVE no disponibles.'}</p>
@@ -204,13 +224,15 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
               {messagesQuery.data && messagesQuery.data.kind !== 'ready' && <p role="alert">{stateMessage(messagesQuery.data)}</p>}
               <ol aria-label="Mensajes de la conversación" className="office-conversation-list">
                 {messages.map(renderMessage)}
+                {sendingTurn && <li className="office-conversation-message office-conversation-message--ceo"><div className="office-conversation-message__meta"><strong>CEO</strong><span>Enviando…</span></div><p className="office-conversation-message__body">{pendingUserMessage}</p></li>}
+                {streamingReply && <li className="office-conversation-message office-conversation-message--aao" aria-live="polite"><div className="office-conversation-message__meta"><strong>AAO</strong><span>Respondiendo…</span></div><p className="office-conversation-message__body">{streamingReply}</p></li>}
                 {messages.length === 0 && <li role="status" style={{ listStyle: 'none', color: 'var(--text-secondary)', fontSize: 12 }}>El hilo aún no tiene mensajes.</li>}
               </ol>
               <form onSubmit={sendMessage} style={{ display: 'grid', gap: 8 }}>
                 <label className="office-form-field">Mensaje CEO
-                  <textarea className="office-form-control office-form-control--textarea" aria-label="Mensaje CEO" required maxLength={10000} rows={3} value={draft} onChange={(event) => setDraft(event.target.value)} />
+                  <textarea className="office-form-control office-form-control--textarea" aria-label="Mensaje CEO" required maxLength={10000} rows={3} value={draft} onChange={(event) => setDraft(event.target.value)} disabled={sendingTurn} />
                 </label>
-                <div><Button type="submit" disabled={!draft.trim()}>Guardar mensaje</Button></div>
+                <div><Button type="submit" disabled={!draft.trim() || sendingTurn}>{sendingTurn ? 'AAO está respondiendo…' : 'Enviar a AAO'}</Button></div>
               </form>
             </>
           )}

@@ -19,22 +19,47 @@ function setup(port: AaoConversationPort) {
 }
 
 describe('office persistent project conversation', () => {
-  it('persists CEO messages and shows only server-returned messages without inventing an AAO reply', async () => {
+  it('streams a provider response and does not create work merely by conversing', async () => {
     const port: AaoConversationPort = {
       listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
       listConversationMessages: vi.fn().mockResolvedValue(ready([message])),
       createProjectConversation: vi.fn(),
       appendCEOConversationMessage: vi.fn().mockResolvedValue(ready(message)),
+      streamCEOConversationTurn: vi.fn().mockImplementation(async (_project, _conversation, _body, onDelta) => {
+        onDelta('Respuesta en directo');
+        return ready({ message_id: 'response-1' });
+      }),
       createWorkRequestFromMessage: vi.fn(),
     };
     setup(port);
     await screen.findByText('Preparar el plan');
     fireEvent.change(screen.getByLabelText('Mensaje CEO'), { target: { value: 'Revisar el presupuesto' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Guardar mensaje' }));
-    await waitFor(() => expect(port.appendCEOConversationMessage).toHaveBeenCalledWith('project-active', 'conversation-1', 'Revisar el presupuesto'));
-    expect(screen.getByText(/Aún no hay respuesta AAO conectada/)).toBeInTheDocument();
-    expect(screen.queryByText('AAO')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar a AAO' }));
+    await waitFor(() => expect(port.streamCEOConversationTurn).toHaveBeenCalledWith('project-active', 'conversation-1', 'Revisar el presupuesto', expect.any(Function)));
+    expect(await screen.findByText(/Respuesta AAO recibida y persistida/)).toBeInTheDocument();
+    expect(port.createWorkRequestFromMessage).not.toHaveBeenCalled();
     expect(screen.queryByRole('option', { name: 'Proyecto pausado' })).not.toBeInTheDocument();
+  });
+
+  it('allows the CEO to turn an AAO proposal into an explicit INBOX task', async () => {
+    const assistantMessage = { ...message, sender: 'AAO' as const, body: 'Propuesta: revisar el presupuesto' };
+    const port: AaoConversationPort = {
+      listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
+      listConversationMessages: vi.fn().mockResolvedValue(ready([assistantMessage])),
+      createProjectConversation: vi.fn(),
+      appendCEOConversationMessage: vi.fn(),
+      streamCEOConversationTurn: vi.fn(),
+      createWorkRequestFromMessage: vi.fn().mockResolvedValue(ready({ id: 'work-1', status: 'INBOX', created: true })),
+    };
+    setup(port);
+    await screen.findByText('Propuesta: revisar el presupuesto');
+    fireEvent.click(screen.getByRole('button', { name: 'Convertir en solicitud de trabajo…' }));
+    fireEvent.change(screen.getByLabelText('Título del trabajo para message-1'), { target: { value: 'Revisar presupuesto' } });
+    fireEvent.change(screen.getByLabelText('Criterios de aceptación para message-1'), { target: { value: 'Informe revisado' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Crear solicitud INBOX' }));
+    await waitFor(() => expect(port.createWorkRequestFromMessage).toHaveBeenCalledWith('project-active', 'conversation-1', 'message-1', {
+      title: 'Revisar presupuesto', acceptance_criteria: ['Informe revisado'],
+    }));
   });
 
   it('requires explicit title and acceptance criteria, then links the persisted work request', async () => {
@@ -49,6 +74,7 @@ describe('office persistent project conversation', () => {
       }])),
       createProjectConversation: vi.fn(),
       appendCEOConversationMessage: vi.fn(),
+      streamCEOConversationTurn: vi.fn(),
       createWorkRequestFromMessage: vi.fn().mockImplementation(async () => {
         linkedWorkId = workId;
         return ready({ id: workId, status: 'INBOX', created: true });

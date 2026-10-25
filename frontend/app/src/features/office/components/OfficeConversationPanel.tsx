@@ -121,9 +121,18 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
       </div>
       <p className="office-conversation-message__body">{message.body}</p>
       {message.related_work_id ? (
-        <Button type="button" size="sm" onClick={() => onOpenBoard(projectId)} className="office-conversation-message__work-link">
-          Abrir trabajo {message.related_work_id}
-        </Button>
+        <div className="office-conversation-message__work-link">
+          <Button type="button" size="sm" onClick={() => onOpenBoard(projectId)}>
+            Abrir trabajo {message.related_work_id}
+          </Button>
+          <small>Estado del trabajo: {message.work_status ?? 'desconocido'}</small>
+          {message.latest_execution && (
+            <small>
+              Última ejecución {message.latest_execution.status} · {message.latest_execution.provider ?? 'proveedor no registrado'}
+              {message.latest_execution.model ? ` / ${message.latest_execution.model}` : ''}
+            </small>
+          )}
+        </div>
       ) : message.sender === 'CEO' ? (
         <div className="office-conversation-message__work-request">
           {requestMessageId !== message.id ? (

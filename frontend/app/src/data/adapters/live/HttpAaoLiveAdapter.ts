@@ -879,7 +879,10 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
     if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede leer conversaciones de proyecto.' };
     return this.request(`/v1/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/messages`, z.array(z.object({
       id: z.string().uuid(), sender: z.enum(['CEO', 'AAO']), body: z.string(),
-      related_work_id: z.string().uuid().nullable(), created_at: z.string(),
+      related_work_id: z.string().uuid().nullable(), work_status: z.string().nullable(),
+      latest_execution: z.object({ id: z.string().uuid(), status: z.string(),
+        backend: z.string().nullable(), provider: z.string().nullable(), model: z.string().nullable(),
+      }).nullable(), created_at: z.string(),
     })), { method: 'GET' });
   }
 
@@ -894,7 +897,10 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
     if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede escribir en conversaciones de proyecto.' };
     return this.request(`/v1/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/messages`, z.object({
       id: z.string().uuid(), sender: z.literal('CEO'), body: z.string(),
-      related_work_id: z.string().uuid().nullable(), created_at: z.string(),
+      related_work_id: z.string().uuid().nullable(), work_status: z.string().nullable(),
+      latest_execution: z.object({ id: z.string().uuid(), status: z.string(),
+        backend: z.string().nullable(), provider: z.string().nullable(), model: z.string().nullable(),
+      }).nullable(), created_at: z.string(),
     }), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }) });
   }
 

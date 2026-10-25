@@ -166,6 +166,19 @@ Los perfiles/unidades persistidos y la edición CEO ya están construidos (#134/
 - **Evidencia backend:** PR #143 añadió la migración `016_project_conversations.sql` y pruebas PostgreSQL CEO-only de creación/reapertura, scope, no respuesta AAO y no creación de trabajo/ejecución; CI pasó. PR #144 añade cobertura frontend de persistencia CEO, relectura de mensajes y ausencia de respuesta inventada.
 - **Límite deliberado:** esto no es todavía chat AAO: no hay respuesta del modelo ni vínculo automático intención→`work_id`. Las solicitudes ambiguas no se convierten automáticamente en trabajo; no hay fallback conversacional simulado. F2 permanece parcial.
 
+### F2 — proyección del estado canónico de trabajos enlazados (en construcción)
+
+- **Objetivo incremental:** que un hilo muestre el estado real de una solicitud ya enlazada y, si existe, el estado y procedencia acotada de su última ejecución. No se presenta esta información como una respuesta conversacional AAO.
+- **Backend en la rama `feat/f2-conversation-outcomes`:** la lectura de mensajes se amplía con `work_status` y `latest_execution` (ID/estado y campos `backend`, `provider`, `model` extraídos de `result_json`). No se devuelve el resultado de ejecución, patch ni texto libre. Los mensajes sin trabajo enlazado devuelven ambos campos como `null`; envío CEO conserva esa forma contractual.
+- **Frontend en la misma rama:** el validador y el tipo de la conversación incorporan los campos; el mensaje enlazado muestra estado real, y si hay ejecución muestra su estado y proveedor/modelo reportados. Sin ejecución permanece explícita la ausencia de evidencia y no se fabrica una respuesta.
+- **Pruebas:** cobertura Postgres redactada para verificar el mensaje recién persistido, work `INBOX`, proyección de ejecución/procedencia y que no se filtre el campo privado `patch`; en esta sesión quedó omitida (`1 skipped`) porque no estaba configurada `AAO_TEST_POSTGRES_URL` junto a `AAO_TEST_DB_DISPOSABLE=yes`. Frontend validado localmente en esta rama: TypeScript, suite completa (156 tests) y build pasan; Ruff, compileall y `git diff --check` pasan. Pendiente DB desechable/CI y SHA integrado.
+- **Límite de F2 que sigue abierto:** no hay respuesta de AAO generada por ejecución real ni clasificación segura de mensaje→orden. La generación debe pasar por identidad/autoridad CEO, motor y persistencia canónicos; texto ambiguo no debe crear trabajo ni llamar al modelo. No se añade gate de autonomía ni se bloquea el piloto.
+
+### F3/F4 — alcance a continuación
+
+- **F3:** el backend actual posee work items y ejecuciones individuales, pero no se ha identificado un recurso durable que agrupe padre/hijos, asignaciones paralelas, dependencias, fallos/reintentos y consolidación. Primer trabajo: especificar contrato y semántica persistente en PostgreSQL/motor; la UI solo consume el estado resultante. No dibujar grafos/equipos ficticios.
+- **F4:** no se ha identificado contrato durable para rutinas/calendario, base de conocimiento corporativa, skills/briefs versionados ni aprendizaje revisado. Primero inventariar datos/capacidades persistentes existentes y sus propietarios; implementar solo el mínimo backend útil, luego lectura UI. No ejecutar temporizadores ni mantener conocimiento operativo solo en navegador.
+
 ### Seguimiento de construcción (rama `feat/agents-office-aa-integration`)
 
 - **F0 implementado por backend y cerrado en el adapter:** `GET /v1/organization` proyecta desde PostgreSQL los proyectos visibles, ejecuciones/revisiones y para AGENT valida credencial activa y `project.read` en SQL. El agente autenticado puede aparecer como identidad desconocida; el CEO ve identidades observadas en ejecuciones/revisiones. No escribe estado ni inventa adscripciones, heartbeat o capacidades. La unidad `unit-unassigned` solo es agrupación visual. El adapter no reconstituye departamentos ni hace fan-out si falla el contrato.

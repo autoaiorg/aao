@@ -21,7 +21,7 @@ describe('CEO HttpOnly browser session adapter', () => {
 
   it('sends cookie-authenticated requests with CSRF and without a bearer header', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({
-      id: '00000000-0000-4000-8000-000000000001', sender: 'CEO', body: 'Test', related_work_id: null, created_at: 'now',
+      id: '00000000-0000-4000-8000-000000000001', sender: 'CEO', body: 'Test', related_work_id: null, work_status: null, latest_execution: null, created_at: 'now',
     }) as Response);
     const adapter = new HttpAaoLiveAdapter({
       requireAuth: true, getAuthRole: () => 'CEO', getCeoCookieSession: () => true,

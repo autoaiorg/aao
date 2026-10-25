@@ -819,3 +819,89 @@ def test_registered_repository_check_requires_task_selection_before_queue_claim(
         execution = board.json()[0]["executions"][0]
         assert execution["id"] == staged.json()["execution_id"]
         assert execution["status"] == "RUNNING"
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="Explicit disposable PostgreSQL database required",
+)
+def test_w1_agent_run_turns_an_admitted_task_into_a_patch_proposal(monkeypatch, tmp_path):
+    """W1 end to end: stage an agent run, the worker claims it, runs the (fixture) agent in a disposable clone
+    at base_sha, and the patch lands as a proposal of the assigned agent, with the execution SUCCEEDED."""
+    import subprocess
+
+    from aao.inert_execution_worker import run_one
+    from aao.work_management_api import app
+
+    repo = tmp_path / "self-dev"
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "core.hooksPath=/dev/null"]
+    subprocess.run([*git, "init", "-q", "-b", "main", str(repo)], check=True)
+    (repo / "README.md").write_text("AAO\n")
+    subprocess.run([*git, "-C", str(repo), "add", "."], check=True)
+    subprocess.run([*git, "-C", str(repo), "commit", "-qm", "base"], check=True)
+    base_sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    patch = tmp_path / "fixture.patch"
+    patch.write_text("diff --git a/tests/test_notes.py b/tests/test_notes.py\nnew file mode 100644\n--- /dev/null\n"
+                     "+++ b/tests/test_notes.py\n@@ -0,0 +1 @@\n+NOTE = 'hello from the agent'\n")
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "agent-run-ceo")
+    monkeypatch.setenv("AAO_AGENT_QUEUE_ENABLED", "true")
+    monkeypatch.setenv("AAO_SELF_DEV_REPOSITORY", str(repo))
+    monkeypatch.setenv("AAO_AGENT_BACKEND", "fixture")
+    monkeypatch.setenv("AAO_AGENT_FIXTURE_PATCH", str(patch))
+    ceo = {"X-CEO-Token": "agent-run-ceo"}
+    with TestClient(app) as client:
+        identity = "w1-agent-" + str(uuid4())
+        issued = client.post("/v1/principals/credentials", headers=ceo, json={"principal_id": identity, "kind": "AGENT"})
+        assert issued.status_code == 201, issued.text
+        token = issued.json()["token"]
+        agent = {"X-Agent-Token": token}
+        mandate = client.post("/v1/mandates", headers=ceo, json={"title": "W1 " + str(uuid4()), "objective": "Agent patch"}).json()["id"]
+        assert client.post(f"/v1/mandates/{mandate}/confirm", headers=ceo).status_code == 200
+        project = client.post("/v1/projects", headers=ceo, json={"name": "W1", "mandate_id": mandate}).json()["id"]
+        from datetime import UTC, datetime, timedelta
+        expiry = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+        for capability in ("work.create", "work.admit", "work.progress", "execution.claim", "project.read", "code.propose"):
+            grant = {"principal_id": identity, "capability": capability}
+            if capability == "code.propose":
+                grant["expires_at"] = expiry  # code.propose grants must expire within 24h
+            assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json=grant).status_code == 201
+        work = client.post(f"/v1/projects/{project}/work", headers=agent, json={
+            "title": "Add a notes module", "author_id": identity, "description": "Create tests/test_notes.py",
+            "acceptance_criteria": ["tests/test_notes.py exists"],
+        })
+        assert work.status_code == 201, work.text
+        work = work.json()["id"]
+        registered = client.post(f"/v1/projects/{project}/capabilities", headers=agent, json={
+            "capability_id": "aao.agent-runner", "version": "1.0.0", "capability_type": "agent",
+            "provenance": {"kind": "repository"},
+            "contract": {"purpose": "Turn a task into a patch proposal", "entrypoint": "aao.agent_runner:patch",
+                         "inputs": ["task", "base_sha"], "outputs": ["patch proposal"], "platform": "Linux",
+                         "authority_boundary": "edits only a disposable clone; proposes, never applies or merges",
+                         "compatible_roles": ["implementer"]},
+            "required_permissions": ["execution.claim", "code.propose"], "risks": ["agent edits a disposable clone"],
+            "dependencies": [], "tests": ["tests/test_agent_runner.py"], "compatibility": {}, "evidence": ["repo source"],
+        })
+        assert registered.status_code == 201, registered.text
+        evaluation = client.post(f"/v1/projects/{project}/capability-evaluations", headers=agent, json={
+            "task_id": work,
+            "options": [{"choice": c, "fit": f, "security": f, "cost": f, "time": f, "tokens": f, "maintenance": f}
+                        for c, f in (("reuse", 5), ("adapt", 3), ("build", 1))],
+            "rationale": "Reuse the agent runner.", "evidence": ["tests/test_agent_runner.py"],
+            "capability_id": "aao.agent-runner", "version": "1.0.0",
+        })
+        assert evaluation.status_code == 201, evaluation.text
+        assert client.post(f"/v1/work/{work}/admit", headers=agent).status_code == 200
+        staged = client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json={
+            "capability_id": "aao.agent-runner", "version": "1.0.0", "base_sha": base_sha})
+        assert staged.status_code == 202, staged.text
+        assert client.post(f"/v1/work/{work}/progress", headers=agent).status_code == 200
+
+        outcome = run_one(identity, token, project_id=project, seconds=60)
+        assert outcome["status"] == "SUCCEEDED", outcome
+        board = client.get(f"/v1/projects/{project}/board", headers=agent).json()
+    assert isinstance(board, list), board
+    proposals = [p for item in board if item["id"] == work for p in item["patch_proposals"]]
+    assert any(p.get("changed_paths") == ["tests/test_notes.py"] and p.get("base_sha") == base_sha for p in proposals), board
+    assert subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True, check=True).stdout == ""

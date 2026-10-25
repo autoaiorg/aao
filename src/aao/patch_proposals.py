@@ -46,17 +46,27 @@ def _patch_paths(patch: str) -> list[str]:
     seen_old = False
     seen_new = False
     seen_hunk = False
+    new_file = deleted_file = False
     for line in patch.splitlines():
         if line.startswith(("GIT binary patch", "Binary files ", "rename ", "copy ",
                             "old mode ", "new mode ", "Submodule ")):
             raise PatchProposalError("binary, rename, copy, and mode changes are not allowed")
         if line.startswith(("old file mode ", "new file mode ")) and line.rsplit(" ", 1)[-1] != "100644":
             raise PatchProposalError("only non-executable regular files are allowed")
+        # A created (deleted) file has /dev/null on its old (new) side; only then is /dev/null accepted.
+        if line == "new file mode 100644":
+            new_file = True
+        elif line == "deleted file mode 100644":
+            deleted_file = True
+        elif line.startswith("deleted file mode "):
+            raise PatchProposalError("only non-executable regular files are allowed")
         if not line.startswith("diff --git "):
             if line.startswith(("--- ", "+++ ")):
                 expected_side = "a/" if line.startswith("--- ") else "b/"
                 value = line[4:].split("\t", 1)[0]
-                if current_path is None or value != expected_side + current_path:
+                created = expected_side == "a/" and value == "/dev/null" and new_file and not deleted_file
+                removed = expected_side == "b/" and value == "/dev/null" and deleted_file and not new_file
+                if current_path is None or (value != expected_side + current_path and not (created or removed)):
                     raise PatchProposalError("patch content paths must match the declared file path")
                 if expected_side == "a/":
                     seen_old = True
@@ -79,6 +89,7 @@ def _patch_paths(patch: str) -> list[str]:
         paths.append(path)
         current_path = path
         seen_old = seen_new = seen_hunk = False
+        new_file = deleted_file = False
     if (current_path is None or not (seen_old and seen_new and seen_hunk)
             or len(paths) > _MAX_FILES or len(set(paths)) != len(paths)):
         raise PatchProposalError("patch must change between 1 and 8 unique allowed files")

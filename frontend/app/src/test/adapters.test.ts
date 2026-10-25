@@ -259,6 +259,38 @@ describe('MockAaoDemoAdapter Fixtures Isolation', () => {
 });
 
 describe('HttpAaoLiveAdapter F3 & F4.8 Live Aggregation Handling (Negative Regressions & Verifiable Evidence)', () => {
+  it('uses the canonical persisted organization projection when available', async () => {
+    const live = new HttpAaoLiveAdapter({ getToken: () => 'test-token' });
+    vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
+      if (String(url).includes('/v1/organization')) {
+        return {
+          status: 200,
+          ok: true,
+          json: async () => ({
+            units: [{
+              id: 'unit-unassigned', name: 'Adscripción desconocida', code: 'UNKNOWN',
+              parentId: null, leadRole: 'Desconocido', leadAgentId: null,
+              description: 'Agrupación visual; no representa un departamento persistido.',
+              standingCount: 0, ephemeralCount: 0, activeProjectsCount: 0,
+            }],
+            agents: [], totalStandingAgents: 0, totalEphemeralAgents: 0,
+            totalUnknownAgents: 0, activeAssignmentsCount: 0,
+            coverage: { totalProjects: 2, inspectedProjects: 2, failedProjects: 0, isPartial: false },
+          }),
+        } as Response;
+      }
+      return { status: 500, ok: false, json: async () => ({}) } as Response;
+    });
+
+    const result = await live.getOrganizationStructure();
+    expect(result.kind).toBe('ready');
+    if (result.kind === 'ready') {
+      expect(result.data.coverage?.totalProjects).toBe(2);
+      expect(result.data.agents).toEqual([]);
+    }
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
   it('strictly rejects heuristics: does NOT infer departments or types from worker_id strings and maps to unknown unit', async () => {
     const live = new HttpAaoLiveAdapter({ getToken: () => 'test-token' });
 

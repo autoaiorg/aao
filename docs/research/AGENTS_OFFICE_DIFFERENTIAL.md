@@ -108,9 +108,9 @@ A SHA `95d8427` no existía `/v1/organization`; se implementó en PR #129 (`e807
 
 ### F2 — Conversación orientada a proyectos, no a proveedor
 
-Definir una interfaz CEO-AAO persistente y con contexto de proyecto/agente. Separar mensajes informativos de órdenes. Una orden genera una propuesta/recurso de trabajo por API, con actor, proyecto, criterios y estado; una conversación no concede grants ni lanza herramientas. La UI consume estado y respuestas persistidas por backend. El piloto real de modelo no depende de esta fase.
+Definir una interfaz CEO-AAO persistente y con contexto de proyecto/agente. La conversación debe sentirse interactiva como un asistente conversacional moderno: el CEO envía un turno y recibe una respuesta útil de AAO sin tener que convertir cada intercambio en un ticket; la respuesta debe empezar a mostrarse mientras se genera, no esperar a una operación larga opaca. Separar mensajes informativos de órdenes. Una orden genera una propuesta/recurso de trabajo por API, con actor, proyecto, criterios y estado; una conversación no concede grants ni lanza herramientas. La UI consume turnos/respuestas persistidos por backend. No mantener conversación operativa ni credenciales de proveedor en React. El piloto real de modelo no depende de esta fase.
 
-**Aceptación:** reabrir sesión recupera conversación/eventos vinculados; petición que implique ejecución se enlaza a un work ID; petición ambigua no genera trabajo oculto; autorización denegada no invoca modelo; respuesta identifica qué ejecución/proveedor produjo resultado cuando haya evidencia.
+**Aceptación:** reabrir sesión recupera turnos/respuestas vinculados al proyecto; una pregunta informativa obtiene respuesta del modelo configurado y la UI la presenta de forma incremental; una orden explícita se enlaza a un work ID del motor canónico; petición ambigua no genera trabajo oculto ni efectos; autorización denegada no invoca modelo; la respuesta identifica provider/model y ejecución cuando exista evidencia, y distingue falta de configuración/fallo/timeout sin fabricar respuesta. Esta capacidad no auto-admite ni auto-ejecuta trabajo. La respuesta conversacional y el flujo de trabajo se correlacionan mediante IDs persistidos, pero conservan propósitos y permisos distintos.
 
 ### F3 — Equipos temporales y consolidación
 

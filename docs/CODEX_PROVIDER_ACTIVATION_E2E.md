@@ -1,61 +1,116 @@
-# Prueba E2E acotada: activación del proveedor `codex` para el agente ejecutor
+# Piloto acotado: Codex como agente ejecutor para una sola tarea
 
-**Estado:** preparada. **No ejecutada.** Requiere la activación expresa del CEO, porque el mandato `CEO-MANDATE-AAO-SELF-DEV-20261019` reserva la activación de modelos y proveedores.
-**Por defecto:** el proveedor está desactivado. Sin `AAO_AGENT_PROVIDER=codex`, `agent_runner` rechaza el backend `codex`. Sin un `AAO_AGENT_CODEX_HOME` dedicado, también lo rechaza.
+**Estado:** el procedimiento está preparado y sus garantías están **demostradas**. El piloto **no se ha ejecutado** y queda pendiente de la autorización expresa del CEO. Esta autorización cubre solo esta tarea y no activa el proveedor para la ejecución general.
 
-## Qué se prueba
+**Por defecto:** el proveedor está desactivado. `agent_runner` rechaza el backend `codex` si falta `AAO_AGENT_PROVIDER=codex` y también si falta un `AAO_AGENT_CODEX_HOME` dedicado. Esas dos variables se exportan solo en el proceso del worker del piloto.
 
-Una tarea real del proyecto «AAO — Self Development» recorre el mismo ciclo ya demostrado con el backend `fixture` (ver `docs/construction-runs/20261025-self-development-cycle.md`). La diferencia es que el parche lo escribe el modelo:
+## Tarea del piloto
 
-`tarea → codex en un clon desechable → propuesta → commit candidato → core-unit en bwrap → revisión del auditor → PR → CI → fusión del CEO → DONE`
-
-## Alcance autorizado
-
-| Aspecto | Límite |
+| Campo | Valor |
 |---|---|
-| **Identidad en AAO** | Un principal AGENT nuevo, `aao-implementer-<fecha>`. Lo emite el CEO con `scripts/self_development_cycle.py setup`. El auditor (AUDITOR) y el publicador (AGENT con `code.publish`) son principales distintos. |
-| **Permisos (grants, 8 h)** | Implementador: `project.read`, `work.create`, `work.admit`, `work.progress`, `execution.claim`, `code.propose`, `evidence.submit`. Auditor: `work.review`. Publicador: `project.read`, `code.publish`. Ningún otro. |
-| **Credencial del modelo** | Un `CODEX_HOME` dedicado, `~/.local/share/aao/codex-agent`, con modo 0700 y sesión iniciada **solo** para esta prueba con `CODEX_HOME=… codex login --device-auth`. No se usa `~/.codex`. El runner pasa `--ignore-user-config`, así que no carga plugins, MCP ni configuración del operador. |
-| **Sandbox del modelo** | `codex exec --sandbox workspace-write --ephemeral`, con plugins, navegador, *computer use* y memorias desactivados. Escribe solo en el clon desechable (`/tmp/aao-agent-run-*`), con `HOME` temporal. El corte de red para los comandos del modelo depende del valor por defecto de `workspace-write` en codex; **no está verificado aquí** y es uno de los puntos que la prueba debe comprobar. El checkout de origen no se toca. |
-| **Sandbox de los tests** | bwrap: sin red, fuente de solo lectura, sin `HOME` ni secretos, 1 GiB de memoria, 90 s de CPU y 120 s en total. |
-| **Recursos** | Una sola tarea y una sola ejecución a la vez. El lease es de 1800 s, de los cuales 1650 s son para el modelo y 150 s para commit y tests. Como máximo 2 reintentos, por procedimiento: el código no lo impone. El coste es el consumo del plan de Codex del CEO para esas ejecuciones. |
-| **Repositorio objetivo** | `autoaiorg/aao`, rama `main` como base. El candidato solo puede tocar `src/` y `tests/`: es la política de `patch_proposals`, y `docs/`, `.github/`, `db/` y `deploy/` quedan fuera. |
-| **Efectos permitidos** | Escribir en el clon desechable. Escribir en el almacén de candidatos local (`refs/aao/candidates/<sha>`). Filas en la base de datos de desarrollo. Una rama `aao/work-<id>-<sha12>` y una PR en `autoaiorg/aao`, publicadas con `--github gh` (cuenta del operador, régimen de construcción) o, tras D2, con las Apps. |
-| **Efectos prohibidos** | Fusionar (lo hace el CEO), escribir en `main`, desplegar, red desde los comandos del modelo, credenciales del operador dentro del clon, Docker y root. |
+| Título | Cover the residual-risk boundaries and emergency-stop precedence of `decide_admission` |
+| Descripción | `tests/test_planner.py` no cubre `residual_risk="moderate"` (debe dar READY), `residual_risk="critical"` (debe dar DEFER) ni que la parada de emergencia prevalece aunque fallen las demás condiciones. Añadir esas comprobaciones sin tocar `src/`. |
+| Criterios | 1) `moderate` → READY y `critical` → DEFER. 2) Con `emergency_stop=True` y cualquier otra condición en contra, el resultado es DENY con el motivo «Emergency stop active». 3) La suite completa pasa. |
+| Rutas admitidas | Solo `tests/`. La política de propuestas ya limita las rutas a `src/` y `tests/`, y la revisión rechaza cualquier cambio en `src/`. |
+| Base | `origin/main` en el momento de lanzarlo. |
 
-## Procedimiento (una vez autorizado)
+## Garantías comprobadas antes del piloto
+
+### 1. Red y credenciales del operador (demostrado sin llamar al modelo)
+
+Codex se ejecuta dentro de un jail bwrap propio (`agent_runner.agent_jail`), y además su propio sandbox (`CODEX_SANDBOX_FLAGS`) confina cada comando del modelo:
+
+- **El jail:**
+  - sustituye `/home`, `/run` (tokens de runtime, socket de Docker, D-Bus), `/tmp`, `/var/tmp` y `/srv` por tmpfs vacíos;
+  - limpia el entorno y aísla PID, IPC y UTS;
+  - solo vuelve a montar el workdir desechable, el `CODEX_HOME` dedicado y el binario de codex (de solo lectura).
+- **El sandbox de codex:**
+  - `workspace-write`, con `network_access=false` fijado explícitamente;
+  - `exclude_slash_tmp` y `exclude_tmpdir_env_var` activados;
+  - el único root escribible extra es `workdir/scratch`, que es el `TMPDIR`.
+
+`scripts/codex_isolation_probe.py` ejecuta, con `codex sandbox`, una sonda como si fuera un comando del modelo, dentro del mismo jail y con los mismos flags. Lo hace sin modelo y sin login. Evidencia en `construction-runs/codex-isolation/`:
+
+| Comprobación | Con jail (`probe-jail.json`) | Control negativo, sin jail y con red (`probe-control.json`) |
+|---|---|---|
+| DNS, TCP a Internet | bloqueado | **abierto** |
+| Loopback: PostgreSQL dev y test, API :8001 | bloqueado | **abierto** |
+| `~/.config/gh/hosts.yml`, `~/.codex/auth.json`, `~/.ssh`, `~/.gitconfig`, `.env.local` | ocultos | **visibles** |
+| Tokens AAO en `$XDG_RUNTIME_DIR` | ocultos | **visibles** |
+| Socket de Docker, D-Bus | ocultos | **visibles** |
+| Escribir en `/etc`, `/usr`, `CODEX_HOME` y el `HOME` del agente | denegado | `HOME`: **escribible** |
+| Escribir en el workspace y en `scratch` | permitido | permitido |
+| Variables de entorno sensibles; PID visibles | ninguna; 2 | — |
+
+En total, **0 fugas con el jail frente a 19 sin él**. `tests/test_agent_runner.py::test_isolation_probe_finds_no_leak` repite la sonda en cualquier host con codex. En CI no hay codex y se omite. La estructura del jail está cubierta por un test unitario que sí corre en CI.
+
+**Riesgo residual (aceptado para el piloto):** los comandos del modelo pueden **leer** `CODEX_HOME/auth.json`, que es la credencial del propio modelo, pero no tienen red para sacarla. El proceso del CLI de codex sí tiene red, porque la necesita para la API del proveedor. No es un comando del modelo.
+
+### 2. Límite efectivo de reintentos
+
+`POST /v1/work/{id}/stage-agent-run` cuenta todos los intentos del agente para esa tarea, sea cual sea su resultado, y rechaza con 409 el que supere `AAO_AGENT_MAX_ATTEMPTS` (3 por defecto). Lo impone la API sobre PostgreSQL, así que el worker no puede saltárselo: solo puede reclamar ejecuciones que la API haya encolado. Lo cubre el E2E `test_self_development_cycle_from_task_to_merged_pr_and_done`. Para cada intento hay además un límite de tiempo: el lease es de 1800 s, de los que 1650 s son para el modelo.
+
+### 3. Separación de permisos
+
+| Rol | Tipo | Grants (8 h) | Quién lo opera en el piloto |
+|---|---|---|---|
+| Implementador | AGENT | `project.read`, `work.create`, `work.admit`, `work.progress`, `execution.claim`, `code.propose`, `evidence.submit` | worker automático; el parche lo escribe **codex** |
+| Auditor | AUDITOR | `work.review` | humano asistido (Claude): lee el diff y ejecuta la suite completa sobre el candidato |
+| Publicador | AGENT | `project.read`, `code.publish` | humano asistido; `--github gh` usa la cuenta del operador |
+| CEO | token de desarrollo | emite credenciales y grants, y fusiona | CEO |
+
+El modelo no recibe ninguna de esas credenciales:
+- el token del implementador vive en la memoria del worker, y el jail limpia el entorno y aísla los PID;
+- los ficheros de token quedan ocultos bajo `/run`;
+- la sonda lo comprueba.
+
+## Procedimiento
 
 ```sh
-# 0. Base de datos y API de desarrollo en marcha (compose.dev.yaml, migraciones 001–014, uvicorn en :8001).
-# 1. Credencial del modelo, dedicada (el CEO inicia la sesión):
+P=9d17d6c1-d644-424a-a425-fe7e084c3d91; export PYTHONPATH=src
+python scripts/codex_isolation_probe.py            # debe imprimir "ok": true; si no, se aborta
 install -d -m 0700 ~/.local/share/aao/codex-agent
-CODEX_HOME=~/.local/share/aao/codex-agent codex login --device-auth
-# 2. Identidades y tarea:
-P=9d17d6c1-d644-424a-a425-fe7e084c3d91
-PYTHONPATH=src python scripts/self_development_cycle.py --project-id $P setup
-PYTHONPATH=src python scripts/self_development_cycle.py --project-id $P task --title "…" \
-  --description "…" --criterion "…" --base-sha "$(git rev-parse origin/main)"
-# 3. Ejecución con el modelo (activación expresa solo para este proceso):
+CODEX_HOME=~/.local/share/aao/codex-agent codex login --device-auth   # CEO: sesión dedicada
+python scripts/self_development_cycle.py --project-id $P setup         # 3 identidades, 8 h
+python scripts/self_development_cycle.py --project-id $P task --title "…" --description "…" \
+  --criterion "…" --base-sha "$(git rev-parse origin/main)"
 AAO_AGENT_PROVIDER=codex AAO_AGENT_BACKEND=codex AAO_AGENT_CODEX_HOME=~/.local/share/aao/codex-agent \
-  PYTHONPATH=src python scripts/run_self_development_worker.py --project-id $P --principal-id <implementador>
-# 4. Revisión: el auditor ejecuta la suite completa sobre el candidato y después:
-PYTHONPATH=src python scripts/self_development_cycle.py --project-id $P submit --work-id <id>
-PYTHONPATH=src python scripts/self_development_cycle.py --project-id $P review --work-id <id> --decision APPROVE --evidence <sha256:…>
-# 5. Publicación y resultado:
-AAO_PUBLISH_BASE_REPO=autoaiorg/aao PYTHONPATH=src python scripts/publish_candidate.py --work-id <id> --step push --github gh
-AAO_PUBLISH_BASE_REPO=autoaiorg/aao PYTHONPATH=src python scripts/publish_candidate.py --work-id <id> --step open --github gh
-# (el CEO fusiona si la CI está en verde)
-AAO_PUBLISH_BASE_REPO=autoaiorg/aao PYTHONPATH=src python scripts/publish_candidate.py --work-id <id> --step reconcile --github gh
+  python scripts/run_self_development_worker.py --project-id $P --principal-id <implementador>
+# auditor: comprobar que el diff solo toca tests/, ejecutar la suite completa sobre el candidato y después:
+python scripts/self_development_cycle.py --project-id $P submit --work-id <id>
+python scripts/self_development_cycle.py --project-id $P review --work-id <id> --decision APPROVE|REJECT --evidence <sha256:…>
+# si se aprueba:
+AAO_PUBLISH_BASE_REPO=autoaiorg/aao python scripts/publish_candidate.py --work-id <id> --step push --github gh
+AAO_PUBLISH_BASE_REPO=autoaiorg/aao python scripts/publish_candidate.py --work-id <id> --step open --github gh
+# CEO fusiona con CI en verde, y después:
+AAO_PUBLISH_BASE_REPO=autoaiorg/aao python scripts/publish_candidate.py --work-id <id> --step reconcile --github gh
+python scripts/self_development_cycle.py --project-id $P verify --work-id <id>   # cadena completa desde PostgreSQL
 ```
 
-## Criterios de éxito
+Si el intento falla o se rechaza, se puede volver a encolar hasta llegar al límite. Al alcanzarlo, la API lo rechaza y decide el CEO.
 
-1. La ejecución termina en SUCCEEDED con `backend: codex`, y el diff no está vacío y respeta los límites de rutas.
-2. `core-unit` en bwrap da `success`, y la suite completa del candidato pasa, ejecutada por el auditor.
-3. La PR tiene como cabeza el SHA aprobado y la CI en verde.
-4. Tras la fusión, la tarea está en DONE con `work.completed` y el `merge_commit_sha`, y se ve en el Control Center (tablero, panel de la tarea y pestaña *Actividad*).
-5. El checkout de origen y `~/.codex` quedan intactos.
+## Verificación final
+
+- **PostgreSQL:** `verify` muestra la tarea, cada ejecución (backend `codex`, candidato y check), las propuestas, las revisiones con su evidencia almacenada (digest y emisor), la PR y su estado, y el estado final. Además comprueba la consistencia: cada aprobación tiene una ejecución SUCCEEDED de ese SHA, y DONE va acompañado de `work.completed` con el SHA aprobado.
+- **Control Center:** en el panel de la tarea aparecen los intentos, las revisiones, las PR con su estado (abierta, cerrada sin fusionar o fusionada con su merge commit) y la resolución, si la hay. La pestaña *Actividad* muestra la cronología.
+
+## Qué es automático y qué es humano (registro obligatorio del piloto)
+
+| Paso | Automático | Humano o asistido |
+|---|---|---|
+| Comprobar el aislamiento (sonda) | ✓ | la lanza el operador |
+| Emitir credenciales y grants | — | CEO (`setup`) |
+| Crear, seleccionar capacidad, admitir y encolar la tarea | — | operador con la identidad del implementador |
+| Reclamar, clonar, **escribir el parche (codex)**, commit candidato y tests en sandbox | ✓ | lanzar el worker |
+| Proponer y registrar la evidencia del check | ✓ (worker) / `submit` | `submit` lo lanza el operador |
+| Revisar y decidir | — | auditor (Claude), con lectura del diff y suite completa |
+| Push y PR | ✓ (script) | lo lanza el publicador; la PR sale con la cuenta del operador |
+| CI | ✓ | — |
+| Fusionar | — | CEO |
+| Reconciliar a DONE | ✓ (script) | lo lanza el operador |
+
+El registro del piloto se guardará en `construction-runs/` con este mismo formato, con los ID y los SHA sacados de `verify`.
 
 ## Desactivación
 
-Basta con no exportar `AAO_AGENT_PROVIDER`. Para revocar el acceso del modelo, `rm -rf ~/.local/share/aao/codex-agent`. Las credenciales de AAO caducan a las 8 h y se pueden revocar antes con `POST /v1/principals/{id}/revoke`.
+Basta con no exportar `AAO_AGENT_PROVIDER`. Para retirar el acceso del modelo: `rm -rf ~/.local/share/aao/codex-agent`. Las credenciales de AAO se pueden revocar con `POST /v1/principals/{id}/revoke` y caducan a las 8 h en cualquier caso.

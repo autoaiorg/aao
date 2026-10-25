@@ -1345,13 +1345,23 @@ def list_project_conversation_messages(
         ).fetchone():
             raise HTTPException(404, "Conversation not found")
         rows = db.execute(
-            "SELECT id,sender,body,related_work_id,created_at "
-            "FROM project_conversation_messages WHERE conversation_id=%s "
-            "ORDER BY created_at,id", (conversation_id,),
+            "SELECT m.id,m.sender,m.body,m.related_work_id,m.created_at,w.status,"
+            "q.id,q.status,q.result_json->>'backend',q.result_json->>'provider',"
+            "q.result_json->>'model' "
+            "FROM project_conversation_messages m "
+            "LEFT JOIN work_items w ON w.id=m.related_work_id "
+            "LEFT JOIN LATERAL (SELECT id,status,result_json FROM execution_queue "
+            "WHERE work_id=w.id ORDER BY created_at DESC,id DESC LIMIT 1) q ON TRUE "
+            "WHERE m.conversation_id=%s "
+            "ORDER BY m.created_at,m.id", (conversation_id,),
         ).fetchall()
     return [
         {"id": str(row[0]), "sender": row[1], "body": row[2],
-         "related_work_id": str(row[3]) if row[3] else None, "created_at": row[4]}
+         "related_work_id": str(row[3]) if row[3] else None, "created_at": row[4],
+         "work_status": row[5],
+         "latest_execution": ({"id": str(row[6]), "status": row[7],
+                               "backend": row[8], "provider": row[9], "model": row[10]}
+                              if row[6] else None)}
         for row in rows
     ]
 
@@ -1393,6 +1403,7 @@ def append_project_conversation_message(
     return {
         "id": message_id, "sender": "CEO", "body": payload.body,
         "related_work_id": None, "created_at": created_at,
+        "work_status": None, "latest_execution": None,
     }
 
 

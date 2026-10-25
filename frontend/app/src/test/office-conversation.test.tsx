@@ -10,7 +10,7 @@ const projects: DataState<ProjectSummary[]> = { kind: 'ready', origin: 'live', f
   { id: 'project-paused', name: 'Proyecto pausado', status: 'PAUSED' },
 ] };
 const conversation = { id: 'conversation-1', project_id: 'project-active', title: 'Plan', created_at: '2026-10-25T10:00:00Z', updated_at: '2026-10-25T10:00:00Z' };
-const message = { id: 'message-1', sender: 'CEO' as const, body: 'Preparar el plan', related_work_id: null, created_at: '2026-10-25T10:00:00Z' };
+const message = { id: 'message-1', sender: 'CEO' as const, body: 'Preparar el plan', related_work_id: null, work_status: null, latest_execution: null, created_at: '2026-10-25T10:00:00Z' };
 const ready = <T,>(data: T): DataState<T> => ({ kind: 'ready', origin: 'live', fetchedAt: 'now', data });
 
 function setup(port: AaoConversationPort) {
@@ -43,7 +43,10 @@ describe('office persistent project conversation', () => {
     let linkedWorkId: string | null = null;
     const port: AaoConversationPort = {
       listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
-      listConversationMessages: vi.fn().mockImplementation(async () => ready([{ ...message, related_work_id: linkedWorkId }])),
+      listConversationMessages: vi.fn().mockImplementation(async () => ready([{
+        ...message, related_work_id: linkedWorkId, work_status: linkedWorkId ? 'INBOX' : null,
+        latest_execution: linkedWorkId ? { id: '00000000-0000-4000-8000-000000000043', status: 'SUCCEEDED', backend: 'codex', provider: 'openai', model: 'gpt-6-luna' } : null,
+      }])),
       createProjectConversation: vi.fn(),
       appendCEOConversationMessage: vi.fn(),
       createWorkRequestFromMessage: vi.fn().mockImplementation(async () => {
@@ -64,6 +67,8 @@ describe('office persistent project conversation', () => {
       title: 'Preparar análisis', acceptance_criteria: ['Hallazgos documentados', 'Revisión completada'],
     }));
     await waitFor(() => expect(screen.getByRole('button', { name: `Abrir trabajo ${workId}` })).toBeInTheDocument());
+    expect(screen.getByText('Estado del trabajo: INBOX')).toBeInTheDocument();
+    expect(screen.getByText(/Última ejecución SUCCEEDED · openai \/ gpt-6-luna/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: `Abrir trabajo ${workId}` }));
     expect(onOpenBoard).toHaveBeenCalledWith('project-active');
     expect(screen.getByText(/no se ha admitido ni ejecutado/)).toBeInTheDocument();

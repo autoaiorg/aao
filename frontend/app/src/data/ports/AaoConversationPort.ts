@@ -13,6 +13,14 @@ export interface ProjectConversationMessage {
   sender: 'CEO' | 'AAO';
   body: string;
   related_work_id: string | null;
+  work_status: string | null;
+  latest_execution: {
+    id: string;
+    status: string;
+    backend: string | null;
+    provider: string | null;
+    model: string | null;
+  } | null;
   created_at: string;
 }
 

@@ -235,6 +235,8 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
             f"/v1/projects/{project}/conversations/{conversation_id}/messages", headers=ceo,
         )
         assert reopened.json()[0]["related_work_id"] == work_id
+        assert reopened.json()[0]["work_status"] == "INBOX"
+        assert reopened.json()[0]["latest_execution"] is None
         board = client.get(f"/v1/projects/{project}/board", headers=ceo)
         assert any(item["id"] == work_id and item["status"] == "INBOX" for item in board.json())
         with connect_postgres() as db:
@@ -263,6 +265,25 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
                 "AND kind='conversation.message.work_requested'", (message.json()["id"],),
             ).fetchone()
         assert counts == (1, 0, 0)
+
+        # The conversation projection exposes only current work/execution
+        # status and bounded provenance, never the execution result payload.
+        execution_id = str(uuid4())
+        with connect_postgres() as db:
+            db.execute(
+                "INSERT INTO execution_queue(id,work_id,project_id,status,input_json,result_json) "
+                "VALUES (%s,%s,%s,'SUCCEEDED','{}'::jsonb,%s::jsonb)",
+                (execution_id, work_id, project, '{"provider":"openai","model":"gpt-6-luna","backend":"codex","patch":"private payload"}'),
+            )
+        projected = client.get(
+            f"/v1/projects/{project}/conversations/{conversation_id}/messages", headers=ceo,
+        ).json()[0]
+        assert projected["work_status"] == "INBOX"
+        assert projected["latest_execution"] == {
+            "id": execution_id, "status": "SUCCEEDED", "backend": "codex",
+            "provider": "openai", "model": "gpt-6-luna",
+        }
+        assert "patch" not in str(projected)
         assert str(linked_work[0]) == project
         assert linked_work[1] == "ceo"
         assert linked_work[2] == "Please investigate the real execution evidence."

@@ -85,7 +85,7 @@ export const OFFICE_ROOMS: OfficeRoomConfig[] = [
 
 export interface VirtualOfficeViewProps {
   organization: DataState<OrganizationStructure>;
-  onNavigate?: (target: 'organization' | 'kanban' | 'projects') => void;
+  onNavigate?: (target: 'organization' | 'kanban' | 'projects', projectId?: string) => void;
   onRefresh?: () => void;
 }
 

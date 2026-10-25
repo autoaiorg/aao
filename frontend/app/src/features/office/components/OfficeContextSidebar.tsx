@@ -8,7 +8,7 @@ export interface OfficeContextSidebarProps {
   units: OrgUnit[];
   agents: AgentIdentity[];
   onSelectAgent: (agentId: string | null) => void;
-  onNavigate?: (target: 'organization' | 'kanban' | 'projects') => void;
+  onNavigate?: (target: 'organization' | 'kanban' | 'projects', projectId?: string) => void;
   onOpenAgentDetail?: (agent: AgentIdentity) => void;
   isDemo?: boolean;
 }
@@ -697,6 +697,25 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
                           <span>Lease: {new Date(asg.leaseExpiresAt).toLocaleTimeString()}</span>
                         )}
                       </div>
+                      <button
+                        type="button"
+                        onClick={() => onNavigate?.('kanban', asg.projectId)}
+                        disabled={!onNavigate}
+                        style={{
+                          alignSelf: 'flex-start',
+                          marginTop: '5px',
+                          border: '1px solid var(--border-subtle)',
+                          borderRadius: 'var(--radius-sm, 4px)',
+                          background: 'var(--bg-muted)',
+                          color: 'var(--text-primary)',
+                          padding: '4px 8px',
+                          fontSize: '10px',
+                          fontWeight: 600,
+                          cursor: onNavigate ? 'pointer' : 'not-allowed',
+                        }}
+                      >
+                        Abrir tablero de este proyecto
+                      </button>
                     </div>
                   );
                 })}

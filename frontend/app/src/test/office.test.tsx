@@ -478,7 +478,8 @@ describe('Phase F4.7: UI Contrast, Design Tokens & Operational Indicators', () =
       fetchedAt: new Date().toISOString(),
     };
 
-    render(<VirtualOfficeView organization={stateWithExecutingAgent} />);
+    const onNavigate = vi.fn();
+    render(<VirtualOfficeView organization={stateWithExecutingAgent} onNavigate={onNavigate} />);
 
     // Select ENG department
     const engBtn = screen.getByRole('button', { name: /\[ENG\] Ingeniería/i });
@@ -497,6 +498,8 @@ describe('Phase F4.7: UI Contrast, Design Tokens & Operational Indicators', () =
     expect(screen.getByText(/○ Telemetría Desconocida/i)).toBeInTheDocument();
     expect(screen.getByText(/⚡ Ejecutando Tarea/i)).toBeInTheDocument();
     expect(screen.getByText(/Build Security Core/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Abrir tablero de este proyecto' }));
+    expect(onNavigate).toHaveBeenCalledWith('kanban', 'p1');
   });
 
   it('renders unknown department and unknown agent type truthfully without fabricating affiliations', () => {

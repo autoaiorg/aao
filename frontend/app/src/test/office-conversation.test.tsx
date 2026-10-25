@@ -25,7 +25,7 @@ describe('office persistent project conversation', () => {
       listConversationMessages: vi.fn().mockResolvedValue(ready([message])),
       createProjectConversation: vi.fn(),
       appendCEOConversationMessage: vi.fn().mockResolvedValue(ready(message)),
-      streamCEOConversationTurn: vi.fn().mockImplementation(async (_project, _conversation, _body, onDelta) => {
+      streamCEOConversationTurn: vi.fn().mockImplementation(async (_project, _conversation, _body, _key, onDelta) => {
         onDelta('Respuesta en directo');
         return ready({ message_id: 'response-1' });
       }),
@@ -36,10 +36,37 @@ describe('office persistent project conversation', () => {
     await screen.findByText('Preparar el plan');
     fireEvent.change(screen.getByLabelText('Mensaje CEO'), { target: { value: 'Revisar el presupuesto' } });
     fireEvent.click(screen.getByRole('button', { name: 'Enviar a AAO' }));
-    await waitFor(() => expect(port.streamCEOConversationTurn).toHaveBeenCalledWith('project-active', 'conversation-1', 'Revisar el presupuesto', expect.any(Function)));
+    await waitFor(() => expect(port.streamCEOConversationTurn).toHaveBeenCalledWith('project-active', 'conversation-1', 'Revisar el presupuesto', expect.any(String), expect.any(Function)));
     expect(await screen.findByText(/Respuesta AAO recibida y persistida/)).toBeInTheDocument();
     expect(port.createWorkRequestFromMessage).not.toHaveBeenCalled();
     expect(screen.queryByRole('option', { name: 'Proyecto pausado' })).not.toBeInTheDocument();
+  });
+
+  it('reuses the same idempotency key when retrying an interrupted logical turn', async () => {
+    const interrupted: DataState<{ message_id: string }> = {
+      kind: 'error', code: 'STREAM_ERROR', message: 'connection interrupted', retryable: true,
+    };
+    const port: AaoConversationPort = {
+      listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
+      listConversationMessages: vi.fn().mockResolvedValue(ready([message])),
+      createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(),
+      streamCEOConversationTurn: vi.fn()
+        .mockResolvedValueOnce(interrupted)
+        .mockResolvedValueOnce(ready({ message_id: 'reply-1' })),
+      createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(),
+    };
+    setup(port);
+    await screen.findByText('Preparar el plan');
+    fireEvent.change(screen.getByLabelText('Mensaje CEO'), { target: { value: 'Analiza este alcance' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar a AAO' }));
+    await waitFor(() => expect(port.streamCEOConversationTurn).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar a AAO' }));
+    await waitFor(() => expect(port.streamCEOConversationTurn).toHaveBeenCalledTimes(2));
+    const first = vi.mocked(port.streamCEOConversationTurn).mock.calls[0];
+    const second = vi.mocked(port.streamCEOConversationTurn).mock.calls[1];
+    expect(first[2]).toBe('Analiza este alcance');
+    expect(second[2]).toBe(first[2]);
+    expect(second[3]).toBe(first[3]);
   });
 
   it('structures a CEO-confirmed task from the conversation thread, not an individual message', async () => {

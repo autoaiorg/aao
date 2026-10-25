@@ -882,7 +882,9 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
       related_work_id: z.string().uuid().nullable(), work_status: z.string().nullable(),
       latest_execution: z.object({ id: z.string().uuid(), status: z.string(),
         backend: z.string().nullable(), provider: z.string().nullable(), model: z.string().nullable(),
-      }).nullable(), provider: z.string().nullable().optional(), model: z.string().nullable().optional(), created_at: z.string(),
+      }).nullable(), provider: z.string().nullable().optional(), model: z.string().nullable().optional(),
+      turn_status: z.enum(['PENDING', 'COMPLETED', 'FAILED']).nullable().optional(),
+      turn_error_code: z.string().nullable().optional(), created_at: z.string(),
     })), { method: 'GET' });
   }
 
@@ -908,6 +910,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
     projectId: string,
     conversationId: string,
     body: string,
+    idempotencyKey: string,
     onDelta: (delta: string) => void,
   ): Promise<DataState<{ message_id: string }>> {
     if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede conversar con AAO.' };
@@ -926,7 +929,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
     try {
       const response = await fetch(`${this.baseUrl}/v1/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/turns`, {
         method: 'POST', headers, credentials: 'include', signal: controller.signal,
-        body: JSON.stringify({ body }),
+        body: JSON.stringify({ body, idempotency_key: idempotencyKey }),
       });
       if (!response.ok || !response.body) {
         if (response.status === 401 || response.status === 403) this.onUnauthorized?.();

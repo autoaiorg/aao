@@ -56,7 +56,7 @@ def test_unauthorized_conversation_turn_never_invokes_provider(monkeypatch):
         response = client.post(
             "/v1/projects/00000000-0000-4000-8000-000000000001/conversations/"
             "00000000-0000-4000-8000-000000000002/turns",
-            json={"body": "please answer"},
+            json={"body": "please answer", "idempotency_key": "00000000-0000-4000-8000-000000000003"},
         )
     assert response.status_code == 403
     assert called is False

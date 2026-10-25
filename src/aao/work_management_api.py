@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from aao.environment_settings import load_local_env
 
@@ -212,6 +212,7 @@ class ProjectConversationMessageRequest(BaseModel):
 
 class ProjectConversationTurnRequest(ProjectConversationMessageRequest):
     """A CEO turn submitted for a provider-backed conversational response."""
+    idempotency_key: UUID
 
 
 class ReviewRequest(BaseModel):
@@ -1397,9 +1398,10 @@ def list_project_conversation_messages(
         rows = db.execute(
             "SELECT m.id,m.sender,m.body,m.related_work_id,m.created_at,w.status,"
             "q.id,q.status,q.result_json->>'backend',q.result_json->>'provider',"
-            "q.result_json->>'model',m.provider,m.model "
+            "q.result_json->>'model',m.provider,m.model,t.state,t.error_code "
             "FROM project_conversation_messages m "
             "LEFT JOIN work_items w ON w.id=m.related_work_id "
+            "LEFT JOIN project_conversation_turns t ON t.user_message_id=m.id "
             "LEFT JOIN LATERAL (SELECT id,status,result_json FROM execution_queue "
             "WHERE work_id=w.id ORDER BY created_at DESC,id DESC LIMIT 1) q ON TRUE "
             "WHERE m.conversation_id=%s "
@@ -1411,7 +1413,8 @@ def list_project_conversation_messages(
          "work_status": row[5],
          "latest_execution": ({"id": str(row[6]), "status": row[7],
                                "backend": row[8], "provider": row[9], "model": row[10]}
-                              if row[6] else None), "provider": row[11], "model": row[12]}
+                              if row[6] else None), "provider": row[11], "model": row[12],
+         "turn_status": row[13], "turn_error_code": row[14]}
         for row in rows
     ]
 
@@ -1468,9 +1471,16 @@ def stream_project_conversation_turn(
 
     Provider configuration is opt-in. Conversation turns never create or execute work.
     """
+    import hashlib
+
     from aao.conversation_provider import ProviderUnavailable, stream_reply
 
+    request_hash = hashlib.sha256(payload.body.encode("utf-8")).hexdigest()
+    provider = os.getenv("AAO_CONVERSATION_PROVIDER", "openai-compatible")
+    model = os.getenv("AAO_CONVERSATION_MODEL", "")
+    replay: tuple[str, str | None, str | None, str | None] | None = None
     user_message_id = str(uuid4())
+    turn_id: str | None = None
     with tx() as db:
         row = db.execute(
             "SELECT p.state FROM project_conversations c JOIN projects p ON p.id=c.project_id "
@@ -1481,26 +1491,76 @@ def stream_project_conversation_turn(
             raise HTTPException(404, "Conversation not found")
         if row[0] != "ACTIVE":
             raise HTTPException(409, "Project not active")
-        db.execute(
-            "INSERT INTO project_conversation_messages(id,conversation_id,sender,body) "
-            "VALUES (%s,%s,'CEO',%s)", (user_message_id, conversation_id, payload.body),
-        )
-        history = db.execute(
-            "SELECT sender,body FROM project_conversation_messages "
-            "WHERE conversation_id=%s ORDER BY created_at,id", (conversation_id,),
-        ).fetchall()
-        db.execute(
-            "UPDATE project_conversations SET updated_at=clock_timestamp() WHERE id=%s",
-            (conversation_id,),
-        )
-        audit(db, conversation_id, "conversation.turn.started", {
-            "user_message_id": user_message_id, "actor": "ceo",
-        })
+        existing = db.execute(
+            "SELECT t.request_sha256,t.state,t.error_code,m.id,m.body,t.user_message_id "
+            "FROM project_conversation_turns t "
+            "LEFT JOIN project_conversation_messages m ON m.id=t.assistant_message_id "
+            "WHERE t.conversation_id=%s AND t.idempotency_key=%s",
+            (conversation_id, payload.idempotency_key),
+        ).fetchone()
+        if existing:
+            if existing[0] != request_hash:
+                raise HTTPException(409, "Idempotency key was already used with a different message")
+            if existing[1] == "PENDING":
+                raise HTTPException(409, "Conversation turn is already processing")
+            if existing[1] == "COMPLETED":
+                replay = (existing[1], existing[2], str(existing[3]) if existing[3] else None, existing[4])
+            else:
+                turn_id = str(db.execute(
+                    "SELECT id FROM project_conversation_turns WHERE conversation_id=%s AND idempotency_key=%s",
+                    (conversation_id, payload.idempotency_key),
+                ).fetchone()[0])
+                user_message_id = str(existing[5])
+                db.execute(
+                    "UPDATE project_conversation_turns SET state='PENDING',error_code=NULL,provider=%s,model=%s,updated_at=clock_timestamp() "
+                    "WHERE conversation_id=%s AND idempotency_key=%s",
+                    (provider, model, conversation_id, payload.idempotency_key),
+                )
+                history = db.execute(
+                    "SELECT sender,body FROM project_conversation_messages "
+                    "WHERE conversation_id=%s ORDER BY created_at,id", (conversation_id,),
+                ).fetchall()
+                audit(db, conversation_id, "conversation.turn.retry_started", {
+                    "user_message_id": user_message_id,
+                    "idempotency_key": str(payload.idempotency_key), "actor": "ceo",
+                })
+        else:
+            turn_id = str(uuid4())
+            db.execute(
+                "INSERT INTO project_conversation_messages(id,conversation_id,sender,body) "
+                "VALUES (%s,%s,'CEO',%s)", (user_message_id, conversation_id, payload.body),
+            )
+            db.execute(
+                "INSERT INTO project_conversation_turns(id,conversation_id,idempotency_key,"
+                "request_sha256,user_message_id,state,provider,model) "
+                "VALUES (%s,%s,%s,%s,%s,'PENDING',%s,%s)",
+                (turn_id, conversation_id, payload.idempotency_key, request_hash,
+                 user_message_id, provider, model),
+            )
+            history = db.execute(
+                "SELECT sender,body FROM project_conversation_messages "
+                "WHERE conversation_id=%s ORDER BY created_at,id", (conversation_id,),
+            ).fetchall()
+            db.execute(
+                "UPDATE project_conversations SET updated_at=clock_timestamp() WHERE id=%s",
+                (conversation_id,),
+            )
+            audit(db, conversation_id, "conversation.turn.started", {
+                "turn_id": turn_id, "user_message_id": user_message_id,
+                "idempotency_key": str(payload.idempotency_key), "actor": "ceo",
+            })
 
     def events():
         import json as json_module
         response_id = str(uuid4())
         answer = []
+        if replay:
+            if replay[0] == "FAILED":
+                yield f"event: error\ndata: {json_module.dumps({'code': replay[1]})}\n\n"
+            else:
+                yield f"event: delta\ndata: {json_module.dumps({'delta': replay[3]})}\n\n"
+                yield f"event: done\ndata: {json_module.dumps({'message_id': replay[2]})}\n\n"
+            return
         try:
             conversation = [{
                 "role": "system",
@@ -1519,14 +1579,28 @@ def stream_project_conversation_turn(
                 yield f"event: delta\ndata: {json_module.dumps({'delta': chunk})}\n\n"
             body = "".join(answer).strip()
             if not body:
+                with tx() as db:
+                    db.execute(
+                        "UPDATE project_conversation_turns SET state='FAILED',error_code='EMPTY_PROVIDER_RESPONSE',updated_at=clock_timestamp() "
+                        "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING'",
+                        (conversation_id, payload.idempotency_key),
+                    )
+                    audit(db, conversation_id, "conversation.turn.failed", {
+                        "turn_id": turn_id, "user_message_id": user_message_id,
+                        "error_code": "EMPTY_PROVIDER_RESPONSE",
+                    })
                 yield "event: error\ndata: {\"code\":\"EMPTY_PROVIDER_RESPONSE\"}\n\n"
                 return
             with tx() as db:
                 db.execute(
                     "INSERT INTO project_conversation_messages(id,conversation_id,sender,body,provider,model) "
                     "VALUES (%s,%s,'AAO',%s,%s,%s)",
-                    (response_id, conversation_id, body, os.getenv("AAO_CONVERSATION_PROVIDER", "openai-compatible"),
-                     os.getenv("AAO_CONVERSATION_MODEL", "")),
+                    (response_id, conversation_id, body, provider, model),
+                )
+                db.execute(
+                    "UPDATE project_conversation_turns SET state='COMPLETED',assistant_message_id=%s,updated_at=clock_timestamp() "
+                    "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING'",
+                    (response_id, conversation_id, payload.idempotency_key),
                 )
                 db.execute("UPDATE project_conversations SET updated_at=clock_timestamp() WHERE id=%s", (conversation_id,))
                 audit(db, conversation_id, "conversation.turn.completed", {
@@ -1534,7 +1608,29 @@ def stream_project_conversation_turn(
                 })
             yield f"event: done\ndata: {json_module.dumps({'message_id': response_id})}\n\n"
         except ProviderUnavailable as exc:
+            with tx() as db:
+                db.execute(
+                    "UPDATE project_conversation_turns SET state='FAILED',error_code=%s,updated_at=clock_timestamp() "
+                    "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING'",
+                    (exc.code, conversation_id, payload.idempotency_key),
+                )
+                audit(db, conversation_id, "conversation.turn.failed", {
+                    "turn_id": turn_id, "user_message_id": user_message_id,
+                    "error_code": exc.code,
+                })
             yield f"event: error\ndata: {json_module.dumps({'code': exc.code, 'message': str(exc)})}\n\n"
+        except Exception:  # noqa: BLE001 - persist every unexpected provider/stream failure durably.
+            with tx() as db:
+                db.execute(
+                    "UPDATE project_conversation_turns SET state='FAILED',error_code='PROVIDER_ERROR',updated_at=clock_timestamp() "
+                    "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING'",
+                    (conversation_id, payload.idempotency_key),
+                )
+                audit(db, conversation_id, "conversation.turn.failed", {
+                    "turn_id": turn_id, "user_message_id": user_message_id,
+                    "error_code": "PROVIDER_ERROR",
+                })
+            yield "event: error\ndata: {\"code\":\"PROVIDER_ERROR\",\"message\":\"AAO no pudo completar la respuesta.\"}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream", headers={
         "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no",

@@ -26,3 +26,24 @@ def test_admission_permits_only_fully_authorized_work():
         ("residual_risk", "unknown", Admission.DENY),
     ]:
         assert decide_admission(**{**BASE, field: value}).status == expected
+
+
+def test_residual_risk_boundaries():
+    assert decide_admission(**{**BASE, "residual_risk": "moderate"}).status == Admission.READY
+    assert decide_admission(**{**BASE, "residual_risk": "critical"}).status == Admission.DEFER
+
+
+def test_emergency_stop_takes_precedence_over_other_failed_conditions():
+    result = decide_admission(
+        project_active=False,
+        mandate_confirmed=False,
+        authorized=False,
+        dependencies_satisfied=False,
+        capacity_available=False,
+        within_budget=False,
+        residual_risk="unknown",
+        emergency_stop=True,
+    )
+
+    assert result.status == Admission.DENY
+    assert result.reason == "Emergency stop active"

@@ -76,6 +76,28 @@ export interface TaskReviewRecord {
   created_at: string;
 }
 
+/** A pull request published for a task (backend event work.pr_opened). */
+export interface TaskPullRequest {
+  pr_number: number;
+  pr_url: string;
+  candidate_sha: string;
+  base_sha?: string;
+  branch?: string;
+  publisher?: string;
+  pusher?: string;
+  review_id?: string;
+  created_at?: string;
+}
+
+/** One entry of GET /v1/projects/{id}/activity (audit events and execution journal). */
+export interface ActivityEvent {
+  id: string;
+  subject_id: string;
+  kind: string;
+  details: unknown;
+  created_at: string;
+}
+
 export interface TaskItem {
   id: string;
   title: string;
@@ -86,6 +108,7 @@ export interface TaskItem {
   evidence?: unknown[];
   executions?: TaskExecutionRecord[];
   reviews?: TaskReviewRecord[];
+  pullRequests?: TaskPullRequest[];
   authorId?: string;
   createdAt?: string;
 }

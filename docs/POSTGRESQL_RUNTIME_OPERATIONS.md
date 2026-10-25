@@ -31,7 +31,9 @@ for migration in db/postgres/001_foundation.sql \
   db/postgres/009_prevent_evidence_truncation.sql \
   db/postgres/010_capability_registry.sql \
   db/postgres/011_sha_bound_reviews_and_veto.sql \
-  db/postgres/012_patch_proposals.sql; do
+  db/postgres/012_patch_proposals.sql \
+  db/postgres/013_work_description.sql \
+  db/postgres/014_execution_retry.sql; do
   psql "$AAO_POSTGRES_URL" -v ON_ERROR_STOP=1 -f "$migration"
 done
 export AAO_CEO_TOKEN='locally-generated-secret'
@@ -39,7 +41,10 @@ uvicorn aao.work_management_api:app --host 127.0.0.1 --port 8001
 ```
 
 For an existing database, apply only migrations absent from
-`schema_migrations`, preserving the same order. Migration 007 is forward-only
+`schema_migrations`, preserving the same order. After `014_execution_retry`,
+check that `execution_queue` no longer has the `execution_queue_work_id_key`
+unique constraint and has the partial index `ux_execution_queue_active_work`
+(`\d execution_queue`); otherwise a failed task cannot be re-run. Migration 007 is forward-only
 after deployment: preserve queue/journal evidence and correct defects with a
 new migration instead of dropping its generation columns or trigger. Recreate
 only explicitly disposable databases when a clean migration replay is needed.

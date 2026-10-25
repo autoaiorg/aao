@@ -4,6 +4,22 @@ import { BOARD_STAGE_LABELS } from '../../domain/models';
 import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Card';
 
+/** Reads the fields the backend records for an agent run; anything else is left out, never invented. */
+function runSummary(result: unknown): { conclusion?: string; candidate?: string; check?: string; error?: string } {
+  if (typeof result !== 'object' || result === null) return {};
+  const r = result as Record<string, unknown>;
+  const check = typeof r.check === 'object' && r.check !== null ? (r.check as Record<string, unknown>) : null;
+  const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
+  return {
+    conclusion: str(r.conclusion),
+    candidate: str(r.candidate_sha),
+    check: check
+      ? `${str(check.check_id) ?? 'check'}: ${str(check.conclusion) ?? '?'} (exit ${String(check.exit_code ?? '?')})`
+      : undefined,
+    error: str(r.error),
+  };
+}
+
 export interface TaskDetailDrawerProps {
   task: TaskItem | null;
   onClose: () => void;
@@ -149,6 +165,24 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
                       Worker: {exec.worker_id} · Intentos: {exec.attempts}
                     </div>
                   )}
+                  {(() => {
+                    const run = runSummary(exec.result);
+                    return (
+                      <>
+                        {run.candidate && (
+                          <div style={{ fontFamily: 'monospace', color: 'var(--text-muted)', marginTop: '2px' }}>
+                            Candidato: {run.candidate}
+                          </div>
+                        )}
+                        {run.check && (
+                          <div style={{ color: 'var(--text-secondary)', marginTop: '2px' }}>Pruebas: {run.check}</div>
+                        )}
+                        {run.error && (
+                          <div style={{ color: 'var(--text-secondary)', marginTop: '2px' }}>Error: {run.error}</div>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
               ))}
             </div>
@@ -191,6 +225,40 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
           ) : (
             <p style={{ fontSize: '13px', color: 'var(--text-muted)', fontStyle: 'italic' }}>
               Sin dictámenes de revisión registrados.
+            </p>
+          )}
+        </div>
+
+        {/* Pull requests (resultado publicado) */}
+        <div>
+          <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px' }}>Pull Requests</h3>
+          {task.pullRequests && task.pullRequests.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {task.pullRequests.map((pr) => (
+                <div
+                  key={pr.pr_number}
+                  style={{
+                    padding: '8px 12px',
+                    borderRadius: 'var(--radius-sm)',
+                    backgroundColor: 'var(--bg-muted)',
+                    fontSize: '12px',
+                  }}
+                >
+                  <a href={pr.pr_url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>
+                    PR #{pr.pr_number}
+                  </a>
+                  <div style={{ fontFamily: 'monospace', color: 'var(--text-muted)', marginTop: '2px' }}>
+                    SHA: {pr.candidate_sha}
+                  </div>
+                  {pr.publisher && (
+                    <div style={{ color: 'var(--text-secondary)', marginTop: '2px' }}>Publicada por: {pr.publisher}</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p style={{ fontSize: '13px', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+              Sin pull request publicada.
             </p>
           )}
         </div>

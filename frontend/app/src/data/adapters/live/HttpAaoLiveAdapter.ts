@@ -25,8 +25,10 @@ import type {
   DataState,
   BoardStage,
   TaskItem,
+  ActivityEvent,
 } from '../../../domain/models';
 import {
+  ActivityEventSchema,
   ProjectsListSchema,
   PrincipalSchema,
   GrantSchema,
@@ -473,6 +475,9 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
           reviews: Array.isArray(itemObj.reviews)
             ? (itemObj.reviews as TaskItem['reviews'])
             : [],
+          pullRequests: Array.isArray(itemObj.pull_requests)
+            ? (itemObj.pull_requests as TaskItem['pullRequests'])
+            : [],
         };
 
         if (canonicalStage) {
@@ -575,6 +580,18 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
       })),
       fetchedAt: new Date().toISOString(),
     };
+  }
+
+  async getProjectActivity(projectId: string): Promise<DataState<ActivityEvent[]>> {
+    const res = await this.request(
+      `/v1/projects/${encodeURIComponent(projectId)}/activity?limit=200`,
+      z.array(ActivityEventSchema)
+    );
+    if (res.kind !== 'ready') return res;
+    if (res.data.length === 0) {
+      return { kind: 'empty', origin: 'live', fetchedAt: new Date().toISOString() };
+    }
+    return { kind: 'ready', origin: 'live', data: res.data, fetchedAt: new Date().toISOString() };
   }
 
   async getCeoOverview(projectId?: string): Promise<CeoOverview> {

@@ -56,6 +56,14 @@ export const WorkItemSchema = z.object({
   created_at: z.string().optional(),
 });
 
+export const ActivityEventSchema = z.object({
+  id: z.string(),
+  subject_id: z.string(),
+  kind: z.string(),
+  details: z.unknown(),
+  created_at: z.string(),
+});
+
 export const PrincipalSchema = z.object({
   principal_id: z.string(),
   kind: z.enum(['AGENT', 'AUDITOR', 'CEO']),

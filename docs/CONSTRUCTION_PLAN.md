@@ -24,7 +24,7 @@
 | De la propuesta aprobada a la PR | **Existe con clientes inyectables** (W2b). En dos pasos, uno por identidad (las claves de cada App solo las lee su uid): `--step push` (implementador, re-verifica en el almacén que el commit es base + parche de la propuesta aprobada y empuja exactamente ese SHA) y `--step open` (PM, abre la PR). Ambos requieren `code.publish` y no pueden ser el autor; quedan `work.candidate_pushed` y `work.pr_opened` en el tablero. Probado con remoto bare y apertura falsa. La vía real (Apps `aao-impl-*` → fork, `aao-pm` → PR) está escrita pero **sin ejercitar**: necesita ejecutar como el uid que custodia las claves | `pr_publisher.py`, `scripts/publish_candidate.py` |
 | De la PR a `main` (R1) | **Existe**, pero desactivado hasta el traspaso | `r1_pipeline.py`, `integrator.py` |
 | Resultado de la tarea (W3) | **Existe.** `publish_candidate.py --step reconcile` pasa la tarea a DONE solo si su PR está fusionada y su cabeza sigue siendo el SHA aprobado; registra `work.completed` con el `merge_commit_sha`. `GET /v1/projects/{id}/activity` da la actividad del proyecto | `pr_publisher.reconcile`, `activity` |
-| Resultado visible en el Control Center | **Parcial.** Tablero, tareas, propuestas, ejecuciones y auditorías, sí. Actividad y agentes asignables, no. La vista del ciclo Git está en una rama sin fusionar | `frontend/`, rama `feat/control-center-daily-ui` (967dc73 y cambios locales) |
+| Resultado visible en el Control Center | **Integrado con el backend real** (app React de `frontend/app`, #99/#105 + esta PR): el tablero muestra los intentos con su candidato y su check, y las PR publicadas; el detalle de proyecto tiene la pestaña *Actividad* (`/v1/projects/{id}/activity`). En modo demo, la actividad aparece como no disponible, sin datos inventados | `frontend/app/src` |
 
 ## Frentes de trabajo, por prioridad
 
@@ -50,3 +50,7 @@ Todo esto se hará sobre el candidato de aceptación:
 - activación del integrador.
 
 Los planes anteriores (M2-A en `CLOSURE_PLAN.md`, F4 en `F4_PENDING_WORK.md`) quedan como referencia de requisitos, no como orden de trabajo.
+
+## Operación real (2026-10-25)
+
+El ciclo se ha ejecutado en la instancia de desarrollo con estado persistente: [`construction-runs/20261025-self-development-cycle.md`](construction-runs/20261025-self-development-cycle.md). Una tarea real produjo las PR #104 (cerrada: la CI falló y la tarea volvió a IN_PROGRESS) y #106 (tercer intento). Falta la fusión del CEO y la reconciliación a DONE. El proveedor `codex` sigue desactivado; su prueba está preparada en [`CODEX_PROVIDER_ACTIVATION_E2E.md`](CODEX_PROVIDER_ACTIVATION_E2E.md).

@@ -40,3 +40,15 @@ def test_codex_requires_provider(monkeypatch, tmp_path):
     sha = _git(repo, "rev-parse", "HEAD").strip()
     with pytest.raises(AgentRunnerError, match="CEO provider activation"):
         run_agent_patch(repo, sha, "x", backend="codex", timeout=3)
+
+
+def test_codex_requires_a_dedicated_codex_home(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-qm", "base"], check=True)
+    sha = _git(repo, "rev-parse", "HEAD").strip()
+    monkeypatch.setenv("AAO_AGENT_PROVIDER", "codex")
+    monkeypatch.delenv("AAO_AGENT_CODEX_HOME", raising=False)
+    with pytest.raises(AgentRunnerError, match="dedicated AAO_AGENT_CODEX_HOME"):
+        run_agent_patch(repo, sha, "x", backend="codex", timeout=3)

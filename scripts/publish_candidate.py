@@ -26,6 +26,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--work-id", required=True)
     parser.add_argument("--step", choices=("push", "open", "reconcile"), required=True)
+    parser.add_argument("--github", choices=("apps", "gh"), default="apps",
+                        help="apps: AAO GitHub Apps (handover path). gh: construction regime only, the "
+                             "operator's gh account pushes to AAO_PUBLISH_BASE_REPO and authors the PR")
     args = parser.parse_args()
     from run_self_development_worker import _read_agent_token
 
@@ -33,11 +36,18 @@ def main() -> int:
     os.environ.setdefault("AAO_ENV_FILE", ".env.local")
     data_home = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
     store = os.environ.get("AAO_CANDIDATE_REPOSITORY") or str(data_home / "aao" / "candidates.git")
-    from aao.pr_publisher import github_publisher, open_pull_request, push_candidate, reconcile
+    from aao.pr_publisher import (
+        gh_publisher,
+        github_publisher,
+        open_pull_request,
+        push_candidate,
+        reconcile,
+    )
 
     try:
         token = _read_agent_token(PUBLISHER_TOKEN_NAME)
-        push, open_pr, get_pr = github_publisher(store)
+        push, open_pr, get_pr = (gh_publisher(store, os.environ["AAO_PUBLISH_BASE_REPO"]) if args.github == "gh"
+                                 else github_publisher(store))
         if args.step == "push":
             result = push_candidate(args.work_id, token, store=store, push=push)
         elif args.step == "reconcile":

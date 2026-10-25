@@ -79,20 +79,23 @@ def _approved_candidate(work_id: str, credential: str, kind_of_step: str) -> dic
             raise PublishError(str(exc.detail)) from exc
         if principal == author_id:
             raise PublishError("the implementing agent cannot publish its own work")
+        review = db.execute("SELECT id,candidate_sha FROM reviews WHERE work_id=%s AND decision='APPROVE' "
+                            "ORDER BY created_at DESC LIMIT 1", (work_id,)).fetchone()
+        if not review:
+            raise PublishError("no approval recorded")
+        review_id, candidate_sha = str(review[0]), review[1]
+        # Idempotent per approved candidate: a later attempt (after a closed PR) gets its own push and PR.
         events = {kind: details for kind, details in db.execute(
             "SELECT kind,details FROM events WHERE subject_id=%s AND kind IN ('work.candidate_pushed','work.pr_opened') "
-            "ORDER BY created_at", (work_id,)).fetchall()}
+            "AND details->>'candidate_sha'=%s AND created_at > COALESCE((SELECT max(created_at) FROM events "
+            "WHERE subject_id=%s AND kind='work.pr_closed'), '-infinity') ORDER BY created_at",
+            (work_id, candidate_sha, work_id)).fetchall()}
         if kind_of_step in events:
             return {"done": events[kind_of_step]}
         if status != "VERIFIED":
             raise PublishError("only VERIFIED work can be published")
         if db.execute("SELECT 1 FROM reviews WHERE work_id=%s AND decision='VETO' LIMIT 1", (work_id,)).fetchone():
             raise PublishError("an active veto blocks publication")
-        review = db.execute("SELECT id,candidate_sha FROM reviews WHERE work_id=%s AND decision='APPROVE' "
-                            "ORDER BY created_at DESC LIMIT 1", (work_id,)).fetchone()
-        if not review:
-            raise PublishError("no approval recorded")
-        review_id, candidate_sha = str(review[0]), review[1]
         proposal = db.execute(
             "SELECT p.id,p.base_sha,p.patch_bytes FROM execution_queue q JOIN patch_proposals p "
             "ON p.id::text = q.result_json->>'proposal_id' AND p.work_id=q.work_id "
@@ -184,8 +187,18 @@ def reconcile(work_id: str, publisher_credential: str, *, get_pr: Callable[[int]
     if pr.get("head_sha") != record["candidate_sha"]:
         raise PublishError("pull request head no longer matches the approved candidate")
     if not pr.get("merged"):
-        return {"status": "OPEN" if pr.get("state") == "open" else "CLOSED_UNMERGED",
-                "pr_number": record["pr_number"]}
+        if pr.get("state") == "open":
+            return {"status": "OPEN", "pr_number": record["pr_number"]}
+        # Closed without merge: the approved candidate was not accepted; the work goes back to
+        # IN_PROGRESS so a new attempt can be run, reviewed and published.
+        with tx() as db:
+            reopened = db.execute("UPDATE work_items SET status='IN_PROGRESS' WHERE id=%s AND status='VERIFIED' "
+                                  "RETURNING id", (work_id,)).fetchone()
+            if reopened:
+                audit(db, work_id, "work.pr_closed", {"pr_number": record["pr_number"], "pr_url": record["pr_url"],
+                                                      "candidate_sha": record["candidate_sha"],
+                                                      "reconciled_by": str(publisher)})
+        return {"status": "CLOSED_UNMERGED", "pr_number": record["pr_number"], "work_status": "IN_PROGRESS"}
     merge_sha = str(pr.get("merge_commit_sha") or "")
     if not _SHA.fullmatch(merge_sha):
         raise PublishError("merged pull request has no merge commit SHA")
@@ -260,5 +273,55 @@ def github_publisher(store: str | Path) -> tuple[Callable[[str, str], None], Cal
                     "merge_commit_sha": pr.get("merge_commit_sha"), "head_sha": (pr.get("head") or {}).get("sha")}
         finally:
             client.close()
+
+    return push, open_pr, get_pr
+
+
+def gh_publisher(store: str | Path, repo: str) -> tuple[Callable[[str, str], None], Callable[[str, str, str], dict],
+                                                        Callable[[int], dict]]:
+    """Construction-regime GitHub effects through the operator's authenticated ``gh`` CLI.
+
+    Opt-in only (``publish_candidate.py --github gh``): the branch is pushed to ``repo`` itself and
+    the PR is authored by the operator's account, not by the AAO GitHub Apps. It exists so the
+    Self Development cycle can run end to end before the App identities are activated; the
+    handover path is ``github_publisher``.
+    """
+    import json as _json
+
+    store = Path(store).resolve()
+
+    def gh(*args: str) -> str:
+        proc = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=60, check=False)
+        if proc.returncode:
+            raise PublishError(f"gh {args[0]} {args[1]} failed")
+        return proc.stdout
+
+    def view(ref: str) -> dict:
+        return _json.loads(gh("pr", "view", ref, "--repo", repo, "--json",
+                              "number,url,state,mergedAt,mergeCommit,headRefOid"))
+
+    def push(sha: str, branch: str) -> None:
+        # Only the git credential helper comes from gh; no hooks or user config from the store.
+        proc = subprocess.run(["git", "--git-dir", str(store), "-c", "credential.helper=",
+                               "-c", "credential.helper=!gh auth git-credential", "push", "--quiet",
+                               f"https://github.com/{repo}.git", f"{sha}:refs/heads/{branch}"],
+                              capture_output=True, timeout=120, check=False, cwd="/",
+                              env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_NOSYSTEM": "1"})
+        if proc.returncode:
+            raise PublishError("git push failed")
+
+    def open_pr(branch: str, title: str, body: str) -> dict:
+        existing = _json.loads(gh("pr", "list", "--repo", repo, "--head", branch, "--state", "open",
+                                  "--json", "number"))
+        ref = str(existing[0]["number"]) if existing else gh(
+            "pr", "create", "--repo", repo, "--base", "main", "--head", branch,
+            "--title", title, "--body", body).strip().splitlines()[-1]
+        pr = view(ref)
+        return {"number": pr["number"], "url": pr["url"], "head_sha": pr["headRefOid"]}
+
+    def get_pr(number: int) -> dict:
+        pr = view(str(int(number)))
+        return {"state": pr["state"].lower(), "merged": bool(pr["mergedAt"]),
+                "merge_commit_sha": (pr.get("mergeCommit") or {}).get("oid"), "head_sha": pr["headRefOid"]}
 
     return push, open_pr, get_pr

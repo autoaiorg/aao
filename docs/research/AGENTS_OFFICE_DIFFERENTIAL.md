@@ -150,10 +150,10 @@ El siguiente incremento útil es añadir perfiles organizativos persistentes y d
 - Se añade migración `015_organization_profiles.sql`: unidades y perfiles se almacenan en PostgreSQL y referencian identidades existentes; son metadatos y **no** grants, credenciales ni estado de ejecución.
 - `PUT /v1/organization/units` y `PUT /v1/organization/profiles` son operaciones CEO-protegidas en el entorno de desarrollo/test, con registro de evento. Validan referencias declaradas; la jerarquía no puede auto-parentarse ni introducir ciclo directo por la ruta de escritura.
 - `GET /v1/organization` integra el perfil y las unidades declaradas en su proyección; para agentes, solo devuelve su propio perfil y unidad asociada; CEO recibe el roster declarado. Una identidad sin actividad conserva estado UNKNOWN. La metadata organizativa no altera alcance de proyectos ni grants.
-- El contrato del frontend acepta `managerId`; la visualización/edición de organigrama en la oficina aún requiere su propio incremento para que el CEO pueda gestionarlo desde la interfaz.
+- El contrato del frontend acepta `managerId`. La escritura organizativa desde UI CEO se añadió después en el incremento descrito abajo; no se edita desde el canvas 3D y no implica que perfiles se conviertan en grants.
 - Validación en el contenedor PostgreSQL desechable: pruebas focalizadas de persistencia/proyección y scope, `2 passed`; `compileall`, Ruff, `git diff --check`, TypeScript y suite frontend (136 tests) pasaron. No se ha ejecutado el conjunto completo ni CI.
 - **Fusionado:** PR #134 en `fecb34ea3e60c93eee6816e5af9840f8ebb84564`; PostgreSQL suite local `650 passed`, frontend `136 passed`, TypeScript/build/compileall/Ruff/pip check pasan; PR CI y `main` CI verdes ([run 40233270842](https://github.com/autoaiorg/aao/actions/runs/40233270842)). Esto acredita los checks indicados, no una certificación.
-- Siguiente: ampliar pruebas (ciclo jerárquico y límites de visibilidad), luego conectar representación/edición de perfiles en la oficina sin estado duplicado.
+- Siguiente en el momento de esa fusión: ampliar pruebas de ciclo jerárquico y límites de visibilidad, y conectar representación/edición de perfiles sin estado duplicado; la UI de gestión llegó después en el incremento de `feat/office-org-profile-management` descrito abajo. Las pruebas de ciclo y visibilidad siguen pendientes.
 
 ## 8. Límites y siguientes responsables
 
@@ -183,4 +183,11 @@ El siguiente incremento útil es añadir perfiles organizativos persistentes y d
 - **Construido:** plano 2D, chips y panel lateral muestran códigos, nombres, descripciones y responsables tal como llegan de las unidades persistidas. El color heredado de las seis salas es solo una decoración, no determina afiliación ni nombre. LIVE permanece en plano 2D; el botón 3D se deshabilita porque representa únicamente la plantilla visual DEMO. Se conserva la agrupación explícita de agentes no adscritos, evitando que el selector los fuerce silenciosamente a la primera unidad.
 - **Regresión:** prueba de unidad live con código/nombre no perteneciente al catálogo fijo y aserción de que el control 3D está deshabilitado; se conserva prueba de UNKNOWN/no adscrito.
 - **Validación local observada:** PostgreSQL suite `650 passed`; TypeScript, suite frontend `137 passed`, build, `compileall`, Ruff, `pip check` y `git diff --check` pasan. Build conserva avisos de tamaño de chunk y anotaciones de Zod.
-- **Pendiente:** CI de PR/main. Esto es un incremento visual parcial, no completa dirección de trabajo, UI de gestión de perfiles, conversación, equipos temporales, calendario, conocimiento o skills. F1-F4 permanecen por construir según la matriz de este documento.
+- **Integrado:** PR #136; merge `518a87fd2684cfb847fd435412f0e2ebe77b2d49`; PR CI y CI de `main` verdes. Esto es un incremento visual parcial, no completa dirección de trabajo, conversación, equipos temporales, calendario, conocimiento o skills.
+
+### Incremento en construcción: gestión CEO de perfiles/unidades persistentes
+
+- **SHA de implementación:** `16b9f0957268fd7012f4b0613bdf891aaa34b11f`.
+- **Construido:** Organization Control Center ofrece al CEO LIVE formularios para upsert de unidad (ID, nombre, código, padre y responsable) y perfil (principal, nombre visible, rol, unidad y responsable). El adapter usa `PUT /v1/organization/units` y `/profiles`, envía token `X-CEO-Token`, y bloquea la llamada localmente si el rol de sesión no es CEO. El servidor sigue siendo la autoridad efectiva y valida la credencial CEO, referencias, ciclos/auto-parentesco y registra eventos. El panel declara expresamente que no concede permisos ni cambia asignaciones. No aparece en DEMO/AGENT.
+- **Validación local:** TypeScript; suite frontend `139 passed`; build. Build conserva warnings de chunk >500 kB y anotaciones de Zod.
+- **Pendiente:** PR/CI. Los IDs de principal se validan en servidor; principal desconocido/revocado o referencias inválidas deben permanecer como error visible. Aún falta que la oficina reúna dirección del trabajo, chat persistente, equipos, calendario y conocimiento.

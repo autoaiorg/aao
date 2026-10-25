@@ -94,7 +94,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({ organizati
     const nodes: {room:Room;center:{x:number;y:number;depth:number}}[] = ROOMS.map(room=>({room,center:p(room.x,0.1,room.z)}));
     nodes.sort((a,b)=>a.center.depth-b.center.depth);
     const nextHits: typeof hits.current = [];
-    for(const {room,center} of nodes){
+    for(const {room} of nodes){
       const x=room.x,z=room.z, y=0.16, ht=1.35, dx=1.85,dz=2.18;
       const a=p(x-dx,y,z-dz),b=p(x+dx,y,z-dz),c=p(x+dx,y,z+dz),d=p(x-dx,y,z+dz);
       const aa=p(x-dx,y+ht,z-dz),bb=p(x+dx,y+ht,z-dz),cc=p(x+dx,y+ht,z+dz),dd=p(x-dx,y+ht,z+dz);

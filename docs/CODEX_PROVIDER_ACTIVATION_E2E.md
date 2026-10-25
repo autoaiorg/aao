@@ -89,6 +89,13 @@ python scripts/self_development_cycle.py --project-id $P verify --work-id <id>  
 
 **Agente y modelo:** desde I3 los decide la capacidad elegida con `--agent`, no el entorno. `aao.agent-runner.codex` lleva en su `model_profile` el backend `codex`, el proveedor `openai` y el modelo `gpt-6-luna`; codex lo recibe como `-m`. La evidencia registra `capability_id`, `backend_source: capability`, proveedor, modelo y la versión real del CLI. Registrar la capacidad no activa nada: sin `AAO_AGENT_PROVIDER=codex` en el worker, el runner rechaza el backend. Las capacidades sin `model_profile` conservan el comportamiento anterior (`AAO_AGENT_BACKEND` y `AAO_AGENT_CODEX_MODEL`) y la evidencia lo indica como `backend_source: environment`.
 
+**Activación y router (I4):** `AAO_AGENT_PROVIDER` admite una lista separada por comas (`codex`, …) y lo comprueban tres puntos por separado:
+- el router (`POST /v1/work/{id}/route-model`), que solo recomienda y deja el evento `model.routed` con `execution_authorized: false`;
+- el staging (`stage-agent-run`), que rechaza con 409 una capacidad cuyo backend no esté activado, aunque el router la haya recomendado;
+- el runner.
+
+Para encolar una tarea con `--agent codex`, la variable tiene que estar también en el proceso de la API, no solo en el del worker. Sin ella, la API rechaza la tarea, y ese es el estado por defecto fuera de un piloto autorizado.
+
 Si el intento falla o se rechaza, se puede volver a encolar hasta llegar al límite. Al alcanzarlo, la API lo rechaza y decide el CEO. También rechaza con 409 («No progress») un intento nuevo cuando los dos últimos acabaron igual: mismo parche y mismo resultado o fallo. En ese caso decide el PM, que puede reformular la tarea como una nueva o pedir una resolución del CEO.
 
 ## Verificación final

@@ -1404,6 +1404,42 @@ def stage_repository_check(
 
 
 
+class RouteModelRequest(BaseModel):
+    seat: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+    role: str = Field(default="implementer", pattern=r"^[a-z_]{1,32}$")
+    exclude_providers: list[str] = Field(default_factory=list, max_length=8)
+
+
+@app.post("/v1/work/{work_id}/route-model")
+def route_model(work_id: str, payload: RouteModelRequest, principal: str = Depends(require_worker)):
+    """Recommend an agent capability from the project catalog and record why. Authorizes nothing: staging
+    re-checks the grant, the capability and provider activation independently."""
+    from aao.agent_runner import activated_backends
+    from aao.model_router import Requirements, route
+    with tx() as db:
+        work = db.execute("SELECT project_id FROM work_items WHERE id=%s FOR SHARE", (work_id,)).fetchone()
+        if not work:
+            raise HTTPException(404, "Work not found")
+        project_id = work[0]
+        require_grant(db, principal, project_id, "work.admit")
+        rows = db.execute("SELECT capability_id,version,contract->'compatible_roles',contract->'model_profile' "
+                          "FROM capability_versions WHERE project_id=%s AND capability_type='agent' AND "
+                          "status='registered_local' AND contract->>'entrypoint'='aao.agent_runner:patch' "
+                          "ORDER BY capability_id,version", (project_id,)).fetchall()
+        candidates = [{"capability_id": r[0], "version": r[1], "compatible_roles": r[2] or [], "model_profile": r[3]}
+                      for r in rows]
+        activated = activated_backends()
+        decision = route(Requirements(seat=payload.seat, role=payload.role,
+                                      exclude_providers=frozenset(payload.exclude_providers)),
+                         candidates, activated=activated)
+        details = {"capability_id": decision.capability_id, "version": decision.version,
+                   "reasons": list(decision.reasons), "rejected": [list(r) for r in decision.rejected],
+                   "seat": payload.seat, "role": payload.role, "exclude_providers": payload.exclude_providers,
+                   "activated_backends": sorted(activated), "principal_id": principal, "execution_authorized": False}
+        audit(db, work_id, "model.routed", details)
+    return details
+
+
 def _attempt_outcome(result: dict | None) -> tuple:
     """What an agent attempt produced: its patch and how it ended (an identical patch that now passes is progress)."""
     r = result or {}
@@ -1428,9 +1464,13 @@ def stage_agent_run(work_id: str, payload: AgentRunRequest, principal: str = Dep
             raise HTTPException(409, "Work not ready in active project")
         require_grant(db, principal, project_id, "work.admit")
         require_grant(db, principal, project_id, "execution.claim")
-        cap = db.execute("SELECT capability_type,status,contract->>'entrypoint' FROM capability_versions WHERE project_id=%s AND capability_id=%s AND version=%s FOR SHARE", (project_id, payload.capability_id, payload.version)).fetchone()
+        cap = db.execute("SELECT capability_type,status,contract->>'entrypoint',contract->'model_profile'->>'backend' FROM capability_versions WHERE project_id=%s AND capability_id=%s AND version=%s FOR SHARE", (project_id, payload.capability_id, payload.version)).fetchone()
         if not cap or cap[0] != "agent" or cap[1] != "registered_local" or cap[2] != "aao.agent_runner:patch":
             raise HTTPException(409, "Selected agent-runner capability is unavailable")
+        # Authorization is checked here on its own, whatever any routing recommendation said.
+        from aao.agent_runner import activated_backends
+        if cap[3] not in (None, "fixture") and cap[3] not in activated_backends():
+            raise HTTPException(409, f"Agent backend {cap[3]} is not activated; CEO provider activation required")
         ev = db.execute("SELECT 1 FROM events WHERE subject_id=%s AND kind='capability.evaluated' AND details->>'capability_id'=%s AND details->>'version'=%s AND details->>'recommendation' IN ('reuse','adapt') LIMIT 1", (work_id, payload.capability_id, payload.version)).fetchone()
         if not ev:
             raise HTTPException(409, "Capability must be selected for this task before staging")

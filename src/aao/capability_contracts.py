@@ -43,6 +43,10 @@ def model_profile_errors(contract: dict) -> list[str]:
     model = profile.get("model")
     if model is not None and (not isinstance(model, str) or not _PROFILE_NAME.fullmatch(model)):
         errors.append("model_profile.model must be a model id or null")
+    quality = profile.get("quality", {})
+    if not isinstance(quality, dict) or not all(
+            isinstance(k, str) and type(v) is int and 0 <= v <= 5 for k, v in quality.items()):
+        errors.append("model_profile.quality must map seats to 0-5")
     seats = profile.get("seats", [])
     if not isinstance(seats, list) or not all(isinstance(s, str) and _PROFILE_NAME.fullmatch(s) for s in seats):
         errors.append("model_profile.seats must be a list of names")

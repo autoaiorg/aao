@@ -46,6 +46,12 @@ def codex_release() -> Path:
     return binary.parents[1]
 
 
+def activated_backends() -> frozenset[str]:
+    """Agent backends the CEO activated for this process (AAO_AGENT_PROVIDER, comma separated). The fixture
+    backend calls no model and needs no activation."""
+    return frozenset(b.strip() for b in os.getenv("AAO_AGENT_PROVIDER", "").split(",") if b.strip())
+
+
 _MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 
 
@@ -149,7 +155,7 @@ def run_agent_patch(repository, base_sha: str, instructions: str, *, backend: st
     if root != source:
         source = root
     _git(source, "cat-file", "-e", f"{base_sha}^{{commit}}")
-    if backend == "codex" and os.getenv("AAO_AGENT_PROVIDER") != "codex":
+    if backend == "codex" and "codex" not in activated_backends():
         raise AgentRunnerError("codex backend disabled; CEO provider activation required (AAO_AGENT_PROVIDER=codex)")
     if backend not in {"fixture", "codex"}:
         raise AgentRunnerError("unsupported agent backend")

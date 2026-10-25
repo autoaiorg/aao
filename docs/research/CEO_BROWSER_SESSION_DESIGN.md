@@ -1,8 +1,14 @@
 # Diseño propuesto: sesión CEO en navegador mediante cookie HttpOnly
 
-**Estado:** propuesta técnica, no implementada ni autorizada para despliegue.  
-**Base observada:** `main` en `a99bb5f711cbe1bfef7672808e680d47ad9320cd` (2026-10-25).  
+**Estado:** implementación preparada en la rama `docs/ceo-cookie-session-design`; no fusionada ni habilitada en producción.
+**Base de implementación:** `main` en `1e63296902a7b111597f4481099c2baf3103d8e2` (2026-10-25).
 **Alcance:** mantener una sesión de navegador tras recargar la página sin persistir el bearer CEO en almacenamiento accesible a JavaScript. No convierte el token estático actual en identidad humana ni habilita producción.
+
+## Estado de la implementación
+
+El flujo quedó implementado en dev/test: `POST /v1/auth/ceo/session` intercambia la credencial CEO por cookie `HttpOnly`, `Secure`, `SameSite=Strict` y sesión opaca revocable de servidor (máximo 12 h); al recargar, el frontend vuelve a obtener CSRF con cookie y presenta reautenticación explícita si la sesión no existe o caducó. Mutaciones cookie-authenticated exigen CSRF y `Origin`. En producción el bootstrap y autenticación por cookie responden 503. La compatibilidad bearer se mantiene para clientes existentes dev/test.
+
+La aplicación de cookie `Secure` en localhost HTTP se comprobó con Playwright real; no se degrada a cookie insegura. No se ejecutó la suite PostgreSQL en esta revisión porque no había URL de DB disposable disponible. Los requests que ya pasaron autenticación antes de confirmar logout pueden terminar después; los siguientes quedan revocados.
 
 ## Situación actual verificada en el código
 

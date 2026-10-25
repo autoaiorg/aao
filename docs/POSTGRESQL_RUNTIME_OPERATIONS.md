@@ -34,7 +34,9 @@ for migration in db/postgres/001_foundation.sql \
   db/postgres/012_patch_proposals.sql \
   db/postgres/013_work_description.sql \
   db/postgres/014_execution_retry.sql \
-  db/postgres/015_organization_profiles.sql; do
+  db/postgres/015_organization_profiles.sql \
+  db/postgres/016_project_conversations.sql \
+  db/postgres/017_ceo_browser_sessions.sql; do
   psql "$AAO_POSTGRES_URL" -v ON_ERROR_STOP=1 -f "$migration"
 done
 export AAO_CEO_TOKEN='locally-generated-secret'
@@ -56,7 +58,6 @@ unique constraint and has the partial index `ux_execution_queue_active_work`
 after deployment: preserve queue/journal evidence and correct defects with a
 new migration instead of dropping its generation columns or trigger. Recreate
 only explicitly disposable databases when a clean migration replay is needed.
-
 PostgreSQL work and review routes require individually issued credentials.
 Use the CEO-authenticated `/v1/principals/credentials` endpoint to provision
 an `AGENT` or `AUDITOR`, then send its one-time returned token as

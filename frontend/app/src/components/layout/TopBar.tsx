@@ -12,8 +12,8 @@ export interface TopBarProps {
   onProjectSelect: (projectId: string | null) => void;
   principal: PrincipalSummary | null;
   isAuthenticated: boolean;
-  onLogin: (token: string, role: 'AGENT' | 'CEO') => void;
-  onLogout: () => void;
+  onLogin: (token: string, role: 'AGENT' | 'CEO') => void | Promise<void>;
+  onLogout: () => void | Promise<void>;
   fetchedAt?: string;
   isFetching?: boolean;
   onRefresh: () => void;
@@ -38,6 +38,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [inputToken, setInputToken] = useState('');
   const [selectedRole, setSelectedRole] = useState<'AGENT' | 'CEO'>('AGENT');
+  const [authError, setAuthError] = useState<string | null>(null);
   const loginTriggerRef = React.useRef<HTMLButtonElement | null>(null);
   const tokenInputRef = React.useRef<HTMLInputElement | null>(null);
 
@@ -53,11 +54,26 @@ export const TopBar: React.FC<TopBarProps> = ({
     }, 0);
   };
 
-  const handleLoginSubmit = (e: React.FormEvent) => {
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputToken.trim()) return;
-    onLogin(inputToken.trim(), selectedRole);
-    closeLoginModal();
+    setAuthError(null);
+    try {
+      await onLogin(inputToken.trim(), selectedRole);
+      closeLoginModal();
+    } catch (error) {
+      setInputToken('');
+      setAuthError(error instanceof Error ? error.message : 'No se pudo iniciar sesión.');
+    }
+  };
+
+  const handleLogoutClick = async () => {
+    setAuthError(null);
+    try {
+      await onLogout();
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : 'No se pudo cerrar sesión.');
+    }
   };
 
   React.useEffect(() => {
@@ -87,6 +103,7 @@ export const TopBar: React.FC<TopBarProps> = ({
         zIndex: 50,
       }}
     >
+      {authError && !showLoginModal && <p role="alert" style={{ margin: 0, color: 'var(--status-danger-text, #b91c1c)', fontSize: 12 }}>{authError}</p>}
       <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
         {onToggleSidebar && (
           <button
@@ -229,7 +246,7 @@ export const TopBar: React.FC<TopBarProps> = ({
                 </span>
               </Badge>
             )}
-            <Button size="sm" variant="ghost" onClick={onLogout} title="Cerrar sesión en memoria">
+            <Button size="sm" variant="ghost" onClick={() => { void handleLogoutClick(); }} title="Cerrar sesión en AAO">
               Desconectar
             </Button>
           </div>
@@ -278,8 +295,9 @@ export const TopBar: React.FC<TopBarProps> = ({
               Autenticación en Memoria Volátil
             </h3>
             <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '16px' }}>
-              El token se retiene exclusivamente en la memoria de esta pestaña y nunca se persiste en disco, almacenamiento local ni cookies.
+              Las credenciales de agente permanecen en memoria. La credencial CEO se intercambia por una sesión de servidor en cookie HttpOnly; el bearer no se conserva en el navegador.
             </p>
+            {authError && <p role="alert" style={{ color: 'var(--status-danger-text, #b91c1c)' }}>{authError}</p>}
 
             <form onSubmit={handleLoginSubmit}>
               <div style={{ marginBottom: '12px' }}>

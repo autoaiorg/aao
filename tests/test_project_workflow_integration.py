@@ -1448,3 +1448,69 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         last = client.get(f"/v1/projects/{project}/activity?limit=1", headers=ceo).json()[0]
         assert last["kind"] == "work.resolved_outside_cycle" and last["details"]["agent_cycle"] is False
     assert subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True, check=True).stdout == ""
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or
+    os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="PostgreSQL integration requires an explicitly disposable test database",
+)
+def test_ceo_browser_session_cookie_csrf_and_logout(monkeypatch):
+    from aao.work_management_api import CEO_SESSION_COOKIE, app, tx
+
+    monkeypatch.setenv("AAO_ENV", "test")
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "cookie-session-test-token")
+    monkeypatch.setenv("AAO_CEO_SESSION_ALLOWED_ORIGINS", "https://testserver")
+    origin = {"Origin": "https://testserver"}
+
+    with TestClient(app, base_url="https://testserver") as client:
+        assert client.post("/v1/auth/ceo/session", headers={**origin, "X-CEO-Token": "bad"}).status_code == 403
+        exchanged = client.post("/v1/auth/ceo/session", headers={**origin, "X-CEO-Token": "cookie-session-test-token"})
+        assert exchanged.status_code == 200
+        assert "cookie-session-test-token" not in exchanged.text
+        cookie_header = exchanged.headers.get("set-cookie", "")
+        assert "HttpOnly" in cookie_header and "Secure" in cookie_header
+        assert "SameSite=strict" in cookie_header and "Path=/" in cookie_header
+        assert CEO_SESSION_COOKIE in cookie_header
+        assert client.cookies.get(CEO_SESSION_COOKIE)
+
+        with tx() as db:
+            cookie_digest = __import__("hashlib").sha256(client.cookies.get(CEO_SESSION_COOKIE).encode()).hexdigest()
+            stored = db.execute(
+                "SELECT id,session_digest,csrf_digest FROM ceo_browser_sessions WHERE session_digest=%s",
+                (cookie_digest,),
+            ).fetchone()
+        assert stored and stored[1] == cookie_digest
+        assert stored[1] != client.cookies.get(CEO_SESSION_COOKIE)
+        assert stored[2] == __import__("hashlib").sha256(exchanged.json()["csrf_token"].encode()).hexdigest()
+
+        assert client.get("/v1/mandates").status_code == 200
+        with tx() as db:
+            db.execute("UPDATE ceo_browser_sessions SET created_at=clock_timestamp() - interval '13 hours', expires_at=clock_timestamp() - interval '1 second' WHERE id=%s", (stored[0],))
+        assert client.get("/v1/mandates").status_code == 403
+        with tx() as db:
+            db.execute("UPDATE ceo_browser_sessions SET expires_at=clock_timestamp() + interval '1 hour' WHERE id=%s", (stored[0],))
+        assert client.get("/v1/mandates").status_code == 200
+        assert client.post("/v1/mandates", headers=origin, json={"title": "blocked", "objective": "csrf"}).status_code == 403
+        assert client.post("/v1/mandates", headers={**origin, "X-AAO-CSRF": "wrong"}, json={"title": "blocked", "objective": "csrf"}).status_code == 403
+        csrf = exchanged.json()["csrf_token"]
+        created = client.post(
+            "/v1/mandates", headers={**origin, "X-AAO-CSRF": csrf},
+            json={"title": "Cookie session test", "objective": "Disposable test only"},
+        )
+        assert created.status_code == 201, created.text
+
+        restored = client.post("/v1/auth/ceo/session/csrf", headers=origin)
+        assert restored.status_code == 200
+        new_csrf = restored.json()["csrf_token"]
+        assert new_csrf != csrf
+        assert client.post("/v1/mandates", headers={**origin, "X-AAO-CSRF": csrf}, json={"title": "old csrf", "objective": "rejected"}).status_code == 403
+        assert client.post("/v1/auth/ceo/logout", headers={**origin, "X-AAO-CSRF": new_csrf}).status_code == 200
+        assert not client.cookies.get(CEO_SESSION_COOKIE)
+        assert client.get("/v1/mandates").status_code == 403
+
+        monkeypatch.setenv("AAO_ENV", "production")
+        assert client.post("/v1/auth/ceo/session", headers={**origin, "X-CEO-Token": "cookie-session-test-token"}).status_code == 503
+        client.cookies.set(CEO_SESSION_COOKIE, "not-a-real-secret", domain="testserver", path="/")
+        assert client.get("/v1/mandates").status_code == 503

@@ -52,6 +52,8 @@ export interface HttpLiveAdapterConfig {
   timeoutMs?: number;
   getToken?: () => string | null;
   getAuthRole?: () => 'AGENT' | 'CEO';
+  getCeoCookieSession?: () => boolean;
+  getCsrfToken?: () => string | null;
   onUnauthorized?: () => void;
   requireAuth?: boolean;
 }
@@ -61,6 +63,8 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
   private timeoutMs: number;
   private getToken: () => string | null;
   private getAuthRole: () => 'AGENT' | 'CEO';
+  private getCeoCookieSession: () => boolean;
+  private getCsrfToken: () => string | null;
   private onUnauthorized?: () => void;
   private requireAuth: boolean;
   private activeControllers: Set<AbortController> = new Set();
@@ -70,6 +74,8 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
     this.timeoutMs = config.timeoutMs ?? 10000;
     this.getToken = config.getToken ?? (() => null);
     this.getAuthRole = config.getAuthRole ?? (() => 'AGENT');
+    this.getCeoCookieSession = config.getCeoCookieSession ?? (() => false);
+    this.getCsrfToken = config.getCsrfToken ?? (() => null);
     this.onUnauthorized = config.onUnauthorized;
     this.requireAuth = config.requireAuth ?? false;
   }
@@ -105,7 +111,8 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
     };
 
     const token = this.getToken();
-    if (this.requireAuth && !token) {
+    const cookieSession = this.getAuthRole() === 'CEO' && this.getCeoCookieSession();
+    if (this.requireAuth && !token && !cookieSession) {
       clearTimeout(timeoutId);
       this.activeControllers.delete(controller);
       return {
@@ -122,11 +129,21 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
         headers['X-Agent-Token'] = token;
       }
     }
+    if (cookieSession && !['GET', 'HEAD', 'OPTIONS'].includes((options.method || 'GET').toUpperCase())) {
+      const csrfToken = this.getCsrfToken();
+      if (!csrfToken) {
+        clearTimeout(timeoutId);
+        this.activeControllers.delete(controller);
+        return { kind: 'forbidden', reason: 'Falta token CSRF de la sesión CEO.' };
+      }
+      headers['X-AAO-CSRF'] = csrfToken;
+    }
 
     try {
       const response = await fetch(`${this.baseUrl}${endpoint}`, {
         ...options,
         headers,
+        credentials: 'include',
         signal: controller.signal,
       });
 
@@ -221,8 +238,9 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
   async getCurrentPrincipal(): Promise<DataState<PrincipalSummary>> {
     const role = this.getAuthRole();
     const token = this.getToken();
+    const cookieSession = role === 'CEO' && this.getCeoCookieSession();
 
-    if (!token) {
+    if (!token && !cookieSession) {
       return {
         kind: 'forbidden',
         reason: 'Credencial no suministrada en memoria. Se requiere autenticación.',
@@ -237,10 +255,8 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
       try {
         // Attempt verification on CEO-only mandate endpoint to check if token is accepted
         const response = await fetch(`${this.baseUrl}/v1/mandates`, {
-          headers: {
-            'X-CEO-Token': token,
-            Accept: 'application/json',
-          },
+          headers: { ...(token ? { 'X-CEO-Token': token } : {}), Accept: 'application/json' },
+          credentials: 'include',
           signal: controller.signal,
         });
 
@@ -374,7 +390,8 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
 
     const headers: Record<string, string> = { Accept: 'application/json' };
     const token = this.getToken();
-    if (this.requireAuth && !token) {
+    const cookieSession = this.getAuthRole() === 'CEO' && this.getCeoCookieSession();
+    if (this.requireAuth && !token && !cookieSession) {
       clearTimeout(timeoutId);
       this.activeControllers.delete(controller);
       return {
@@ -391,10 +408,10 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
         headers['X-Agent-Token'] = token;
       }
     }
-
     try {
       const response = await fetch(`${this.baseUrl}/v1/projects/${encodeURIComponent(projectId)}/board`, {
         headers,
+        credentials: 'include',
         signal: controller.signal,
       });
 
@@ -544,6 +561,43 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
     } finally {
       clearTimeout(timeoutId);
       this.activeControllers.delete(controller);
+    }
+  }
+
+  async exchangeCeoBearerForSession(token: string): Promise<DataState<{ csrf_token: string }>> {
+    return this.authSessionRequest('/v1/auth/ceo/session', token);
+  }
+
+  async restoreCeoBrowserSession(): Promise<DataState<{ csrf_token: string }>> {
+    return this.authSessionRequest('/v1/auth/ceo/session/csrf');
+  }
+
+  async revokeCeoBrowserSession(csrfToken: string): Promise<DataState<{ logged_out: boolean }>> {
+    return this.authSessionRequest('/v1/auth/ceo/logout', undefined, csrfToken);
+  }
+
+  private async authSessionRequest<T extends { csrf_token?: string; logged_out?: boolean }>(
+    path: string, bearer?: string, csrfToken?: string,
+  ): Promise<DataState<T>> {
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (bearer) headers['X-CEO-Token'] = bearer;
+    if (csrfToken) headers['X-AAO-CSRF'] = csrfToken;
+    try {
+      const response = await fetch(`${this.baseUrl}${path}`, {
+        method: 'POST', headers, credentials: 'include',
+      });
+      if (!response.ok) {
+        return { kind: 'forbidden', reason: `Sesión CEO rechazada (HTTP ${response.status}).` };
+      }
+      const payload: unknown = await response.json();
+      const schema = path.endsWith('/logout')
+        ? z.object({ logged_out: z.boolean() })
+        : z.object({ authenticated: z.literal(true), csrf_token: z.string().min(32), expires_in_seconds: z.number() });
+      const parsed = schema.safeParse(payload);
+      if (!parsed.success) return { kind: 'error', code: 'SCHEMA_VALIDATION_ERROR', message: 'Respuesta de sesión CEO inválida.', retryable: false };
+      return { kind: 'ready', origin: 'live', fetchedAt: new Date().toISOString(), data: parsed.data as T };
+    } catch {
+      return { kind: 'error', code: 'NETWORK_ERROR', message: 'No se pudo contactar el servicio de sesión CEO.', retryable: true };
     }
   }
 

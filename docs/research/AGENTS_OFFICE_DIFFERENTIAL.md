@@ -57,7 +57,7 @@ El análisis inicial de AAO se actualizó después de #127 y #128 sobre `95d8427
 - Capa de lectura `AaoReadPort`, adapter HTTP vivo y demo separado; React Query, claves ligadas a sesión, limpieza de cache al cambiar origen/salir. La UI inicia en `live`; los datos demo son explícitamente aislados.
 - Control Center con proyectos, board, actividad de proyecto, capacidades/evaluaciones, decisiones y operaciones. Backend expone board/actividad/capacidades y stages de trabajo/ejecución. PostgreSQL es la fuente persistente del trabajo y journal.
 - La oficina consume `GET /v1/organization`, proyección backend de proyectos visibles, ejecuciones y revisiones; `/v1/agents/{id}` no existe. La ruta ya no vuelve a fan-out de proyectos/boards ante 404, error de red o contrato inválido: LIVE muestra el estado explícito y no inventa las seis unidades estáticas que antes componían el fallback. La comprobación de lease y cobertura siguen en el contrato backend.
-- La proyección no persiste perfiles de nombre/rol/unidad/responsable ni heartbeat. La única unidad de producción es `unit-unassigned`, etiqueta de agrupación visual no organizativa. Nombres worker/reviewer son IDs observados, no prueba de adscripción, liderazgo o certificación.
+- Las unidades y perfiles declarados ahora persisten en PostgreSQL y se editan desde el Control Center CEO (#134/#137); la oficina LIVE ya los representa en su plano 2D (#136). Aún no hay heartbeat: `unit-unassigned` es solo agrupación visual y los nombres worker/reviewer observados no prueban por sí solos disponibilidad, liderazgo ni certificación. El canvas 3D sigue siendo DEMO, no una vista del organigrama dinámico.
 - PR #127 amplió la oficina con historial de proveedor/modelo, intentos y alertas de no progreso/presupuesto en el inspector; PR #128 corrigió limpieza de canvas al desmontar y añadió QA de ciclo de vida. Estos cambios ya materializan lectura visual de ejecuciones, pero no añaden un endpoint de organización.
 
 ### Puntos de código que sustentan el diferencial
@@ -75,16 +75,15 @@ A SHA `95d8427` no existía `/v1/organization`; se implementó en PR #129 (`e807
 
 ### Falta o no se encontró en el alcance
 
-- Perfiles organizativos dinámicos persistidos y autorizados (unidad, rol, responsable y adscripción), integrados en la proyección existente sin conceder grants ni alterar datos de ejecución.
-- Perfiles persistentes de rol, unidad y responsable; telemetría heartbeat. Hasta que existan, la UI no puede declarar organigrama real, responsable de unidad ni disponibilidad. La actividad por ejecución sí existe parcialmente; «activo» solo se prueba con lease vigente.
+- Telemetría de presencia/heartbeat y feed de actividad unificado en la oficina. Estado de ejecución sigue siendo evidencia de trabajo, no presencia general del agente.
 - Conversación CEO-agente persistente en el producto; equipos temporales padre/hijos durables; calendario/rutinas con ejecución servidor; visualización de conocimiento corporativo unificada; feedback/skills versionadas asociadas al catálogo.
-- Experiencia de dirección de proyectos desde la oficina que cree trabajo con la misma API y límites de autoridad que Control Center.
+- Dirección de proyectos desde la oficina: hoy existe navegación a Kanban desde asignaciones, pero no creación de trabajo desde la oficina. El endpoint existente `POST /v1/projects/{id}/work` exige principal AGENT con `work.create`; no se debe eludir ese límite ni fingir una identidad de agente para el CEO.
 
 ## 5. Propuesta incremental
 
 ### F0 — Oficina de lectura sobre el estado real (prioridad inmediata)
 
-**Backend (base ya implementada en PR #129):** mantener `GET /v1/organization` como proyección de lectura, no un almacén de trabajo paralelo. Derivarla de proyectos, work items, ejecución/lease y revisiones existentes; el siguiente incremento añade perfiles organizativos persistidos, separados de grants/credenciales. Mantener separación entre perfil de agente (si existe) y principal autenticado; no inferir unidad/rol de `worker_id`, de un grant o de una revisión. Incluir relaciones mínimas: unidad/rol/responsable solo si persistidos, identidad observada, asignación y ejecución vinculadas, estado evidenciado, timestamp de origen, fuente/IDs y cobertura. Si no existe perfil canónico, devolver identidad desconocida con la relación de trabajo observada. Aplicar permisos en backend: CEO lee el ámbito autorizado por su rol; agente solo proyectos con `project.read`; no expandir datos visibles al unir proyectos.
+**Backend (base implementada en PR #129 y perfiles en #134):** mantener `GET /v1/organization` como proyección de lectura, no almacén de trabajo paralelo. Derivarla de proyectos, work items, ejecución/lease, revisiones y perfiles organizativos declarados por CEO. Mantener separación entre perfil de agente y principal autenticado; no inferir unidad/rol de `worker_id`, un grant o revisión. Si no existe perfil canónico, devolver identidad desconocida con relación de trabajo observada. Aplicar permisos en backend: CEO lee ámbito permitido por su rol; agente solo proyectos con `project.read`; no expandir datos visibles al unir proyectos.
 
 **Frontend:** consumir el contrato canónico sin fan-out ni sustitución si falta o es inválido; preservar `DataState` (ready/unavailable/forbidden/error), origen, evidencia y cobertura. Reutilizar vista, escena, inspector, query cache y navegación existentes. Selección de agente abre la identidad/actividad observadas; enlaces van a los proyectos/boards/actividad existentes. Sin estado de tareas replicado en el cliente.
 
@@ -97,11 +96,11 @@ A SHA `95d8427` no existía `/v1/organization`; se implementó en PR #129 (`e807
 
 **Pruebas ya existentes que deben conservarse/ampliarse:** `frontend/app/src/test/adapters.test.ts` contiene negativos sobre no inferir unidad/tipo por nombre, lease ausente/vencido/vigente, separación de grants y capacidades, y cobertura parcial; `frontend/app/src/test/office.test.tsx` comprueba el inspector e historial. No repetirlas sustituyendo la fuente real por fixtures. Añadir pruebas endpoint Postgres para scope CEO/AGENT, respuesta sin perfil organizativo y esquema consumible por el adapter; mantener fixture y live distinguidos.
 
-### F1 — Navegación y dirección del trabajo existente
+### F1 — Navegación y dirección del trabajo existente (parcial)
 
 **Frontend:** en detalle de agente/unidad mostrar resumen de asignaciones, recientes y decisiones relacionadas, con CTA a proyecto, Kanban y Activity ya disponibles. La oficina es un mapa de navegación, no un segundo tablero.
 
-**Backend:** reutilizar endpoints actuales (`POST /v1/projects/{id}/work`, admisión y stages autorizados). Extender solo si la respuesta no expone ID/actor/evidencia necesarios para el enlace. Sin ejecución directa por la escena.
+**Backend:** reutilizar endpoints actuales (`POST /v1/projects/{id}/work`, admisión y stages autorizados), sin ejecución directa por la escena. La API de creación requiere hoy un principal AGENT con grant `work.create`; para habilitar dirección CEO desde la oficina hay que diseñar/implementar una ruta de solicitud autorizada que conserve actor y proyecto y no conceda ejecución. No impersonar un agente ni crear un estado paralelo a `work_items`.
 
 **Aceptación:** desde un agente se llega a un trabajo existente; una solicitud de trabajo creada por la vía aprobada aparece inmediatamente en el board y la oficina a partir del mismo registro. Usuario sin grant no ve ni crea trabajo en ese proyecto.
 
@@ -143,7 +142,7 @@ Estas pruebas son criterios de construcción y aceptación de producto; **no est
 | 3 | Diseñar persistencia de conversación solo después de validar flujo de trabajo y autorización | UI de conversación CEO-AAO ligada a proyecto; emitir órdenes por flujo de trabajo existente, no llamadas directas a modelo |
 | 4 | Modelo padre/hijos, coordinador paralelo y scheduler durable solo si piloto/producto los justifica | Mostrar tareas hijas, calendario y conocimiento consumiendo contratos canónicos |
 
-El siguiente incremento útil es añadir perfiles organizativos persistentes y declarados por una autoridad autorizada; la proyección y el adapter ya existen y ahora fallan cerrado. Conversación, equipos o rutinas no son requisitos para ese trabajo ni para la operación del motor de ejecución.
+Los perfiles/unidades persistidos y la edición CEO ya están construidos (#134/#137), y su representación dinámica LIVE en 2D está construida (#136). El siguiente bloque prioritario de producto es cerrar F1: una vía autorizada para que el CEO dirija trabajo desde la oficina, con los mismos registros de `work_items` y visibilidad de board/oficina. A continuación F2 requiere conversación persistente, vinculada a proyecto y trabajo. Equipos (F3) y calendario/conocimiento/skills (F4) quedan después; no son precondiciones para el piloto real de modelo.
 
 ### Incremento de construcción siguiente: perfiles organizativos persistidos
 
@@ -153,7 +152,7 @@ El siguiente incremento útil es añadir perfiles organizativos persistentes y d
 - El contrato del frontend acepta `managerId`. La escritura organizativa desde UI CEO se añadió después en el incremento descrito abajo; no se edita desde el canvas 3D y no implica que perfiles se conviertan en grants.
 - Validación en el contenedor PostgreSQL desechable: pruebas focalizadas de persistencia/proyección y scope, `2 passed`; `compileall`, Ruff, `git diff --check`, TypeScript y suite frontend (136 tests) pasaron. No se ha ejecutado el conjunto completo ni CI.
 - **Fusionado:** PR #134 en `fecb34ea3e60c93eee6816e5af9840f8ebb84564`; PostgreSQL suite local `650 passed`, frontend `136 passed`, TypeScript/build/compileall/Ruff/pip check pasan; PR CI y `main` CI verdes ([run 40233270842](https://github.com/autoaiorg/aao/actions/runs/40233270842)). Esto acredita los checks indicados, no una certificación.
-- Siguiente en el momento de esa fusión: ampliar pruebas de ciclo jerárquico y límites de visibilidad, y conectar representación/edición de perfiles sin estado duplicado; la UI de gestión llegó después en el incremento de `feat/office-org-profile-management` descrito abajo. Las pruebas de ciclo y visibilidad siguen pendientes.
+- Nota histórica al fusionar #134: faltaban ciclo jerárquico y conexión UI. La gestión llegó con #137 y las escrituras concurrentes de jerarquía se cerraron con #139; la revisión independiente final de los límites de visibilidad continúa diferida al candidato y no se afirma aquí.
 
 ## 8. Límites y siguientes responsables
 
@@ -161,8 +160,8 @@ El siguiente incremento útil es añadir perfiles organizativos persistentes y d
 
 - **F0 implementado por backend y cerrado en el adapter:** `GET /v1/organization` proyecta desde PostgreSQL los proyectos visibles, ejecuciones/revisiones y para AGENT valida credencial activa y `project.read` en SQL. El agente autenticado puede aparecer como identidad desconocida; el CEO ve identidades observadas en ejecuciones/revisiones. No escribe estado ni inventa adscripciones, heartbeat o capacidades. La unidad `unit-unassigned` solo es agrupación visual. El adapter no reconstituye departamentos ni hace fan-out si falla el contrato.
 - **Evidencia local inicial:** prueba PostgreSQL `tests/test_project_workflow_integration.py::test_organization_projection_is_authenticated_and_project_scoped` pasó (`1 passed`) contra el contenedor desechable; `compileall`, Ruff focal y `git diff --check` pasaron. Esto no valida aún el conjunto completo ni CI.
-- **Límite de cobertura:** no se añadieron perfiles organizativos ni heartbeat, y el endpoint no concede permisos. Los estados se deducen únicamente de filas de ejecución; un `RUNNING` sin lease vigente demostrable permanece desconocido/no activo. La interfaz ya no conserva la ruta de agregación anterior: si el backend no entrega un contrato válido, muestra unavailable/forbidden/error.
-- **Siguiente trabajo:** persistir perfiles organizativos dinámicos (unidad, responsable y rol solo por declaración autorizada), exponerlos en la proyección con pruebas de scope y conectar la oficina a esos datos; no inventar presencia/heartbeat. El siguiente tramo de producto después de perfiles es F2: conversación persistente vinculada a proyectos y trabajo AAO, no chat directo a proveedor. F3/F4 siguen sujetos a necesidad validada.
+- **Límite de cobertura en ese incremento inicial:** aún no había perfiles ni heartbeat, y el endpoint no concede permisos. Los estados se deducen únicamente de filas de ejecución; un `RUNNING` sin lease vigente demostrable permanece desconocido/no activo. La interfaz ya no conserva la ruta de agregación anterior: si el backend no entrega un contrato válido, muestra unavailable/forbidden/error. Los perfiles llegaron después (#134/#137); heartbeat sigue pendiente.
+- **Siguiente trabajo (actualizado):** cerrar la dirección de trabajo de F1 sin ampliar grants por una interacción visual ni suplantar identidades; después abordar conversación persistente F2. No inventar presencia/heartbeat. F3/F4 siguen después de F1/F2.
 - **F1 implementado en incremento posterior:** desde la ficha de un agente, cada asignación abre el Kanban del proyecto real seleccionado en el Control Center. El vínculo usa el `projectId` de la respuesta; no crea ni replica tareas. Test de interacción `office.test.tsx` verifica navegación con el mismo ID. PR #130, merge `cf8b397`; suite frontend y CI de main verdes.
 
 - Esta investigación es referencia conceptual, no revisión de seguridad ni certificación de AAO.
@@ -191,6 +190,14 @@ El siguiente incremento útil es añadir perfiles organizativos persistentes y d
 - **Construido:** Organization Control Center ofrece al CEO LIVE formularios para upsert de unidad (ID, nombre, código, padre y responsable) y perfil (principal, nombre visible, rol, unidad y responsable). El adapter usa `PUT /v1/organization/units` y `/profiles`, envía token `X-CEO-Token`, y bloquea la llamada localmente si el rol de sesión no es CEO. El servidor sigue siendo la autoridad efectiva y valida la credencial CEO, referencias, ciclos/auto-parentesco y registra eventos. El panel declara expresamente que no concede permisos ni cambia asignaciones. No aparece en DEMO/AGENT.
 - **Validación local:** TypeScript; suite frontend `139 passed`; build. Build conserva warnings de chunk >500 kB y anotaciones de Zod.
 - **Integrado:** PR #137 en `f00573dddf83fb96d554674580cb18b6012e375c`; CI de `main` verde en [run 40235005341](https://github.com/autoaiorg/aao/actions/runs/40235005341). Los IDs de principal se validan en servidor; principal desconocido/revocado o referencias inválidas deben permanecer como error visible. Aún falta que la oficina reúna dirección del trabajo, chat persistente, equipos, calendario y conocimiento.
+
+### Robustez de jerarquía organizativa
+
+- Implementación `2e0d57fb54929c7388f9a9fd2043d39f5ac60afe`; PR #139 fusionada en `cfb4d7749f1806db51051e6e01d33afdde2e09ed`. Escrituras concurrentes de parent serializadas con advisory transaction lock; CTE recursiva limitada con `UNION`; test de integración PostgreSQL concurrente incluido. CI de `main` verde en [run 40235751391](https://github.com/autoaiorg/aao/actions/runs/40235751391). Protege metadatos organizativos; no resuelve dirección de trabajo.
+
+### Robustez de jerarquía organizativa
+
+- PR #139 fusionada en `cfb4d7749f1806db51051e6e01d33afdde2e09ed`: las escrituras concurrentes de parent se serializan con advisory transaction lock y la consulta recursiva de ciclos termina incluso si hubiera datos cíclicos preexistentes. Test PostgreSQL concurrente incluido; CI de `main` verde en [run 40235751391](https://github.com/autoaiorg/aao/actions/runs/40235751391). Es robustez de metadatos organizativos, no autorización de trabajo.
 
 ### Corrección transversal: esquema de compatibilidad de capacidades
 

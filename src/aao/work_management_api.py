@@ -2115,10 +2115,21 @@ def admit(work_id: str, principal: str = Depends(require_worker)):
             "p.mandate_id=m.id WHERE p.id=%s", (project_id,),
         ).fetchone()
         require_grant(db, principal, project_id, "work.admit")
+        if db.execute("SELECT 1 FROM work_groups WHERE parent_work_id=%s", (work_id,)).fetchone():
+            raise HTTPException(409, "A work-group parent is a container and cannot be admitted")
+        prerequisites = db.execute(
+            "SELECT prerequisite.status FROM work_item_dependencies dependency "
+            "JOIN work_items prerequisite ON prerequisite.project_id=dependency.project_id "
+            "AND prerequisite.id=dependency.depends_on_work_id "
+            "WHERE dependency.project_id=%s AND dependency.work_id=%s "
+            "ORDER BY dependency.depends_on_work_id FOR SHARE OF prerequisite",
+            (project_id, work_id),
+        ).fetchall()
+        dependencies_satisfied = all(status == "DONE" for (status,) in prerequisites)
         decision = decide_admission(
             project_active=project[0] == "ACTIVE",
             mandate_confirmed=project[1] == "CONFIRMED",
-            authorized=True, dependencies_satisfied=True,
+            authorized=True, dependencies_satisfied=dependencies_satisfied,
             capacity_available=True, within_budget=True,
             residual_risk="low", emergency_stop=False,
         )

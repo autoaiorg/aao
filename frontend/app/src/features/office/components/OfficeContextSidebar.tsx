@@ -38,7 +38,7 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
           color: '#64748b',
           accentColor: '#94a3b8',
         }
-      : OFFICE_ROOMS[0]);
+      : undefined);
 
   const unit =
     units.find((u) => u.id === selectedRoomId) ||
@@ -87,14 +87,14 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
             style={{
               padding: '2px 8px',
               borderRadius: 'var(--radius-sm, 4px)',
-              backgroundColor: roomConfig.color,
+              backgroundColor: roomConfig?.color || '#334155',
               color: '#ffffff',
               fontSize: '11px',
               fontWeight: 700,
               letterSpacing: '0.5px',
             }}
           >
-            {roomConfig.code}
+            {unit?.code || roomConfig?.code || 'ORG'}
           </span>
           <span
             style={{
@@ -122,11 +122,13 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
             lineHeight: 1.3,
           }}
         >
-          {unit?.name || roomConfig.name}
+          {unit?.name || roomConfig?.name || 'Unidad no disponible'}
         </h3>
 
         <div style={{ fontSize: '12px', color: 'var(--accent)', fontWeight: 600 }}>
-          Responsable: {unit?.leadRole || 'Líder de Unidad'}
+          {unit?.leadAgentId
+            ? `Responsable: ${agents.find((agent) => agent.id === unit.leadAgentId)?.name || unit.leadAgentId} · ${unit.leadRole}`
+            : `Responsable: ${unit?.leadRole || 'No declarado'}`}
         </div>
 
         <p
@@ -137,7 +139,10 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
             lineHeight: 1.5,
           }}
         >
-          {unit?.description || 'Departamento operativo de la organización digital autónoma.'}
+          {unit?.description ||
+            (isUnassignedRoom
+              ? 'Sin adscripción departamental canónica confirmada en el núcleo.'
+              : 'Sin descripción organizativa declarada.')}
         </p>
 
         {/* Operational Indicators Row */}

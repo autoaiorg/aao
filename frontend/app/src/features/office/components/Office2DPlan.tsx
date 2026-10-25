@@ -38,10 +38,12 @@ export const Office2DPlan: React.FC<Office2DPlanProps> = ({
         boxShadow: 'var(--shadow-sm)',
       }}
     >
-      {OFFICE_ROOMS.map((room) => {
-        const unit = units.find((u) => u.id === room.id);
-        const roomAgents = agents.filter((a) => a.unitId === room.id);
-        const isSelected = selectedRoomId === room.id;
+      {units.map((unit, unitIndex) => {
+        const room = OFFICE_ROOMS.find((candidate) => candidate.id === unit.id) ||
+          OFFICE_ROOMS[unitIndex % OFFICE_ROOMS.length];
+        const roomAgents = agents.filter((a) => a.unitId === unit.id);
+        const isSelected = selectedRoomId === unit.id;
+        const lead = unit.leadAgentId ? agents.find((agent) => agent.id === unit.leadAgentId) : undefined;
 
         return (
           <div
@@ -62,7 +64,7 @@ export const Office2DPlan: React.FC<Office2DPlanProps> = ({
             <button
               type="button"
               aria-pressed={isSelected}
-              onClick={() => onSelectRoom(room.id)}
+              onClick={() => onSelectRoom(unit.id)}
               style={{
                 background: 'transparent',
                 border: 'none',
@@ -89,7 +91,7 @@ export const Office2DPlan: React.FC<Office2DPlanProps> = ({
                     marginBottom: '4px',
                   }}
                 >
-                  {room.code}
+                  {unit.code}
                 </span>
                 <h4
                   style={{
@@ -100,10 +102,14 @@ export const Office2DPlan: React.FC<Office2DPlanProps> = ({
                     lineHeight: 1.3,
                   }}
                 >
-                  {unit?.name || room.name}
+                  {unit.name}
                 </h4>
                 <div style={{ fontSize: '12px', color: 'var(--accent)', fontWeight: 600 }}>
-                  {unit?.leadRole || 'Responsable de unidad'}
+                  {lead
+                    ? `Responsable: ${lead.name} · ${unit.leadRole}`
+                    : unit.leadAgentId
+                      ? `Responsable declarado: ${unit.leadAgentId}`
+                      : unit.leadRole}
                 </div>
               </div>
               <span
@@ -131,7 +137,7 @@ export const Office2DPlan: React.FC<Office2DPlanProps> = ({
                 lineHeight: 1.45,
               }}
             >
-              {unit?.description || 'Departamento operativo de AAO.'}
+              {unit.description || 'Sin descripción organizativa declarada.'}
             </p>
 
             {/* Agents inside this room */}

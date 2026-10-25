@@ -12,10 +12,13 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
   onNavigate,
   onRefresh,
 }) => {
-  const [viewMode, setViewMode] = useState<OfficeViewMode>('3d');
-  const [selectedRoomId, setSelectedRoomId] = useState<string>('unit-exec');
+  const [viewMode, setViewMode] = useState<OfficeViewMode>(
+    organization.kind === 'ready' && organization.origin === 'demo' ? '3d' : '2d'
+  );
+  const [selectedRoomId, setSelectedRoomId] = useState<string>('unit-unassigned');
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [drawerAgent, setDrawerAgent] = useState<AgentIdentity | null>(null);
+  const initialUnitSelectionDone = useRef(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [typeFilter, setTypeFilter] = useState<'ALL' | 'STANDING' | 'EPHEMERAL'>('ALL');
   const [reducedMotion, setReducedMotion] = useState<boolean>(() => {
@@ -41,6 +44,25 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
 
   const units = useMemo(() => data?.units || [], [data]);
   const allAgents = useMemo(() => data?.agents || [], [data]);
+
+  useEffect(() => {
+    if (!isDemo && viewMode === '3d') setViewMode('2d');
+  }, [isDemo, viewMode]);
+
+  useEffect(() => {
+    const isDerivedUnassignedUnit =
+      selectedRoomId === 'unit-unassigned' &&
+      allAgents.some((agent) => agent.unitId === 'unit-unassigned' || !units.some((unit) => unit.id === agent.unitId));
+    if (
+      units.length &&
+      (!initialUnitSelectionDone.current ||
+        (!isDerivedUnassignedUnit && !units.some((unit) => unit.id === selectedRoomId)))
+    ) {
+      initialUnitSelectionDone.current = true;
+      const firstAssignedUnit = units.find((unit) => unit.id !== 'unit-unassigned');
+      setSelectedRoomId(firstAssignedUnit?.id || units[0].id);
+    }
+  }, [allAgents, selectedRoomId, units]);
 
   // Filtered agents by search and type
   const filteredAgents = useMemo(() => {
@@ -152,7 +174,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
             {isDemo
               ? 'DEMO · SIMULACIÓN 3D ACTIVA · Todos los departamentos, agentes y asignaciones son sintéticos y no representan datos de producción.'
               : data
-              ? `LIVE · ESTRUCTURA RECIBIDA · ${
+              ? `LIVE · ESTRUCTURA RECIBIDA · Plano 2D derivado de unidades y perfiles persistidos. La escena 3D es solo DEMO. ${
                   data.coverage
                     ? data.coverage.notes ||
                       (data.coverage.isPartial
@@ -170,6 +192,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
         viewMode={viewMode}
         onViewModeChange={setViewMode}
         selectedRoomId={selectedRoomId}
+        units={units}
         onSelectRoom={handleSelectRoom}
         onRotateCamera={(deg) => canvas3DRef.current?.rotate(deg)}
         onZoomCamera={(factor) => canvas3DRef.current?.zoom(factor)}
@@ -180,6 +203,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
         onTypeFilterChange={setTypeFilter}
         reducedMotion={reducedMotion}
         onToggleReducedMotion={() => setReducedMotion((prev) => !prev)}
+        isDemo={isDemo}
       />
 
       {/* 3. Main Workspace Grid: (3D WebGL Canvas OR 2D Plan) + Context Inspector Sidebar */}

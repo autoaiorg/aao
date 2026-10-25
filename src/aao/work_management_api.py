@@ -21,7 +21,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from aao.capability_contracts import missing_contract_fields
+from aao.capability_contracts import missing_contract_fields, model_profile_errors
 from aao.capability_evaluation import recommend
 from aao.planner import Admission, decide_admission
 from aao.review import evaluate_review
@@ -848,6 +848,9 @@ def register_capability(
         raise HTTPException(
             422, "Capability contract is incomplete: " + ", ".join(sorted(missing_fields)),
         )
+    profile_errors = model_profile_errors(payload.contract) if payload.capability_type == "agent" else []
+    if profile_errors:
+        raise HTTPException(422, "; ".join(profile_errors))
     if not payload.tests or not payload.evidence:
         raise HTTPException(422, "At least one test reference and evidence reference are required")
     with tx() as db:

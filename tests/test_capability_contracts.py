@@ -24,3 +24,16 @@ def test_empty_contract_values_are_not_treated_as_declarations():
             "usage_limits": ["project scope"],
         },
     ) == {"compatible_roles"}
+
+
+def test_model_profile_is_optional_but_validated_when_present():
+    from aao.capability_contracts import model_profile_errors
+    assert model_profile_errors({"purpose": "x"}) == []
+    good = {"backend": "codex", "provider": "openai", "model": "gpt-6-luna", "seats": ["patch.tests"]}
+    assert model_profile_errors({"model_profile": good}) == []
+    assert model_profile_errors({"model_profile": {**good, "model": None}}) == []
+    assert model_profile_errors({"model_profile": "codex"}) == ["model_profile must be an object"]
+    for bad, field in (({**good, "backend": "docker"}, "backend"), ({**good, "provider": ""}, "provider"),
+                       ({**good, "model": "--yolo"}, "model"), ({**good, "seats": "patch"}, "seats")):
+        errors = model_profile_errors({"model_profile": bad})
+        assert len(errors) == 1 and f"model_profile.{field}" in errors[0], (field, errors)

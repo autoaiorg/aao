@@ -119,6 +119,8 @@ def test_agent_worker_reads_task_instructions_and_persists_proposal(monkeypatch)
     assert completed[0][3]["proposal_id"] == "proposal-1"
     assert {k: completed[0][3][k] for k in ("backend", "provider", "model", "backend_version")} == {
         "backend": "fixture", "provider": "fixture", "model": None, "backend_version": "fixture-v1"}
+    # A capability without model_profile keeps the previous behaviour: the environment picks the backend.
+    assert completed[0][3]["backend_source"] == "environment"
 
 
 def test_agent_worker_empty_diff_fails_without_proposal(monkeypatch):
@@ -145,3 +147,43 @@ def test_agent_worker_empty_diff_fails_without_proposal(monkeypatch):
     monkeypatch.setattr(worker, "complete", lambda *args, **kwargs: completed.append(args))
     assert worker.run_one("agent-1", "credential", project_id="project-1")["status"] == "FAILED"
     assert completed[0][3]["conclusion"] == "failure"
+
+
+def test_agent_worker_runs_the_backend_and_model_of_the_staged_capability(monkeypatch):
+    """The capability's model_profile, not AAO_AGENT_BACKEND, decides what runs; the result says so."""
+    from contextlib import contextmanager
+
+    from aao import inert_execution_worker as worker
+    selection = {"type": "aao.agent-patch.v1", "capability_id": "aao.agent-runner.codex", "version": "1.0.0",
+                 "base_sha": "a" * 40}
+    monkeypatch.setattr(worker, "claim", lambda *args, **kwargs: _lease(selection))
+    monkeypatch.setattr(worker, "state", lambda _: {"status": "RUNNING"})
+    monkeypatch.setenv("AAO_SELF_DEV_REPOSITORY", "/repository")
+    monkeypatch.setenv("AAO_CANDIDATE_REPOSITORY", "/candidates.git")
+    monkeypatch.setenv("AAO_AGENT_BACKEND", "fixture")
+    profile = {"backend": "codex", "provider": "openai", "model": "gpt-6-luna", "seats": ["patch.tests"]}
+    queries = []
+    class DB:
+        def execute(self, sql, params):
+            queries.append(params)
+            class Q:
+                def fetchone(self):
+                    return (profile,) if "model_profile" in sql else ("task", "", [], "agent-1")
+            return Q()
+    @contextmanager
+    def tx(): yield DB()
+    monkeypatch.setattr("aao.work_management_api.tx", tx)
+    captured = {}
+    def runner(repository, base, instructions, **kwargs):
+        captured.update(kwargs)
+        return {"patch": "", "backend": kwargs["backend"], "provider": "openai", "model": kwargs["model"],
+                "backend_version": "codex-cli x", "elapsed_seconds": .01, "exit_status": 0}
+    monkeypatch.setattr("aao.agent_runner.run_agent_patch", runner)
+    completed = []
+    monkeypatch.setattr(worker, "complete", lambda *args, **kwargs: completed.append(args))
+    worker.run_one("agent-1", "credential", project_id="project-1", seconds=400)
+    assert (captured["backend"], captured["model"]) == ("codex", "gpt-6-luna")
+    assert ("execution-1", "aao.agent-runner.codex", "1.0.0") in queries
+    result = completed[0][3]
+    assert result["backend_source"] == "capability" and result["model"] == "gpt-6-luna"
+    assert (result["capability_id"], result["capability_version"]) == ("aao.agent-runner.codex", "1.0.0")

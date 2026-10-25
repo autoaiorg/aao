@@ -91,7 +91,7 @@ def test_codex_run_records_provider_pinned_model_and_real_cli_release(monkeypatc
 def test_codex_model_pin_is_validated(monkeypatch):
     from aao.agent_runner import backend_identity
     monkeypatch.setenv("AAO_AGENT_CODEX_MODEL", "--dangerously-bypass")
-    with pytest.raises(AgentRunnerError, match="invalid AAO_AGENT_CODEX_MODEL"):
+    with pytest.raises(AgentRunnerError, match="invalid codex model id"):
         backend_identity("codex")
 
 

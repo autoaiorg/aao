@@ -73,8 +73,8 @@ install -d -m 0700 ~/.local/share/aao/codex-agent
 CODEX_HOME=~/.local/share/aao/codex-agent codex login --device-auth   # CEO: sesión dedicada
 python scripts/self_development_cycle.py --project-id $P setup         # 3 identidades, 8 h
 python scripts/self_development_cycle.py --project-id $P task --title "…" --description "…" \
-  --criterion "…" --base-sha "$(git rev-parse origin/main)"
-AAO_AGENT_PROVIDER=codex AAO_AGENT_BACKEND=codex AAO_AGENT_CODEX_HOME=~/.local/share/aao/codex-agent \
+  --criterion "…" --base-sha "$(git rev-parse origin/main)" --agent codex
+AAO_AGENT_PROVIDER=codex AAO_AGENT_CODEX_HOME=~/.local/share/aao/codex-agent \
   python scripts/run_self_development_worker.py --project-id $P --principal-id <implementador>
 # auditor: comprobar que el diff solo toca tests/, ejecutar la suite completa sobre el candidato y después:
 python scripts/self_development_cycle.py --project-id $P submit --work-id <id>
@@ -87,7 +87,7 @@ AAO_PUBLISH_BASE_REPO=autoaiorg/aao python scripts/publish_candidate.py --work-i
 python scripts/self_development_cycle.py --project-id $P verify --work-id <id>   # cadena completa desde PostgreSQL
 ```
 
-**Modelo (opcional, recomendado):** si se añade `AAO_AGENT_CODEX_MODEL=<id>` a la línea del worker, codex recibe `-m <id>` y la evidencia de la ejecución registra ese modelo. Sin esa variable, la evidencia registra `model: null`, porque AAO no observa el modelo por defecto del CLI. En los dos casos registra `provider: openai` y la versión real del CLI (`codex-cli <release>`).
+**Agente y modelo:** desde I3 los decide la capacidad elegida con `--agent`, no el entorno. `aao.agent-runner.codex` lleva en su `model_profile` el backend `codex`, el proveedor `openai` y el modelo `gpt-6-luna`; codex lo recibe como `-m`. La evidencia registra `capability_id`, `backend_source: capability`, proveedor, modelo y la versión real del CLI. Registrar la capacidad no activa nada: sin `AAO_AGENT_PROVIDER=codex` en el worker, el runner rechaza el backend. Las capacidades sin `model_profile` conservan el comportamiento anterior (`AAO_AGENT_BACKEND` y `AAO_AGENT_CODEX_MODEL`) y la evidencia lo indica como `backend_source: environment`.
 
 Si el intento falla o se rechaza, se puede volver a encolar hasta llegar al límite. Al alcanzarlo, la API lo rechaza y decide el CEO. También rechaza con 409 («No progress») un intento nuevo cuando los dos últimos acabaron igual: mismo parche y mismo resultado o fallo. En ese caso decide el PM, que puede reformular la tarea como una nueva o pedir una resolución del CEO.
 

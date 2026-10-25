@@ -847,7 +847,10 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
     monkeypatch.setenv("AAO_AGENT_QUEUE_ENABLED", "true")
     monkeypatch.setenv("AAO_SELF_DEV_REPOSITORY", str(repo))
     monkeypatch.setenv("AAO_CANDIDATE_REPOSITORY", str(store))
-    monkeypatch.setenv("AAO_AGENT_BACKEND", "fixture")
+    # The environment says codex (not activated here, so it would fail); the capability's model_profile says
+    # fixture and must win.
+    monkeypatch.setenv("AAO_AGENT_BACKEND", "codex")
+    monkeypatch.delenv("AAO_AGENT_PROVIDER", raising=False)
     monkeypatch.setenv("AAO_AGENT_FIXTURE_PATCH", str(failing))
     ceo = {"X-CEO-Token": "agent-run-ceo"}
     with TestClient(app) as client:
@@ -876,16 +879,22 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         })
         assert work.status_code == 201, work.text
         work = work.json()["id"]
-        registered = client.post(f"/v1/projects/{project}/capabilities", headers=agent, json={
+        capability = {
             "capability_id": "aao.agent-runner", "version": "1.0.0", "capability_type": "agent",
             "provenance": {"kind": "repository"},
             "contract": {"purpose": "Turn a task into a patch proposal", "entrypoint": "aao.agent_runner:patch",
                          "inputs": ["task", "base_sha"], "outputs": ["patch proposal"], "platform": "Linux",
                          "authority_boundary": "edits only a disposable clone; proposes, never applies or merges",
-                         "compatible_roles": ["implementer"]},
+                         "compatible_roles": ["implementer"],
+                         "model_profile": {"backend": "fixture", "provider": "fixture", "model": None,
+                                           "seats": ["patch.tests"]}},
             "required_permissions": ["execution.claim", "code.propose"], "risks": ["agent edits a disposable clone"],
             "dependencies": [], "tests": ["tests/test_agent_runner.py"], "compatibility": {}, "evidence": ["repo source"],
-        })
+        }
+        bad = {**capability, "contract": {**capability["contract"], "model_profile": {"backend": "docker"}}}
+        rejected = client.post(f"/v1/projects/{project}/capabilities", headers=agent, json=bad)
+        assert rejected.status_code == 422 and "model_profile.backend" in rejected.text
+        registered = client.post(f"/v1/projects/{project}/capabilities", headers=agent, json=capability)
         assert registered.status_code == 201, registered.text
         evaluation = client.post(f"/v1/projects/{project}/capability-evaluations", headers=agent, json={
             "task_id": work,
@@ -932,6 +941,8 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         assert failed["status"] == "FAILED" and failed["result"]["check"]["conclusion"] == "failure"
         assert infra_failed["status"] == "FAILED" and infra_failed["result"]["check"]["error"] == "sandbox unavailable"
         result = succeeded["result"]
+        assert (result["backend"], result["backend_source"], result["capability_id"]) == (
+            "fixture", "capability", "aao.agent-runner")
         assert result["proposal_id"] == infra_failed["result"]["proposal_id"]
         assert succeeded["status"] == "SUCCEEDED" and result["check"]["conclusion"] == "success", result
         assert result["check"]["extra_tests"] == ["tests/test_notes.py"]

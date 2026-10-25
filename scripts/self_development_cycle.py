@@ -2,8 +2,8 @@
 """Drive one Self Development cycle on the development instance, one role per step.
 
   setup   (CEO)          issue implementer/auditor/publisher credentials with scoped 8h grants,
-                         register the agent-runner capability; tokens go only to private runtime files
-  task    (implementer)  create a task, select the capability, admit it and stage an agent run
+                         register the agent catalog (one capability per backend/model); tokens go only to private files
+  task    (implementer)  create a task, select the --agent capability, admit it and stage an agent run
   submit  (implementer)  after a SUCCEEDED run: register its check output as evidence, move to review
   review  (auditor)      APPROVE or REJECT exactly the tested candidate SHA
   verify  (read-only)    print the task's whole chain from PostgreSQL and check its consistency
@@ -28,7 +28,14 @@ sys.path.insert(0, str(ROOT / "scripts"))
 API = os.environ.get("AAO_API", "http://127.0.0.1:8001")
 TOKENS = {"implementer": "aao-self-development-agent.token", "auditor": "aao-auditor.token",
           "publisher": "aao-publisher.token"}
-CAPABILITY = {"capability_id": "aao.agent-runner", "version": "1.0.0"}
+# The agent catalog: one capability per backend/model. The model is data here; the code never branches on its name.
+# Registering a capability activates nothing: codex still needs the CEO's AAO_AGENT_PROVIDER=codex on the worker.
+AGENTS = {
+    "fixture": ({"capability_id": "aao.agent-runner.fixture", "version": "1.0.0"},
+                {"backend": "fixture", "provider": "fixture", "model": None, "seats": ["patch.python", "patch.tests"]}),
+    "codex": ({"capability_id": "aao.agent-runner.codex", "version": "1.0.0"},
+              {"backend": "codex", "provider": "openai", "model": "gpt-6-luna", "seats": ["patch.python", "patch.tests"]}),
+}
 
 
 def call(path: str, *, method: str = "GET", headers: dict | None = None, body: dict | None = None):
@@ -85,35 +92,45 @@ def setup(project_id: str) -> None:
             call(f"/v1/projects/{project_id}/grants", method="POST", headers=ceo,
                  body={"principal_id": principal, "capability": capability, "expires_at": expiry})
         print(f"{role}: {principal} ({kind}) grants={','.join(grants)} until {expiry}")
+    for name in AGENTS:
+        ensure_capability(project_id, name)
+
+
+def ensure_capability(project_id: str, name: str) -> dict:
+    """Register the catalog entry for this agent once (idempotent) and return its selection."""
+    selection, profile = AGENTS[name]
     existing = call(f"/v1/projects/{project_id}/capabilities?capability_type=agent", headers=agent())
-    if not any(c.get("capability_id") == CAPABILITY["capability_id"] for c in existing):
+    if not any(c.get("capability_id") == selection["capability_id"] and c.get("version") == selection["version"]
+               for c in existing):
         call(f"/v1/projects/{project_id}/capabilities", method="POST", headers=agent(), body={
-            **CAPABILITY, "capability_type": "agent", "provenance": {"kind": "repository", "path": "src/aao/agent_runner.py"},
+            **selection, "capability_type": "agent", "provenance": {"kind": "repository", "path": "src/aao/agent_runner.py"},
             "contract": {"purpose": "Turn a task into a tested candidate and patch proposal",
                          "entrypoint": "aao.agent_runner:patch", "inputs": ["task", "base_sha"],
                          "outputs": ["patch proposal", "candidate commit", "sandbox check"], "platform": "Linux",
                          "authority_boundary": "edits only a disposable clone; proposes, never applies or merges",
-                         "compatible_roles": ["implementer"]},
+                         "compatible_roles": ["implementer"], "model_profile": profile},
             "required_permissions": ["execution.claim", "code.propose"],
             "risks": ["agent edits a disposable clone"], "dependencies": [],
             "tests": ["tests/test_agent_runner.py", "tests/test_project_workflow_integration.py"],
             "compatibility": {}, "evidence": ["src/aao/agent_runner.py"]})
-        print("registered capability aao.agent-runner 1.0.0")
+        print(f"registered capability {selection['capability_id']} {selection['version']}")
+    return selection
 
 
-def task(project_id: str, title: str, description: str, criteria: list[str], base_sha: str) -> None:
+def task(project_id: str, title: str, description: str, criteria: list[str], base_sha: str, agent_name: str) -> None:
+    capability = ensure_capability(project_id, agent_name)
     work = call(f"/v1/projects/{project_id}/work", method="POST", headers=agent(), body={
         "title": title, "description": description, "acceptance_criteria": criteria,
         "author_id": principal_of("implementer")})["id"]
     call(f"/v1/projects/{project_id}/capability-evaluations", method="POST", headers=agent(), body={
-        "task_id": work, **CAPABILITY,
+        "task_id": work, **capability,
         "options": [{"choice": c, "fit": f, "security": f, "cost": f, "time": f, "tokens": f, "maintenance": f}
                     for c, f in (("reuse", 5), ("adapt", 3), ("build", 1))],
         "rationale": "The registered agent runner covers patch, candidate and sandbox check.",
         "evidence": ["src/aao/agent_runner.py"]})
     call(f"/v1/work/{work}/admit", method="POST", headers=agent())
     staged = call(f"/v1/work/{work}/stage-agent-run", method="POST", headers=agent(),
-                  body={**CAPABILITY, "base_sha": base_sha})
+                  body={**capability, "base_sha": base_sha})
     call(f"/v1/work/{work}/progress", method="POST", headers=agent())
     print(json.dumps({"work_id": work, "execution_id": staged["execution_id"], "status": "IN_PROGRESS"}))
 
@@ -221,6 +238,8 @@ def main() -> int:
     t.add_argument("--description", required=True)
     t.add_argument("--criterion", action="append", required=True)
     t.add_argument("--base-sha", required=True)
+    t.add_argument("--agent", choices=sorted(AGENTS), required=True,
+                   help="catalog entry that decides the backend and model of the run")
     s = sub.add_parser("submit")
     s.add_argument("--work-id", required=True)
     r = sub.add_parser("review")
@@ -235,7 +254,7 @@ def main() -> int:
     if args.step == "setup":
         setup(args.project_id)
     elif args.step == "task":
-        task(args.project_id, args.title, args.description, args.criterion, args.base_sha)
+        task(args.project_id, args.title, args.description, args.criterion, args.base_sha, args.agent)
     elif args.step == "submit":
         submit(args.project_id, args.work_id)
     else:

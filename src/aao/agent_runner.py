@@ -57,8 +57,11 @@ def _commit_candidate(clone: Path, env: dict, *, author_email: str, message: str
     result: dict = {"candidate_sha": candidate_sha, "candidate_ref": ref}
     if check_id:
         from aao.sandboxed_repository_checks import RepositoryCheckError, run_repository_check
-        extra = tuple(p for p in changed_paths if re.fullmatch(r"tests/test_[A-Za-z0-9_]+\.py", p)
-                      and (clone / p).is_file())
+        # Only test files the patch adds: modified tests may need the host (e.g. they launch the sandbox
+        # themselves) and are validated by CI on the PR.
+        added = set(_git(clone, "diff", "--name-only", "--diff-filter=A", "HEAD~1", "HEAD").split())
+        extra = tuple(p for p in changed_paths if p in added
+                      and re.fullmatch(r"tests/test_[A-Za-z0-9_]+\.py", p) and (clone / p).is_file())
         try:
             check = run_repository_check(clone, check_id, extra)
         except RepositoryCheckError as exc:
@@ -116,7 +119,13 @@ def run_agent_patch(repository, base_sha: str, instructions: str, *, backend: st
             prompt = ("Fixed safety preamble: edit only inside this repository; do not use network actions; do not commit.\n\n"
                       + instructions)
             output = Path(tmp) / "last-message.txt"
+            # Auth comes only from a dedicated CODEX_HOME (never the operator's ~/.codex); its config.toml is ignored.
+            codex_home = os.getenv("AAO_AGENT_CODEX_HOME")
+            if not codex_home or not Path(codex_home).is_dir():
+                raise AgentRunnerError("codex backend requires a dedicated AAO_AGENT_CODEX_HOME")
+            env = {**env, "CODEX_HOME": codex_home}
             command = ["codex", "exec", "--sandbox", "workspace-write", "--ephemeral", "--skip-git-repo-check",
+                       "--ignore-user-config",
                        "-C", str(clone), "-c", "model_reasoning_effort=medium", "--disable=plugins",
                        "--disable=browser_use", "--disable=computer_use", "--disable=memories",
                        "--output-last-message", str(output), "-"]

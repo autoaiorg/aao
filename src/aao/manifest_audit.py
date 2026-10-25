@@ -144,7 +144,10 @@ def _report_veto_to_supervisor(anchor: dict[str, Any], candidate_sha: str, diges
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
             client.settimeout(30)
             client.connect(anchor["supervisor_intake_socket"])
-            client.sendall(json.dumps({"candidate_sha": candidate_sha, "marker_digest": digest}).encode() + b"\n")
+            try:
+                client.sendall(json.dumps({"candidate_sha": candidate_sha, "marker_digest": digest}).encode() + b"\n")
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # the supervisor may refuse the peer and close before reading; its reply is still readable
             answer = b""
             while not answer.endswith(b"\n"):
                 chunk = client.recv(4096)

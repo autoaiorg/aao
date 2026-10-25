@@ -15,6 +15,7 @@ import type {
   OrganizationStructure,
   AgentIdentity,
   DataState,
+  ActivityEvent,
 } from '../../../domain/models';
 import {
   DEMO_PROJECTS,
@@ -111,6 +112,15 @@ export class MockAaoDemoAdapter implements AaoReadPort {
       kind: 'empty',
       origin: 'demo',
       fetchedAt: new Date().toISOString(),
+    };
+  }
+
+  async getProjectActivity(_projectId: string): Promise<DataState<ActivityEvent[]>> {
+    // No synthetic activity: the feed only exists for the real backend.
+    return {
+      kind: 'unavailable',
+      reason: 'La actividad solo se muestra con el backend real (modo LIVE).',
+      retryable: false,
     };
   }
 

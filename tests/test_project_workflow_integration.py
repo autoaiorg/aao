@@ -981,7 +981,8 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
             opened.append((branch, title, body))
             head = subprocess.run(["git", "--git-dir", str(remote), "rev-parse", f"refs/heads/{branch}"],
                                   capture_output=True, text=True, check=True).stdout.strip()
-            return {"number": 7, "url": "https://github.invalid/autoaiorg/aao/pull/7", "head_sha": head}
+            number = 6 + len(opened)
+            return {"number": number, "url": f"https://github.invalid/autoaiorg/aao/pull/{number}", "head_sha": head}
 
         with pytest.raises(PublishError, match="Project grant required"):
             push_candidate(work, pusher, store=store, push=push)
@@ -1019,8 +1020,22 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         assert reconcile(work, publisher, get_pr=lambda n: pr_state)["status"] == "OPEN"
         with pytest.raises(PublishError, match="head no longer matches"):
             reconcile(work, publisher, get_pr=lambda n: {**pr_state, "head_sha": "f" * 40})
+        # A PR closed without merge sends the task back to IN_PROGRESS; a new attempt gets its own PR.
+        closed = reconcile(work, publisher, get_pr=lambda n: {**pr_state, "state": "closed"})
+        assert closed["status"] == "CLOSED_UNMERGED" and closed["work_status"] == "IN_PROGRESS"
+        assert client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run).status_code == 202
+        assert run_one(identity, token, project_id=project, seconds=400)["status"] == "SUCCEEDED"
+        assert client.post(f"/v1/work/{work}/progress", headers=agent).status_code == 200
+        board = client.get(f"/v1/projects/{project}/board", headers=agent).json()
+        candidate_sha = next(i for i in board if i["id"] == work)["executions"][-1]["result"]["candidate_sha"]
+        assert client.post(f"/v1/work/{work}/reviews", headers=auditor, json={
+            "decision": "APPROVE", "candidate_sha": candidate_sha, "evidence": [evidence_ref]}).status_code == 201
+        assert push_candidate(work, pusher, store=store, push=push)["status"] == "PUSHED"
+        reopened = open_pull_request(work, publisher, open_pr=open_pr)
+        assert reopened["status"] == "PUBLISHED" and reopened["pr_number"] == 8
+        pr_state = {"state": "closed", "merged": True, "merge_commit_sha": None, "head_sha": candidate_sha}
         merge_sha = "e" * 40
-        pr_state.update(state="closed", merged=True, merge_commit_sha=merge_sha)
+        pr_state.update(merge_commit_sha=merge_sha)
         done = reconcile(work, publisher, get_pr=lambda n: pr_state)
         assert done["status"] == "DONE" and done["merge_commit_sha"] == merge_sha
         assert reconcile(work, publisher, get_pr=lambda n: pr_state) == {"status": "DONE"}
@@ -1031,7 +1046,7 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         kinds = [event["kind"] for event in activity.json()]
         assert kinds[0] == "work.completed" and activity.json()[0]["details"]["merge_commit_sha"] == merge_sha
         for kind in ("work.admitted", "execution.staged", "execution.claimed", "execution.completed",
-                     "work.patch_proposed", "work.reviewed", "work.pr_opened"):
+                     "work.patch_proposed", "work.reviewed", "work.pr_opened", "work.pr_closed"):
             assert kind in kinds, kind
         assert client.get(f"/v1/projects/{project}/activity?limit=0", headers=ceo).status_code == 422
     assert subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True, check=True).stdout == ""

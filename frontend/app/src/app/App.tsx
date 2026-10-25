@@ -169,6 +169,23 @@ export const App: React.FC = () => {
     staleTime: staleTimeSeconds * 1000,
   });
 
+  // Query: Project activity (real backend events only)
+  const activityQuery = useQuery({
+    queryKey: ['activity', origin, detailedProjectId, isAuthenticated, sessionId],
+    queryFn: () => {
+      if (!detailedProjectId) {
+        return Promise.resolve({
+          kind: 'empty' as const,
+          origin,
+          fetchedAt: new Date().toISOString(),
+        });
+      }
+      return port.getProjectActivity(detailedProjectId);
+    },
+    enabled: (origin === 'demo' || isAuthenticated) && !!detailedProjectId,
+    staleTime: staleTimeSeconds * 1000,
+  });
+
   // Refresh handler
   const handleRefresh = useCallback(() => {
     queryClient.invalidateQueries();
@@ -271,6 +288,7 @@ export const App: React.FC = () => {
             project={detailedProject}
             capabilitiesState={capabilitiesQuery.data || { kind: 'empty', origin, fetchedAt: '' }}
             evaluationsState={evaluationsQuery.data || { kind: 'empty', origin, fetchedAt: '' }}
+            activityState={activityQuery.data || { kind: 'empty', origin, fetchedAt: '' }}
             onBack={() => setDetailedProjectId(null)}
             onOpenKanban={() => {
               setSelectedProjectId(detailedProjectId);

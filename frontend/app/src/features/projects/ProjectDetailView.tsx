@@ -4,6 +4,7 @@ import type {
   CapabilitySummary,
   EvaluationSummary,
   DataState,
+  ActivityEvent,
 } from '../../domain/models';
 import { Card } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
@@ -14,6 +15,7 @@ export interface ProjectDetailViewProps {
   project: ProjectSummary;
   capabilitiesState: DataState<CapabilitySummary[]>;
   evaluationsState: DataState<EvaluationSummary[]>;
+  activityState: DataState<ActivityEvent[]>;
   onBack: () => void;
   onOpenKanban: () => void;
   onRefresh: () => void;
@@ -23,11 +25,12 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
   project,
   capabilitiesState,
   evaluationsState,
+  activityState,
   onBack,
   onOpenKanban,
   onRefresh,
 }) => {
-  const [activeTab, setActiveTab] = useState<'capabilities' | 'evaluations' | 'metadata'>(
+  const [activeTab, setActiveTab] = useState<'capabilities' | 'evaluations' | 'activity' | 'metadata'>(
     'capabilities'
   );
   const [filterType, setFilterType] = useState<string>('all');
@@ -141,6 +144,22 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
           }}
         >
           Evaluaciones de Capacidad
+        </button>
+
+        <button
+          role="tab"
+          aria-selected={activeTab === 'activity'}
+          onClick={() => setActiveTab('activity')}
+          style={{
+            padding: '8px 16px',
+            fontSize: '13px',
+            fontWeight: activeTab === 'activity' ? 600 : 500,
+            borderRadius: 'var(--radius-md)',
+            backgroundColor: activeTab === 'activity' ? 'var(--bg-muted)' : 'transparent',
+            color: activeTab === 'activity' ? 'var(--primary)' : 'var(--text-secondary)',
+          }}
+        >
+          Actividad
         </button>
 
         <button
@@ -324,6 +343,46 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
                 </Card>
               ))}
             </div>
+          )}
+        />
+      )}
+
+      {activeTab === 'activity' && (
+        <DataStatePanel
+          state={activityState}
+          onRetry={onRefresh}
+          title="Actividad del proyecto"
+          renderReady={(events) => (
+            <ol aria-label="Actividad del proyecto" style={{ listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {events.map((ev) => (
+                <li key={ev.id}>
+                  <Card elevation="sm">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+                      <strong style={{ fontSize: '13px', fontFamily: 'monospace' }}>{ev.kind}</strong>
+                      <time dateTime={ev.created_at} style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                        {new Date(ev.created_at).toLocaleString('es-ES')}
+                      </time>
+                    </div>
+                    <div style={{ fontSize: '11px', fontFamily: 'monospace', color: 'var(--text-muted)', marginTop: '2px' }}>
+                      {ev.subject_id}
+                    </div>
+                    <pre
+                      style={{
+                        fontSize: '11px',
+                        fontFamily: 'monospace',
+                        backgroundColor: 'var(--bg-muted)',
+                        padding: '8px',
+                        marginTop: '6px',
+                        borderRadius: 'var(--radius-sm)',
+                        overflowX: 'auto',
+                      }}
+                    >
+                      {JSON.stringify(ev.details, null, 2)}
+                    </pre>
+                  </Card>
+                </li>
+              ))}
+            </ol>
           )}
         />
       )}

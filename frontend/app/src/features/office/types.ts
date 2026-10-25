@@ -1,5 +1,6 @@
 import type { DataState, OrganizationStructure, ProjectSummary } from '../../domain/models';
 import type { CEOWorkRequest, CreatedWorkRequest } from '../../data/ports/AaoWorkCommandPort';
+import type { AaoConversationPort } from '../../data/ports/AaoConversationPort';
 
 export type OfficeViewMode = '3d' | '2d';
 
@@ -88,6 +89,8 @@ export interface VirtualOfficeViewProps {
   organization: DataState<OrganizationStructure>;
   projects?: DataState<ProjectSummary[]>;
   canCreateWorkRequest?: boolean;
+  conversationPort?: AaoConversationPort;
+  conversationSessionId?: string;
   onCreateWorkRequest?: (projectId: string, input: CEOWorkRequest) => Promise<DataState<CreatedWorkRequest>>;
   onNavigate?: (target: 'organization' | 'kanban' | 'projects', projectId?: string) => void;
   onRefresh?: () => void;

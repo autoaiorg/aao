@@ -401,6 +401,8 @@ export const App: React.FC = () => {
                 retryable: true,
               }}
               canCreateWorkRequest={origin === 'live' && role === 'CEO' && port instanceof HttpAaoLiveAdapter}
+              conversationPort={origin === 'live' && role === 'CEO' && port instanceof HttpAaoLiveAdapter ? port : undefined}
+              conversationSessionId={sessionId}
               onCreateWorkRequest={port instanceof HttpAaoLiveAdapter
                 ? async (projectId, input) => {
                     const result = await port.createCEOWorkRequest(projectId, input);

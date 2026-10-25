@@ -7,7 +7,8 @@ and re-checks in the candidate store that the commit's only parent is the propos
 base and that its tree equals base + the stored patch. It pushes exactly that SHA.
 
 Two steps, one per identity: ``push_candidate`` (implementer) and ``open_pull_request`` (PM).
-GitHub access is injected: ``push(sha, branch)`` and ``open_pr(branch, title, body)`` (returns number, url and head_sha).
+GitHub access is injected: ``push(sha, branch)``, ``open_pr(branch, title, body)`` (returns number,
+url and head_sha) and ``get_pr(number)`` (for ``reconcile``, W3, PM identity).
 ``github_publisher`` builds them from GitHub Apps; tests use local bare remotes.
 Run it as a one-shot process (scripts/publish_candidate.py) so App keys never reach the API.
 """
@@ -147,7 +148,60 @@ def open_pull_request(work_id: str, credential: str, *, open_pr: Callable[[str, 
     return {**record, "status": "PUBLISHED"}
 
 
-def github_publisher(store: str | Path) -> tuple[Callable[[str, str], None], Callable[[str, str, str], dict]]:
+def reconcile(work_id: str, publisher_credential: str, *, get_pr: Callable[[int], dict]) -> dict:
+    """W3: VERIFIED work becomes DONE once its PR is merged with the approved SHA as head.
+
+    ``get_pr(number)`` returns ``{"state", "merged", "merge_commit_sha", "head_sha"}``.
+    The CEO squash-merges, so the result is bound by the PR (head == approved SHA, merged)
+    and its merge commit, not by ancestry.
+    """
+    from fastapi import HTTPException
+
+    from aao.principal_credentials import PrincipalDenied
+    from aao.work_management_api import _authenticate_request_principal, audit, require_grant, tx
+
+    try:
+        publisher = _authenticate_request_principal(publisher_credential, "AGENT")
+    except PrincipalDenied as exc:
+        raise PublishError("active publisher credential required") from exc
+    with tx() as db:
+        work = db.execute("SELECT project_id,status FROM work_items WHERE id=%s FOR UPDATE", (work_id,)).fetchone()
+        if not work:
+            raise PublishError("work not found")
+        project_id, status = work
+        try:
+            require_grant(db, publisher, project_id, "code.publish")
+        except HTTPException as exc:
+            raise PublishError(str(exc.detail)) from exc
+        published = db.execute("SELECT details FROM events WHERE subject_id=%s AND kind='work.pr_opened' "
+                               "ORDER BY created_at DESC LIMIT 1", (work_id,)).fetchone()
+    if status == "DONE":
+        return {"status": "DONE"}
+    if not published:
+        raise PublishError("work has no published pull request")
+    record = published[0]
+    pr = get_pr(int(record["pr_number"]))
+    if pr.get("head_sha") != record["candidate_sha"]:
+        raise PublishError("pull request head no longer matches the approved candidate")
+    if not pr.get("merged"):
+        return {"status": "OPEN" if pr.get("state") == "open" else "CLOSED_UNMERGED",
+                "pr_number": record["pr_number"]}
+    merge_sha = str(pr.get("merge_commit_sha") or "")
+    if not _SHA.fullmatch(merge_sha):
+        raise PublishError("merged pull request has no merge commit SHA")
+    result = {"pr_number": record["pr_number"], "pr_url": record["pr_url"],
+              "candidate_sha": record["candidate_sha"], "merge_commit_sha": merge_sha, "reconciled_by": publisher}
+    with tx() as db:
+        updated = db.execute("UPDATE work_items SET status='DONE' WHERE id=%s AND status='VERIFIED' RETURNING id",
+                             (work_id,)).fetchone()
+        if not updated:
+            raise PublishError("work is no longer VERIFIED")
+        audit(db, work_id, "work.completed", result)
+    return {**result, "status": "DONE"}
+
+
+def github_publisher(store: str | Path) -> tuple[Callable[[str, str], None], Callable[[str, str, str], dict],
+                                                  Callable[[int], dict]]:
     """Real GitHub effects: the implementer App pushes to its fork, the PM App opens the PR.
 
     Each App key is readable only by its own uid (github_app_auth.load_app), so ``push`` must run
@@ -193,4 +247,18 @@ def github_publisher(store: str | Path) -> tuple[Callable[[str, str], None], Cal
         finally:
             client.close()
 
-    return push, open_pr
+    def get_pr(number: int) -> dict:
+        owner, repo = base_repo.split("/", 1)
+        client = GitHubAppClient(os.environ["AAO_PUBLISH_PR_APP"])
+        try:
+            client.installation_token(owner, repo)
+            response = client.request("GET", f"/repos/{base_repo}/pulls/{int(number)}")
+            if response.status != 200 or not isinstance(response.body, dict):
+                raise PublishError(f"pull request lookup failed with HTTP {response.status}")
+            pr = response.body
+            return {"state": pr.get("state"), "merged": bool(pr.get("merged")),
+                    "merge_commit_sha": pr.get("merge_commit_sha"), "head_sha": (pr.get("head") or {}).get("sha")}
+        finally:
+            client.close()
+
+    return push, open_pr, get_pr

@@ -752,6 +752,33 @@ def board(project_id: str, principal: str = Depends(read_principal)):
         ]
 
 
+@app.get("/v1/projects/{project_id}/activity")
+def activity(project_id: str, principal: str = Depends(read_principal), limit: int = 100):
+    """Newest-first project activity: audit events of the project, its work and executions,
+    plus the execution journal (claims, completions, effects)."""
+    if not 1 <= limit <= 500:
+        raise HTTPException(422, "limit must be between 1 and 500")
+    with tx() as db:
+        if not db.execute("SELECT 1 FROM projects WHERE id=%s", (project_id,)).fetchone():
+            raise HTTPException(404, "Project not found")
+        if principal is not _CEO_PRINCIPAL:
+            require_grant(db, principal, project_id, "project.read")
+        rows = db.execute(
+            "SELECT id,subject_id,kind,details,created_at FROM ("
+            " SELECT e.id,e.subject_id,e.kind,e.details,e.created_at FROM events e"
+            " WHERE e.subject_id=%(p)s"
+            " OR e.subject_id IN (SELECT id FROM work_items WHERE project_id=%(p)s)"
+            " OR e.subject_id IN (SELECT id FROM execution_queue WHERE project_id=%(p)s)"
+            " UNION ALL"
+            " SELECT j.id,j.execution_id,'execution.'||j.kind,j.details,j.occurred_at FROM execution_journal j"
+            " JOIN execution_queue q ON q.id=j.execution_id WHERE q.project_id=%(p)s"
+            ") a ORDER BY created_at DESC,id LIMIT %(n)s",
+            {"p": project_id, "n": limit},
+        ).fetchall()
+    return [{"id": str(r[0]), "subject_id": str(r[1]), "kind": r[2], "details": r[3],
+             "created_at": r[4].isoformat()} for r in rows]
+
+
 @app.get("/v1/projects/{project_id}/capabilities")
 def list_capabilities(
     project_id: str, principal: str = Depends(read_principal),

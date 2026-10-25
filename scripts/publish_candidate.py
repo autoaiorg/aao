@@ -3,6 +3,7 @@
 
   --step push   run as the implementer App's uid (e.g. aao-impl-codex): verify and push the approved SHA
   --step open   run as aao-pm's uid: open the PR for the pushed branch
+  --step reconcile  run as aao-pm's uid: mark the work DONE once its PR is merged (W3)
 
 Each run reads its AAO publisher bearer (grant code.publish) only from the private runtime file
 $XDG_RUNTIME_DIR/aao-publisher.token. GitHub: AAO_PUBLISH_BASE_REPO, AAO_PUBLISH_HEAD_REPO,
@@ -24,7 +25,7 @@ PUBLISHER_TOKEN_NAME = "aao-publisher.token"
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--work-id", required=True)
-    parser.add_argument("--step", choices=("push", "open"), required=True)
+    parser.add_argument("--step", choices=("push", "open", "reconcile"), required=True)
     args = parser.parse_args()
     from run_self_development_worker import _read_agent_token
 
@@ -32,13 +33,15 @@ def main() -> int:
     os.environ.setdefault("AAO_ENV_FILE", ".env.local")
     data_home = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
     store = os.environ.get("AAO_CANDIDATE_REPOSITORY") or str(data_home / "aao" / "candidates.git")
-    from aao.pr_publisher import github_publisher, open_pull_request, push_candidate
+    from aao.pr_publisher import github_publisher, open_pull_request, push_candidate, reconcile
 
     try:
         token = _read_agent_token(PUBLISHER_TOKEN_NAME)
-        push, open_pr = github_publisher(store)
+        push, open_pr, get_pr = github_publisher(store)
         if args.step == "push":
             result = push_candidate(args.work_id, token, store=store, push=push)
+        elif args.step == "reconcile":
+            result = reconcile(args.work_id, token, get_pr=get_pr)
         else:
             result = open_pull_request(args.work_id, token, open_pr=open_pr)
     except (RuntimeError, KeyError, ValueError) as exc:  # WorkerError, PublishError, GitHubAuthError

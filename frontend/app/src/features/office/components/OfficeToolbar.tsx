@@ -39,73 +39,85 @@ export const OfficeToolbar: React.FC<OfficeToolbarProps> = ({
       style={{
         display: 'flex',
         flexDirection: 'column',
-        gap: '12px',
-        padding: '14px 16px',
-        backgroundColor: 'var(--bg-surface, #0f172a)',
-        border: '1px solid var(--border-subtle, #334155)',
-        borderRadius: '12px',
+        gap: 'var(--space-3, 12px)',
+        padding: 'var(--space-4, 16px)',
+        backgroundColor: 'var(--bg-surface)',
+        border: '1px solid var(--border-subtle)',
+        borderRadius: 'var(--radius-lg, 12px)',
+        boxShadow: 'var(--shadow-sm)',
       }}
     >
-      {/* Row 1: Mode Toggle & Camera controls */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: '10px', alignItems: 'center' }}>
-        {/* View Mode Toggle */}
-        <div style={{ display: 'flex', gap: '6px' }}>
+      {/* Row 1: Mode Toggle, Camera Controls & Accessibility */}
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          justifyContent: 'space-between',
+          gap: 'var(--space-3, 12px)',
+          alignItems: 'center',
+        }}
+      >
+        {/* View Mode Switcher */}
+        <div style={{ display: 'flex', gap: 'var(--space-2, 8px)' }}>
           <button
             type="button"
             aria-pressed={viewMode === '3d'}
             onClick={() => onViewModeChange('3d')}
             style={{
-              padding: '8px 14px',
-              borderRadius: '8px',
-              border: viewMode === '3d' ? '1px solid #38bdf8' : '1px solid #334155',
-              backgroundColor: viewMode === '3d' ? '#0369a1' : '#1e293b',
-              color: '#ffffff',
+              padding: '8px 16px',
+              borderRadius: 'var(--radius-md, 8px)',
+              border: viewMode === '3d' ? '2px solid var(--accent)' : '1px solid var(--border-subtle)',
+              backgroundColor: viewMode === '3d' ? 'var(--accent)' : 'var(--bg-muted)',
+              color: viewMode === '3d' ? 'var(--text-inverse)' : 'var(--text-primary)',
               fontWeight: 600,
               fontSize: '13px',
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
               gap: '6px',
+              transition: 'all 0.15s ease',
             }}
           >
-            <span>🌐</span> Vista 3D (WebGL)
+            <span aria-hidden="true">🌐</span> Vista 3D (WebGL)
           </button>
           <button
             type="button"
             aria-pressed={viewMode === '2d'}
             onClick={() => onViewModeChange('2d')}
             style={{
-              padding: '8px 14px',
-              borderRadius: '8px',
-              border: viewMode === '2d' ? '1px solid #38bdf8' : '1px solid #334155',
-              backgroundColor: viewMode === '2d' ? '#0369a1' : '#1e293b',
-              color: '#ffffff',
+              padding: '8px 16px',
+              borderRadius: 'var(--radius-md, 8px)',
+              border: viewMode === '2d' ? '2px solid var(--accent)' : '1px solid var(--border-subtle)',
+              backgroundColor: viewMode === '2d' ? 'var(--accent)' : 'var(--bg-muted)',
+              color: viewMode === '2d' ? 'var(--text-inverse)' : 'var(--text-primary)',
               fontWeight: 600,
               fontSize: '13px',
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
               gap: '6px',
+              transition: 'all 0.15s ease',
             }}
           >
-            <span>🗺️</span> Plano 2D Accesible
+            <span aria-hidden="true">🗺️</span> Plano 2D Accesible
           </button>
         </div>
 
         {/* 3D Camera Controls */}
         {viewMode === '3d' && (
-          <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' }}>
             <button
               type="button"
               onClick={() => onRotateCamera?.(-25)}
               aria-label="Rotar cámara a la izquierda"
               style={{
-                padding: '6px 10px',
-                borderRadius: '6px',
-                border: '1px solid #334155',
-                backgroundColor: '#1e293b',
-                color: '#cbd5e1',
+                padding: '6px 12px',
+                borderRadius: 'var(--radius-md, 6px)',
+                border: '1px solid var(--border-subtle)',
+                backgroundColor: 'var(--bg-muted)',
+                color: 'var(--text-primary)',
                 fontSize: '12px',
+                fontWeight: 500,
                 cursor: 'pointer',
               }}
             >
@@ -116,12 +128,13 @@ export const OfficeToolbar: React.FC<OfficeToolbarProps> = ({
               onClick={() => onRotateCamera?.(25)}
               aria-label="Rotar cámara a la derecha"
               style={{
-                padding: '6px 10px',
-                borderRadius: '6px',
-                border: '1px solid #334155',
-                backgroundColor: '#1e293b',
-                color: '#cbd5e1',
+                padding: '6px 12px',
+                borderRadius: 'var(--radius-md, 6px)',
+                border: '1px solid var(--border-subtle)',
+                backgroundColor: 'var(--bg-muted)',
+                color: 'var(--text-primary)',
                 fontSize: '12px',
+                fontWeight: 500,
                 cursor: 'pointer',
               }}
             >
@@ -132,12 +145,13 @@ export const OfficeToolbar: React.FC<OfficeToolbarProps> = ({
               onClick={() => onZoomCamera?.(0.85)}
               aria-label="Acercar zoom"
               style={{
-                padding: '6px 10px',
-                borderRadius: '6px',
-                border: '1px solid #334155',
-                backgroundColor: '#1e293b',
-                color: '#cbd5e1',
+                padding: '6px 12px',
+                borderRadius: 'var(--radius-md, 6px)',
+                border: '1px solid var(--border-subtle)',
+                backgroundColor: 'var(--bg-muted)',
+                color: 'var(--text-primary)',
                 fontSize: '12px',
+                fontWeight: 500,
                 cursor: 'pointer',
               }}
             >
@@ -148,12 +162,13 @@ export const OfficeToolbar: React.FC<OfficeToolbarProps> = ({
               onClick={() => onZoomCamera?.(1.15)}
               aria-label="Alejar zoom"
               style={{
-                padding: '6px 10px',
-                borderRadius: '6px',
-                border: '1px solid #334155',
-                backgroundColor: '#1e293b',
-                color: '#cbd5e1',
+                padding: '6px 12px',
+                borderRadius: 'var(--radius-md, 6px)',
+                border: '1px solid var(--border-subtle)',
+                backgroundColor: 'var(--bg-muted)',
+                color: 'var(--text-primary)',
                 fontSize: '12px',
+                fontWeight: 500,
                 cursor: 'pointer',
               }}
             >
@@ -162,19 +177,22 @@ export const OfficeToolbar: React.FC<OfficeToolbarProps> = ({
             <button
               type="button"
               onClick={() => onResetCamera?.()}
-              aria-label="Restablecer posición de cámara"
+              aria-label="Restablecer posición de cámara y centrar oficina"
               style={{
-                padding: '6px 12px',
-                borderRadius: '6px',
-                border: '1px solid #475569',
-                backgroundColor: '#0f172a',
-                color: '#38bdf8',
+                padding: '6px 14px',
+                borderRadius: 'var(--radius-md, 6px)',
+                border: '1px solid var(--accent)',
+                backgroundColor: 'var(--accent-light)',
+                color: 'var(--accent)',
                 fontSize: '12px',
                 fontWeight: 600,
                 cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
               }}
             >
-              Restablecer
+              <span aria-hidden="true">⟲</span> Vista General
             </button>
           </div>
         )}
@@ -186,12 +204,19 @@ export const OfficeToolbar: React.FC<OfficeToolbarProps> = ({
             aria-pressed={reducedMotion}
             onClick={onToggleReducedMotion}
             style={{
-              padding: '6px 10px',
-              borderRadius: '6px',
-              border: reducedMotion ? '1px solid #eab308' : '1px solid #334155',
-              backgroundColor: reducedMotion ? '#713f12' : '#1e293b',
-              color: reducedMotion ? '#fef08a' : '#94a3b8',
+              padding: '6px 12px',
+              borderRadius: 'var(--radius-md, 6px)',
+              border: reducedMotion
+                ? '1px solid var(--status-warning-border)'
+                : '1px solid var(--border-subtle)',
+              backgroundColor: reducedMotion
+                ? 'var(--status-warning-bg)'
+                : 'var(--bg-muted)',
+              color: reducedMotion
+                ? 'var(--status-warning-text)'
+                : 'var(--text-secondary)',
               fontSize: '11px',
+              fontWeight: 600,
               cursor: 'pointer',
             }}
           >
@@ -201,10 +226,20 @@ export const OfficeToolbar: React.FC<OfficeToolbarProps> = ({
       </div>
 
       {/* Row 2: Department Quick Select Chips & Filters */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: '10px', alignItems: 'center', borderTop: '1px solid #1e293b', paddingTop: '10px' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          justifyContent: 'space-between',
+          gap: 'var(--space-3, 10px)',
+          alignItems: 'center',
+          borderTop: '1px solid var(--border-subtle)',
+          paddingTop: 'var(--space-3, 10px)',
+        }}
+      >
         {/* Department Chips */}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' }}>
-          <span style={{ fontSize: '12px', color: '#64748b', fontWeight: 600, marginRight: '4px' }}>
+          <span style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 600, marginRight: '4px' }}>
             Departamentos:
           </span>
           {OFFICE_ROOMS.map((room) => {
@@ -213,20 +248,23 @@ export const OfficeToolbar: React.FC<OfficeToolbarProps> = ({
               <button
                 key={room.id}
                 type="button"
+                aria-label={`[${room.code}] ${room.name}`}
                 aria-pressed={isSelected}
                 onClick={() => onSelectRoom(room.id)}
                 style={{
-                  padding: '5px 10px',
-                  borderRadius: '6px',
-                  border: isSelected ? `2px solid ${room.accentColor}` : '1px solid #334155',
-                  backgroundColor: isSelected ? '#1e3a8a' : '#1e293b',
-                  color: isSelected ? '#ffffff' : '#cbd5e1',
+                  padding: '5px 11px',
+                  borderRadius: 'var(--radius-md, 6px)',
+                  border: isSelected ? `2px solid ${room.accentColor}` : '1px solid var(--border-subtle)',
+                  backgroundColor: isSelected ? 'var(--accent-light)' : 'var(--bg-muted)',
+                  color: isSelected ? 'var(--text-primary)' : 'var(--text-secondary)',
                   fontSize: '12px',
-                  fontWeight: isSelected ? 600 : 500,
+                  fontWeight: isSelected ? 700 : 500,
                   cursor: 'pointer',
+                  transition: 'all 0.15s ease',
                 }}
               >
-                [{room.code}] {room.name.split(' ')[0]}
+                <strong style={{ color: room.accentColor, marginRight: '4px' }}>[{room.code}]</strong>
+                <span>{room.name.split(' ')[0]}</span>
               </button>
             );
           })}
@@ -242,12 +280,12 @@ export const OfficeToolbar: React.FC<OfficeToolbarProps> = ({
             aria-label="Buscar agentes en la oficina"
             style={{
               padding: '6px 12px',
-              borderRadius: '6px',
-              border: '1px solid #334155',
-              backgroundColor: '#0a1628',
-              color: '#f8fafc',
+              borderRadius: 'var(--radius-md, 6px)',
+              border: '1px solid var(--border-strong)',
+              backgroundColor: 'var(--bg-app)',
+              color: 'var(--text-primary)',
               fontSize: '12px',
-              width: '180px',
+              width: '190px',
             }}
           />
 
@@ -257,10 +295,10 @@ export const OfficeToolbar: React.FC<OfficeToolbarProps> = ({
             aria-label="Filtrar por tipo de agente"
             style={{
               padding: '6px 10px',
-              borderRadius: '6px',
-              border: '1px solid #334155',
-              backgroundColor: '#0a1628',
-              color: '#f8fafc',
+              borderRadius: 'var(--radius-md, 6px)',
+              border: '1px solid var(--border-strong)',
+              backgroundColor: 'var(--bg-app)',
+              color: 'var(--text-primary)',
               fontSize: '12px',
             }}
           >

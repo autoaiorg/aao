@@ -29,10 +29,13 @@ export class ThreeOfficeScene {
   private pointerDownPos = new THREE.Vector2();
   private isDragging = false;
 
-  // Camera Orbit parameters
+  // Camera Orbit & Smart Zoom parameters
   private cameraAngle = 35; // degrees around Y
-  private cameraElevation = 45; // degrees tilt
-  private cameraDistance = 28; // distance from target
+  private cameraElevation = 42; // degrees tilt
+  private cameraDistance = 24; // distance from target
+  private desiredDistance = 24; // smart zoom destination
+  private minDistance = 8;
+  private maxDistance = 38;
   private cameraTarget = new THREE.Vector3(0, 0, 0);
   private desiredTarget = new THREE.Vector3(0, 0, 0);
 
@@ -40,6 +43,7 @@ export class ThreeOfficeScene {
   private roomsGroup = new THREE.Group();
   private agentsGroup = new THREE.Group();
   private lightsGroup = new THREE.Group();
+  private walkwaysGroup = new THREE.Group();
   private interactiveMeshes: THREE.Object3D[] = [];
   private roomPlatforms: Map<string, THREE.Mesh> = new Map();
   private agentMeshes: Map<string, THREE.Group> = new Map();
@@ -57,15 +61,15 @@ export class ThreeOfficeScene {
     // 1. Scene
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x0a1628);
-    this.scene.fog = new THREE.FogExp2(0x0a1628, 0.015);
+    this.scene.fog = new THREE.FogExp2(0x0a1628, 0.018);
 
     // 2. Camera
     const width = container.clientWidth || 800;
     const height = container.clientHeight || 500;
-    this.camera = new THREE.PerspectiveCamera(42, width / height, 0.5, 200);
+    this.camera = new THREE.PerspectiveCamera(40, width / height, 0.5, 200);
     this.updateCameraPosition();
 
-    // 3. Renderer
+    // 3. Renderer (supports injected renderer for testing)
     this.renderer =
       options.renderer ||
       new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
@@ -80,6 +84,7 @@ export class ThreeOfficeScene {
     }
 
     // 4. Hierarchy Groups
+    this.scene.add(this.walkwaysGroup);
     this.scene.add(this.roomsGroup);
     this.scene.add(this.agentsGroup);
     this.scene.add(this.lightsGroup);
@@ -98,12 +103,12 @@ export class ThreeOfficeScene {
 
   private setupLighting(): void {
     // Ambient light for base illumination
-    const ambient = new THREE.AmbientLight(0x2d3e58, 1.8);
+    const ambient = new THREE.AmbientLight(0x2d3e58, 2.0);
     this.lightsGroup.add(ambient);
 
-    // Main Key Sun Light
-    const dirLight = new THREE.DirectionalLight(0xffffff, 2.2);
-    dirLight.position.set(18, 30, 16);
+    // Main Sun Key Light
+    const dirLight = new THREE.DirectionalLight(0xffffff, 2.4);
+    dirLight.position.set(18, 32, 16);
     dirLight.castShadow = true;
     dirLight.shadow.mapSize.width = 1024;
     dirLight.shadow.mapSize.height = 1024;
@@ -117,22 +122,22 @@ export class ThreeOfficeScene {
     this.lightsGroup.add(dirLight);
 
     // Fill Light for deep cyber/corporate ambiance
-    const fillLight = new THREE.DirectionalLight(0x38bdf8, 1.0);
+    const fillLight = new THREE.DirectionalLight(0x38bdf8, 1.2);
     fillLight.position.set(-20, 15, -15);
     this.lightsGroup.add(fillLight);
 
     // Dynamic Spotlight focused on active department
     this.roomSpotlight = new THREE.SpotLight(0x60a5fa, 4, 30, Math.PI / 4, 0.35, 1);
-    this.roomSpotlight.position.set(-6, 12, -4);
+    this.roomSpotlight.position.set(-5, 12, -3.1);
     this.roomSpotlight.castShadow = true;
     this.lightsGroup.add(this.roomSpotlight);
   }
 
   private buildWorld(): void {
     // 1. Central Plaza & Complex Ground Slab
-    const groundGeo = new THREE.BoxGeometry(26, 0.4, 20);
+    const groundGeo = new THREE.BoxGeometry(28, 0.4, 22);
     const groundMat = new THREE.MeshStandardMaterial({
-      color: 0x111e33,
+      color: 0x0d1829,
       roughness: 0.85,
       metalness: 0.15,
     });
@@ -142,28 +147,39 @@ export class ThreeOfficeScene {
     this.scene.add(ground);
 
     // Ground Grid overlay
-    const grid = new THREE.GridHelper(26, 26, 0x38bdf8, 0x1e3a5f);
+    const grid = new THREE.GridHelper(28, 28, 0x38bdf8, 0x1e3a5f);
     grid.position.y = 0.01;
     this.scene.add(grid);
 
-    // Central Connecting Atrium Walkway
-    const atriumGeo = new THREE.CylinderGeometry(3.5, 3.5, 0.08, 32);
+    // Central Connecting Atrium Walkway & Hub
+    const atriumGeo = new THREE.CylinderGeometry(3.6, 3.6, 0.1, 32);
     const atriumMat = new THREE.MeshStandardMaterial({
       color: 0x1e293b,
-      roughness: 0.5,
-      metalness: 0.4,
+      roughness: 0.4,
+      metalness: 0.5,
     });
     const atrium = new THREE.Mesh(atriumGeo, atriumMat);
-    atrium.position.y = 0.04;
+    atrium.position.y = 0.05;
     atrium.receiveShadow = true;
     this.scene.add(atrium);
 
-    // 2. Department Pavilions
+    // Center Logo / Compass Marker
+    const compassGeo = new THREE.RingGeometry(1.0, 1.25, 32);
+    compassGeo.rotateX(-Math.PI / 2);
+    const compassMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide });
+    const compass = new THREE.Mesh(compassGeo, compassMat);
+    compass.position.y = 0.11;
+    this.scene.add(compass);
+
+    // 2. Circulation Walkways connecting central hub to all 6 departments
+    this.buildWalkways();
+
+    // 3. Department Pavilions with interior architecture
     OFFICE_ROOMS.forEach((room) => {
       this.buildRoom(room);
     });
 
-    // 3. Selection Ring (for active agent)
+    // 4. Selection Ring (for active agent)
     const ringGeo = new THREE.RingGeometry(0.55, 0.75, 32);
     ringGeo.rotateX(-Math.PI / 2);
     const ringMat = new THREE.MeshBasicMaterial({
@@ -176,6 +192,36 @@ export class ThreeOfficeScene {
     this.selectionRing.visible = false;
     this.selectionRing.position.y = 0.22;
     this.scene.add(this.selectionRing);
+  }
+
+  private buildWalkways(): void {
+    const walkwayMat = new THREE.MeshStandardMaterial({
+      color: 0x142238,
+      roughness: 0.6,
+      metalness: 0.3,
+    });
+
+    OFFICE_ROOMS.forEach((room) => {
+      // Vector from (0, 0, 0) to (room.x, 0, room.z)
+      const target = new THREE.Vector3(room.x, 0, room.z);
+      const distance = target.length();
+      const angle = Math.atan2(room.x, room.z);
+
+      const pathGeo = new THREE.BoxGeometry(1.1, 0.06, distance);
+      const path = new THREE.Mesh(pathGeo, walkwayMat);
+      path.position.set(room.x * 0.5, 0.03, room.z * 0.5);
+      path.rotation.y = angle;
+      path.receiveShadow = true;
+      this.walkwaysGroup.add(path);
+
+      // Light strip guide along walkway
+      const stripGeo = new THREE.BoxGeometry(0.08, 0.08, distance);
+      const stripMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(room.accentColor).multiplyScalar(0.7) });
+      const stripLeft = new THREE.Mesh(stripGeo, stripMat);
+      stripLeft.position.set(room.x * 0.5 - Math.cos(angle) * 0.55, 0.04, room.z * 0.5 + Math.sin(angle) * 0.55);
+      stripLeft.rotation.y = angle;
+      this.walkwaysGroup.add(stripLeft);
+    });
   }
 
   private buildRoom(room: OfficeRoomConfig): void {
@@ -203,14 +249,13 @@ export class ThreeOfficeScene {
     const borderGeo = new THREE.BoxGeometry(room.width + 0.1, 0.06, room.depth + 0.1);
     const borderMat = new THREE.MeshBasicMaterial({
       color: new THREE.Color(room.accentColor),
-      wireframe: false,
     });
     const border = new THREE.Mesh(borderGeo, borderMat);
     border.position.y = 0.38;
     roomGroup.add(border);
 
     // Translucent Corner Glass Pillars
-    const pillarGeo = new THREE.BoxGeometry(0.2, 1.6, 0.2);
+    const pillarGeo = new THREE.BoxGeometry(0.2, 1.8, 0.2);
     const pillarMat = new THREE.MeshStandardMaterial({
       color: 0x93c5fd,
       transparent: true,
@@ -228,30 +273,202 @@ export class ThreeOfficeScene {
     ];
     corners.forEach(([cx, cz]) => {
       const p = new THREE.Mesh(pillarGeo, pillarMat);
-      p.position.set(cx, 1.0, cz);
+      p.position.set(cx, 1.1, cz);
       p.castShadow = true;
       roomGroup.add(p);
     });
 
-    // Central Desk/Console Unit (Furniture)
-    const deskGeo = new THREE.CylinderGeometry(0.85, 0.95, 0.5, 16);
-    const deskMat = new THREE.MeshStandardMaterial({
-      color: 0x1e293b,
-      roughness: 0.4,
-      metalness: 0.6,
-    });
-    const desk = new THREE.Mesh(deskGeo, deskMat);
-    desk.position.set(0, 0.5, 0);
-    desk.castShadow = true;
-    desk.receiveShadow = true;
-    roomGroup.add(desk);
+    // Architectural Perimeter Half-Walls & Dividers (Recognizable Office Structure)
+    this.buildRoomArchitecture(roomGroup, room);
+
+    // Department Specific Furniture & Interior Layout
+    this.buildDepartmentFurniture(roomGroup, room);
 
     // Floating Department Label Sprite
     const labelSprite = this.createDepartmentLabelSprite(room.code, room.name, room.accentColor);
-    labelSprite.position.set(0, 2.2, 0);
+    labelSprite.position.set(0, 2.4, 0);
     roomGroup.add(labelSprite);
 
     this.roomsGroup.add(roomGroup);
+  }
+
+  private buildRoomArchitecture(group: THREE.Group, room: OfficeRoomConfig): void {
+    const wallMat = new THREE.MeshStandardMaterial({
+      color: 0x1b283d,
+      roughness: 0.6,
+      metalness: 0.3,
+    });
+    const glassMat = new THREE.MeshStandardMaterial({
+      color: 0x60a5fa,
+      transparent: true,
+      opacity: 0.35,
+      roughness: 0.1,
+      metalness: 0.9,
+    });
+
+    const isTopRow = room.z < 0;
+    const backZ = isTopRow ? -room.depth / 2 + 0.12 : room.depth / 2 - 0.12;
+
+    // Back Solid Architectural Wall (low profile)
+    const backWallGeo = new THREE.BoxGeometry(room.width - 0.6, 0.85, 0.14);
+    const backWall = new THREE.Mesh(backWallGeo, wallMat);
+    backWall.position.set(0, 0.77, backZ);
+    backWall.castShadow = true;
+    backWall.receiveShadow = true;
+    group.add(backWall);
+
+    // Translucent Glass Acoustic Partition on Side
+    const sideGlassGeo = new THREE.BoxGeometry(0.1, 0.8, room.depth * 0.45);
+    const sideGlass = new THREE.Mesh(sideGlassGeo, glassMat);
+    sideGlass.position.set(-room.width / 2 + 0.15, 0.75, 0);
+    group.add(sideGlass);
+  }
+
+  private buildDepartmentFurniture(group: THREE.Group, room: OfficeRoomConfig): void {
+    const deskMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.4, metalness: 0.5 });
+    const screenMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(room.accentColor).multiplyScalar(1.2) });
+    const chairMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.6 });
+
+    switch (room.id) {
+      case 'unit-exec': {
+        // EXEC: Executive Oval Boardroom Table + Directive Presentation Screen
+        const tableGeo = new THREE.CylinderGeometry(0.85, 0.95, 0.45, 24);
+        const table = new THREE.Mesh(tableGeo, deskMat);
+        table.position.set(0, 0.58, 0);
+        table.castShadow = true;
+        group.add(table);
+
+        // Directive screen on back wall
+        const screenGeo = new THREE.BoxGeometry(1.6, 0.6, 0.05);
+        const screen = new THREE.Mesh(screenGeo, screenMat);
+        screen.position.set(0, 1.25, -room.depth / 2 + 0.2);
+        group.add(screen);
+
+        // 2 Executive Chairs
+        const chairGeo = new THREE.BoxGeometry(0.35, 0.45, 0.35);
+        const chair1 = new THREE.Mesh(chairGeo, chairMat);
+        chair1.position.set(-0.7, 0.55, 0);
+        group.add(chair1);
+        const chair2 = new THREE.Mesh(chairGeo, chairMat);
+        chair2.position.set(0.7, 0.55, 0);
+        group.add(chair2);
+        break;
+      }
+
+      case 'unit-gov': {
+        // GOV: Constitutional Rostrum Podium + Policy Desks
+        const podiumGeo = new THREE.BoxGeometry(0.7, 0.85, 0.5);
+        const podium = new THREE.Mesh(podiumGeo, deskMat);
+        podium.position.set(0, 0.75, -0.6);
+        podium.castShadow = true;
+        group.add(podium);
+
+        // Constitutional Ledger / Screen
+        const ledgerGeo = new THREE.BoxGeometry(0.45, 0.08, 0.35);
+        const ledger = new THREE.Mesh(ledgerGeo, screenMat);
+        ledger.position.set(0, 1.2, -0.6);
+        ledger.rotation.x = -0.3;
+        group.add(ledger);
+
+        // Lateral Deliberation Desk
+        const deskGeo = new THREE.BoxGeometry(1.4, 0.45, 0.5);
+        const desk = new THREE.Mesh(deskGeo, deskMat);
+        desk.position.set(0, 0.58, 0.5);
+        group.add(desk);
+        break;
+      }
+
+      case 'unit-audit': {
+        // AUDIT: Forensic Analysis Desk + Dual Security Scanners
+        const deskGeo = new THREE.BoxGeometry(1.8, 0.45, 0.6);
+        const desk = new THREE.Mesh(deskGeo, deskMat);
+        desk.position.set(0, 0.58, 0);
+        desk.castShadow = true;
+        group.add(desk);
+
+        // Security Scanner Screens (Teal Glow)
+        const sGeo = new THREE.BoxGeometry(0.55, 0.35, 0.05);
+        const sc1 = new THREE.Mesh(sGeo, screenMat);
+        sc1.position.set(-0.45, 0.95, 0.05);
+        sc1.rotation.y = 0.2;
+        group.add(sc1);
+        const sc2 = new THREE.Mesh(sGeo, screenMat);
+        sc2.position.set(0.45, 0.95, 0.05);
+        sc2.rotation.y = -0.2;
+        group.add(sc2);
+        break;
+      }
+
+      case 'unit-arch': {
+        // ARCH: Blueprint Drafting Table with Holographic Grid
+        const tableGeo = new THREE.BoxGeometry(1.6, 0.5, 1.0);
+        const table = new THREE.Mesh(tableGeo, deskMat);
+        table.position.set(0, 0.6, 0);
+        table.castShadow = true;
+        group.add(table);
+
+        // Holographic Blueprint Plane
+        const bpGeo = new THREE.PlaneGeometry(1.3, 0.75);
+        bpGeo.rotateX(-Math.PI / 2);
+        const bpMat = new THREE.MeshBasicMaterial({
+          color: 0xf59e0b,
+          wireframe: true,
+        });
+        const bp = new THREE.Mesh(bpGeo, bpMat);
+        bp.position.set(0, 0.86, 0);
+        group.add(bp);
+        break;
+      }
+
+      case 'unit-eng': {
+        // ENG: Developer Workstations in Battery + Dual Code Monitors
+        const deskGeo = new THREE.BoxGeometry(1.8, 0.45, 0.6);
+        const desk = new THREE.Mesh(deskGeo, deskMat);
+        desk.position.set(0, 0.58, -0.2);
+        desk.castShadow = true;
+        group.add(desk);
+
+        // Developer Dual Monitors
+        const monGeo = new THREE.BoxGeometry(0.5, 0.3, 0.04);
+        const mon1 = new THREE.Mesh(monGeo, screenMat);
+        mon1.position.set(-0.4, 0.92, -0.2);
+        group.add(mon1);
+        const mon2 = new THREE.Mesh(monGeo, screenMat);
+        mon2.position.set(0.4, 0.92, -0.2);
+        group.add(mon2);
+        break;
+      }
+
+      case 'unit-ops': {
+        // OPS: Curved Mission Control Console + Large Telemetry Video Wall
+        const consoleGeo = new THREE.CylinderGeometry(1.0, 1.1, 0.45, 16, 1, false, 0, Math.PI);
+        const consoleMesh = new THREE.Mesh(consoleGeo, deskMat);
+        consoleMesh.position.set(0, 0.58, 0.2);
+        consoleMesh.rotation.y = Math.PI;
+        group.add(consoleMesh);
+
+        // Large Telemetry Video Wall
+        const wallGeo = new THREE.BoxGeometry(2.0, 0.8, 0.08);
+        const wallScreen = new THREE.Mesh(wallGeo, screenMat);
+        wallScreen.position.set(0, 1.25, room.depth / 2 - 0.2);
+        group.add(wallScreen);
+
+        // Server Node Towers
+        const towerGeo = new THREE.BoxGeometry(0.35, 1.1, 0.35);
+        const towerMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.3 });
+        const tower1 = new THREE.Mesh(towerGeo, towerMat);
+        tower1.position.set(-1.4, 0.9, 0.8);
+        group.add(tower1);
+        break;
+      }
+
+      default: {
+        const dGeo = new THREE.CylinderGeometry(0.8, 0.9, 0.45, 16);
+        const d = new THREE.Mesh(dGeo, deskMat);
+        d.position.set(0, 0.58, 0);
+        group.add(d);
+      }
+    }
   }
 
   private createDepartmentLabelSprite(code: string, name: string, accentColor: string): THREE.Sprite {
@@ -261,7 +478,7 @@ export class ThreeOfficeScene {
     const ctx = canvas.getContext('2d');
     if (ctx) {
       // Rounded background badge
-      ctx.fillStyle = 'rgba(10, 22, 40, 0.88)';
+      ctx.fillStyle = 'rgba(10, 22, 40, 0.9)';
       ctx.strokeStyle = accentColor;
       ctx.lineWidth = 4;
       ctx.beginPath();
@@ -282,9 +499,9 @@ export class ThreeOfficeScene {
     }
 
     const texture = new THREE.CanvasTexture(canvas);
-    const spriteMat = new THREE.SpriteMaterial({ map: texture, transparent: true });
+    const spriteMat = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
     const sprite = new THREE.Sprite(spriteMat);
-    sprite.scale.set(3.2, 1.2, 1);
+    sprite.scale.set(3.0, 1.1, 1);
     return sprite;
   }
 
@@ -315,12 +532,34 @@ export class ThreeOfficeScene {
       const count = roomAgents.length;
       if (count === 0) return;
 
-      const radius = count === 1 ? 0.0 : Math.min(1.6, 0.9 + count * 0.15);
-
+      // Smart placement supporting up to 100 agents gracefully
       roomAgents.forEach((agent, index) => {
-        const angle = count === 1 ? 0 : (index / count) * Math.PI * 2;
-        const localX = count === 1 ? 0 : Math.cos(angle) * radius;
-        const localZ = count === 1 ? 1.0 : Math.sin(angle) * radius;
+        let localX = 0;
+        let localZ = 0;
+
+        if (count === 1) {
+          localX = 0;
+          localZ = 0.9;
+        } else if (count <= 4) {
+          // Quadrant workstation placement
+          const offsets = [
+            [-0.9, 0.8],
+            [0.9, 0.8],
+            [-0.9, -0.8],
+            [0.9, -0.8],
+          ];
+          localX = offsets[index][0];
+          localZ = offsets[index][1];
+        } else {
+          // Concentric circular distribution
+          const ring = Math.floor(index / 8);
+          const ringRadius = 0.85 + ring * 0.55;
+          const indexInRing = index % 8;
+          const ringCount = Math.min(8, count - ring * 8);
+          const angle = (indexInRing / ringCount) * Math.PI * 2;
+          localX = Math.cos(angle) * ringRadius;
+          localZ = Math.sin(angle) * ringRadius;
+        }
 
         const posX = room.x + localX;
         const posZ = room.z + localZ;
@@ -362,6 +601,18 @@ export class ThreeOfficeScene {
     return this.agentMeshes.get(agentId);
   }
 
+  public getCameraDistance(): number {
+    return this.cameraDistance;
+  }
+
+  public getDesiredDistance(): number {
+    return this.desiredDistance;
+  }
+
+  public getDesiredTarget(): THREE.Vector3 {
+    return this.desiredTarget.clone();
+  }
+
   private buildAgentAvatar(agent: AgentIdentity): THREE.Group {
     const group = new THREE.Group();
 
@@ -389,7 +640,7 @@ export class ThreeOfficeScene {
     group.add(halo);
 
     if (isStanding) {
-      // Standing Agent Avatar: Sturdy geometric humanoid torso + head
+      // Standing Agent Avatar: Sturdy geometric humanoid torso + head + desk pedestal
       // Pedestal
       const pedGeo = new THREE.CylinderGeometry(0.22, 0.26, 0.12, 16);
       const pedMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.5 });
@@ -444,7 +695,7 @@ export class ThreeOfficeScene {
       group.add(crown);
     }
 
-    // Mini Name Label Sprite
+    // Mini Name Label Sprite with high contrast
     const label = this.createAgentNameSprite(agent.name.split(' ')[0], haloColor);
     label.position.set(0, 1.25, 0);
     group.add(label);
@@ -459,7 +710,7 @@ export class ThreeOfficeScene {
     const ctx = canvas.getContext('2d');
     if (ctx) {
       const hex = '#' + borderColor.toString(16).padStart(6, '0');
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
       ctx.strokeStyle = hex;
       ctx.lineWidth = 3;
       ctx.beginPath();
@@ -474,7 +725,7 @@ export class ThreeOfficeScene {
     }
 
     const texture = new THREE.CanvasTexture(canvas);
-    const spriteMat = new THREE.SpriteMaterial({ map: texture, transparent: true });
+    const spriteMat = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
     const sprite = new THREE.Sprite(spriteMat);
     sprite.scale.set(1.4, 0.42, 1);
     return sprite;
@@ -507,11 +758,13 @@ export class ThreeOfficeScene {
       }
     });
 
-    // Set target for smooth camera pan
+    // Smart Zoom: smoothly focus camera onto selected department
     this.desiredTarget.set(roomConfig.x, 0, roomConfig.z);
+    this.desiredDistance = 14.5;
 
     if (!animate || this.options.reducedMotion) {
       this.cameraTarget.copy(this.desiredTarget);
+      this.cameraDistance = this.desiredDistance;
       this.updateCameraPosition();
     }
   }
@@ -546,17 +799,24 @@ export class ThreeOfficeScene {
   }
 
   public zoomCamera(deltaFactor: number): void {
-    this.cameraDistance = Math.max(14, Math.min(45, this.cameraDistance * deltaFactor));
-    this.updateCameraPosition();
+    this.desiredDistance = Math.max(this.minDistance, Math.min(this.maxDistance, this.desiredDistance * deltaFactor));
+    if (this.options.reducedMotion) {
+      this.cameraDistance = this.desiredDistance;
+      this.updateCameraPosition();
+    }
   }
 
   public resetCamera(): void {
     this.cameraAngle = 35;
-    this.cameraElevation = 45;
-    this.cameraDistance = 28;
+    this.cameraElevation = 42;
+    this.desiredDistance = 24;
     this.desiredTarget.set(0, 0, 0);
-    this.cameraTarget.set(0, 0, 0);
-    this.updateCameraPosition();
+
+    if (this.options.reducedMotion) {
+      this.cameraTarget.set(0, 0, 0);
+      this.cameraDistance = 24;
+      this.updateCameraPosition();
+    }
   }
 
   private updateCameraPosition(): void {
@@ -628,11 +888,7 @@ export class ThreeOfficeScene {
   };
 
   private handlePointerUp = (e: PointerEvent): void => {
-    try {
-      this.renderer.domElement.releasePointerCapture(e.pointerId);
-    } catch {
-      // Ignore if not captured
-    }
+    this.renderer.domElement.releasePointerCapture(e.pointerId);
 
     if (!this.isDragging) {
       const rect = this.renderer.domElement.getBoundingClientRect();
@@ -675,10 +931,20 @@ export class ThreeOfficeScene {
   public stepAnimation(time: number): void {
     if (this.isDisposed) return;
 
-    // Smooth camera panning toward desiredTarget
-    if (!this.options.reducedMotion && this.cameraTarget.distanceTo(this.desiredTarget) > 0.05) {
-      this.cameraTarget.lerp(this.desiredTarget, 0.08);
-      this.updateCameraPosition();
+    // Smooth camera panning and smart zooming
+    if (!this.options.reducedMotion) {
+      let needsCameraUpdate = false;
+      if (this.cameraTarget.distanceTo(this.desiredTarget) > 0.02) {
+        this.cameraTarget.lerp(this.desiredTarget, 0.08);
+        needsCameraUpdate = true;
+      }
+      if (Math.abs(this.cameraDistance - this.desiredDistance) > 0.05) {
+        this.cameraDistance += (this.desiredDistance - this.cameraDistance) * 0.08;
+        needsCameraUpdate = true;
+      }
+      if (needsCameraUpdate) {
+        this.updateCameraPosition();
+      }
     }
 
     // Subtle idle animation strictly for EPHEMERAL crystal agents
@@ -736,16 +1002,16 @@ export class ThreeOfficeScene {
     }
 
     const dom = this.renderer.domElement;
-    dom.removeEventListener('pointerdown', this.handlePointerDown);
-    dom.removeEventListener('pointermove', this.handlePointerMove);
-    dom.removeEventListener('pointerup', this.handlePointerUp);
-    dom.removeEventListener('wheel', this.handleWheel);
+    if (dom && dom.removeEventListener) {
+      dom.removeEventListener('pointerdown', this.handlePointerDown);
+      dom.removeEventListener('pointermove', this.handlePointerMove);
+      dom.removeEventListener('pointerup', this.handlePointerUp);
+      dom.removeEventListener('wheel', this.handleWheel);
+    }
 
     this.disposeHierarchy(this.scene);
-    this.renderer.dispose();
-
-    if (dom.parentElement === this.container) {
-      this.container.removeChild(dom);
+    if (this.renderer && typeof this.renderer.dispose === 'function') {
+      this.renderer.dispose();
     }
   }
 }

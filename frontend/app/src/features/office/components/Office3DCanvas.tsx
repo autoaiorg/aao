@@ -91,7 +91,7 @@ export const Office3DCanvas = React.forwardRef<WebGLCanvasHandle, Office3DCanvas
         scene.dispose();
         sceneRef.current = null;
       };
-    }, [webglSupported, reducedMotion]); // Re-create on webgl or motion changes
+    }, [webglSupported, reducedMotion]);
 
     // Update agents in existing scene
     useEffect(() => {
@@ -103,7 +103,7 @@ export const Office3DCanvas = React.forwardRef<WebGLCanvasHandle, Office3DCanvas
       sceneRef.current?.selectRoom(selectedRoomId);
     }, [selectedRoomId]);
 
-    // Update agent selection in existing scene
+    // Update active agent selection in existing scene
     useEffect(() => {
       sceneRef.current?.selectAgent(selectedAgentId);
     }, [selectedAgentId]);
@@ -112,40 +112,44 @@ export const Office3DCanvas = React.forwardRef<WebGLCanvasHandle, Office3DCanvas
       return (
         <div
           role="region"
-          aria-label="Aviso de aceleración gráfica no disponible"
+          aria-label="Aviso de ausencia de WebGL"
           style={{
-            minHeight: '480px',
-            backgroundColor: 'var(--bg-muted, #0f172a)',
-            border: '1px solid var(--border-subtle, #334155)',
-            borderRadius: '16px',
+            minHeight: '520px',
+            backgroundColor: 'var(--bg-surface)',
+            border: '1px solid var(--border-subtle)',
+            borderRadius: 'var(--radius-lg, 16px)',
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
-            padding: '32px',
+            padding: '32px 24px',
             textAlign: 'center',
             gap: '16px',
+            boxShadow: 'var(--shadow-sm)',
           }}
         >
-          <div style={{ fontSize: '32px' }} aria-hidden="true">🖥️</div>
-          <h3 style={{ margin: 0, fontSize: '18px', color: 'var(--text-primary, #f8fafc)' }}>
+          <div style={{ fontSize: '36px' }} aria-hidden="true">
+            🖥️
+          </div>
+          <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 700, color: 'var(--text-primary)' }}>
             Acelerador 3D WebGL no disponible en este dispositivo
           </h3>
-          <p style={{ maxWidth: '500px', margin: 0, fontSize: '13px', color: 'var(--text-secondary, #94a3b8)', lineHeight: 1.5 }}>
+          <p style={{ maxWidth: '500px', margin: 0, fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
             El entorno no dispone de contexto WebGL habilitado. Puede recorrer toda la organización, departamentos y agentes utilizando el plano 2D accesible equivalente.
           </p>
           <button
             type="button"
             onClick={onFallbackTo2D}
             style={{
-              padding: '10px 18px',
-              backgroundColor: 'var(--color-primary, #3b82f6)',
-              color: '#ffffff',
+              padding: '10px 20px',
+              backgroundColor: 'var(--accent)',
+              color: 'var(--text-inverse)',
               border: 'none',
-              borderRadius: '8px',
+              borderRadius: 'var(--radius-md, 8px)',
               cursor: 'pointer',
               fontWeight: 600,
               fontSize: '13px',
+              boxShadow: 'var(--shadow-sm)',
             }}
           >
             Abrir Plano 2D Accesible
@@ -161,10 +165,10 @@ export const Office3DCanvas = React.forwardRef<WebGLCanvasHandle, Office3DCanvas
           width: '100%',
           minHeight: '520px',
           backgroundColor: '#0a1628',
-          borderRadius: '16px',
+          borderRadius: 'var(--radius-lg, 16px)',
           overflow: 'hidden',
-          border: '1px solid #1e293b',
-          boxShadow: 'var(--shadow-md, 0 4px 6px -1px rgba(0, 0, 0, 0.1))',
+          border: '1px solid var(--border-subtle)',
+          boxShadow: 'var(--shadow-md)',
         }}
       >
         <div
@@ -183,14 +187,15 @@ export const Office3DCanvas = React.forwardRef<WebGLCanvasHandle, Office3DCanvas
               top: '12px',
               left: '12px',
               padding: '6px 12px',
-              backgroundColor: 'rgba(15, 23, 42, 0.85)',
-              border: '1px solid #38bdf8',
-              borderRadius: '8px',
+              backgroundColor: 'rgba(15, 23, 42, 0.9)',
+              border: '1px solid var(--accent)',
+              borderRadius: 'var(--radius-md, 8px)',
               fontSize: '12px',
               fontWeight: 600,
-              color: '#38bdf8',
+              color: 'var(--accent)',
               pointerEvents: 'none',
-              backdropFilter: 'blur(4px)',
+              backdropFilter: 'blur(6px)',
+              boxShadow: 'var(--shadow-sm)',
             }}
           >
             {hoveredInfo.type === 'agent' ? '👤 Agente detectado' : '🏢 Departamento detectado'} · Clic para seleccionar
@@ -203,14 +208,15 @@ export const Office3DCanvas = React.forwardRef<WebGLCanvasHandle, Office3DCanvas
             position: 'absolute',
             bottom: '12px',
             left: '12px',
-            padding: '8px 12px',
-            backgroundColor: 'rgba(15, 23, 42, 0.85)',
-            border: '1px solid #334155',
-            borderRadius: '8px',
+            padding: '8px 14px',
+            backgroundColor: 'rgba(15, 23, 42, 0.88)',
+            border: '1px solid var(--border-subtle)',
+            borderRadius: 'var(--radius-md, 8px)',
             fontSize: '11px',
-            color: '#94a3b8',
+            color: '#e2e8f0',
             pointerEvents: 'none',
-            lineHeight: 1.4,
+            lineHeight: 1.45,
+            backdropFilter: 'blur(6px)',
           }}
         >
           <span>🖱️ Arrastrar para rotar</span> · <span>🔍 Scroll para zoom</span> · <span>🎯 Clic en sala o agente</span>

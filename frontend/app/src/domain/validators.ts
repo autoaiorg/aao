@@ -139,6 +139,16 @@ export const AgentAssignmentSchema = z.object({
   status: z.enum(['ACTIVE', 'EXPIRED', 'COMPLETED']),
 });
 
+export const AgentOperationalStateSchema = z.enum([
+  'REGISTRADO',
+  'ASIGNADO',
+  'CONECTADO',
+  'EJECUTANDO',
+  'INACTIVO',
+  'DESCONOCIDO',
+  'NO_DISPONIBLE',
+]);
+
 export const AgentIdentitySchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -150,9 +160,12 @@ export const AgentIdentitySchema = z.object({
   heartbeatStatus: AgentHeartbeatStatusSchema,
   lastHeartbeatAt: z.string().nullable().default(null),
   status: AgentOperationalStatusSchema,
+  operationalState: AgentOperationalStateSchema.optional(),
   currentAssignments: z.array(AgentAssignmentSchema).default([]),
   authorityBoundary: z.string(),
   isSyntheticDemo: z.boolean().optional(),
+  lastEvidenceAt: z.string().nullable().optional(),
+  evidenceDescription: z.string().optional(),
 });
 
 export const OrgUnitSchema = z.object({

@@ -27,14 +27,15 @@ export const Office2DPlan: React.FC<Office2DPlanProps> = ({
       aria-label="Plano 2D accesible de la oficina de AAO"
       style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
-        gap: '16px',
-        padding: '20px',
-        backgroundColor: '#0a1628',
-        border: '1px solid #1e293b',
-        borderRadius: '16px',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(290px, 1fr))',
+        gap: 'var(--space-4, 16px)',
+        padding: 'var(--space-4, 18px)',
+        backgroundColor: 'var(--bg-surface)',
+        border: '1px solid var(--border-subtle)',
+        borderRadius: 'var(--radius-lg, 16px)',
         minHeight: '520px',
         alignContent: 'start',
+        boxShadow: 'var(--shadow-sm)',
       }}
     >
       {OFFICE_ROOMS.map((room) => {
@@ -48,13 +49,13 @@ export const Office2DPlan: React.FC<Office2DPlanProps> = ({
             style={{
               display: 'flex',
               flexDirection: 'column',
-              backgroundColor: isSelected ? 'rgba(30, 58, 138, 0.45)' : 'rgba(15, 23, 42, 0.75)',
-              border: isSelected ? `2px solid ${room.accentColor}` : '1px solid #334155',
-              borderRadius: '12px',
-              padding: '16px',
-              gap: '12px',
+              backgroundColor: isSelected ? 'var(--accent-light)' : 'var(--bg-muted)',
+              border: isSelected ? `2px solid ${room.accentColor}` : '1px solid var(--border-subtle)',
+              borderRadius: 'var(--radius-lg, 12px)',
+              padding: 'var(--space-4, 16px)',
+              gap: 'var(--space-3, 12px)',
               transition: 'all 0.2s ease',
-              boxShadow: isSelected ? `0 0 16px ${room.accentColor}33` : 'none',
+              boxShadow: isSelected ? 'var(--shadow-md)' : 'var(--shadow-sm)',
             }}
           >
             {/* Header / Room Button */}
@@ -72,6 +73,7 @@ export const Office2DPlan: React.FC<Office2DPlanProps> = ({
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'flex-start',
+                gap: '8px',
               }}
             >
               <div>
@@ -79,7 +81,7 @@ export const Office2DPlan: React.FC<Office2DPlanProps> = ({
                   style={{
                     display: 'inline-block',
                     padding: '2px 8px',
-                    borderRadius: '4px',
+                    borderRadius: 'var(--radius-sm, 4px)',
                     backgroundColor: room.color,
                     color: '#ffffff',
                     fontSize: '11px',
@@ -89,10 +91,18 @@ export const Office2DPlan: React.FC<Office2DPlanProps> = ({
                 >
                   {room.code}
                 </span>
-                <h4 style={{ margin: '4px 0 2px 0', fontSize: '15px', fontWeight: 600, color: '#f8fafc' }}>
+                <h4
+                  style={{
+                    margin: '3px 0 2px 0',
+                    fontSize: '15px',
+                    fontWeight: 700,
+                    color: 'var(--text-primary)',
+                    lineHeight: 1.3,
+                  }}
+                >
                   {unit?.name || room.name}
                 </h4>
-                <div style={{ fontSize: '12px', color: '#94a3b8' }}>
+                <div style={{ fontSize: '12px', color: 'var(--accent)', fontWeight: 600 }}>
                   {unit?.leadRole || 'Responsable de unidad'}
                 </div>
               </div>
@@ -100,10 +110,12 @@ export const Office2DPlan: React.FC<Office2DPlanProps> = ({
                 style={{
                   fontSize: '11px',
                   padding: '3px 8px',
-                  borderRadius: '12px',
-                  backgroundColor: '#1e293b',
-                  color: room.accentColor,
+                  borderRadius: 'var(--radius-full, 9999px)',
+                  backgroundColor: 'var(--bg-surface)',
+                  color: isSelected ? 'var(--accent)' : 'var(--text-secondary)',
+                  border: '1px solid var(--border-subtle)',
                   fontWeight: 600,
+                  whiteSpace: 'nowrap',
                 }}
               >
                 {roomAgents.length} {isDemo ? 'simulados' : 'registrados'}
@@ -111,26 +123,50 @@ export const Office2DPlan: React.FC<Office2DPlanProps> = ({
             </button>
 
             {/* Room description */}
-            <p style={{ margin: 0, fontSize: '12px', color: '#cbd5e1', lineHeight: 1.4 }}>
+            <p
+              style={{
+                margin: 0,
+                fontSize: '12px',
+                color: 'var(--text-secondary)',
+                lineHeight: 1.45,
+              }}
+            >
               {unit?.description || 'Departamento operativo de AAO.'}
             </p>
 
             {/* Agents inside this room */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '4px' }}>
-              <div style={{ fontSize: '11px', fontWeight: 600, color: '#64748b', textTransform: 'uppercase' }}>
+              <div
+                style={{
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  color: 'var(--text-muted)',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.5px',
+                }}
+              >
                 Plantilla en sala:
               </div>
+
               {roomAgents.length === 0 ? (
-                <div style={{ fontSize: '11px', color: '#64748b', fontStyle: 'italic' }}>
-                  Sin agentes asignados actualmente
+                <div
+                  style={{
+                    fontSize: '11px',
+                    color: 'var(--text-muted)',
+                    fontStyle: 'italic',
+                    padding: '6px 0',
+                  }}
+                >
+                  Sin agentes asignados
                 </div>
               ) : (
                 roomAgents.map((agent) => {
-                  const isAgentSelected = selectedAgentId === agent.id;
-                  let dotColor = '#64748b';
-                  if (agent.heartbeatStatus === 'HEALTHY') dotColor = '#22c55e';
-                  else if (agent.heartbeatStatus === 'STALE') dotColor = '#eab308';
+                  let dotColor = '#64748b'; // UNKNOWN
+                  if (agent.heartbeatStatus === 'HEALTHY') dotColor = '#10b981';
+                  else if (agent.heartbeatStatus === 'STALE') dotColor = '#f59e0b';
                   else if (agent.heartbeatStatus === 'UNAVAILABLE') dotColor = '#ef4444';
+
+                  const isAgentSelected = selectedAgentId === agent.id;
 
                   return (
                     <button
@@ -142,14 +178,17 @@ export const Office2DPlan: React.FC<Office2DPlanProps> = ({
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'space-between',
-                        padding: '6px 10px',
-                        borderRadius: '6px',
-                        backgroundColor: isAgentSelected ? '#1e40af' : '#1e293b',
-                        border: isAgentSelected ? '1px solid #60a5fa' : '1px solid #334155',
-                        color: '#f8fafc',
+                        padding: '7px 10px',
+                        borderRadius: 'var(--radius-md, 6px)',
+                        backgroundColor: isAgentSelected ? 'var(--accent-light)' : 'var(--bg-surface)',
+                        border: isAgentSelected
+                          ? '2px solid var(--accent)'
+                          : '1px solid var(--border-subtle)',
+                        color: 'var(--text-primary)',
                         cursor: 'pointer',
                         textAlign: 'left',
                         fontSize: '12px',
+                        transition: 'all 0.15s ease',
                       }}
                     >
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -163,9 +202,21 @@ export const Office2DPlan: React.FC<Office2DPlanProps> = ({
                           }}
                           aria-hidden="true"
                         />
-                        <span style={{ fontWeight: 500 }}>{agent.name}</span>
+                        <span style={{ fontWeight: isAgentSelected ? 700 : 500, color: 'var(--text-primary)' }}>
+                          {agent.name}
+                        </span>
                       </div>
-                      <span style={{ fontSize: '10px', color: '#94a3b8' }}>
+                      <span
+                        style={{
+                          fontSize: '10px',
+                          color: 'var(--text-muted)',
+                          padding: '1px 6px',
+                          borderRadius: 'var(--radius-sm, 4px)',
+                          backgroundColor: 'var(--bg-muted)',
+                          border: '1px solid var(--border-subtle)',
+                          fontWeight: 500,
+                        }}
+                      >
                         {agent.type === 'STANDING' ? 'Fijo' : 'Efímero'}
                       </span>
                     </button>

@@ -247,6 +247,15 @@ export interface CeoOverview {
 
 export type AgentType = 'STANDING' | 'EPHEMERAL';
 
+export type AgentOperationalState =
+  | 'REGISTRADO'
+  | 'ASIGNADO'
+  | 'CONECTADO'
+  | 'EJECUTANDO'
+  | 'INACTIVO'
+  | 'DESCONOCIDO'
+  | 'NO_DISPONIBLE';
+
 export type AgentHeartbeatStatus =
   | 'HEALTHY'       // Recent verified heartbeat within lease/window
   | 'STALE'         // Heartbeat timestamp exceeded freshness window
@@ -289,9 +298,12 @@ export interface AgentIdentity {
   heartbeatStatus: AgentHeartbeatStatus;
   lastHeartbeatAt: string | null;
   status: AgentOperationalStatus;
+  operationalState?: AgentOperationalState;
   currentAssignments: AgentAssignment[];
   authorityBoundary: string;
   isSyntheticDemo?: boolean;
+  lastEvidenceAt?: string | null;
+  evidenceDescription?: string;
 }
 
 export interface OrgUnit {

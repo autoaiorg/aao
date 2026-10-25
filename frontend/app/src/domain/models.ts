@@ -245,7 +245,7 @@ export interface CeoOverview {
 // Spec: AAO-FE-ARCH-2026-10-25 Section 14 & Mandate AAO-CEO-F3-2026-10-25
 // ---------------------------------------------------------------------------
 
-export type AgentType = 'STANDING' | 'EPHEMERAL';
+export type AgentType = 'STANDING' | 'EPHEMERAL' | 'UNKNOWN';
 
 export type AgentOperationalState =
   | 'REGISTRADO'
@@ -319,10 +319,20 @@ export interface OrgUnit {
   activeProjectsCount: number;
 }
 
+export interface OrganizationCoverage {
+  totalProjects: number;
+  inspectedProjects: number;
+  failedProjects: number;
+  isPartial: boolean;
+  notes?: string;
+}
+
 export interface OrganizationStructure {
   units: OrgUnit[];
   agents: AgentIdentity[];
   totalStandingAgents: number;
   totalEphemeralAgents: number;
+  totalUnknownAgents?: number;
   activeAssignmentsCount: number;
+  coverage?: OrganizationCoverage;
 }

@@ -149,7 +149,14 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
             {isDemo
               ? 'DEMO · SIMULACIÓN 3D ACTIVA · Todos los departamentos, agentes y asignaciones son sintéticos y no representan datos de producción.'
               : data
-              ? 'LIVE · ESTRUCTURA RECIBIDA · La presencia operativa está condicionada a telemetría verificada en tiempo real.'
+              ? `LIVE · ESTRUCTURA RECIBIDA · ${
+                  data.coverage
+                    ? data.coverage.notes ||
+                      (data.coverage.isPartial
+                        ? `Cobertura parcial (${data.coverage.failedProjects} errores en ${data.coverage.totalProjects} proyectos).`
+                        : `Cobertura completa (${data.coverage.inspectedProjects}/${data.coverage.totalProjects} proyectos).`)
+                    : 'La presencia operativa está condicionada a telemetría verificada en tiempo real.'
+                }`
               : 'SIN CONEXIÓN AL NÚCLEO EN LIVE (F3/F4) · Los edificios son ilustrativos. Conmute a DEMO para explorar la escena 3D.'}
           </span>
         </div>

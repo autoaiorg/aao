@@ -206,22 +206,26 @@ Retrieves the individual agent profile, capabilities, and active assignments.
 
 ---
 
-## 3. Frontend Adapter Compatibility (Fail-Closed)
+## 3. Frontend Adapter Compatibility (Fail-Closed & Verifiable Evidence)
 
-In `HttpAaoLiveAdapter.ts`, the frontend is designed with progressive layering:
+In `HttpAaoLiveAdapter.ts`, the frontend enforces strict factual grounding:
 
 1. **Direct Request:** First attempts `GET /v1/organization`. If supported and returning `200 OK`, it parses and validates via `OrganizationStructureSchema`.
 2. **Graceful Fallback:** If `GET /v1/organization` returns 404 (not yet implemented in backend), the frontend does NOT crash or invent fake agents. It aggregates active workers, tasks in progress, and registered principals from:
    - `GET /v1/projects`
    - `GET /v1/projects/{id}/board`
    - `GET /v1/principals/me`
-3. **Strict Truthfulness:** When falling back, all agent heartbeats are set to `'UNKNOWN'` with the explicit note `"Sin telemetría en tiempo real expuesta en la API"`. The frontend never fabricates fake heartbeats or simulates pulse timestamps.
-4. **Distinct Operational States:** Operational execution (`EJECUTANDO`, `ASIGNADO`, `REGISTRADO`) is derived directly from live task executions recorded on the kanban boards.
+3. **No Department or Type Heuristics:** The frontend never infers departments or types (`STANDING`/`EPHEMERAL`) from substrings in `worker_id`. Unassigned workers are explicitly attributed to `«Departamento desconocido»` (`unit-unassigned`), and their type is set to `UNKNOWN`.
+4. **Execution Vigency Required:** A task marked `IN_PROGRESS` on the kanban board does NOT imply the agent is `EJECUTANDO`. Active execution requires demonstrable vigency (`status === 'RUNNING'`, valid execution ID, and timestamp within the active validity window). Historical executions are marked as `HISTÓRICO REGISTRADO`.
+5. **No Synthetic Capabilities:** Task reviews recorded on candidate PRs are treated purely as audit events, never converted into certified capabilities. Capabilities require formal grants.
+6. **No Fabricated Evidence Timestamps:** `fetchedAt` (client query time) is strictly distinguished from `lastEvidenceAt` (backend event timestamp). If no backend evidence timestamp exists, `lastEvidenceAt` is `null`.
+7. **Complete Project Coverage:** All projects are inspected without silent truncation limits; any failed queries are explicitly reported in `coverage.failedProjects` and `coverage.isPartial`.
 
 ---
 
 ## 4. Acceptance Criteria for Backend Implementation
 
-1. **Constitutional Units:** Endpoints must maintain the 6 canonical AAO units: `EXEC`, `GOV`, `AUDIT`, `ARCH`, `ENG`, `OPS`.
-2. **Authority & Separation:** The agent executing this endpoint must not have merge privileges. Telemetry must be read-only.
-3. **No Phantom Execution:** Only agents with active worker leases in the PostgreSQL database may be reported as `HEALTHY` and `EJECUTANDO`.
+1. **Constitutional Units:** Endpoints must maintain the canonical AAO units (`EXEC`, `GOV`, `AUDIT`, `ARCH`, `ENG`, `OPS`) and provide explicit departmental mapping for registered principals.
+2. **Authority & Separation:** Telemetry and organization queries must be read-only without state mutation privileges.
+3. **Verifiable Leases:** Only agents with currently active, unexpired PostgreSQL worker leases (`lease_expires_at > now`) may be reported with `heartbeat_status: "HEALTHY"` and `operational_state: "EJECUTANDO"`.
+4. **Distinction of Reviews vs Grants:** Audit reviews on tasks must remain recorded as activity events; formal capabilities must be backed by valid project capability grants.

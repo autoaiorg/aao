@@ -587,6 +587,45 @@ export class ThreeOfficeScene {
       });
     });
 
+    // Populate unassigned / unknown agents in central atrium plaza
+    const unassignedAgents = agents.filter(
+      (a) =>
+        a.unitId === 'unit-unassigned' ||
+        a.unitId === 'unit-unknown' ||
+        !OFFICE_ROOMS.some((r) => r.id === a.unitId)
+    );
+    if (unassignedAgents.length > 0) {
+      unassignedAgents.forEach((agent, index) => {
+        const ring = Math.floor(index / 8);
+        const ringRadius = 1.0 + ring * 0.6;
+        const indexInRing = index % 8;
+        const ringCount = Math.min(8, unassignedAgents.length - ring * 8);
+        const angle = (indexInRing / ringCount) * Math.PI * 2;
+        const posX = Math.cos(angle) * ringRadius;
+        const posZ = Math.sin(angle) * ringRadius;
+
+        const agentGroup = this.buildAgentAvatar(agent);
+        agentGroup.position.set(posX, 0.35, posZ);
+        agentGroup.userData = {
+          type: 'agent',
+          id: agent.id,
+          unitId: agent.unitId,
+          name: agent.name,
+          agentType: agent.type,
+        };
+
+        this.agentsGroup.add(agentGroup);
+        this.agentMeshes.set(agent.id, agentGroup);
+
+        agentGroup.traverse((child) => {
+          if (child instanceof THREE.Mesh) {
+            child.userData = agentGroup.userData;
+            this.interactiveMeshes.push(child);
+          }
+        });
+      });
+    }
+
     // Update selection ring if active agent exists
     if (this.activeAgentId) {
       this.selectAgent(this.activeAgentId);
@@ -618,7 +657,8 @@ export class ThreeOfficeScene {
 
     // Color based on agent type and telemetry
     const isStanding = agent.type === 'STANDING';
-    const bodyColor = isStanding ? 0x2563eb : 0x0891b2;
+    const isEphemeral = agent.type === 'EPHEMERAL';
+    const bodyColor = isStanding ? 0x2563eb : isEphemeral ? 0x0891b2 : 0x64748b;
 
     // Telemetry aura color
     let haloColor = 0x64748b; // UNKNOWN
@@ -671,7 +711,7 @@ export class ThreeOfficeScene {
       head.position.y = 0.86;
       head.castShadow = true;
       group.add(head);
-    } else {
+    } else if (isEphemeral) {
       // Ephemeral Agent Avatar: Floating Crystal / Octahedron with ethereal transparency
       const crystalGeo = new THREE.OctahedronGeometry(0.28, 0);
       const crystalMat = new THREE.MeshStandardMaterial({
@@ -693,6 +733,24 @@ export class ThreeOfficeScene {
       const crown = new THREE.Mesh(crownGeo, crownMat);
       crown.position.y = 0.95;
       group.add(crown);
+    } else {
+      // Unknown Agent Type: Neutral geometric prism (no synthetic pedestal, no crystal)
+      const unknownGeo = new THREE.BoxGeometry(0.32, 0.55, 0.32);
+      const unknownMat = new THREE.MeshStandardMaterial({
+        color: 0x64748b,
+        roughness: 0.5,
+        metalness: 0.2,
+      });
+      const unknownMesh = new THREE.Mesh(unknownGeo, unknownMat);
+      unknownMesh.position.y = 0.38;
+      unknownMesh.castShadow = true;
+      group.add(unknownMesh);
+
+      const markerGeo = new THREE.SphereGeometry(0.12, 12, 12);
+      const markerMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8 });
+      const marker = new THREE.Mesh(markerGeo, markerMat);
+      marker.position.y = 0.75;
+      group.add(marker);
     }
 
     // Mini Name Label Sprite with high contrast

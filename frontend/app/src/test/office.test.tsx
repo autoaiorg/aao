@@ -506,6 +506,75 @@ describe('Phase F4.7: UI Contrast, Design Tokens & Operational Indicators', () =
     expect(screen.getAllByText('«Departamento desconocido»').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('Sin adscripción departamental canónica confirmada en el núcleo.')).toBeInTheDocument();
     expect(screen.getByText(/HISTÓRICO REGISTRADO/i)).toBeInTheDocument();
-    expect(screen.getByText(/Sin capacidades certificadas registradas formalmente/i)).toBeInTheDocument();
+    expect(screen.getByText(/Sin capacidades certificadas/i)).toBeInTheDocument();
+  });
+
+  it('truthfully displays unknown execution vigency and project grants in inspector', () => {
+    const stateWithVigencyUnknown: DataState<OrganizationStructure> = {
+      kind: 'ready',
+      origin: 'live',
+      data: {
+        units: DEMO_ORG_UNITS,
+        agents: [
+          {
+            id: 'worker-lease-unknown',
+            name: 'Unverified Vigency Worker',
+            type: 'UNKNOWN',
+            roleTitle: 'Agente Operativo Registrado',
+            unitId: 'unit-unassigned',
+            capabilities: [],
+            grants: [
+              {
+                projectId: 'proj-sec',
+                permission: 'project.read',
+                active: true,
+                expiresAt: '2026-10-26T00:00:00Z',
+              },
+            ],
+            heartbeatStatus: 'UNKNOWN',
+            lastHeartbeatAt: null,
+            status: 'UNKNOWN',
+            operationalState: 'DESCONOCIDO',
+            currentAssignments: [
+              {
+                id: 'asg-unknown-vigency',
+                projectId: 'proj-sec',
+                projectName: 'Security Vault',
+                taskId: 'task-sec-1',
+                taskTitle: 'Audit cryptographic key store',
+                assignedAt: '2026-10-25T18:00:00Z',
+                leaseExpiresAt: null,
+                status: 'UNKNOWN',
+              },
+            ],
+            authorityBoundary: 'Delimitado por el mandato del proyecto Security Vault.',
+            lastEvidenceAt: '2026-10-25T18:00:00Z',
+            evidenceDescription: 'Registro de ejecución con vigencia desconocida (sin lease acreditado).',
+          },
+        ],
+        totalStandingAgents: 0,
+        totalEphemeralAgents: 0,
+        totalUnknownAgents: 1,
+        activeAssignmentsCount: 0,
+      },
+      fetchedAt: new Date().toISOString(),
+    };
+
+    render(<VirtualOfficeView organization={stateWithVigencyUnknown} />);
+
+    // Switch to 2D Plan
+    const toolbar = screen.getByRole('toolbar', { name: /Barra de herramientas de la Oficina Virtual/i });
+    const plan2dBtn = within(toolbar).getByRole('button', { name: /Plano 2D Accesible/i });
+    fireEvent.click(plan2dBtn);
+
+    // Click on the agent button
+    const agentBtn = screen.getByRole('button', { name: /Unverified Vigency Worker/i });
+    fireEvent.click(agentBtn);
+
+    // Verify Inspector displays Vigencia Desconocida and Grants
+    expect(screen.getByText(/⚠️ Vigencia Desconocida \(Sin lease acreditado\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/VIGENCIA DESCONOCIDA \(SIN LEASE\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/Concesiones y Permisos de Proyecto/i)).toBeInTheDocument();
+    expect(screen.getByText(/project\.read/i)).toBeInTheDocument();
   });
 });

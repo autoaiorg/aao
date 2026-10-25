@@ -23,10 +23,13 @@ import type {
   OrganizationStructure,
   AgentIdentity,
   AgentType,
+  AgentOperationalStatus,
+  AgentOperationalState,
   OrgUnit,
   DataState,
   BoardStage,
   TaskItem,
+  TaskExecutionRecord,
   ActivityEvent,
 } from '../../../domain/models';
 import {
@@ -877,46 +880,51 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
       const principalResult = await this.getCurrentPrincipal();
       if (principalResult.kind === 'ready') {
         const p = principalResult.data;
-        let unitId = 'unit-unassigned';
-        let roleTitle = 'Principal Registrado';
-        let agentType: AgentType = 'UNKNOWN';
-        let unitName = 'Departamento desconocido';
+        // CEO Point 3: No deduzcas adscripción departamental ni tipo STANDING únicamente del rol CEO/AUDITOR.
+        // Conserva el rol autenticado, pero marca los demás atributos como desconocidos sin datos organizativos canónicos.
+        const unitId = 'unit-unassigned';
+        const unitName = 'Departamento desconocido';
+        const agentType: AgentType = 'UNKNOWN';
+        const roleTitle =
+          p.kind === 'CEO'
+            ? 'CEO (Rol autenticado)'
+            : p.kind === 'AUDITOR'
+            ? 'Auditor (Rol autenticado)'
+            : 'Principal Registrado';
+        const agentName =
+          p.kind === 'CEO'
+            ? 'CEO (Identidad Autenticada)'
+            : p.kind === 'AUDITOR'
+            ? `Auditor (${p.principal_id})`
+            : p.principal_id;
 
-        // Canonical mapping based exclusively on verified principal kind
-        if (p.kind === 'CEO') {
-          unitId = 'unit-exec';
-          roleTitle = 'Presidencia Ejecutiva / CEO';
-          agentType = 'STANDING';
-          unitName = units.find((u) => u.id === 'unit-exec')?.name || 'Dirección Ejecutiva';
-        } else if (p.kind === 'AUDITOR') {
-          unitId = 'unit-audit';
-          roleTitle = 'Auditor Independiente';
-          agentType = 'STANDING';
-          unitName = units.find((u) => u.id === 'unit-audit')?.name || 'Auditoría Independiente';
-        }
+        // CEO Point 2: No traduzcas automáticamente concesiones grants en capacidades CERTIFIED.
+        // Diferencia permisos, capacidades declaradas y certificaciones.
+        const grants = (p.grants || []).map((g) => ({
+          projectId: g.project_id,
+          permission: g.capability,
+          active: g.active,
+          expiresAt: g.expires_at || null,
+        }));
 
         agentMap.set(p.principal_id, {
           id: p.principal_id,
-          name: p.kind === 'CEO' ? 'CEO (Identidad Canónica)' : p.principal_id,
+          name: agentName,
           type: agentType,
           roleTitle,
           unitId,
           unitName,
-          capabilities: (p.grants || []).map((g, idx) => ({
-            id: `cap-${idx}`,
-            name: g.capability,
-            level: 'CERTIFIED',
-            verified: g.active,
-          })),
+          capabilities: [], // Grants are project permissions, NOT technical certifications!
+          grants,
           heartbeatStatus: 'UNKNOWN',
           lastHeartbeatAt: null,
-          status: 'IDLE',
+          status: 'UNKNOWN',
           operationalState: 'REGISTRADO',
           currentAssignments: [],
           authorityBoundary:
             p.kind === 'CEO'
-              ? 'Autoridad Constitucional Reservada. Decisiones estratégicas y de admisión.'
-              : 'Permisos delimitados por concesiones activas verificadas en el núcleo.',
+              ? 'Rol autenticado de CEO en el núcleo. Delimitación organizativa y adscripción departamental pendientes de datos canónicos.'
+              : 'Rol autenticado de Auditor en el núcleo. Delimitación organizativa y adscripción departamental pendientes de datos canónicos.',
           isSyntheticDemo: false,
           evidenceDescription: 'Credencial activa verificada mediante endpoint /v1/principals/me.',
           lastEvidenceAt: null, // No fabricar marcas temporales sintéticas
@@ -930,7 +938,6 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
     let inspectedProjectsCount = 0;
     let failedProjectsCount = 0;
     const totalProjectsCount = projectsResult.kind === 'ready' ? projectsResult.data.length : 0;
-    const VIGENCY_WINDOW_MS = 5 * 60 * 1000; // 5 min freshness window for current execution claim
     const nowMs = Date.now();
 
     if (projectsResult.kind === 'ready') {
@@ -952,20 +959,48 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
                   const targetUnitName = 'Departamento desconocido';
                   const targetAgentType: AgentType = 'UNKNOWN';
 
-                  // CEO Requirement 2:
-                  // No declarar EJECUTANDO por IN_PROGRESS. Exigir evidencia vigente: status === 'RUNNING', id válido y comprobación temporal.
-                  const execTimestamp = exec.created_at ? new Date(exec.created_at).getTime() : NaN;
-                  const isFresh =
-                    !isNaN(execTimestamp) && nowMs - execTimestamp >= 0 && nowMs - execTimestamp <= VIGENCY_WINDOW_MS;
-                  const isCurrentlyExecuting = exec.status === 'RUNNING' && Boolean(exec.id) && isFresh;
+                  // CEO Requirement 1 (PR #122 Review):
+                  // No utilices execution.created_at y una ventana fija de cinco minutos como prueba suficiente de ejecución activa.
+                  // Requiere estado RUNNING y lease vigente acreditados por el backend (lease_expires_at > now).
+                  // En ausencia de esa evidencia, representa vigencia desconocida (UNKNOWN).
+                  const execRecord = exec as TaskExecutionRecord;
+                  const hasLeaseAttr =
+                    execRecord.lease_expires_at !== undefined && execRecord.lease_expires_at !== null;
+                  const leaseExpiresMs = hasLeaseAttr ? new Date(execRecord.lease_expires_at!).getTime() : NaN;
+                  const isLeaseActive = !isNaN(leaseExpiresMs) && leaseExpiresMs > nowMs;
+                  const isLeaseExpired = !isNaN(leaseExpiresMs) && leaseExpiresMs <= nowMs;
 
-                  // CEO Requirement 8:
-                  // No marcar asignaciones como activas sin evidencia vigente.
-                  const isTaskOpen = task.status !== 'DONE' && task.status !== 'VERIFIED';
-                  const assignmentStatus: 'ACTIVE' | 'COMPLETED' = isCurrentlyExecuting ? 'ACTIVE' : 'COMPLETED';
+                  let assignmentStatus: 'ACTIVE' | 'EXPIRED' | 'COMPLETED' | 'UNKNOWN';
+                  let vigencyState: 'ACTIVE' | 'EXPIRED' | 'UNKNOWN' | 'COMPLETED';
+
+                  if (exec.status === 'RUNNING' && Boolean(exec.id)) {
+                    if (isLeaseActive) {
+                      assignmentStatus = 'ACTIVE';
+                      vigencyState = 'ACTIVE';
+                    } else if (isLeaseExpired) {
+                      assignmentStatus = 'EXPIRED';
+                      vigencyState = 'EXPIRED';
+                    } else {
+                      // Backend does not accredit a valid lease: vigency is strictly UNKNOWN
+                      assignmentStatus = 'UNKNOWN';
+                      vigencyState = 'UNKNOWN';
+                    }
+                  } else {
+                    assignmentStatus = 'COMPLETED';
+                    vigencyState = 'COMPLETED';
+                  }
 
                   let agent = agentMap.get(workerId);
                   if (!agent) {
+                    const agentStatus: AgentOperationalStatus =
+                      vigencyState === 'ACTIVE' ? 'BUSY' : vigencyState === 'UNKNOWN' ? 'UNKNOWN' : 'IDLE';
+                    const opState: AgentOperationalState =
+                      vigencyState === 'ACTIVE'
+                        ? 'EJECUTANDO'
+                        : vigencyState === 'UNKNOWN'
+                        ? 'DESCONOCIDO'
+                        : 'REGISTRADO';
+
                     agent = {
                       id: workerId,
                       name: workerId,
@@ -976,21 +1011,27 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
                       capabilities: [],
                       heartbeatStatus: 'UNKNOWN',
                       lastHeartbeatAt: null,
-                      status: isCurrentlyExecuting ? 'BUSY' : 'IDLE',
-                      operationalState: isCurrentlyExecuting ? 'EJECUTANDO' : isTaskOpen ? 'ASIGNADO' : 'REGISTRADO',
+                      status: agentStatus,
+                      operationalState: opState,
                       currentAssignments: [],
                       authorityBoundary: `Delimitado por el mandato del proyecto ${project.name || project.id}.`,
                       isSyntheticDemo: false,
-                      evidenceDescription: `Registro de ejecución en tarea ${task.id} (${task.title}). Estado de ejecución: ${exec.status}.`,
+                      evidenceDescription:
+                        vigencyState === 'ACTIVE'
+                          ? `Ejecución activa con lease vigente hasta ${execRecord.lease_expires_at} en tarea ${task.id} (${task.title}).`
+                          : vigencyState === 'UNKNOWN'
+                          ? `Registro de ejecución en tarea ${task.id} (${task.title}) con estado ${exec.status}. Vigencia desconocida: backend no acredita lease vigente.`
+                          : `Registro histórico de ejecución en tarea ${task.id} (${task.title}). Estado: ${exec.status}.`,
                       lastEvidenceAt: exec.created_at || null, // lastEvidenceAt preserva marca del núcleo, nunca new Date()
                     };
                     agentMap.set(workerId, agent);
                   } else {
-                    if (isCurrentlyExecuting) {
+                    if (vigencyState === 'ACTIVE') {
                       agent.status = 'BUSY';
                       agent.operationalState = 'EJECUTANDO';
-                    } else if (agent.operationalState !== 'EJECUTANDO' && isTaskOpen) {
-                      agent.operationalState = 'ASIGNADO';
+                    } else if (vigencyState === 'UNKNOWN' && agent.operationalState !== 'EJECUTANDO') {
+                      agent.status = 'UNKNOWN';
+                      agent.operationalState = 'DESCONOCIDO';
                     }
                     if (exec.created_at && (!agent.lastEvidenceAt || exec.created_at > agent.lastEvidenceAt)) {
                       agent.lastEvidenceAt = exec.created_at;
@@ -1005,6 +1046,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
                       taskId: task.id,
                       taskTitle: task.title,
                       assignedAt: exec.created_at || task.createdAt || '',
+                      leaseExpiresAt: execRecord.lease_expires_at || null,
                       status: assignmentStatus,
                     });
                   }

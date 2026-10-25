@@ -1,10 +1,12 @@
 import React from 'react';
+import type { OrgUnit } from '../../../domain/models';
 import { OFFICE_ROOMS, type OfficeViewMode } from '../types';
 
 export interface OfficeToolbarProps {
   viewMode: OfficeViewMode;
   onViewModeChange: (mode: OfficeViewMode) => void;
   selectedRoomId: string;
+  units: OrgUnit[];
   onSelectRoom: (roomId: string) => void;
   onRotateCamera?: (degrees: number) => void;
   onZoomCamera?: (factor: number) => void;
@@ -15,12 +17,14 @@ export interface OfficeToolbarProps {
   onTypeFilterChange: (filter: 'ALL' | 'STANDING' | 'EPHEMERAL') => void;
   reducedMotion: boolean;
   onToggleReducedMotion: () => void;
+  isDemo?: boolean;
 }
 
 export const OfficeToolbar: React.FC<OfficeToolbarProps> = ({
   viewMode,
   onViewModeChange,
   selectedRoomId,
+  units,
   onSelectRoom,
   onRotateCamera,
   onZoomCamera,
@@ -31,6 +35,7 @@ export const OfficeToolbar: React.FC<OfficeToolbarProps> = ({
   onTypeFilterChange,
   reducedMotion,
   onToggleReducedMotion,
+  isDemo = false,
 }) => {
   return (
     <div
@@ -63,6 +68,8 @@ export const OfficeToolbar: React.FC<OfficeToolbarProps> = ({
             type="button"
             aria-pressed={viewMode === '3d'}
             onClick={() => onViewModeChange('3d')}
+            disabled={!isDemo}
+            title={!isDemo ? 'La escena 3D representa una plantilla visual de demostración, no el organigrama live.' : undefined}
             style={{
               padding: '8px 16px',
               borderRadius: 'var(--radius-md, 8px)',
@@ -71,7 +78,8 @@ export const OfficeToolbar: React.FC<OfficeToolbarProps> = ({
               color: viewMode === '3d' ? 'var(--text-inverse)' : 'var(--text-primary)',
               fontWeight: 600,
               fontSize: '13px',
-              cursor: 'pointer',
+              cursor: isDemo ? 'pointer' : 'not-allowed',
+              opacity: isDemo ? 1 : 0.55,
               display: 'flex',
               alignItems: 'center',
               gap: '6px',
@@ -242,19 +250,20 @@ export const OfficeToolbar: React.FC<OfficeToolbarProps> = ({
           <span style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 600, marginRight: '4px' }}>
             Departamentos:
           </span>
-          {OFFICE_ROOMS.map((room) => {
-            const isSelected = selectedRoomId === room.id;
+          {units.map((unit, index) => {
+            const visual = OFFICE_ROOMS.find((room) => room.id === unit.id) || OFFICE_ROOMS[index % OFFICE_ROOMS.length];
+            const isSelected = selectedRoomId === unit.id;
             return (
               <button
-                key={room.id}
+                key={unit.id}
                 type="button"
-                aria-label={`[${room.code}] ${room.name}`}
+                aria-label={`[${unit.code}] ${unit.name}`}
                 aria-pressed={isSelected}
-                onClick={() => onSelectRoom(room.id)}
+                onClick={() => onSelectRoom(unit.id)}
                 style={{
                   padding: '5px 11px',
                   borderRadius: 'var(--radius-md, 6px)',
-                  border: isSelected ? `2px solid ${room.accentColor}` : '1px solid var(--border-subtle)',
+                  border: isSelected ? `2px solid ${visual?.accentColor || '#64748b'}` : '1px solid var(--border-subtle)',
                   backgroundColor: isSelected ? 'var(--accent-light)' : 'var(--bg-muted)',
                   color: isSelected ? 'var(--text-primary)' : 'var(--text-secondary)',
                   fontSize: '12px',
@@ -263,8 +272,8 @@ export const OfficeToolbar: React.FC<OfficeToolbarProps> = ({
                   transition: 'all 0.15s ease',
                 }}
               >
-                <strong style={{ color: room.accentColor, marginRight: '4px' }}>[{room.code}]</strong>
-                <span>{room.name.split(' ')[0]}</span>
+                <strong style={{ color: visual?.accentColor || '#64748b', marginRight: '4px' }}>[{unit.code}]</strong>
+                <span>{unit.name}</span>
               </button>
             );
           })}

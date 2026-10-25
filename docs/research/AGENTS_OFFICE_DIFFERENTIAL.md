@@ -176,3 +176,11 @@ El siguiente incremento útil es añadir perfiles organizativos persistentes y d
 - **Construcción:** se eliminó el fallback de `getOrganizationStructure()` que, ante ausencia/error del contrato, reconstruía la lista de agentes desde fan-out y añadía seis departamentos estáticos. Ahora consulta únicamente `GET /v1/organization`; credencial ausente, 403, 404, error de red y respuesta inválida permanecen como estados no disponibles/denegados/error. Así la interfaz operativa no muestra organigrama ficticio ni oculta el fallo del backend.
 - **Pruebas focalizadas:** `frontend/app/src/test/adapters.test.ts` verifica contrato canónico, 404 sin fan-out, 403/schema error fail-closed y ausencia de consulta sin token.
 - **Validación local:** TypeScript y suite frontend completas (136 tests), `npm run build` y `git diff --check` pasan. Build advierte chunks >500 kB y anotaciones de terceros Zod ya presentes; no son errores. PR/CI/merge quedan pendientes.
+
+### Incremento en construcción: plano LIVE desde unidades dinámicas (`feat/live-office-dynamic-org`)
+
+- **SHA de implementación:** `a79b258a4795be99ef8fe39b93164af472be5f69`.
+- **Construido:** plano 2D, chips y panel lateral muestran códigos, nombres, descripciones y responsables tal como llegan de las unidades persistidas. El color heredado de las seis salas es solo una decoración, no determina afiliación ni nombre. LIVE permanece en plano 2D; el botón 3D se deshabilita porque representa únicamente la plantilla visual DEMO. Se conserva la agrupación explícita de agentes no adscritos, evitando que el selector los fuerce silenciosamente a la primera unidad.
+- **Regresión:** prueba de unidad live con código/nombre no perteneciente al catálogo fijo y aserción de que el control 3D está deshabilitado; se conserva prueba de UNKNOWN/no adscrito.
+- **Validación local observada:** PostgreSQL suite `650 passed`; TypeScript, suite frontend `137 passed`, build, `compileall`, Ruff, `pip check` y `git diff --check` pasan. Build conserva avisos de tamaño de chunk y anotaciones de Zod.
+- **Pendiente:** CI de PR/main. Esto es un incremento visual parcial, no completa dirección de trabajo, UI de gestión de perfiles, conversación, equipos temporales, calendario, conocimiento o skills. F1-F4 permanecen por construir según la matriz de este documento.

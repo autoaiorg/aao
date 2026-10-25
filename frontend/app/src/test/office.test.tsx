@@ -422,6 +422,40 @@ describe('ThreeOfficeScene Engine Direct Regression Tests (Defects 1 & 2)', () =
 });
 
 describe('Phase F4.7: UI Contrast, Design Tokens & Operational Indicators', () => {
+  it('renders live organizational units from the API and keeps the fixed 3D template demo-only', () => {
+    const liveUnit = {
+      ...DEMO_ORG_UNITS[0],
+      id: 'unit-live-custom',
+      code: 'CUSTOM',
+      name: 'Unidad dinámica live',
+      description: 'Unidad persistida recibida del backend.',
+      leadRole: 'Responsable persistido',
+      leadAgentId: null,
+      standingCount: 0,
+      ephemeralCount: 0,
+      activeProjectsCount: 0,
+    };
+    const liveState: DataState<OrganizationStructure> = {
+      kind: 'ready',
+      origin: 'live',
+      data: {
+        units: [liveUnit],
+        agents: [],
+        totalStandingAgents: 0,
+        totalEphemeralAgents: 0,
+        activeAssignmentsCount: 0,
+      },
+      fetchedAt: new Date().toISOString(),
+    };
+
+    render(<VirtualOfficeView organization={liveState} />);
+
+    expect(screen.getByRole('button', { name: '[CUSTOM] Unidad dinámica live' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 4, name: 'Unidad dinámica live' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /\[GOV\]/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Vista 3D \(WebGL\)/i })).toBeDisabled();
+  });
+
   it('renders "Vista General" reset button and triggers camera reset callback', () => {
     const readyDemoState: DataState<OrganizationStructure> = {
       kind: 'ready',
@@ -491,7 +525,7 @@ describe('Phase F4.7: UI Contrast, Design Tokens & Operational Indicators', () =
     expect(screen.getByText('Ejecutando')).toBeInTheDocument();
 
     // Select the worker
-    const workerBtn = screen.getByRole('button', { name: /Codex Real Worker/i });
+    const workerBtn = screen.getAllByRole('button', { name: /Codex Real Worker/i })[0];
     fireEvent.click(workerBtn);
 
     // Verify presence vs execution badges

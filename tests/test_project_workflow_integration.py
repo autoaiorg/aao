@@ -1475,6 +1475,22 @@ def test_ceo_browser_session_cookie_csrf_and_logout(monkeypatch):
         assert CEO_SESSION_COOKIE in cookie_header
         assert client.cookies.get(CEO_SESSION_COOKIE)
 
+        mandate = client.post("/v1/mandates", headers=origin | {"X-CEO-Token": "cookie-session-test-token"}, json={
+            "title": "Cookie project visibility", "objective": "Cookie CEO sessions can read canonical projects",
+        })
+        assert mandate.status_code == 201
+        assert client.post(
+            f"/v1/mandates/{mandate.json()['id']}/confirm",
+            headers=origin | {"X-CEO-Token": "cookie-session-test-token"},
+        ).status_code == 200
+        project = client.post("/v1/projects", headers=origin | {"X-CEO-Token": "cookie-session-test-token"}, json={
+            "name": "Cookie-visible project", "mandate_id": mandate.json()["id"],
+        })
+        assert project.status_code == 201
+        project_list = client.get("/v1/projects")
+        assert project_list.status_code == 200
+        assert project.json()["id"] in {item["id"] for item in project_list.json()}
+
         with tx() as db:
             cookie_digest = __import__("hashlib").sha256(client.cookies.get(CEO_SESSION_COOKIE).encode()).hexdigest()
             stored = db.execute(

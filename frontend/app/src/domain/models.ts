@@ -127,6 +127,9 @@ export interface TaskItem {
   routingDecisions?: import('../features/ronin/modelProfile').ModelRoutingRecord[];
   authorId?: string;
   createdAt?: string;
+  parentWorkId?: string | null;
+  dependsOn?: string[];
+  workGroupId?: string | null;
 }
 
 export interface ProjectBoard {

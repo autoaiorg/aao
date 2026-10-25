@@ -31,6 +31,7 @@ describe('office persistent project conversation', () => {
       }),
       createWorkRequestFromMessage: vi.fn(),
       createWorkRequestFromConversation: vi.fn(),
+      createWorkGroupFromConversation: vi.fn(),
     };
     setup(port);
     await screen.findByText('Preparar el plan');
@@ -53,7 +54,7 @@ describe('office persistent project conversation', () => {
       streamCEOConversationTurn: vi.fn()
         .mockResolvedValueOnce(interrupted)
         .mockResolvedValueOnce(ready({ message_id: 'reply-1' })),
-      createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(),
+      createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(), createWorkGroupFromConversation: vi.fn(),
     };
     setup(port);
     await screen.findByText('Preparar el plan');
@@ -69,13 +70,18 @@ describe('office persistent project conversation', () => {
     expect(second[3]).toBe(first[3]);
   });
 
-  it('structures a CEO-confirmed task from the conversation thread, not an individual message', async () => {
+  it('structures CEO-confirmed parent and dependent tasks from the conversation thread', async () => {
     const port: AaoConversationPort = {
       listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
       listConversationMessages: vi.fn().mockResolvedValue(ready([message, { ...message, id: 'message-2', sender: 'AAO', body: 'Propongo documentar los hallazgos.' } ])),
       createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(), streamCEOConversationTurn: vi.fn(),
       createWorkRequestFromMessage: vi.fn(),
       createWorkRequestFromConversation: vi.fn().mockResolvedValue(ready({ id: 'work-1', status: 'INBOX', created: true })),
+      createWorkGroupFromConversation: vi.fn().mockResolvedValue(ready({
+        id: 'group-1', project_id: 'project-active', conversation_id: 'conversation-1',
+        parent_work_id: 'work-parent', status: 'INBOX', created: true,
+        tasks: [{ id: 'work-child', title: 'Documentar', status: 'INBOX', depends_on: [] }],
+      })),
     };
     setup(port);
     await screen.findByText('Propongo documentar los hallazgos.');
@@ -83,9 +89,20 @@ describe('office persistent project conversation', () => {
     fireEvent.change(screen.getByLabelText('Título de tarea desde conversación'), { target: { value: 'Documentar hallazgos' } });
     fireEvent.change(screen.getByLabelText('Descripción de tarea desde conversación'), { target: { value: 'A partir del hilo, documentar los hallazgos acordados.' } });
     fireEvent.change(screen.getByLabelText('Criterios de aceptación de tarea desde conversación'), { target: { value: 'Hallazgos documentados\nCEO puede revisarlos' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Confirmar y crear en Entrada' }));
-    await waitFor(() => expect(port.createWorkRequestFromConversation).toHaveBeenCalledWith('project-active', 'conversation-1', {
+    fireEvent.change(screen.getByLabelText('Título task-1'), { target: { value: 'Documentar hallazgos' } });
+    fireEvent.change(screen.getByLabelText('Criterios task-1'), { target: { value: 'Hallazgos documentados' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Añadir tarea' }));
+    fireEvent.change(screen.getByLabelText('Título task-2'), { target: { value: 'Revisar documentación' } });
+    fireEvent.change(screen.getByLabelText('Criterios task-2'), { target: { value: 'CEO puede revisarlos' } });
+    fireEvent.click(screen.getByLabelText('task-1: Documentar hallazgos'));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar desglose y crear en Entrada' }));
+    await waitFor(() => expect(port.createWorkGroupFromConversation).toHaveBeenCalledWith('project-active', 'conversation-1', {
+      idempotency_key: expect.any(String),
       title: 'Documentar hallazgos', description: 'A partir del hilo, documentar los hallazgos acordados.', acceptance_criteria: ['Hallazgos documentados', 'CEO puede revisarlos'],
+      tasks: [
+        { key: 'task-1', title: 'Documentar hallazgos', description: '', acceptance_criteria: ['Hallazgos documentados'], depends_on: [] },
+        { key: 'task-2', title: 'Revisar documentación', description: '', acceptance_criteria: ['CEO puede revisarlos'], depends_on: ['task-1'] },
+      ],
     }));
     expect(await screen.findByText(/no se ha admitido ni ejecutado/)).toBeInTheDocument();
     expect(port.createWorkRequestFromMessage).not.toHaveBeenCalled();

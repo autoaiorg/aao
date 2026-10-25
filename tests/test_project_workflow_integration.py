@@ -323,6 +323,68 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         assert thread_audit[1]["conversation_id"] == conversation_id
         assert thread_audit[1]["admitted"] is False
 
+        # CEO-confirmed thread breakdown persists a parent, parallel children,
+        # and a dependency DAG without admitting or queuing any work.
+        group_url = f"/v1/projects/{project}/conversations/{conversation_id}/work-groups"
+        group_request = {
+            "idempotency_key": str(uuid4()),
+            "title": "Deliver the reviewed plan",
+            "description": "Parent summary from the full discussion",
+            "acceptance_criteria": ["All child results consolidated"],
+            "tasks": [
+                {"key": "research", "title": "Research evidence",
+                 "description": "Review primary evidence", "acceptance_criteria": ["Evidence cited"]},
+                {"key": "design", "title": "Design implementation",
+                 "description": "Draft a viable plan", "acceptance_criteria": ["Plan recorded"]},
+                {"key": "consolidate", "title": "Consolidate findings",
+                 "description": "Combine approved results", "acceptance_criteria": ["Findings linked"],
+                 "depends_on": ["research", "design"]},
+            ],
+        }
+        assert client.post(group_url, json=group_request).status_code == 403
+        group = client.post(group_url, headers=ceo, json=group_request)
+        assert group.status_code == 201, group.text
+        group_body = group.json()
+        assert group_body["status"] == "INBOX" and group_body["created"] is True
+        assert len(group_body["tasks"]) == 3
+        research_id = next(task["id"] for task in group_body["tasks"] if task["title"] == "Research evidence")
+        design_id = next(task["id"] for task in group_body["tasks"] if task["title"] == "Design implementation")
+        consolidate = next(task for task in group_body["tasks"] if task["title"] == "Consolidate findings")
+        assert set(consolidate["depends_on"]) == {research_id, design_id}
+        repeated_group = client.post(group_url, headers=ceo, json=group_request)
+        assert repeated_group.status_code == 201
+        assert repeated_group.json()["created"] is False
+        assert repeated_group.json()["id"] == group_body["id"]
+        assert repeated_group.json()["parent_work_id"] == group_body["parent_work_id"]
+        assert client.post(group_url, headers=ceo, json={
+            **group_request, "description": "Same key, mutated payload",
+        }).status_code == 409
+        assert client.post(group_url, headers=ceo, json={
+            **group_request, "idempotency_key": str(uuid4()), "tasks": [
+                {"key": "x", "title": "X", "acceptance_criteria": ["x"], "depends_on": ["y"]},
+                {"key": "y", "title": "Y", "acceptance_criteria": ["y"], "depends_on": ["x"]},
+            ],
+        }).status_code == 422
+        board = client.get(f"/v1/projects/{project}/board", headers=ceo).json()
+        parent = next(item for item in board if item["id"] == group_body["parent_work_id"])
+        assert parent["work_group_id"] == group_body["id"]
+        child = next(item for item in board if item["id"] == consolidate["id"])
+        assert child["parent_work_id"] == group_body["parent_work_id"]
+        assert set(child["depends_on"]) == {research_id, design_id}
+        with connect_postgres() as db:
+            group_state = db.execute(
+                "SELECT count(*),count(*) FILTER (WHERE status <> 'INBOX') "
+                "FROM work_items WHERE id=%s OR parent_work_id=%s",
+                (group_body["parent_work_id"], group_body["parent_work_id"]),
+            ).fetchone()
+            group_executions = db.execute(
+                "SELECT count(*) FROM execution_queue WHERE work_id=%s "
+                "OR work_id IN (SELECT id FROM work_items WHERE parent_work_id=%s)",
+                (group_body["parent_work_id"], group_body["parent_work_id"]),
+            ).fetchone()[0]
+        assert group_state == (4, 0)
+        assert group_executions == 0
+
         provider_calls = 0
         def successful_provider(_messages):
             nonlocal provider_calls

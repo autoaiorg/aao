@@ -12,6 +12,14 @@ interface OfficeConversationPanelProps {
   onOpenBoard: (projectId: string) => void;
 }
 
+interface WorkTaskDraft {
+  key: string;
+  title: string;
+  description: string;
+  acceptanceCriteria: string;
+  dependsOn: string[];
+}
+
 export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = ({ projects, port, sessionId, onOpenBoard }) => {
   const queryClient = useQueryClient();
   const activeProjects = useMemo(() => projects.kind === 'ready'
@@ -29,6 +37,9 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
   const [requestDescription, setRequestDescription] = useState('');
   const [requestCriteria, setRequestCriteria] = useState('');
   const [requestingMessageId, setRequestingMessageId] = useState(false);
+  const [workTasks, setWorkTasks] = useState<WorkTaskDraft[]>([{ key: 'task-1', title: '', description: '', acceptanceCriteria: '', dependsOn: [] }]);
+  const [nextTaskNumber, setNextTaskNumber] = useState(2);
+  const [workGroupIdempotencyKey, setWorkGroupIdempotencyKey] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
@@ -111,6 +122,43 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
     return null;
   };
 
+  const updateWorkTask = (key: string, update: Partial<WorkTaskDraft>) => {
+    setWorkGroupIdempotencyKey('');
+    setWorkTasks((current) => current.map((task) => task.key === key ? { ...task, ...update } : task));
+  };
+
+  const submitWorkGroup = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const criteria = requestCriteria.split('\n').map((item) => item.trim()).filter(Boolean);
+    const tasks = workTasks.map((task) => ({
+      key: task.key,
+      title: task.title.trim(),
+      description: task.description.trim(),
+      acceptance_criteria: task.acceptanceCriteria.split('\n').map((item) => item.trim()).filter(Boolean),
+      depends_on: task.dependsOn,
+    }));
+    if (!projectId || !conversationId || !requestTitle.trim() || !requestDescription.trim()
+      || criteria.length === 0 || tasks.some((task) => !task.title || task.acceptance_criteria.length === 0)) return;
+    const idempotencyKey = workGroupIdempotencyKey || crypto.randomUUID();
+    setWorkGroupIdempotencyKey(idempotencyKey);
+    setRequestingMessageId(true);
+    const result = await port.createWorkGroupFromConversation(projectId, conversationId, {
+      idempotency_key: idempotencyKey,
+      title: requestTitle.trim(), description: requestDescription.trim(),
+      acceptance_criteria: criteria, tasks,
+    });
+    setRequestingMessageId(false);
+    if (result.kind === 'ready') {
+      setRequestTitle(''); setRequestDescription(''); setRequestCriteria('');
+      setWorkTasks([{ key: 'task-1', title: '', description: '', acceptanceCriteria: '', dependsOn: [] }]);
+      setNextTaskNumber(2); setWorkGroupIdempotencyKey('');
+      setNotice(`Desglose ${result.data.id} (${result.data.tasks.length} tareas) registrado en Entrada; no se ha admitido ni ejecutado.`);
+      await queryClient.invalidateQueries({ queryKey: ['board'] });
+    } else {
+      setNotice(result.kind === 'error' ? `${result.code}: ${result.message}` : result.kind === 'forbidden' ? result.reason : 'No se pudo estructurar el desglose.');
+    }
+  };
+
   const renderMessage = (message: ProjectConversationMessage) => (
     <li key={message.id} className={`office-conversation-message office-conversation-message--${message.sender.toLowerCase()}`}>
       <div className="office-conversation-message__meta">
@@ -187,35 +235,59 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
                 </label>
                 <div><Button type="submit" disabled={!draft.trim() || sendingTurn}>{sendingTurn ? 'AAO está respondiendo…' : 'Enviar a AAO'}</Button></div>
               </form>
-              <form onSubmit={(event) => {
-                event.preventDefault();
-                const acceptance_criteria = requestCriteria.split('\n').map((item) => item.trim()).filter(Boolean);
-                if (!requestTitle.trim() || !requestDescription.trim() || acceptance_criteria.length === 0) return;
-                setRequestingMessageId(true);
-                void port.createWorkRequestFromConversation(projectId, conversationId, {
-                  title: requestTitle.trim(), description: requestDescription.trim(), acceptance_criteria,
-                }).then(async (result) => {
-                  setRequestingMessageId(false);
-                  if (result.kind === 'ready') {
-                    setRequestTitle(''); setRequestDescription(''); setRequestCriteria('');
-                    setNotice(`Tarea ${result.data.id} registrada en Entrada desde el hilo; no se ha admitido ni ejecutado.`);
-                    await queryClient.invalidateQueries({ queryKey: ['board'] });
-                  } else setNotice(result.kind === 'error' ? `${result.code}: ${result.message}` : result.kind === 'forbidden' ? result.reason : 'No se pudo estructurar el trabajo.');
-                });
-              }} className="office-conversation-work-request-form">
-                <strong>Estructurar tarea a partir del hilo</strong>
-                <p className="office-conversation-work-request-form__note">Resume aquí el resultado de la conversación. Revisa y confirma antes de crear una tarea en Entrada.</p>
+              <form onSubmit={(event) => void submitWorkGroup(event)} className="office-conversation-work-request-form">
+                <strong>Estructurar tareas a partir del hilo</strong>
+                <p className="office-conversation-work-request-form__note">Resume el resultado y desglosa las tareas dependientes. Todo se guarda como trabajo canónico en Entrada tras confirmarlo; no se admite ni ejecuta automáticamente.</p>
                 <label className="office-form-field">Título
-                  <input className="office-form-control" aria-label="Título de tarea desde conversación" required maxLength={200} value={requestTitle} onChange={(event) => setRequestTitle(event.target.value)} />
+                  <input className="office-form-control" aria-label="Título de tarea desde conversación" required maxLength={200} value={requestTitle} onChange={(event) => { setWorkGroupIdempotencyKey(''); setRequestTitle(event.target.value); }} />
                 </label>
                 <label className="office-form-field">Descripción acordada
-                  <textarea className="office-form-control office-form-control--textarea" aria-label="Descripción de tarea desde conversación" required rows={3} maxLength={5000} value={requestDescription} onChange={(event) => setRequestDescription(event.target.value)} />
+                  <textarea className="office-form-control office-form-control--textarea" aria-label="Descripción de tarea desde conversación" required rows={3} maxLength={5000} value={requestDescription} onChange={(event) => { setWorkGroupIdempotencyKey(''); setRequestDescription(event.target.value); }} />
                 </label>
                 <label className="office-form-field">Criterios de aceptación (uno por línea)
-                  <textarea className="office-form-control office-form-control--textarea" aria-label="Criterios de aceptación de tarea desde conversación" required rows={3} value={requestCriteria} onChange={(event) => setRequestCriteria(event.target.value)} />
+                  <textarea className="office-form-control office-form-control--textarea" aria-label="Criterios de aceptación de tarea desde conversación" required rows={3} value={requestCriteria} onChange={(event) => { setWorkGroupIdempotencyKey(''); setRequestCriteria(event.target.value); }} />
                 </label>
-                <Button type="submit" disabled={requestingMessageId || !requestTitle.trim() || !requestDescription.trim() || !requestCriteria.trim()}>
-                  {requestingMessageId ? 'Guardando…' : 'Confirmar y crear en Entrada'}
+                <div className="office-conversation-task-list">
+                  <strong>Tareas del desglose</strong>
+                  {workTasks.map((task, index) => (
+                    <fieldset key={task.key} className="office-conversation-task">
+                      <legend>{task.key}</legend>
+                      <label className="office-form-field">Título de tarea
+                        <input className="office-form-control" aria-label={`Título ${task.key}`} required maxLength={200} value={task.title} onChange={(event) => updateWorkTask(task.key, { title: event.target.value })} />
+                      </label>
+                      <label className="office-form-field">Descripción
+                        <textarea className="office-form-control office-form-control--textarea" aria-label={`Descripción ${task.key}`} rows={2} maxLength={5000} value={task.description} onChange={(event) => updateWorkTask(task.key, { description: event.target.value })} />
+                      </label>
+                      <label className="office-form-field">Criterios (uno por línea)
+                        <textarea className="office-form-control office-form-control--textarea" aria-label={`Criterios ${task.key}`} required rows={2} value={task.acceptanceCriteria} onChange={(event) => updateWorkTask(task.key, { acceptanceCriteria: event.target.value })} />
+                      </label>
+                      {index > 0 && (
+                        <fieldset className="office-conversation-dependencies">
+                          <legend>Depende de estas tareas anteriores (opcional)</legend>
+                          {workTasks.slice(0, index).map((previous) => (
+                            <label key={previous.key}>
+                              <input type="checkbox" checked={task.dependsOn.includes(previous.key)} onChange={(event) => updateWorkTask(task.key, {
+                                dependsOn: event.target.checked
+                                  ? [...task.dependsOn, previous.key]
+                                  : task.dependsOn.filter((key) => key !== previous.key),
+                              })} />
+                              {previous.key}: {previous.title || 'tarea sin título'}
+                            </label>
+                          ))}
+                        </fieldset>
+                      )}
+                      {workTasks.length > 1 && <Button type="button" variant="secondary" onClick={() => { setWorkGroupIdempotencyKey(''); setWorkTasks((current) => current.filter((item) => item.key !== task.key).map((item) => ({ ...item, dependsOn: item.dependsOn.filter((key) => key !== task.key) }))); }}>Eliminar {task.key}</Button>}
+                    </fieldset>
+                  ))}
+                  <Button type="button" variant="secondary" onClick={() => {
+                    const key = `task-${nextTaskNumber}`;
+                    setNextTaskNumber((number) => number + 1);
+                    setWorkGroupIdempotencyKey('');
+                    setWorkTasks((current) => [...current, { key, title: '', description: '', acceptanceCriteria: '', dependsOn: [] }]);
+                  }}>Añadir tarea</Button>
+                </div>
+                <Button type="submit" disabled={requestingMessageId || !requestTitle.trim() || !requestDescription.trim() || !requestCriteria.trim() || workTasks.some((task) => !task.title.trim() || !task.acceptanceCriteria.trim())}>
+                  {requestingMessageId ? 'Guardando…' : 'Confirmar desglose y crear en Entrada'}
                 </Button>
               </form>
             </>

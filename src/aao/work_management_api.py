@@ -146,6 +146,69 @@ class WorkRequest(BaseModel):
     description: str = Field(default="", max_length=5000)
 
 
+class WorkGroupTaskRequest(BaseModel):
+    key: str = Field(min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=5000)
+    acceptance_criteria: list[str] = Field(min_length=1, max_length=20)
+    depends_on: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("acceptance_criteria")
+    @classmethod
+    def task_criteria_not_blank(cls, values: list[str]) -> list[str]:
+        criteria = [value.strip() for value in values]
+        if any(not value for value in criteria):
+            raise ValueError("Acceptance criteria must not be blank")
+        return criteria
+
+
+class ConversationWorkGroupRequest(BaseModel):
+    """CEO-reviewed breakdown of one conversation into canonical inbox work."""
+    idempotency_key: UUID
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=5000)
+    acceptance_criteria: list[str] = Field(min_length=1, max_length=20)
+    tasks: list[WorkGroupTaskRequest] = Field(min_length=1, max_length=20)
+
+    @field_validator("acceptance_criteria")
+    @classmethod
+    def group_criteria_not_blank(cls, values: list[str]) -> list[str]:
+        criteria = [value.strip() for value in values]
+        if any(not value for value in criteria):
+            raise ValueError("Acceptance criteria must not be blank")
+        return criteria
+
+    @model_validator(mode="after")
+    def validate_dependencies(self):
+        keys = [task.key for task in self.tasks]
+        if len(set(keys)) != len(keys):
+            raise ValueError("Task keys must be unique")
+        known = set(keys)
+        graph: dict[str, set[str]] = {}
+        for task in self.tasks:
+            deps = set(task.depends_on)
+            if len(deps) != len(task.depends_on) or not deps <= known or task.key in deps:
+                raise ValueError("Dependencies must reference distinct tasks in this group")
+            graph[task.key] = deps
+        visited: set[str] = set()
+        active: set[str] = set()
+
+        def visit(key: str) -> None:
+            if key in active:
+                raise ValueError("Task dependencies must be acyclic")
+            if key in visited:
+                return
+            active.add(key)
+            for dependency in graph[key]:
+                visit(dependency)
+            active.remove(key)
+            visited.add(key)
+
+        for key in keys:
+            visit(key)
+        return self
+
+
 class CEOWorkRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     acceptance_criteria: list[str] = Field(min_length=1)
@@ -1341,6 +1404,102 @@ def create_work_request_from_conversation(
     return {"id": work_id, "status": "INBOX", "created": True}
 
 
+@app.post(
+    "/v1/projects/{project_id}/conversations/{conversation_id}/work-groups",
+    status_code=201,
+)
+def create_conversation_work_group(
+    project_id: str,
+    conversation_id: str,
+    payload: ConversationWorkGroupRequest,
+    _: str = Depends(require_ceo),
+):
+    """Persist a CEO-confirmed parent/child breakdown; creation never admits work."""
+    request_hash = hashlib.sha256(
+        json.dumps(payload.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    with tx() as db:
+        project = db.execute(
+            "SELECT state FROM projects WHERE id=%s FOR UPDATE", (project_id,),
+        ).fetchone()
+        if not project:
+            raise HTTPException(404, "Project not found")
+        if project[0] != "ACTIVE":
+            raise HTTPException(409, "Project not active")
+        conversation = db.execute(
+            "SELECT id FROM project_conversations WHERE id=%s AND project_id=%s FOR UPDATE",
+            (conversation_id, project_id),
+        ).fetchone()
+        if not conversation:
+            raise HTTPException(404, "Conversation not found")
+
+        existing = db.execute(
+            "SELECT id,request_sha256,parent_work_id FROM work_groups "
+            "WHERE conversation_id=%s AND idempotency_key=%s",
+            (conversation_id, payload.idempotency_key),
+        ).fetchone()
+        if existing:
+            if existing[1] != request_hash:
+                raise HTTPException(409, "Idempotency key was used with a different breakdown")
+            group_id, parent_work_id, created = str(existing[0]), str(existing[2]), False
+        else:
+            group_id = str(uuid4())
+            parent_work_id = _insert_ceo_work_request(
+                db, project_id, payload.title, payload.description,
+                payload.acceptance_criteria,
+            )
+            db.execute(
+                "INSERT INTO work_groups(id,project_id,conversation_id,parent_work_id,"
+                "idempotency_key,request_sha256) VALUES (%s,%s,%s,%s,%s,%s)",
+                (group_id, project_id, conversation_id, parent_work_id,
+                 payload.idempotency_key, request_hash),
+            )
+            task_ids = {task.key: str(uuid4()) for task in payload.tasks}
+            for task in payload.tasks:
+                db.execute(
+                    "INSERT INTO work_items(id,project_id,title,description,author_id,status,"
+                    "acceptance_criteria,parent_work_id) VALUES (%s,%s,%s,%s,'ceo','INBOX',%s::jsonb,%s)",
+                    (task_ids[task.key], project_id, task.title, task.description,
+                     json.dumps(task.acceptance_criteria), parent_work_id),
+                )
+            for task in payload.tasks:
+                for dependency_key in task.depends_on:
+                    db.execute(
+                        "INSERT INTO work_item_dependencies(project_id,work_id,depends_on_work_id) "
+                        "VALUES (%s,%s,%s)",
+                        (project_id, task_ids[task.key], task_ids[dependency_key]),
+                    )
+            audit(db, parent_work_id, "work.group_created", {
+                "group_id": group_id, "project_id": project_id,
+                "conversation_id": conversation_id, "actor": "ceo",
+                "child_work_ids": list(task_ids.values()), "admitted": False,
+                "execution_created": False,
+            })
+            created = True
+
+        children = db.execute(
+            "SELECT id,title,status FROM work_items WHERE project_id=%s AND parent_work_id=%s ORDER BY id",
+            (project_id, parent_work_id),
+        ).fetchall()
+        dependency_rows = db.execute(
+            "SELECT work_id,depends_on_work_id FROM work_item_dependencies "
+            "WHERE project_id=%s AND work_id IN "
+            "(SELECT id FROM work_items WHERE project_id=%s AND parent_work_id=%s) "
+            "ORDER BY work_id,depends_on_work_id",
+            (project_id, project_id, parent_work_id),
+        ).fetchall()
+        dependencies: dict[str, list[str]] = {}
+        for work_id, depends_on_work_id in dependency_rows:
+            dependencies.setdefault(str(work_id), []).append(str(depends_on_work_id))
+        return {
+            "id": group_id, "project_id": project_id,
+            "conversation_id": conversation_id, "parent_work_id": parent_work_id,
+            "status": "INBOX", "created": created,
+            "tasks": [{"id": str(child[0]), "title": child[1], "status": child[2],
+                       "depends_on": dependencies.get(str(child[0]), [])} for child in children],
+        }
+
+
 @app.post("/v1/projects/{project_id}/conversations", status_code=201)
 def create_project_conversation(
     project_id: str,
@@ -1649,7 +1808,10 @@ def board(project_id: str, principal: str = Depends(read_principal)):
             "COALESCE((SELECT json_agg(json_build_object('id',q.id,'status',q.status,"
             "'worker_id',q.worker_id,'attempts',q.attempts,'created_at',q.created_at,"
             "'result',q.result_json) ORDER BY q.created_at,q.id) FROM execution_queue q "
-            "WHERE q.work_id=w.id),'[]'::json) "
+            "WHERE q.work_id=w.id),'[]'::json),w.parent_work_id,"
+            "COALESCE((SELECT json_agg(d.depends_on_work_id ORDER BY d.depends_on_work_id) "
+            "FROM work_item_dependencies d WHERE d.work_id=w.id),'[]'::json),"
+            "(SELECT g.id FROM work_groups g WHERE g.parent_work_id=w.id) "
             "FROM work_items w "
             "WHERE w.project_id=%s ORDER BY w.id", (project_id,),
         ).fetchall()
@@ -1718,6 +1880,9 @@ def board(project_id: str, principal: str = Depends(read_principal)):
             {"id": r[0], "title": r[1], "status": r[2],
              "acceptance_criteria": r[3], "evidence": r[4],
              "executions": r[5], "reviews": reviews_by_work.get(str(r[0]), []),
+             "parent_work_id": str(r[6]) if r[6] else None,
+             "depends_on": [str(item) for item in (r[7] or [])],
+             "work_group_id": str(r[8]) if r[8] else None,
              "patch_proposals": patches_by_work.get(str(r[0]), []),
              "pull_requests": prs_by_work.get(str(r[0]), []),
              "resolution": resolutions.get(str(r[0]))}

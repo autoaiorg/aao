@@ -152,7 +152,8 @@ El siguiente incremento útil es añadir perfiles organizativos persistentes y d
 - `GET /v1/organization` integra el perfil y las unidades declaradas en su proyección; para agentes, solo devuelve su propio perfil y unidad asociada; CEO recibe el roster declarado. Una identidad sin actividad conserva estado UNKNOWN. La metadata organizativa no altera alcance de proyectos ni grants.
 - El contrato del frontend acepta `managerId`; la visualización/edición de organigrama en la oficina aún requiere su propio incremento para que el CEO pueda gestionarlo desde la interfaz.
 - Validación en el contenedor PostgreSQL desechable: pruebas focalizadas de persistencia/proyección y scope, `2 passed`; `compileall`, Ruff, `git diff --check`, TypeScript y suite frontend (136 tests) pasaron. No se ha ejecutado el conjunto completo ni CI.
-- Siguiente: ampliar pruebas (ciclo jerárquico y límites de visibilidad), correr CI completa; luego conectar representación/edición de perfiles en la oficina sin estado duplicado.
+- **Fusionado:** PR #134 en `fecb34ea3e60c93eee6816e5af9840f8ebb84564`; PostgreSQL suite local `650 passed`, frontend `136 passed`, TypeScript/build/compileall/Ruff/pip check pasan; PR CI y `main` CI verdes ([run 40233270842](https://github.com/autoaiorg/aao/actions/runs/40233270842)). Esto acredita los checks indicados, no una certificación.
+- Siguiente: ampliar pruebas (ciclo jerárquico y límites de visibilidad), luego conectar representación/edición de perfiles en la oficina sin estado duplicado.
 
 ## 8. Límites y siguientes responsables
 

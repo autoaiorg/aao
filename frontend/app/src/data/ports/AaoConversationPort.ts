@@ -21,6 +21,8 @@ export interface ProjectConversationMessage {
     provider: string | null;
     model: string | null;
   } | null;
+  provider?: string | null;
+  model?: string | null;
   created_at: string;
 }
 
@@ -40,6 +42,12 @@ export interface AaoConversationPort {
   listConversationMessages(projectId: string, conversationId: string): Promise<DataState<ProjectConversationMessage[]>>;
   createProjectConversation(projectId: string, title: string): Promise<DataState<Pick<ProjectConversation, 'id' | 'project_id' | 'title'>>>;
   appendCEOConversationMessage(projectId: string, conversationId: string, body: string): Promise<DataState<ProjectConversationMessage>>;
+  streamCEOConversationTurn(
+    projectId: string,
+    conversationId: string,
+    body: string,
+    onDelta: (delta: string) => void,
+  ): Promise<DataState<{ message_id: string }>>;
   createWorkRequestFromMessage(
     projectId: string,
     conversationId: string,

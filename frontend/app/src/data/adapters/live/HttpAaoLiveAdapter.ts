@@ -882,7 +882,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
       related_work_id: z.string().uuid().nullable(), work_status: z.string().nullable(),
       latest_execution: z.object({ id: z.string().uuid(), status: z.string(),
         backend: z.string().nullable(), provider: z.string().nullable(), model: z.string().nullable(),
-      }).nullable(), created_at: z.string(),
+      }).nullable(), provider: z.string().nullable().optional(), model: z.string().nullable().optional(), created_at: z.string(),
     })), { method: 'GET' });
   }
 
@@ -902,6 +902,68 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
         backend: z.string().nullable(), provider: z.string().nullable(), model: z.string().nullable(),
       }).nullable(), created_at: z.string(),
     }), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }) });
+  }
+
+  async streamCEOConversationTurn(
+    projectId: string,
+    conversationId: string,
+    body: string,
+    onDelta: (delta: string) => void,
+  ): Promise<DataState<{ message_id: string }>> {
+    if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede conversar con AAO.' };
+    const token = this.getToken();
+    const cookieSession = this.getCeoCookieSession();
+    if (this.requireAuth && !token && !cookieSession) return { kind: 'forbidden', reason: 'Sesión CEO requerida.' };
+    const headers: Record<string, string> = { Accept: 'text/event-stream', 'Content-Type': 'application/json' };
+    if (token) headers['X-CEO-Token'] = token;
+    if (cookieSession) {
+      const csrfToken = this.getCsrfToken();
+      if (!csrfToken) return { kind: 'forbidden', reason: 'Falta token CSRF de la sesión CEO.' };
+      headers['X-AAO-CSRF'] = csrfToken;
+    }
+    const controller = new AbortController();
+    this.activeControllers.add(controller);
+    try {
+      const response = await fetch(`${this.baseUrl}/v1/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/turns`, {
+        method: 'POST', headers, credentials: 'include', signal: controller.signal,
+        body: JSON.stringify({ body }),
+      });
+      if (!response.ok || !response.body) {
+        if (response.status === 401 || response.status === 403) this.onUnauthorized?.();
+        return { kind: response.status === 401 || response.status === 403 ? 'forbidden' : 'error',
+          ...(response.status === 401 || response.status === 403
+            ? { reason: `No autorizado (HTTP ${response.status}).` }
+            : { code: `HTTP_${response.status}`, message: 'No se pudo iniciar la respuesta de AAO.', retryable: response.status >= 500 }) } as DataState<{ message_id: string }>;
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let messageId = '';
+      let streamError: { code: string; message?: string } | undefined;
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value, { stream: !done });
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || '';
+        for (const event of events) {
+          const type = event.match(/^event: (.+)$/m)?.[1];
+          const data = event.match(/^data: (.+)$/m)?.[1];
+          if (!data) continue;
+          const parsed = JSON.parse(data) as { delta?: string; message_id?: string; code?: string; message?: string };
+          if (type === 'delta' && parsed.delta) onDelta(parsed.delta);
+          if (type === 'done') messageId = parsed.message_id || '';
+          if (type === 'error') streamError = { code: parsed.code || 'PROVIDER_ERROR', message: parsed.message };
+        }
+        if (done) break;
+      }
+      if (streamError) return { kind: 'error', code: streamError.code || 'PROVIDER_ERROR', message: streamError.message || 'El proveedor no pudo responder.', retryable: true };
+      if (!messageId) return { kind: 'error', code: 'INCOMPLETE_STREAM', message: 'La respuesta terminó sin confirmación de persistencia.', retryable: true };
+      return { kind: 'ready', origin: 'live', fetchedAt: new Date().toISOString(), data: { message_id: messageId } };
+    } catch {
+      return { kind: 'error', code: 'STREAM_ERROR', message: 'Se interrumpió la respuesta de AAO.', retryable: true };
+    } finally {
+      this.activeControllers.delete(controller);
+    }
   }
 
   async createWorkRequestFromMessage(

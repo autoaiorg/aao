@@ -18,7 +18,7 @@ from aao.environment_settings import load_local_env
 load_local_env()
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from aao.capability_contracts import missing_contract_fields, model_profile_errors
@@ -195,6 +195,10 @@ class ProjectConversationMessageRequest(BaseModel):
         if not value:
             raise ValueError("Conversation message must not be blank")
         return value
+
+
+class ProjectConversationTurnRequest(ProjectConversationMessageRequest):
+    """A CEO turn submitted for a provider-backed conversational response."""
 
 
 class ReviewRequest(BaseModel):
@@ -1237,7 +1241,7 @@ def create_work_request_from_conversation_message(
     payload: ConversationWorkRequest,
     _: str = Depends(require_ceo),
 ):
-    """Explicitly turn one persisted CEO message into one canonical INBOX work item.
+    """Explicitly turn one persisted conversation message into one canonical INBOX work item.
 
     The message lock and work insert/link/audit writes share one transaction, so
     retries (including concurrent retries) return the original work ID.
@@ -1261,8 +1265,8 @@ def create_work_request_from_conversation_message(
         ).fetchone()
         if not message:
             raise HTTPException(404, "Conversation message not found")
-        if message[0] != "CEO":
-            raise HTTPException(409, "Only CEO messages can become work requests")
+        if message[0] not in {"CEO", "AAO"}:
+            raise HTTPException(409, "Unsupported conversation message sender")
 
         if message[2] is not None:
             existing = db.execute(
@@ -1347,7 +1351,7 @@ def list_project_conversation_messages(
         rows = db.execute(
             "SELECT m.id,m.sender,m.body,m.related_work_id,m.created_at,w.status,"
             "q.id,q.status,q.result_json->>'backend',q.result_json->>'provider',"
-            "q.result_json->>'model' "
+            "q.result_json->>'model',m.provider,m.model "
             "FROM project_conversation_messages m "
             "LEFT JOIN work_items w ON w.id=m.related_work_id "
             "LEFT JOIN LATERAL (SELECT id,status,result_json FROM execution_queue "
@@ -1361,7 +1365,7 @@ def list_project_conversation_messages(
          "work_status": row[5],
          "latest_execution": ({"id": str(row[6]), "status": row[7],
                                "backend": row[8], "provider": row[9], "model": row[10]}
-                              if row[6] else None)}
+                              if row[6] else None), "provider": row[11], "model": row[12]}
         for row in rows
     ]
 
@@ -1405,6 +1409,90 @@ def append_project_conversation_message(
         "related_work_id": None, "created_at": created_at,
         "work_status": None, "latest_execution": None,
     }
+
+
+@app.post("/v1/projects/{project_id}/conversations/{conversation_id}/turns")
+def stream_project_conversation_turn(
+    project_id: str,
+    conversation_id: str,
+    payload: ProjectConversationTurnRequest,
+    _: str = Depends(require_ceo),
+):
+    """Persist a CEO turn, then stream the configured provider's reply as SSE.
+
+    Provider configuration is opt-in. Conversation turns never create or execute work.
+    """
+    from aao.conversation_provider import ProviderUnavailable, stream_reply
+
+    user_message_id = str(uuid4())
+    with tx() as db:
+        row = db.execute(
+            "SELECT p.state FROM project_conversations c JOIN projects p ON p.id=c.project_id "
+            "WHERE c.id=%s AND c.project_id=%s FOR UPDATE OF c",
+            (conversation_id, project_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Conversation not found")
+        if row[0] != "ACTIVE":
+            raise HTTPException(409, "Project not active")
+        db.execute(
+            "INSERT INTO project_conversation_messages(id,conversation_id,sender,body) "
+            "VALUES (%s,%s,'CEO',%s)", (user_message_id, conversation_id, payload.body),
+        )
+        history = db.execute(
+            "SELECT sender,body FROM project_conversation_messages "
+            "WHERE conversation_id=%s ORDER BY created_at,id", (conversation_id,),
+        ).fetchall()
+        db.execute(
+            "UPDATE project_conversations SET updated_at=clock_timestamp() WHERE id=%s",
+            (conversation_id,),
+        )
+        audit(db, conversation_id, "conversation.turn.started", {
+            "user_message_id": user_message_id, "actor": "ceo",
+        })
+
+    def events():
+        import json as json_module
+        response_id = str(uuid4())
+        answer = []
+        try:
+            conversation = [{
+                "role": "system",
+                "content": (
+                    "You are AAO, the user's organizational assistant. Converse clearly and helpfully. "
+                    "Do not claim to have executed actions or inspected live state unless evidence is in this conversation. "
+                    "Conversation does not authorize or execute work. When useful, help the CEO turn decisions into "
+                    "explicit project tasks with clear outcomes and acceptance criteria; the CEO must submit those "
+                    "tasks separately for review/admission."
+                ),
+            }]
+            conversation.extend({"role": "assistant" if sender == "AAO" else "user", "content": body}
+                                for sender, body in history)
+            for chunk in stream_reply(conversation):
+                answer.append(chunk)
+                yield f"event: delta\ndata: {json_module.dumps({'delta': chunk})}\n\n"
+            body = "".join(answer).strip()
+            if not body:
+                yield "event: error\ndata: {\"code\":\"EMPTY_PROVIDER_RESPONSE\"}\n\n"
+                return
+            with tx() as db:
+                db.execute(
+                    "INSERT INTO project_conversation_messages(id,conversation_id,sender,body,provider,model) "
+                    "VALUES (%s,%s,'AAO',%s,%s,%s)",
+                    (response_id, conversation_id, body, os.getenv("AAO_CONVERSATION_PROVIDER", "openai-compatible"),
+                     os.getenv("AAO_CONVERSATION_MODEL", "")),
+                )
+                db.execute("UPDATE project_conversations SET updated_at=clock_timestamp() WHERE id=%s", (conversation_id,))
+                audit(db, conversation_id, "conversation.turn.completed", {
+                    "user_message_id": user_message_id, "assistant_message_id": response_id,
+                })
+            yield f"event: done\ndata: {json_module.dumps({'message_id': response_id})}\n\n"
+        except ProviderUnavailable as exc:
+            yield f"event: error\ndata: {json_module.dumps({'code': exc.code, 'message': str(exc)})}\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no",
+    })
 
 
 @app.get("/v1/projects/{project_id}/board")

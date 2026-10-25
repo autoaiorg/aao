@@ -58,3 +58,16 @@ describe('AuthContext Memory-Only Model', () => {
     expect(cleanupSpy).toHaveBeenCalled();
   });
 });
+
+it('keeps the CEO bearer out of auth state after the HttpOnly session is established', () => {
+  const wrapper = ({ children }: { children: React.ReactNode }) => <AuthProvider>{children}</AuthProvider>;
+  const { result } = renderHook(() => useAuth(), { wrapper });
+  act(() => result.current.setCeoCookieSession('csrf-in-memory-value'));
+  expect(result.current.isAuthenticated).toBe(true);
+  expect(result.current.role).toBe('CEO');
+  expect(result.current.token).toBeNull();
+  expect(result.current.cookieSession).toBe(true);
+  expect(result.current.csrfToken).toBe('csrf-in-memory-value');
+  expect(localStorage.length).toBe(0);
+  expect(sessionStorage.length).toBe(0);
+});

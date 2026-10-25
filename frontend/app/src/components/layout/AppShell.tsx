@@ -12,8 +12,8 @@ export interface AppShellProps {
   onProjectSelect: (projectId: string | null) => void;
   principal: PrincipalSummary | null;
   isAuthenticated: boolean;
-  onLogin: (token: string, role: 'AGENT' | 'CEO') => void;
-  onLogout: () => void;
+  onLogin: (token: string, role: 'AGENT' | 'CEO') => void | Promise<void>;
+  onLogout: () => void | Promise<void>;
   activeNav: ActiveNavKey;
   onNavSelect: (nav: ActiveNavKey) => void;
   fetchedAt?: string;

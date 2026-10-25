@@ -17,7 +17,7 @@ from aao.environment_settings import load_local_env
 
 load_local_env()
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -32,15 +32,63 @@ def _ceo_bearer_enabled() -> bool:
     return mode in {"development", "test"}
 
 
-def require_ceo(x_ceo_token: str | None = Header(None)):
+CEO_SESSION_COOKIE = "__Host-aao_ceo_session"
+CEO_SESSION_TTL_HOURS = 12
+
+
+def _session_digest(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _origin_allowed(origin: str | None) -> bool:
+    configured = os.getenv("AAO_CEO_SESSION_ALLOWED_ORIGINS", "")
+    allowed = {item.strip() for item in configured.split(",") if item.strip()}
+    if not allowed and os.getenv("AAO_ENV", "").strip().lower() in {"development", "test"}:
+        allowed = {"http://localhost:5173", "http://127.0.0.1:5173"}
+    return bool(origin and origin in allowed)
+
+
+def _require_cookie_csrf(request: Request, csrf_header: str | None) -> None:
+    if request.method in {"GET", "HEAD", "OPTIONS"}:
+        return
+    if not _origin_allowed(request.headers.get("origin")) or not csrf_header:
+        raise HTTPException(403, "CEO session request rejected")
+    cookie = request.cookies.get(CEO_SESSION_COOKIE)
+    with tx() as db:
+        row = db.execute(
+            "SELECT csrf_digest FROM ceo_browser_sessions WHERE session_digest=%s "
+            "AND revoked_at IS NULL AND expires_at > clock_timestamp()",
+            (_session_digest(cookie or ""),),
+        ).fetchone()
+    if not row or not secrets.compare_digest(row[0], _session_digest(csrf_header)):
+        raise HTTPException(403, "CEO session request rejected")
+
+
+def require_ceo(
+    request: Request,
+    x_ceo_token: str | None = Header(None),
+    x_aao_csrf: str | None = Header(None),
+):
     if not _ceo_bearer_enabled():
         raise HTTPException(503, "CEO development bearer is unavailable in this environment")
     expected = os.getenv("AAO_CEO_TOKEN")
     if not expected:
         raise HTTPException(503, "CEO credential not configured")
-    if not x_ceo_token or not secrets.compare_digest(expected, x_ceo_token):
-        raise HTTPException(403, "CEO authentication required")
-    return "ceo"
+    if x_ceo_token and secrets.compare_digest(expected, x_ceo_token):
+        return "ceo"
+    cookie_value = request.cookies.get(CEO_SESSION_COOKIE)
+    if cookie_value:
+        digest = _session_digest(cookie_value)
+        with tx() as db:
+            row = db.execute(
+                "SELECT session_digest FROM ceo_browser_sessions WHERE session_digest=%s "
+                "AND revoked_at IS NULL AND expires_at > clock_timestamp()",
+                (digest,),
+            ).fetchone()
+        if row:
+            _require_cookie_csrf(request, x_aao_csrf)
+            return "ceo"
+    raise HTTPException(403, "CEO authentication required")
 
 
 def require_reviewer(
@@ -261,6 +309,101 @@ class OrganizationProfileRequest(BaseModel):
 
 app = FastAPI(title="AAO PostgreSQL development core", version="0.2.0")
 _CEO_PRINCIPAL = object()
+
+
+def _require_development_ceo_token(token: str | None) -> None:
+    if not _ceo_bearer_enabled():
+        raise HTTPException(503, "CEO browser sessions are unavailable in this environment")
+    expected = os.getenv("AAO_CEO_TOKEN")
+    if not expected:
+        raise HTTPException(503, "CEO credential not configured")
+    if not token or not secrets.compare_digest(expected, token):
+        raise HTTPException(403, "CEO authentication required")
+
+
+@app.post("/v1/auth/ceo/session")
+def create_ceo_browser_session(
+    request: Request,
+    response: Response,
+    x_ceo_token: str | None = Header(None),
+):
+    """Exchange the dev/test bearer for an opaque, revocable browser session."""
+    if not _origin_allowed(request.headers.get("origin")):
+        raise HTTPException(403, "CEO session request rejected")
+    _require_development_ceo_token(x_ceo_token)
+    session_secret = secrets.token_urlsafe(32)
+    csrf_token = secrets.token_urlsafe(32)
+    session_id = str(uuid4())
+    with tx() as db:
+        db.execute(
+            "DELETE FROM ceo_browser_sessions WHERE expires_at < clock_timestamp() - interval '30 days' "
+            "OR (revoked_at IS NOT NULL AND revoked_at < clock_timestamp() - interval '30 days')"
+        )
+        db.execute(
+            "INSERT INTO ceo_browser_sessions(id,session_digest,csrf_digest,expires_at) "
+            "VALUES (%s,%s,%s,clock_timestamp() + interval '12 hours')",
+            (session_id, _session_digest(session_secret), _session_digest(csrf_token)),
+        )
+        audit(db, session_id, "ceo.browser_session.created", {"expires_in_hours": CEO_SESSION_TTL_HOURS})
+    response.set_cookie(
+        key=CEO_SESSION_COOKIE, value=session_secret, httponly=True, secure=True,
+        samesite="strict", path="/", max_age=CEO_SESSION_TTL_HOURS * 60 * 60,
+    )
+    return {"authenticated": True, "csrf_token": csrf_token, "expires_in_seconds": CEO_SESSION_TTL_HOURS * 60 * 60}
+
+
+@app.post("/v1/auth/ceo/session/csrf")
+def refresh_ceo_browser_csrf(request: Request):
+    """Re-establish an in-memory CSRF token after a page reload."""
+    if not _origin_allowed(request.headers.get("origin")):
+        raise HTTPException(403, "CEO session request rejected")
+    session_secret = request.cookies.get(CEO_SESSION_COOKIE)
+    if not session_secret:
+        raise HTTPException(401, "CEO session unavailable")
+    csrf_token = secrets.token_urlsafe(32)
+    with tx() as db:
+        row = db.execute(
+            "UPDATE ceo_browser_sessions SET csrf_digest=%s "
+            "WHERE session_digest=%s AND revoked_at IS NULL AND expires_at > clock_timestamp() "
+            "RETURNING id",
+            (_session_digest(csrf_token), _session_digest(session_secret)),
+        ).fetchone()
+    if not row:
+        raise HTTPException(401, "CEO session unavailable")
+    return {"authenticated": True, "csrf_token": csrf_token, "expires_in_seconds": CEO_SESSION_TTL_HOURS * 60 * 60}
+
+
+@app.post("/v1/auth/ceo/logout")
+def revoke_ceo_browser_session(
+    request: Request,
+    response: Response,
+    x_aao_csrf: str | None = Header(None),
+):
+    if not _origin_allowed(request.headers.get("origin")) or not x_aao_csrf:
+        raise HTTPException(403, "CEO session request rejected")
+    session_secret = request.cookies.get(CEO_SESSION_COOKIE)
+    if not session_secret:
+        response.delete_cookie(CEO_SESSION_COOKIE, path="/", secure=True, httponly=True, samesite="strict")
+        return {"logged_out": True}
+    digest = _session_digest(session_secret)
+    with tx() as db:
+        row = db.execute(
+            "SELECT id FROM ceo_browser_sessions WHERE session_digest=%s AND csrf_digest=%s "
+            "AND revoked_at IS NULL AND expires_at > clock_timestamp() FOR UPDATE",
+            (digest, _session_digest(x_aao_csrf)),
+        ).fetchone()
+        if not row:
+            raise HTTPException(403, "CEO session request rejected")
+        row = db.execute(
+            "UPDATE ceo_browser_sessions SET revoked_at=clock_timestamp() "
+            "WHERE id=%s AND revoked_at IS NULL "
+            "RETURNING id",
+            (row[0],),
+        ).fetchone()
+        if row:
+            audit(db, str(row[0]), "ceo.browser_session.revoked", {})
+    response.delete_cookie(CEO_SESSION_COOKIE, path="/", secure=True, httponly=True, samesite="strict")
+    return {"logged_out": True}
 
 class AuthenticatedPrincipal(str):
     """Principal ID plus the exact bearer digest for transaction-time recheck."""

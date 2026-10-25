@@ -279,6 +279,7 @@ def test_project_listing_rechecks_active_reader_in_transaction(monkeypatch):
 def test_static_ceo_bearer_is_unavailable_outside_development(monkeypatch, environment):
     from fastapi import HTTPException
     from fastapi.testclient import TestClient
+    from starlette.requests import Request
 
     from aao.work_management_api import app, read_principal, require_ceo
 
@@ -287,8 +288,13 @@ def test_static_ceo_bearer_is_unavailable_outside_development(monkeypatch, envir
     else:
         monkeypatch.setenv("AAO_ENV", environment)
     monkeypatch.setenv("AAO_CEO_TOKEN", "development-ceo-token")
+    request = Request({
+        "type": "http", "headers": [], "method": "GET", "scheme": "http",
+        "server": ("testserver", 80), "client": ("testclient", 123),
+        "path": "/", "query_string": b"", "root_path": "",
+    })
     with pytest.raises(HTTPException) as direct:
-        require_ceo(x_ceo_token="development-ceo-token")
+        require_ceo(request=request, x_ceo_token="development-ceo-token")
     assert direct.value.status_code == 503
 
     with pytest.raises(HTTPException) as reader:

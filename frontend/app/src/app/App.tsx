@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { DataOrigin, ProjectSummary, CeoOverview } from '../domain/models';
 import { useAuth } from '../auth/AuthContext';
@@ -28,7 +28,9 @@ const VirtualOfficeView = React.lazy(() =>
 
 export const App: React.FC = () => {
   const queryClient = useQueryClient();
-  const { token, role, isAuthenticated, sessionId, setCredentials, logout } = useAuth();
+  const { token, role, isAuthenticated, sessionId, csrfToken, cookieSession, setCredentials, setCeoCookieSession, logout } = useAuth();
+  const restoreAttempted = useRef(false);
+  const [sessionRestoreIssue, setSessionRestoreIssue] = useState<string | null>(null);
 
   const [origin, setOrigin] = useState<DataOrigin>('live');
   const [activeNav, setActiveNav] = useState<ActiveNavKey>('dashboard');
@@ -44,6 +46,8 @@ export const App: React.FC = () => {
     return new HttpAaoLiveAdapter({
       getToken: () => token,
       getAuthRole: () => role,
+      getCeoCookieSession: () => cookieSession,
+      getCsrfToken: () => csrfToken,
       requireAuth: true,
       onUnauthorized: () => {
         logout();
@@ -51,7 +55,23 @@ export const App: React.FC = () => {
         queryClient.clear();
       },
     });
-  }, [origin, token, role, logout, queryClient]);
+  }, [origin, token, role, csrfToken, cookieSession, logout, queryClient]);
+
+  useEffect(() => {
+    if (origin !== 'live' || isAuthenticated || restoreAttempted.current) return;
+    restoreAttempted.current = true;
+    const sessionAdapter = new HttpAaoLiveAdapter({ requireAuth: false });
+    void sessionAdapter.restoreCeoBrowserSession().then((result) => {
+      if (result.kind === 'ready') {
+        setSessionRestoreIssue(null);
+        setCeoCookieSession(result.data.csrf_token);
+      } else if (result.kind === 'forbidden') {
+        setSessionRestoreIssue('La sesión CEO no existe o ha caducado. Vuelve a autenticarte con «Credencial de Acceso».');
+      } else if (result.kind === 'error') {
+        setSessionRestoreIssue('No se pudo comprobar la sesión CEO. Reintenta o vuelve a autenticarte con «Credencial de Acceso».');
+      }
+    });
+  }, [origin, isAuthenticated, setCeoCookieSession]);
 
   // P0 Finding 2: Switch origin cleanly with immediate cancellation of in-flight queries & cache purge
   const handleOriginChange = useCallback(
@@ -71,7 +91,15 @@ export const App: React.FC = () => {
     [origin, port, queryClient]
   );
 
-  const handleLogout = useCallback(() => {
+  const handleLogout = useCallback(async () => {
+    if (cookieSession && csrfToken) {
+      const result = port instanceof HttpAaoLiveAdapter
+        ? await port.revokeCeoBrowserSession(csrfToken)
+        : { kind: 'forbidden' as const, reason: 'Adaptador LIVE no disponible.' };
+      if (result.kind !== 'ready') {
+        throw new Error('No se confirmó el cierre de sesión remoto; la sesión sigue activa. Reintenta.');
+      }
+    }
     if (port instanceof HttpAaoLiveAdapter) {
       port.abortAll();
     }
@@ -80,7 +108,18 @@ export const App: React.FC = () => {
     setSelectedProjectId(null);
     setDetailedProjectId(null);
     logout();
-  }, [port, queryClient, logout]);
+  }, [port, queryClient, logout, cookieSession, csrfToken]);
+
+  const handleLogin = useCallback(async (credential: string, selectedRole: 'AGENT' | 'CEO') => {
+    if (origin === 'live' && selectedRole === 'CEO') {
+      const authAdapter = new HttpAaoLiveAdapter({ requireAuth: false });
+      const result = await authAdapter.exchangeCeoBearerForSession(credential);
+      if (result.kind !== 'ready') throw new Error('No se pudo iniciar la sesión CEO. Verifica la credencial y el origen permitido.');
+      setCeoCookieSession(result.data.csrf_token);
+      return;
+    }
+    setCredentials(credential, selectedRole);
+  }, [origin, setCredentials, setCeoCookieSession]);
 
   // P0 Finding 2 & P0 Finding 4: Query keys bound to sessionId; queries suppressed in LIVE mode until valid session exists
   // Query: Principal
@@ -222,7 +261,7 @@ export const App: React.FC = () => {
       onProjectSelect={setSelectedProjectId}
       principal={principalData}
       isAuthenticated={isAuthenticated}
-      onLogin={setCredentials}
+      onLogin={handleLogin}
       onLogout={handleLogout}
       activeNav={activeNav}
       onNavSelect={(nav) => {
@@ -234,6 +273,11 @@ export const App: React.FC = () => {
       onRefresh={handleRefresh}
     >
       <ErrorBoundary>
+        {origin === 'live' && !isAuthenticated && sessionRestoreIssue && (
+          <div role="alert" style={{ marginBottom: 16, padding: '12px 16px', borderRadius: 'var(--radius-md)', backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border-focus)' }}>
+            {sessionRestoreIssue} El acceso LIVE permanece bloqueado hasta autenticar.
+          </div>
+        )}
         {activeNav === 'dashboard' && (
           <>
             {origin === 'live' && !isAuthenticated && (

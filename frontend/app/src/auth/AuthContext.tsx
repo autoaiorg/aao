@@ -1,11 +1,10 @@
 /**
  * AuthContext
- * Enforces memory-only credential retention and strict session isolation.
+ * Keeps agent credentials and CEO CSRF material in memory; CEO bearer is exchanged for an HttpOnly session cookie.
  *
  * Strict Volatile Memory Policy:
- * - Credentials (tokens) reside EXCLUSIVELY in volatile runtime memory (React state).
- * - Under NO circumstances may credentials be written to sessionStorage, localStorage,
- *   IndexedDB, cookies, or URL search parameters.
+ * - Agent bearers and CEO CSRF material reside only in volatile runtime memory.
+ * - CEO session secret is held only in a server-issued HttpOnly cookie; JS never reads or persists it.
  * - Rotates sessionId cryptographically on login, logout, and credential updates using crypto.randomUUID().
  * - Logout completely purges the token, aborts pending queries, and cleans caches.
  * - Token is never logged or exposed in error messages.
@@ -46,6 +45,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
     role: 'AGENT',
     isAuthenticated: false,
     principalId: null,
+    csrfToken: null,
+    cookieSession: false,
     sessionId: generateSessionId(),
   });
 
@@ -63,11 +64,21 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
         role,
         isAuthenticated: true,
         principalId: principalId || null,
+        csrfToken: null,
+        cookieSession: false,
         sessionId: generateSessionId(),
       });
     },
     [onCredentialsChange]
   );
+
+  const setCeoCookieSession = useCallback((csrfToken: string) => {
+    if (onCredentialsChange) onCredentialsChange();
+    setAuth({
+      token: null, role: 'CEO', isAuthenticated: true, principalId: null,
+      csrfToken, cookieSession: true, sessionId: generateSessionId(),
+    });
+  }, [onCredentialsChange]);
 
   const logout = useCallback(() => {
     if (onLogoutCleanup) {
@@ -79,6 +90,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
       role: 'AGENT',
       isAuthenticated: false,
       principalId: null,
+      csrfToken: null,
+      cookieSession: false,
       sessionId: generateSessionId(),
     });
   }, [onLogoutCleanup]);
@@ -87,9 +100,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
     () => ({
       ...auth,
       setCredentials,
+      setCeoCookieSession,
       logout,
     }),
-    [auth, setCredentials, logout]
+    [auth, setCredentials, setCeoCookieSession, logout]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

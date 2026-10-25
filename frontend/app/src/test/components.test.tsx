@@ -101,3 +101,17 @@ describe('UI Presentation & Component Integrity', () => {
     consoleSpy.mockRestore();
   });
 });
+
+it('does not claim logout succeeded when server-side revocation fails', async () => {
+  const onLogout = vi.fn().mockRejectedValue(new Error('No se confirmó el cierre de sesión remoto'));
+  render(
+    <TopBar
+      origin="live" onOriginChange={() => {}} projects={[]} selectedProjectId={null}
+      onProjectSelect={() => {}} principal={null} isAuthenticated onLogin={() => {}}
+      onLogout={onLogout} onRefresh={() => {}}
+    />
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Desconectar' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent(/No se confirmó el cierre/);
+  expect(onLogout).toHaveBeenCalledOnce();
+});

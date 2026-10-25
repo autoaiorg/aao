@@ -1,7 +1,7 @@
 # CEO-DEC-AAO-CONSTRUCTION-2026-10-25
 ## Régimen de construcción y transición a operación autónoma
 
-**Estado:** Propuesta para ratificación del CEO  
+**Estado:** RATIFICADA por el CEO el 2026-10-25, con las precisiones del §8, y **en vigor desde esa fecha**  
 **Autoridad:** CEO — decisión R3  
 **Ámbito:** Proyecto AAO — Self Development
 
@@ -84,3 +84,32 @@ El equipo externo debe priorizar la finalización de AAO Self Development y su C
 Los ensayos completos y la auditoría formal de aceptación se realizarán sobre candidatos de traspaso claramente identificados.
 
 El objetivo es disponer de una organización funcional y transferirle gradualmente su operación, no convertir la fase de construcción en un ejercicio permanente de certificación.
+
+### 8. Ratificación y precisiones del CEO (2026-10-25, texto literal)
+
+> Ratifico **CEO-DEC-AAO-CONSTRUCTION-2026-10-25**, con las precisiones 1 y 2 propuestas y la siguiente modificación de la precisión 3:
+>
+> Durante la construcción acepto de forma transitoria el riesgo residual derivado del uso de las herramientas y credenciales actuales, exclusivamente en el entorno de desarrollo y dentro de los permisos ya autorizados.
+>
+> Esta aceptación no concede acceso general a secretos, privilegios de root ni capacidad de ejecutar operaciones irreversibles o sensibles sin autorización. El uso de Docker y GitHub deberá limitarse a las necesidades de construcción y mantener medidas razonables de protección.
+>
+> La separación definitiva de identidades, credenciales y privilegios será un criterio obligatorio del traspaso.
+>
+> La excepción de Codex como auditor y la auditoría retroactiva dejan de ser requisitos de integración durante la construcción. La auditoría independiente se realizará sobre el candidato de aceptación.
+>
+> Las decisiones anteriores sobre P2/P3, equivalencias, P3-10, rutas protegidas, Docker y bloqueo de activación se conservan como requisitos y restricciones para la operación autónoma futura, sin imponer sus gates a las PR del equipo constructor.
+>
+> **Ordeno aplicar desde ahora el régimen de construcción externa.**
+>
+> Actualiza la decisión formal y la PR #97, y reorganiza el proyecto para priorizar la terminación funcional de AAO Self Development y Control Center.
+>
+> Claude, Codex y Antigravity trabajarán como equipo constructor externo, con integración ordinaria y controles de calidad proporcionados.
+>
+> No solicites nuevas decisiones sobre los mecanismos de gobierno autónomo salvo que afecten a una materia estratégica o a un riesgo real que exija mi intervención.
+>
+> El objetivo inmediato es construir AAO. La certificación y transferencia de poderes vendrán después.
+
+**Efectos sobre decisiones anteriores** (los registra el PM; no añaden nada a lo ratificado):
+- **CEO-DEC-AUDIT-CODEX-2026-10-24:** deja de ser requisito de integración. La auditoría independiente se hará sobre el candidato de aceptación (criterio 7).
+- **CEO-DEC-P2P3-2026-10-24 y CEO-DEC-2026-10-25:** siguen vigentes como requisitos y restricciones del traspaso y de la operación autónoma. Sus gates no se aplican a las PR del equipo constructor.
+- **El riesgo de las credenciales del CEO** al alcance de los constructores es un riesgo transitorio aceptado. Su resolución es el criterio 3 del traspaso.

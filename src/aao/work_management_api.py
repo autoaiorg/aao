@@ -1400,6 +1400,14 @@ def stage_repository_check(
             "capability_id": payload.capability_id, "version": payload.version}
 
 
+
+def _attempt_outcome(result: dict | None) -> tuple:
+    """What an agent attempt produced: its patch and how it ended (an identical patch that now passes is progress)."""
+    r = result or {}
+    check = r.get("check") or {}
+    return (r.get("patch_sha256"), r.get("conclusion"), r.get("error"), check.get("conclusion"), check.get("error"))
+
+
 @app.post("/v1/work/{work_id}/stage-agent-run", status_code=202)
 def stage_agent_run(work_id: str, payload: AgentRunRequest, principal: str = Depends(require_worker)):
     if os.getenv("AAO_AGENT_QUEUE_ENABLED") != "true":
@@ -1435,6 +1443,13 @@ def stage_agent_run(work_id: str, payload: AgentRunRequest, principal: str = Dep
         limit = int(os.getenv("AAO_AGENT_MAX_ATTEMPTS", "3"))
         if attempts >= limit:
             raise HTTPException(409, f"Agent attempt limit reached ({attempts}/{limit}); CEO or PM decision required")
+        # No progress: two consecutive finished attempts with the same outcome (same patch and same result or
+        # failure) would only burn attempts; stop and leave the decision to the PM (new task or CEO resolution).
+        last = db.execute("SELECT result_json FROM execution_queue WHERE work_id=%s AND input_json->>'type'="
+                          "'aao.agent-patch.v1' AND status IN ('SUCCEEDED','FAILED') ORDER BY created_at DESC LIMIT 2",
+                          (work_id,)).fetchall()
+        if len(last) == 2 and _attempt_outcome(last[0][0]) == _attempt_outcome(last[1][0]):
+            raise HTTPException(409, "No progress: the last two agent attempts had the same outcome; PM decision required")
         execution_id = str(uuid4())
         db.execute("INSERT INTO execution_queue(id,work_id,project_id,status,input_json) VALUES (%s,%s,%s,'QUEUED',%s::jsonb)", (execution_id, work_id, project_id, json.dumps(job)))
         audit(db, execution_id, "execution.staged", {"work_id": work_id, "capability_id": payload.capability_id, "version": payload.version, "base_sha": payload.base_sha})

@@ -104,6 +104,27 @@ class CEOWorkRequest(BaseModel):
     description: str = Field(default="", max_length=5000)
 
 
+class ConversationWorkRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    acceptance_criteria: list[str] = Field(min_length=1)
+
+    @field_validator("title")
+    @classmethod
+    def title_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Work title must not be blank")
+        return value
+
+    @field_validator("acceptance_criteria")
+    @classmethod
+    def criteria_not_blank(cls, values: list[str]) -> list[str]:
+        criteria = [value.strip() for value in values]
+        if any(not value for value in criteria):
+            raise ValueError("Acceptance criteria must not be blank")
+        return criteria
+
+
 class ProjectConversationRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
 
@@ -1011,6 +1032,27 @@ def create_work(project_id: str, payload: WorkRequest,
     return {"id": wid, "status": "INBOX"}
 
 
+def _insert_ceo_work_request(
+    db, project_id: str, title: str, description: str,
+    acceptance_criteria: list[str], *, source_message_id: str | None = None,
+) -> str:
+    """Persist CEO direction using the canonical, unadmitted work-item semantics."""
+    work_id = str(uuid4())
+    db.execute(
+        "INSERT INTO work_items(id,project_id,title,description,author_id,status,acceptance_criteria) "
+        "VALUES (%s,%s,%s,%s,'ceo','INBOX',%s::jsonb)",
+        (work_id, project_id, title, description, json.dumps(acceptance_criteria)),
+    )
+    details = {
+        "project_id": project_id, "actor": "ceo", "status": "INBOX",
+        "admitted": False,
+    }
+    if source_message_id is not None:
+        details["source_message_id"] = source_message_id
+    audit(db, work_id, "work.requested", details)
+    return work_id
+
+
 @app.post("/v1/projects/{project_id}/work-requests", status_code=201)
 def create_ceo_work_request(
     project_id: str,
@@ -1018,7 +1060,6 @@ def create_ceo_work_request(
     _: str = Depends(require_ceo),
 ):
     """Record CEO direction as canonical INBOX work; it does not admit or execute it."""
-    work_id = str(uuid4())
     with tx() as db:
         row = db.execute(
             "SELECT state FROM projects WHERE id=%s FOR UPDATE", (project_id,),
@@ -1027,17 +1068,72 @@ def create_ceo_work_request(
             raise HTTPException(404, "Project not found")
         if row[0] != "ACTIVE":
             raise HTTPException(409, "Project not active")
-        db.execute(
-            "INSERT INTO work_items(id,project_id,title,description,author_id,status,acceptance_criteria) "
-            "VALUES (%s,%s,%s,%s,'ceo','INBOX',%s::jsonb)",
-            (work_id, project_id, payload.title, payload.description,
-             json.dumps(payload.acceptance_criteria)),
+        work_id = _insert_ceo_work_request(
+            db, project_id, payload.title, payload.description,
+            payload.acceptance_criteria,
         )
-        audit(db, work_id, "work.requested", {
-            "project_id": project_id, "actor": "ceo", "status": "INBOX",
-            "admitted": False,
-        })
     return {"id": work_id, "status": "INBOX"}
+
+
+@app.post("/v1/projects/{project_id}/conversations/{conversation_id}/messages/{message_id}/work-request")
+def create_work_request_from_conversation_message(
+    project_id: str,
+    conversation_id: str,
+    message_id: str,
+    payload: ConversationWorkRequest,
+    _: str = Depends(require_ceo),
+):
+    """Explicitly turn one persisted CEO message into one canonical INBOX work item.
+
+    The message lock and work insert/link/audit writes share one transaction, so
+    retries (including concurrent retries) return the original work ID.
+    """
+    with tx() as db:
+        project = db.execute(
+            "SELECT state FROM projects WHERE id=%s FOR UPDATE", (project_id,),
+        ).fetchone()
+        if not project:
+            raise HTTPException(404, "Project not found")
+        if project[0] != "ACTIVE":
+            raise HTTPException(409, "Project not active")
+
+        message = db.execute(
+            "SELECT m.sender,m.body,m.related_work_id "
+            "FROM project_conversation_messages m "
+            "JOIN project_conversations c ON c.id=m.conversation_id "
+            "WHERE m.id=%s AND m.conversation_id=%s AND c.project_id=%s "
+            "FOR UPDATE OF m",
+            (message_id, conversation_id, project_id),
+        ).fetchone()
+        if not message:
+            raise HTTPException(404, "Conversation message not found")
+        if message[0] != "CEO":
+            raise HTTPException(409, "Only CEO messages can become work requests")
+
+        if message[2] is not None:
+            existing = db.execute(
+                "SELECT project_id,status FROM work_items WHERE id=%s", (message[2],),
+            ).fetchone()
+            if not existing or str(existing[0]) != project_id:
+                raise HTTPException(409, "Conversation work link is inconsistent")
+            return {"id": str(message[2]), "status": existing[1], "created": False}
+
+        work_id = _insert_ceo_work_request(
+            db, project_id, payload.title, message[1],
+            payload.acceptance_criteria, source_message_id=message_id,
+        )
+        db.execute(
+            "UPDATE project_conversation_messages SET related_work_id=%s WHERE id=%s",
+            (work_id, message_id),
+        )
+        audit(db, message_id, "conversation.message.work_requested", {
+            "project_id": project_id, "actor": "ceo", "work_id": work_id,
+        })
+        db.execute(
+            "UPDATE project_conversations SET updated_at=clock_timestamp() WHERE id=%s",
+            (conversation_id,),
+        )
+    return {"id": work_id, "status": "INBOX", "created": True}
 
 
 @app.post("/v1/projects/{project_id}/conversations", status_code=201)

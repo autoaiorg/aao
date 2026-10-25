@@ -21,6 +21,10 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
   const [conversationId, setConversationId] = useState('');
   const [newTitle, setNewTitle] = useState('');
   const [draft, setDraft] = useState('');
+  const [requestMessageId, setRequestMessageId] = useState<string | null>(null);
+  const [requestTitle, setRequestTitle] = useState('');
+  const [requestCriteria, setRequestCriteria] = useState('');
+  const [requestingMessageId, setRequestingMessageId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
@@ -78,6 +82,30 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
     }
   };
 
+  const createWorkRequest = async (event: React.FormEvent, message: ProjectConversationMessage) => {
+    event.preventDefault();
+    const acceptance_criteria = requestCriteria.split('\n').map((item) => item.trim()).filter(Boolean);
+    if (!projectId || !conversationId || !requestTitle.trim() || acceptance_criteria.length === 0) return;
+    setRequestingMessageId(message.id);
+    const result = await port.createWorkRequestFromMessage(projectId, conversationId, message.id, {
+      title: requestTitle.trim(), acceptance_criteria,
+    });
+    setRequestingMessageId(null);
+    if (result.kind === 'ready') {
+      setRequestMessageId(null);
+      setRequestTitle('');
+      setRequestCriteria('');
+      setNotice(result.data.created
+        ? `Solicitud ${result.data.id} creada en Entrada; no se ha admitido ni ejecutado.`
+        : `El mensaje ya estaba vinculado a la solicitud ${result.data.id}; se reutilizó sin duplicar trabajo.`);
+      await queryClient.invalidateQueries({ queryKey: ['office-conversation-messages', sessionId, projectId, conversationId] });
+      await queryClient.invalidateQueries({ queryKey: ['office-conversations', sessionId, projectId] });
+      await queryClient.invalidateQueries({ queryKey: ['board'] });
+    } else {
+      setNotice(result.kind === 'error' ? `${result.code}: ${result.message}` : result.kind === 'forbidden' ? result.reason : 'No se pudo crear la solicitud de trabajo.');
+    }
+  };
+
   const stateMessage = (state: DataState<unknown> | undefined) => {
     if (!state) return 'Cargando…';
     if (state.kind === 'error') return `${state.code}: ${state.message}`;
@@ -92,7 +120,40 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
         <strong>{message.sender}</strong><time dateTime={message.created_at}>{new Date(message.created_at).toLocaleString()}</time>
       </div>
       <p className="office-conversation-message__body">{message.body}</p>
-      {message.related_work_id && <button type="button" onClick={() => onOpenBoard(projectId)} style={{ marginTop: 6 }}>Trabajo {message.related_work_id}</button>}
+      {message.related_work_id ? (
+        <Button type="button" size="sm" onClick={() => onOpenBoard(projectId)} className="office-conversation-message__work-link">
+          Abrir trabajo {message.related_work_id}
+        </Button>
+      ) : message.sender === 'CEO' ? (
+        <div className="office-conversation-message__work-request">
+          {requestMessageId !== message.id ? (
+            <Button type="button" size="sm" variant="outline" onClick={() => {
+              setRequestMessageId(message.id);
+              setRequestTitle('');
+              setRequestCriteria('');
+            }}>
+              Convertir en solicitud de trabajo…
+            </Button>
+          ) : (
+            <form onSubmit={(event) => void createWorkRequest(event, message)} className="office-conversation-work-request-form">
+              <strong>Crear trabajo INBOX desde este mensaje</strong>
+              <label className="office-form-field">Título
+                <input className="office-form-control" aria-label={`Título del trabajo para ${message.id}`} required maxLength={200} value={requestTitle} onChange={(event) => setRequestTitle(event.target.value)} />
+              </label>
+              <label className="office-form-field">Criterios de aceptación (uno por línea)
+                <textarea className="office-form-control office-form-control--textarea" aria-label={`Criterios de aceptación para ${message.id}`} required rows={3} value={requestCriteria} onChange={(event) => setRequestCriteria(event.target.value)} />
+              </label>
+              <p className="office-conversation-work-request-form__note">El mensaje será la descripción y quedará enlazado al trabajo. Crear la solicitud no concede grants, no admite ni ejecuta el trabajo.</p>
+              <div className="office-conversation-work-request-form__actions">
+                <Button type="submit" size="sm" disabled={requestingMessageId === message.id || !requestTitle.trim() || !requestCriteria.trim()}>
+                  {requestingMessageId === message.id ? 'Guardando…' : 'Crear solicitud INBOX'}
+                </Button>
+                <Button type="button" size="sm" variant="ghost" disabled={requestingMessageId === message.id} onClick={() => setRequestMessageId(null)}>Cancelar</Button>
+              </div>
+            </form>
+          )}
+        </div>
+      ) : null}
     </li>
   );
 

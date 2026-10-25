@@ -15,7 +15,7 @@
 import type { AaoReadPort } from '../../ports/AaoReadPort';
 import type { AaoOrganizationCommandPort, OrganizationProfileCommand, OrganizationUnitCommand } from '../../ports/AaoOrganizationCommandPort';
 import type { AaoWorkCommandPort, CEOWorkRequest, CreatedWorkRequest } from '../../ports/AaoWorkCommandPort';
-import type { AaoConversationPort, ProjectConversation, ProjectConversationMessage } from '../../ports/AaoConversationPort';
+import type { AaoConversationPort, ConversationWorkRequestInput, ConversationWorkRequestResult, ProjectConversation, ProjectConversationMessage } from '../../ports/AaoConversationPort';
 import type {
   PrincipalSummary,
   ProjectSummary,
@@ -830,6 +830,24 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
       id: z.string().uuid(), sender: z.literal('CEO'), body: z.string(),
       related_work_id: z.string().uuid().nullable(), created_at: z.string(),
     }), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }) });
+  }
+
+  async createWorkRequestFromMessage(
+    projectId: string,
+    conversationId: string,
+    messageId: string,
+    input: ConversationWorkRequestInput,
+  ): Promise<DataState<ConversationWorkRequestResult>> {
+    if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede convertir mensajes en solicitudes de trabajo.' };
+    return this.request(
+      `/v1/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/work-request`,
+      z.object({ id: z.string().uuid(), status: z.string(), created: z.boolean() }),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+    );
   }
 
   async getAgentDetails(agentId: string): Promise<DataState<AgentIdentity>> {

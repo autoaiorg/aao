@@ -205,4 +205,74 @@ test.describe('Real Browser Functional & Accessibility Suite (Google Chrome)', (
     await expect(page.getByRole('table')).toBeVisible();
     await expect(page.getByText(/Matriz de Puestos y Capacidades:/i)).toBeVisible();
   });
+
+  test('F4 Virtual Office 3D: WebGL / accessible 2D fallback, room & agent selection, sidebar inspection and cross-navigation', async ({ page }) => {
+    // 1. Navigate to "Oficina Virtual" in LIVE mode
+    const officeNav = page.getByRole('button', { name: 'Oficina Virtual' });
+    await expect(officeNav).toBeVisible();
+    await officeNav.click();
+
+    // 2. In LIVE mode, verify honest technical notice is displayed
+    await expect(page.getByRole('heading', { level: 2, name: /Oficina Virtual 3D · AAO/i })).toBeVisible();
+    await expect(page.getByText(/SIN CONEXIÓN AL NÚCLEO EN LIVE \(F3\/F4\)/i)).toBeVisible();
+
+    // 3. Switch to DEMO mode
+    const demoButton = page.getByRole('button', { name: /DEMO/i });
+    await demoButton.click();
+    await expect(page.getByText(/DEMO · SIMULACIÓN 3D ACTIVA/i)).toBeVisible();
+
+    // 4. Verify Toolbar is present
+    const toolbar = page.getByRole('toolbar', { name: /Barra de herramientas de la Oficina Virtual/i });
+    await expect(toolbar).toBeVisible();
+
+    // 5. Check mode switcher buttons in toolbar
+    const view3dBtn = toolbar.getByRole('button', { name: /Vista 3D \(WebGL\)/i });
+    const plan2dBtn = toolbar.getByRole('button', { name: /Plano 2D Accesible/i });
+    await expect(view3dBtn).toBeVisible();
+    await expect(plan2dBtn).toBeVisible();
+
+    // 6. Switch to 2D Plan
+    await plan2dBtn.click();
+    const plan2dRegion = page.getByRole('region', { name: /Plano 2D accesible de la oficina de AAO/i });
+    await expect(plan2dRegion).toBeVisible();
+
+    // Verify all 6 departments appear in 2D blueprint map
+    await expect(page.getByRole('heading', { level: 4, name: /Dirección Ejecutiva/i })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 4, name: /Gobernanza Constitucional/i })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 4, name: /Auditoría Independiente/i })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 4, name: /Arquitectura de Sistemas/i })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 4, name: /Ingeniería de Software/i })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 4, name: /Operaciones de Infraestructura/i })).toBeVisible();
+
+    // 7. Select department via toolbar chip
+    const auditChip = toolbar.getByRole('button', { name: /\[AUDIT\] Auditoría/i });
+    await auditChip.click();
+
+    // 8. Verify contextual sidebar updates
+    const sidebar = page.locator('aside');
+    await expect(sidebar.getByRole('heading', { level: 3, name: /Auditoría Independiente y Verificación/i })).toBeVisible();
+
+    // 9. Inspect agent in sidebar
+    const agentButton = sidebar.getByRole('button', { name: /Auditor Independiente Principal/i });
+    await expect(agentButton).toBeVisible();
+    await agentButton.click();
+
+    // Contextual inspector card appears
+    const inspector = page.getByRole('region', { name: /Ficha técnica de Auditor Independiente Principal/i });
+    await expect(inspector).toBeVisible();
+    await expect(inspector.getByText(/Límite de Autoridad:/i)).toBeVisible();
+    await expect(inspector.getByText(/Independencia funcional garantizada/i)).toBeVisible();
+
+    // Close agent card
+    await inspector.getByRole('button', { name: /Cerrar ficha de agente/i }).click();
+    await expect(inspector).not.toBeVisible();
+
+    // 10. Test cross-navigation shortcut ("Ver Organigrama")
+    const orgShortcut = sidebar.getByRole('button', { name: /Ver Organigrama/i });
+    await expect(orgShortcut).toBeVisible();
+    await orgShortcut.click();
+
+    // View changes to Organization
+    await expect(page.getByRole('heading', { level: 2, name: /Organización y Estructura de Agentes/i })).toBeVisible();
+  });
 });

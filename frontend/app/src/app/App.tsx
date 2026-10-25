@@ -19,8 +19,12 @@ import { AlertsView } from '../features/alerts/AlertsView';
 import { AuditView } from '../features/audit/AuditView';
 import { OperationsView } from '../features/operations/OperationsView';
 import { OrganizationView } from '../features/organization/OrganizationView';
-import { VirtualOfficeView } from '../features/future/VirtualOfficeView';
 import { ViewSettingsView } from '../features/future/ViewSettingsView';
+
+// F4: Lazy load 3D spatial office to keep initial Control Center bundle lightweight
+const VirtualOfficeView = React.lazy(() =>
+  import('../features/office/VirtualOfficeView').then((m) => ({ default: m.VirtualOfficeView }))
+);
 
 export const App: React.FC = () => {
   const queryClient = useQueryClient();
@@ -351,10 +355,52 @@ export const App: React.FC = () => {
           />
         )}
 
-        {activeNav === 'office3d' && <VirtualOfficeView
-          organization={organizationQuery.data || {kind:'unavailable',reason:'No hay API de organización disponible',retryable:false}}
-          onNavigate={setActiveNav}
-        />}
+        {activeNav === 'office3d' && (
+          <React.Suspense
+            fallback={
+              <div
+                role="status"
+                aria-label="Cargando entorno espacial 3D"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  minHeight: '440px',
+                  backgroundColor: 'var(--bg-surface)',
+                  borderRadius: '16px',
+                  border: '1px solid var(--border-subtle)',
+                }}
+              >
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: '28px', marginBottom: '8px' }}>🌐</div>
+                  <strong style={{ fontSize: '14px', color: 'var(--text-primary)', display: 'block' }}>
+                    Cargando entorno espacial 3D de la Oficina Virtual...
+                  </strong>
+                  <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                    Carga diferida de recursos gráficos Three.js
+                  </span>
+                </div>
+              </div>
+            }
+          >
+            <VirtualOfficeView
+              organization={
+                organizationQuery.data || {
+                  kind: 'unavailable',
+                  reason:
+                    'El núcleo canónico de AAO no expone aún endpoints públicos para la estructura organizativa ni la telemetría de agentes (F3/F4).',
+                  retryable: false,
+                }
+              }
+              onNavigate={(target) => {
+                if (target === 'organization') setActiveNav('organization');
+                else if (target === 'kanban') setActiveNav('kanban');
+                else if (target === 'projects') setActiveNav('projects');
+              }}
+              onRefresh={handleRefresh}
+            />
+          </React.Suspense>
+        )}
 
         {activeNav === 'settings' && (
           <ViewSettingsView

@@ -80,4 +80,13 @@ describe('Task outcome in the board (PR state and outside-cycle resolution)', ()
       .toBe('openai · modelo por defecto del CLI · codex-cli 0.164.0');
     expect(runSummary({ backend: 'codex', backend_version: 'codex-cli' }).agent).toBeUndefined();
   });
+
+  it('shows the capability that chose the agent and its estimated cost', () => {
+    expect(runSummary({ capability_id: 'aao.agent-runner.codex', capability_version: '1.0.0',
+      backend_source: 'capability', cost_estimate_usd: 0.4 }).selection)
+      .toBe('aao.agent-runner.codex@1.0.0 · elegido por la capacidad · coste estimado 0.4 USD');
+    expect(runSummary({ capability_id: 'legacy', capability_version: '1', backend_source: 'environment' }).selection)
+      .toBe('legacy@1 · elegido por el entorno');
+    expect(runSummary({ backend: 'codex' }).selection).toBeUndefined();
+  });
 });

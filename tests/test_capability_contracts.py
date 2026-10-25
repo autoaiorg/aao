@@ -34,6 +34,9 @@ def test_model_profile_is_optional_but_validated_when_present():
     assert model_profile_errors({"model_profile": {**good, "model": None}}) == []
     assert model_profile_errors({"model_profile": "codex"}) == ["model_profile must be an object"]
     for bad, field in (({**good, "backend": "docker"}, "backend"), ({**good, "provider": ""}, "provider"),
-                       ({**good, "model": "--yolo"}, "model"), ({**good, "seats": "patch"}, "seats")):
+                       ({**good, "model": "--yolo"}, "model"), ({**good, "seats": "patch"}, "seats"),
+                       ({**good, "cost_per_attempt_usd": -1}, "cost_per_attempt_usd"),
+                       ({**good, "cost_per_attempt_usd": True}, "cost_per_attempt_usd"),
+                       ({**good, "quality": {"patch.tests": 9}}, "quality")):
         errors = model_profile_errors({"model_profile": bad})
         assert len(errors) == 1 and f"model_profile.{field}" in errors[0], (field, errors)

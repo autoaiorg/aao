@@ -24,11 +24,11 @@ class RouteDecision:
 
 
 def route(req: Requirements, candidates: list[dict], *, activated: frozenset[str],
-          unavailable: frozenset[str] = frozenset()) -> RouteDecision:
+          unavailable: frozenset[str] = frozenset(), budget_left: float | None = None) -> RouteDecision:
     """``candidates``: {"capability_id", "version", "compatible_roles", "model_profile"} rows of the catalog.
 
     Filters, each with a recorded reason: role, seat, backend activated, provider not excluded, backend
-    available. The highest ``quality[seat]`` wins; a tie yields no recommendation (same rule as
+    available, estimated cost within the budget left (None = no budget set). The highest ``quality[seat]`` wins; a tie yields no recommendation (same rule as
     ``capability_evaluation.recommend``)."""
     rejected: list[tuple[str, str]] = []
     eligible: list[tuple[int, dict]] = []
@@ -48,6 +48,8 @@ def route(req: Requirements, candidates: list[dict], *, activated: frozenset[str
             why = f"provider {provider} excluded"
         elif backend in unavailable:
             why = f"backend {backend} unavailable"
+        elif budget_left is not None and profile.get("cost_per_attempt_usd", 0) > budget_left:
+            why = f"estimated cost {profile.get('cost_per_attempt_usd', 0)} over budget left {budget_left}"
         else:
             eligible.append((int((profile.get("quality") or {}).get(req.seat, 0)), c))
             continue

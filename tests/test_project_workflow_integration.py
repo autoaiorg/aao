@@ -1027,9 +1027,15 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         monkeypatch.setenv("AAO_AGENT_MAX_ATTEMPTS", "3")
         refused = client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run)
         assert refused.status_code == 409 and "attempt limit" in refused.text
+        # Attempts 2 and 3 share a patch but end differently (sandbox unavailable, then tested): that is progress.
         monkeypatch.setenv("AAO_AGENT_MAX_ATTEMPTS", "4")
         assert client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run).status_code == 202
         assert run_one(identity, token, project_id=project, seconds=400)["status"] == "SUCCEEDED"
+        # Attempt 4 reproduced attempt 3 exactly (same patch, same tested outcome): no progress, so a fifth is
+        # refused even below the attempt limit.
+        monkeypatch.setenv("AAO_AGENT_MAX_ATTEMPTS", "10")
+        stalled = client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run)
+        assert stalled.status_code == 409 and "No progress" in stalled.text
         assert client.post(f"/v1/work/{work}/progress", headers=agent).status_code == 200
         board = client.get(f"/v1/projects/{project}/board", headers=agent).json()
         candidate_sha = next(i for i in board if i["id"] == work)["executions"][-1]["result"]["candidate_sha"]

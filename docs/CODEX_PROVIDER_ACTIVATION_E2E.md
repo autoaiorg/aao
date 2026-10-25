@@ -89,7 +89,7 @@ python scripts/self_development_cycle.py --project-id $P verify --work-id <id>  
 
 **Modelo (opcional, recomendado):** si se añade `AAO_AGENT_CODEX_MODEL=<id>` a la línea del worker, codex recibe `-m <id>` y la evidencia de la ejecución registra ese modelo. Sin esa variable, la evidencia registra `model: null`, porque AAO no observa el modelo por defecto del CLI. En los dos casos registra `provider: openai` y la versión real del CLI (`codex-cli <release>`).
 
-Si el intento falla o se rechaza, se puede volver a encolar hasta llegar al límite. Al alcanzarlo, la API lo rechaza y decide el CEO.
+Si el intento falla o se rechaza, se puede volver a encolar hasta llegar al límite. Al alcanzarlo, la API lo rechaza y decide el CEO. También rechaza con 409 («No progress») un intento nuevo cuando los dos últimos acabaron igual: mismo parche y mismo resultado o fallo. En ese caso decide el PM, que puede reformular la tarea como una nueva o pedir una resolución del CEO.
 
 ## Verificación final
 

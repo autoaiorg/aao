@@ -80,6 +80,7 @@ def test_agent_worker_reads_task_instructions_and_persists_proposal(monkeypatch)
     monkeypatch.setattr(worker, "claim", lambda *args, **kwargs: _lease(selection))
     monkeypatch.setattr(worker, "state", lambda _: {"status": "RUNNING"})
     monkeypatch.setenv("AAO_SELF_DEV_REPOSITORY", "/repository")
+    monkeypatch.setenv("AAO_CANDIDATE_REPOSITORY", "/candidates.git")
     monkeypatch.setenv("AAO_AGENT_BACKEND", "fixture")
     captured = {}
     class DB:
@@ -92,7 +93,10 @@ def test_agent_worker_reads_task_instructions_and_persists_proposal(monkeypatch)
     monkeypatch.setattr("aao.work_management_api.tx", tx)
     def runner(repository, base, instructions, **kwargs):
         captured["instructions"] = instructions
+        captured.update(kwargs)
         return {"patch": "patch", "patch_sha256": "b" * 64, "changed_paths": ["src/aao/x.py"],
+                "candidate_sha": "c" * 40, "candidate_ref": "refs/aao/candidates/" + "c" * 40,
+                "check": {"conclusion": "success"},
                 "backend": "fixture", "backend_version": "fixture-v1", "elapsed_seconds": .01, "exit_status": 0}
     monkeypatch.setattr("aao.agent_runner.run_agent_patch", runner)
     monkeypatch.setattr("aao.work_management_api.persist_patch_proposal", lambda *args: {"proposal_id": "proposal-1"})
@@ -100,8 +104,13 @@ def test_agent_worker_reads_task_instructions_and_persists_proposal(monkeypatch)
     monkeypatch.setattr("aao.work_management_api._authenticate_request_principal", lambda token, kind: "agent-1")
     completed = []
     monkeypatch.setattr(worker, "complete", lambda *args, **kwargs: completed.append(args))
-    outcome = worker.run_one("agent-1", "credential", project_id="project-1")
+    assert worker.run_one("agent-1", "credential", project_id="project-1", seconds=30)["status"] == "FAILED"
+    assert "lease must exceed" in completed.pop()[3]["error"]
+    outcome = worker.run_one("agent-1", "credential", project_id="project-1", seconds=400)
     assert outcome["status"] == "SUCCEEDED"
+    assert completed[0][3]["candidate_sha"] == "c" * 40
+    assert captured["candidate_store"] == "/candidates.git" and captured["check_id"] == "core-unit"
+    assert captured["timeout"] == 400 - worker.CHECK_BUDGET_SECONDS
     assert "from DB" in captured["instructions"] and "task desc" in captured["instructions"]
     assert "queue" not in captured["instructions"].lower()
     assert completed[0][3]["proposal_id"] == "proposal-1"

@@ -6,6 +6,8 @@ from fastapi import HTTPException
 
 from aao.execution_queue import ExecutionConflict, claim, complete, state
 
+CHECK_BUDGET_SECONDS = 150  # sandbox hard timeout (120s + kill) plus commit/push margin
+
 
 def run_one(worker_id: str, agent_credential: str, *, project_id: str, seconds: int = 30) -> dict:
     lease = claim(worker_id, agent_credential=agent_credential, project_id=project_id, seconds=seconds)
@@ -33,13 +35,22 @@ def run_one(worker_id: str, agent_credential: str, *, project_id: str, seconds: 
             title, description, criteria, _ = row
             instructions = "Task: " + title + "\nDescription: " + (description or "") + "\nAcceptance criteria: " + "; ".join(criteria or [])
             repository = os.getenv("AAO_SELF_DEV_REPOSITORY")
+            store = os.getenv("AAO_CANDIDATE_REPOSITORY")
             try:
-                if not repository:
-                    raise ValueError("repository path not configured")
+                if not repository or not store:
+                    raise ValueError("repository or candidate store path not configured")
+                # The lease covers the agent and the candidate checks; completion after expiry is refused.
+                agent_timeout = seconds - CHECK_BUDGET_SECONDS
+                if agent_timeout < 1:
+                    raise ValueError(f"lease must exceed {CHECK_BUDGET_SECONDS}s to run the agent and its checks")
                 from aao.agent_runner import run_agent_patch
                 run = run_agent_patch(repository, selected["base_sha"], instructions,
                                       backend=os.getenv("AAO_AGENT_BACKEND", "codex"),
-                                      timeout=seconds, patch_file=os.getenv("AAO_AGENT_FIXTURE_PATCH"))
+                                      timeout=agent_timeout, patch_file=os.getenv("AAO_AGENT_FIXTURE_PATCH"),
+                                      candidate_store=store, author_email=f"{worker_id}@agents.aao.invalid",
+                                      commit_message=f"{title}\n\nAAO-Work: {lease.get('work_id')}\n"
+                                                     f"AAO-Execution: {execution_id}\n",
+                                      check_id="core-unit")
                 if not run["patch"]:
                     result = {"kind": selected["type"], "conclusion": "failure", "backend": run["backend"],
                               "backend_version": run["backend_version"], "elapsed_seconds": run["elapsed_seconds"],
@@ -51,11 +62,16 @@ def run_one(worker_id: str, agent_credential: str, *, project_id: str, seconds: 
                     if principal != worker_id:
                         raise ValueError("worker credential does not authenticate the claiming agent")
                     proposal = persist_patch_proposal(str(lease.get("work_id")), principal, selected["base_sha"], run["patch"])
+                    tested = run["check"].get("conclusion") == "success"
                     result = {"kind": selected["type"], "proposal_id": proposal["proposal_id"],
                               "patch_sha256": run["patch_sha256"], "changed_paths": run["changed_paths"],
+                              "candidate_sha": run["candidate_sha"], "candidate_ref": run["candidate_ref"],
+                              "check": run["check"],
                               "backend": run["backend"], "backend_version": run["backend_version"],
                               "elapsed_seconds": run["elapsed_seconds"], "exit_status": run["exit_status"],
-                              "conclusion": "success"}
+                              "conclusion": "success" if tested else "failure"}
+                    if not tested:
+                        result["error"] = "candidate checks failed"
             except (ValueError, RuntimeError, HTTPException) as exc:
                 backend = os.getenv("AAO_AGENT_BACKEND", "codex")
                 result = {"kind": selected["type"], "conclusion": "failure", "backend": backend,

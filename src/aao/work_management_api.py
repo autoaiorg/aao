@@ -1174,9 +1174,12 @@ def review(work_id: str, payload: ReviewRequest, principal: str = Depends(requir
             "SELECT id,status FROM execution_queue WHERE work_id=%s FOR UPDATE",
             (work_id,),
         ).fetchall()
-        if payload.decision == "APPROVE" and any(
-            execution_status != "SUCCEEDED"
-            for _, execution_status in executions
+        # Earlier failed attempts do not block approval; the reviewed candidate's own
+        # execution must have succeeded and no attempt may still be active.
+        if payload.decision == "APPROVE" and (
+            all(execution_status != "SUCCEEDED" for _, execution_status in candidate_execution)
+            or any(execution_status in ("QUEUED", "RUNNING", "UNCERTAIN")
+                   for _, execution_status in executions)
         ):
             raise HTTPException(409, "Execution must succeed before work review")
         if db.execute(
@@ -1193,6 +1196,9 @@ def review(work_id: str, payload: ReviewRequest, principal: str = Depends(requir
             evidence=payload.evidence,
             decision=payload.decision,
             project_active=active[0] == "ACTIVE",
+            # require_reviewer authenticated a separate AUDITOR credential, authorship and
+            # execution separation were checked, and verify_evidence_references resolved the evidence.
+            identity_and_evidence_verified=True,
         )
         if not review_decision.allowed:
             raise HTTPException(409, review_decision.reason)
@@ -1332,7 +1338,8 @@ def stage_agent_run(work_id: str, payload: AgentRunRequest, principal: str = Dep
             raise HTTPException(404, "Work not found")
         project_id, status = work
         project = db.execute("SELECT state FROM projects WHERE id=%s FOR SHARE", (project_id,)).fetchone()
-        if not project or project[0] != "ACTIVE" or status != "READY":
+        # READY for the first run; IN_PROGRESS to re-run after a failed or rejected attempt.
+        if not project or project[0] != "ACTIVE" or status not in ("READY", "IN_PROGRESS"):
             raise HTTPException(409, "Work not ready in active project")
         require_grant(db, principal, project_id, "work.admit")
         require_grant(db, principal, project_id, "execution.claim")
@@ -1342,10 +1349,11 @@ def stage_agent_run(work_id: str, payload: AgentRunRequest, principal: str = Dep
         ev = db.execute("SELECT 1 FROM events WHERE subject_id=%s AND kind='capability.evaluated' AND details->>'capability_id'=%s AND details->>'version'=%s AND details->>'recommendation' IN ('reuse','adapt') LIMIT 1", (work_id, payload.capability_id, payload.version)).fetchone()
         if not ev:
             raise HTTPException(409, "Capability must be selected for this task before staging")
-        existing = db.execute("SELECT id,status,input_json FROM execution_queue WHERE work_id=%s", (work_id,)).fetchone()
+        existing = db.execute("SELECT id,status,input_json FROM execution_queue WHERE work_id=%s "
+                              "AND status IN ('QUEUED','RUNNING','UNCERTAIN')", (work_id,)).fetchone()
         if existing:
             if existing[2] != job:
-                raise HTTPException(409, "A different execution is already recorded")
+                raise HTTPException(409, "A different execution is still active for this work")
             return {"execution_id": str(existing[0]), "status": existing[1]}
         execution_id = str(uuid4())
         db.execute("INSERT INTO execution_queue(id,work_id,project_id,status,input_json) VALUES (%s,%s,%s,'QUEUED',%s::jsonb)", (execution_id, work_id, project_id, json.dumps(job)))

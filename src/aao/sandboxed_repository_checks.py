@@ -7,6 +7,7 @@ home directory, repository metadata, or inherited credentials.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
@@ -25,6 +26,7 @@ CHECKS: dict[str, tuple[str, ...]] = {
         "tests/test_execution.py",
     ),
 }
+_EXTRA_TEST = re.compile(r"^tests/test_[A-Za-z0-9_]+\.py$")
 _OUTPUT_LIMIT = 12_000
 _TIMEOUT_SECONDS = 120
 
@@ -81,10 +83,14 @@ def _required_path(repository: Path, relative: str, *, directory: bool) -> Path:
     return target
 
 
-def _build_command(repository: Path, check_id: str, site_packages: Path) -> list[str]:
+def _build_command(repository: Path, check_id: str, site_packages: Path,
+                   extra_tests: tuple[str, ...] = ()) -> list[str]:
     files = CHECKS.get(check_id)
     if files is None:
         raise RepositoryCheckError("unsupported repository check")
+    if any(not _EXTRA_TEST.fullmatch(test) for test in extra_tests):
+        raise RepositoryCheckError("extra tests must be top-level tests/test_*.py files")
+    files = tuple(dict.fromkeys((*files, *extra_tests)))
     if sys.platform != "linux":
         raise RepositoryCheckError("Linux bubblewrap is required")
     bwrap = shutil.which("bwrap")
@@ -201,14 +207,15 @@ def _build_command(repository: Path, check_id: str, site_packages: Path) -> list
     return command
 
 
-def run_repository_check(repository: str | Path, check_id: str) -> dict[str, object]:
-    """Run one allow-listed unit check and return bounded output tied to HEAD."""
+def run_repository_check(repository: str | Path, check_id: str,
+                         extra_tests: tuple[str, ...] = ()) -> dict[str, object]:
+    """Run one allow-listed unit check (plus candidate test files) tied to HEAD."""
     root = Path(repository).resolve()
     if not root.is_dir():
         raise RepositoryCheckError("candidate repository is unavailable")
     sha = _candidate_sha(root)
     site_packages = Path(sysconfig.get_paths()["purelib"])
-    command = _build_command(root, check_id, site_packages)
+    command = _build_command(root, check_id, site_packages, extra_tests)
     started = time.monotonic()
     try:
         with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
@@ -238,6 +245,7 @@ def run_repository_check(repository: str | Path, check_id: str) -> dict[str, obj
     return {
         "kind": "aao.repository-check.v1",
         "check_id": check_id,
+        "extra_tests": list(extra_tests),
         "candidate_sha": sha,
         "conclusion": "success" if result.returncode == 0 else "failure",
         "exit_code": result.returncode,

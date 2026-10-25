@@ -30,8 +30,47 @@ def _git(repo: Path, *args: str, timeout: int = 30) -> str:
         raise AgentRunnerError("configured source repository or base revision unavailable")
     return p.stdout
 
+_EMAIL = re.compile(r"^[A-Za-z0-9._+-]{1,64}@[A-Za-z0-9.-]{1,128}$")
+
+
+def _commit_candidate(clone: Path, env: dict, *, author_email: str, message: str,
+                      store: Path, changed_paths: list[str], check_id: str | None) -> dict:
+    """Commit the agent's worktree under a fixed identity, keep it under a durable ref, and test it."""
+    if not _EMAIL.fullmatch(author_email):
+        raise AgentRunnerError("invalid candidate author identity")
+    identity = {"GIT_AUTHOR_NAME": "AAO agent", "GIT_AUTHOR_EMAIL": author_email,
+                "GIT_COMMITTER_NAME": "AAO agent", "GIT_COMMITTER_EMAIL": author_email}
+    _git(clone, "add", "-A", "--", ".", timeout=10)
+    proc = subprocess.run(["git", "-C", str(clone), "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+                           "commit", "--quiet", "--no-verify", "-F", "-"], input=message, text=True,
+                          capture_output=True, env={**env, **identity}, cwd="/", timeout=30, check=False)
+    if proc.returncode:
+        raise AgentRunnerError("failed to commit the candidate")
+    candidate_sha = _git(clone, "rev-parse", "HEAD").strip()
+    if not store.exists():
+        store.parent.mkdir(parents=True, exist_ok=True)
+        _git(store.parent, "init", "--quiet", "--bare", str(store))
+    ref = f"refs/aao/candidates/{candidate_sha}"
+    _git(clone, "push", "--quiet", str(store), f"HEAD:{ref}")
+    result: dict = {"candidate_sha": candidate_sha, "candidate_ref": ref}
+    if check_id:
+        from aao.sandboxed_repository_checks import RepositoryCheckError, run_repository_check
+        extra = tuple(p for p in changed_paths if re.fullmatch(r"tests/test_[A-Za-z0-9_]+\.py", p)
+                      and (clone / p).is_file())
+        try:
+            check = run_repository_check(clone, check_id, extra)
+        except RepositoryCheckError as exc:
+            check = {"check_id": check_id, "conclusion": "failure", "error": str(exc)[:500]}
+        if check.get("candidate_sha", candidate_sha) != candidate_sha:
+            raise AgentRunnerError("checks ran on a different revision")
+        result["check"] = check
+    return result
+
+
 def run_agent_patch(repository, base_sha: str, instructions: str, *, backend: str,
-                    timeout: int, patch_file: str | None = None) -> dict:
+                    timeout: int, patch_file: str | None = None,
+                    candidate_store: str | Path | None = None, author_email: str = "agent@aao.invalid",
+                    commit_message: str = "AAO candidate", check_id: str | None = None) -> dict:
     if not _SHA.fullmatch(base_sha):
         raise AgentRunnerError("full base commit SHA required")
     if timeout < 1 or timeout > 3600:
@@ -100,5 +139,10 @@ def run_agent_patch(repository, base_sha: str, instructions: str, *, backend: st
             details = inspect_patch(patch) if patch else {"patch_sha256": None, "changed_paths": [], "patch_bytes": 0}
         except PatchProposalError as exc:
             raise AgentRunnerError(str(exc)) from exc
-        return {"patch": patch, **details, "backend": backend, "backend_version": "codex-cli" if backend == "codex" else "fixture-v1",
+        candidate = {}
+        if patch and candidate_store is not None:
+            candidate = _commit_candidate(clone, env, author_email=author_email, message=commit_message,
+                                          store=Path(candidate_store).resolve(),
+                                          changed_paths=list(details["changed_paths"]), check_id=check_id)
+        return {"patch": patch, **details, **candidate, "backend": backend, "backend_version": "codex-cli" if backend == "codex" else "fixture-v1",
                 "elapsed_seconds": round(time.monotonic() - started, 3), "exit_status": exit_code}

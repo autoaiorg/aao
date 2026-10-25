@@ -1,8 +1,8 @@
 {
  "schema": "aao.protected-routes.v1",
  "approved_by": "CEO",
- "approved_at": "2026-10-25 (CEO merge of the PR adding 21 security routes; Codex audit 50033ae r1 A-03)",
- "decision": "docs/proposals/RA01_RA02_TRUST_INPUTS.md",
+ "approved_at": "2026-10-25",
+ "decision": "docs/decisions/CEO-DEC-2026-10-25.md (Decisión 1; ratifies the 21 routes added at 2b3e9c16e520c21b2f9de15aeb9f442d7f36bc1c); earlier routes: docs/proposals/RA01_RA02_TRUST_INPUTS.md",
  "semantics": {
   "directory": "entry ending in '/' covers everything below it",
   "exact": "any other entry is an exact path unless it contains '*'",

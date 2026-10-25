@@ -6,6 +6,14 @@ from fastapi import HTTPException
 
 from aao.execution_queue import ExecutionConflict, claim, complete, state
 
+_IDENTITY_FIELDS = ("backend", "provider", "model", "backend_version")
+
+
+def _identity(run: dict) -> dict:
+    """Provider, model and CLI release that produced the run, as the runner recorded them."""
+    return {k: run.get(k) for k in _IDENTITY_FIELDS}
+
+
 CHECK_BUDGET_SECONDS = 150  # sandbox hard timeout (120s + kill) plus commit/push margin
 
 
@@ -52,8 +60,8 @@ def run_one(worker_id: str, agent_credential: str, *, project_id: str, seconds: 
                                                      f"AAO-Execution: {execution_id}\n",
                                       check_id="core-unit")
                 if not run["patch"]:
-                    result = {"kind": selected["type"], "conclusion": "failure", "backend": run["backend"],
-                              "backend_version": run["backend_version"], "elapsed_seconds": run["elapsed_seconds"],
+                    result = {"kind": selected["type"], "conclusion": "failure", **_identity(run),
+                              "elapsed_seconds": run["elapsed_seconds"],
                               "exit_status": run["exit_status"], "error": "empty patch"}
                 else:
                     # Same authorization as the API: the proposal is made by the authenticated agent credential,
@@ -79,15 +87,18 @@ def run_one(worker_id: str, agent_credential: str, *, project_id: str, seconds: 
                               "patch_sha256": run["patch_sha256"], "changed_paths": run["changed_paths"],
                               "candidate_sha": run["candidate_sha"], "candidate_ref": run["candidate_ref"],
                               "check": run["check"],
-                              "backend": run["backend"], "backend_version": run["backend_version"],
+                              **_identity(run),
                               "elapsed_seconds": run["elapsed_seconds"], "exit_status": run["exit_status"],
                               "conclusion": "success" if tested else "failure"}
                     if not tested:
                         result["error"] = "candidate checks failed"
             except (ValueError, RuntimeError, HTTPException) as exc:
-                backend = os.getenv("AAO_AGENT_BACKEND", "codex")
-                result = {"kind": selected["type"], "conclusion": "failure", "backend": backend,
-                          "backend_version": "codex-cli" if backend == "codex" else "fixture-v1",
+                from aao.agent_runner import backend_identity
+                try:
+                    identity = backend_identity(os.getenv("AAO_AGENT_BACKEND", "codex"))
+                except ValueError:
+                    identity = {"backend": os.getenv("AAO_AGENT_BACKEND", "codex")}
+                result = {"kind": selected["type"], "conclusion": "failure", **identity,
                           "elapsed_seconds": round((datetime.now(UTC) - started_at).total_seconds(), 3),
                           "exit_status": None, "error": str(exc)[:500]}
         complete(execution_id, lease["token"], worker_id, result, agent_credential=agent_credential)

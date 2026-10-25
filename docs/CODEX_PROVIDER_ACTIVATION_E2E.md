@@ -87,6 +87,8 @@ AAO_PUBLISH_BASE_REPO=autoaiorg/aao python scripts/publish_candidate.py --work-i
 python scripts/self_development_cycle.py --project-id $P verify --work-id <id>   # cadena completa desde PostgreSQL
 ```
 
+**Modelo (opcional, recomendado):** si se añade `AAO_AGENT_CODEX_MODEL=<id>` a la línea del worker, codex recibe `-m <id>` y la evidencia de la ejecución registra ese modelo. Sin esa variable, la evidencia registra `model: null`, porque AAO no observa el modelo por defecto del CLI. En los dos casos registra `provider: openai` y la versión real del CLI (`codex-cli <release>`).
+
 Si el intento falla o se rechaza, se puede volver a encolar hasta llegar al límite. Al alcanzarlo, la API lo rechaza y decide el CEO.
 
 ## Verificación final

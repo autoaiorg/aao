@@ -46,6 +46,26 @@ def codex_release() -> Path:
     return binary.parents[1]
 
 
+_MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+
+
+def backend_identity(backend: str) -> dict:
+    """Who produces the patch, for the evidence: provider, model and the real CLI release.
+
+    ``model`` is the one pinned with AAO_AGENT_CODEX_MODEL (passed to codex as ``-m``); None means the CLI's
+    own default, which AAO does not observe and therefore does not record."""
+    if backend != "codex":
+        return {"backend": backend, "provider": "fixture", "model": None, "backend_version": "fixture-v1"}
+    model = os.getenv("AAO_AGENT_CODEX_MODEL") or None
+    if model is not None and not _MODEL.fullmatch(model):
+        raise AgentRunnerError("invalid AAO_AGENT_CODEX_MODEL")
+    try:
+        version = "codex-cli " + codex_release().name
+    except AgentRunnerError:
+        version = "codex-cli unavailable"
+    return {"backend": backend, "provider": "openai", "model": model, "backend_version": version}
+
+
 def agent_jail(argv: list[str], *, workdir: Path, codex_home: Path, release: Path,
                cwd: Path | None = None) -> list[str]:
     """Outer bwrap around the codex CLI so that neither it nor the model's commands can read the operator's
@@ -133,6 +153,7 @@ def run_agent_patch(repository, base_sha: str, instructions: str, *, backend: st
         raise AgentRunnerError("codex backend disabled; CEO provider activation required (AAO_AGENT_PROVIDER=codex)")
     if backend not in {"fixture", "codex"}:
         raise AgentRunnerError("unsupported agent backend")
+    identity = backend_identity(backend)
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="aao-agent-run-") as tmp:
         clone = Path(tmp) / "repo"
@@ -170,6 +191,7 @@ def run_agent_patch(repository, base_sha: str, instructions: str, *, backend: st
             command = agent_jail(
                 [str(release / "bin" / "codex"), "exec", "--sandbox", "workspace-write",
                  *codex_sandbox_flags(Path(tmp))[2:],
+                 *(["-m", identity["model"]] if identity["model"] else []),
                  "--ephemeral", "--skip-git-repo-check", "--ignore-user-config",
                  "-C", str(clone), "-c", "model_reasoning_effort=medium", "--disable=plugins",
                  "--disable=browser_use", "--disable=computer_use", "--disable=memories",
@@ -201,5 +223,5 @@ def run_agent_patch(repository, base_sha: str, instructions: str, *, backend: st
             candidate = _commit_candidate(clone, env, author_email=author_email, message=commit_message,
                                           store=Path(candidate_store).resolve(),
                                           changed_paths=list(details["changed_paths"]), check_id=check_id)
-        return {"patch": patch, **details, **candidate, "backend": backend, "backend_version": "codex-cli" if backend == "codex" else "fixture-v1",
+        return {"patch": patch, **details, **candidate, **identity,
                 "elapsed_seconds": round(time.monotonic() - started, 3), "exit_status": exit_code}

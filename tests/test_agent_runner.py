@@ -29,6 +29,7 @@ def test_fixture_runs_in_clone_and_preserves_source(tmp_path, monkeypatch):
     assert result["patch"]
     assert _git(repo, "status", "--porcelain") == before
     assert (repo / "src/aao/x.py").read_text() == "before\n"
+    assert (result["provider"], result["model"], result["backend_version"]) == ("fixture", None, "fixture-v1")
 
 
 def test_codex_requires_provider(monkeypatch, tmp_path):
@@ -52,6 +53,46 @@ def test_codex_requires_a_dedicated_codex_home(monkeypatch, tmp_path):
     monkeypatch.delenv("AAO_AGENT_CODEX_HOME", raising=False)
     with pytest.raises(AgentRunnerError, match="dedicated AAO_AGENT_CODEX_HOME"):
         run_agent_patch(repo, sha, "x", backend="codex", timeout=3)
+
+
+def _empty_repo(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-qm", "base"], check=True)
+    return repo, _git(repo, "rev-parse", "HEAD").strip()
+
+
+def test_codex_run_records_provider_pinned_model_and_real_cli_release(monkeypatch, tmp_path):
+    """Evidence names who produced the patch; the recorded model is the one actually passed to codex."""
+    from aao import agent_runner
+    repo, sha = _empty_repo(tmp_path)
+    argv_file = tmp_path / "argv"
+    (tmp_path / "codex-home").mkdir()
+    monkeypatch.setenv("AAO_AGENT_PROVIDER", "codex")
+    monkeypatch.setenv("AAO_AGENT_CODEX_HOME", str(tmp_path / "codex-home"))
+    monkeypatch.setenv("AAO_AGENT_CODEX_MODEL", "gpt-5.1-codex")
+    monkeypatch.setattr(agent_runner, "codex_release", lambda: tmp_path / "releases" / "0.164.0-x86_64-unknown-linux-musl")
+    # Stand-in for the jailed CLI: records its argv and changes nothing (no model call).
+    monkeypatch.setattr(agent_runner, "agent_jail", lambda argv, **kw: [
+        "/bin/sh", "-c", 'printf "%s\\n" "$@" > "$0"', str(argv_file), *argv])
+    result = run_agent_patch(repo, sha, "x", backend="codex", timeout=20)
+    assert result["patch"] == ""
+    assert result["provider"] == "openai" and result["model"] == "gpt-5.1-codex"
+    assert result["backend_version"] == "codex-cli 0.164.0-x86_64-unknown-linux-musl"
+    args = argv_file.read_text().splitlines()
+    assert args[args.index("-m") + 1] == "gpt-5.1-codex"
+    # Without a pin, nothing is passed and nothing is claimed about the CLI's default model.
+    monkeypatch.delenv("AAO_AGENT_CODEX_MODEL")
+    result = run_agent_patch(repo, sha, "x", backend="codex", timeout=20)
+    assert result["model"] is None and "-m" not in argv_file.read_text().splitlines()
+
+
+def test_codex_model_pin_is_validated(monkeypatch):
+    from aao.agent_runner import backend_identity
+    monkeypatch.setenv("AAO_AGENT_CODEX_MODEL", "--dangerously-bypass")
+    with pytest.raises(AgentRunnerError, match="invalid AAO_AGENT_CODEX_MODEL"):
+        backend_identity("codex")
 
 
 def test_agent_jail_hides_operator_state_and_mounts_only_the_workdir(tmp_path):

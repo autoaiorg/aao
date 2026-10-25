@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
+import * as THREE from 'three';
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import { VirtualOfficeView } from '../features/office/VirtualOfficeView';
 import { Office2DPlan } from '../features/office/components/Office2DPlan';
+import { ThreeOfficeScene } from '../features/office/engine/ThreeOfficeScene';
 import type { DataState, OrganizationStructure } from '../domain/models';
 import { DEMO_ORG_STRUCTURE, DEMO_AGENTS, DEMO_ORG_UNITS } from '../data/adapters/demo/fixtures';
 
@@ -170,5 +172,96 @@ describe('Office2DPlan Component Direct Test', () => {
     const govBtn = screen.getByRole('button', { name: /Gobernanza Constitucional/i });
     fireEvent.click(govBtn);
     expect(onSelectRoom).toHaveBeenCalledWith('unit-gov');
+  });
+});
+
+describe('ThreeOfficeScene Engine Direct Regression Tests (Defects 1 & 2)', () => {
+  const createMockRenderer = () =>
+    ({
+      setSize: vi.fn(),
+      setPixelRatio: vi.fn(),
+      render: vi.fn(),
+      domElement: document.createElement('canvas'),
+      shadowMap: { enabled: false, type: 0 },
+      dispose: vi.fn(),
+    } as unknown as THREE.WebGLRenderer);
+
+  it('Defect 1: updateAgents() removes obsolete agent references from interactiveMeshes to prevent memory leaks and raycast accumulation', () => {
+    const container = document.createElement('div');
+    const scene = new ThreeOfficeScene(container, {
+      renderer: createMockRenderer(),
+      callbacks: {
+        onSelectRoom: vi.fn(),
+        onSelectAgent: vi.fn(),
+        onHoverObject: vi.fn(),
+      },
+    });
+
+    // Initially, interactiveMeshes contains the 6 room platforms
+    expect(scene.getInteractiveMeshesCount()).toBe(6);
+
+    // First agent update with DEMO_AGENTS
+    scene.updateAgents(DEMO_AGENTS);
+    const countAfterFirstUpdate = scene.getInteractiveMeshesCount();
+    expect(countAfterFirstUpdate).toBeGreaterThan(6);
+
+    // Second agent update with DEMO_AGENTS (must NOT accumulate or leak old meshes)
+    scene.updateAgents(DEMO_AGENTS);
+    expect(scene.getInteractiveMeshesCount()).toBe(countAfterFirstUpdate);
+
+    // Third agent update with empty array: should cleanly revert to exactly 6 room platforms
+    scene.updateAgents([]);
+    expect(scene.getInteractiveMeshesCount()).toBe(6);
+
+    scene.dispose();
+  });
+
+  it('Defect 2: stepAnimation() strictly animates EPHEMERAL crystal agents and leaves STANDING agent geometry stationary', () => {
+    const container = document.createElement('div');
+    const scene = new ThreeOfficeScene(container, {
+      renderer: createMockRenderer(),
+      callbacks: {
+        onSelectRoom: vi.fn(),
+        onSelectAgent: vi.fn(),
+        onHoverObject: vi.fn(),
+      },
+    });
+
+    scene.updateAgents(DEMO_AGENTS);
+
+    // Identify a standing agent (e.g. Asistente de Presidencia / CEO Chair)
+    const standingAgent = DEMO_AGENTS.find((a) => a.type === 'STANDING');
+    expect(standingAgent).toBeDefined();
+
+    // Identify an ephemeral agent (e.g. Sincronizador de Documentación / Doc Bot)
+    const ephemeralAgent = DEMO_AGENTS.find((a) => a.type === 'EPHEMERAL');
+    expect(ephemeralAgent).toBeDefined();
+
+    const standingGroup = scene.getAgentMeshGroup(standingAgent!.id);
+    const ephemeralGroup = scene.getAgentMeshGroup(ephemeralAgent!.id);
+    expect(standingGroup).toBeDefined();
+    expect(ephemeralGroup).toBeDefined();
+
+    // Initial positions of children[1]:
+    // Standing: pedestal at y = 0.06, rotation.y = 0
+    expect(standingGroup!.children[1].position.y).toBeCloseTo(0.06);
+    expect(standingGroup!.children[1].rotation.y).toBe(0);
+
+    // Ephemeral: floating crystal initial y = 0.58
+    expect(ephemeralGroup!.children[1].position.y).toBeCloseTo(0.58);
+    expect(ephemeralGroup!.children[1].rotation.y).toBe(0);
+
+    // Execute animation step at t = 1000ms
+    scene.stepAnimation(1000);
+
+    // STANDING agent geometry must remain strictly unchanged
+    expect(standingGroup!.children[1].position.y).toBeCloseTo(0.06);
+    expect(standingGroup!.children[1].rotation.y).toBe(0);
+
+    // EPHEMERAL agent crystal geometry MUST have rotated and bobbed
+    expect(ephemeralGroup!.children[1].rotation.y).toBeCloseTo(1000 * 0.002 * 0.5);
+    expect(ephemeralGroup!.children[1].position.y).not.toBe(0.58);
+
+    scene.dispose();
   });
 });

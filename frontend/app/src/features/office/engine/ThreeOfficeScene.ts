@@ -11,6 +11,7 @@ export interface ThreeSceneCallbacks {
 export interface ThreeSceneOptions {
   reducedMotion?: boolean;
   callbacks: ThreeSceneCallbacks;
+  renderer?: THREE.WebGLRenderer;
 }
 
 export class ThreeOfficeScene {
@@ -65,13 +66,18 @@ export class ThreeOfficeScene {
     this.updateCameraPosition();
 
     // 3. Renderer
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
+    this.renderer =
+      options.renderer ||
+      new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
     this.renderer.setSize(width, height);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-
-    container.appendChild(this.renderer.domElement);
+    if (!options.renderer) {
+      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      this.renderer.shadowMap.enabled = true;
+      this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    }
+    if (!container.contains(this.renderer.domElement)) {
+      container.appendChild(this.renderer.domElement);
+    }
 
     // 4. Hierarchy Groups
     this.scene.add(this.roomsGroup);
@@ -283,7 +289,12 @@ export class ThreeOfficeScene {
   }
 
   public updateAgents(agents: AgentIdentity[]): void {
-    // Clear old agents
+    // 1. Remove old agent meshes from interactive raycast array to avoid stale objects and cumulative growth
+    this.interactiveMeshes = this.interactiveMeshes.filter(
+      (mesh) => mesh.userData?.type !== 'agent'
+    );
+
+    // 2. Clear old agents from 3D hierarchy and GPU memory
     this.agentMeshes.forEach((group) => {
       this.agentsGroup.remove(group);
       this.disposeHierarchy(group);
@@ -321,6 +332,7 @@ export class ThreeOfficeScene {
           id: agent.id,
           unitId: agent.unitId,
           name: agent.name,
+          agentType: agent.type,
         };
 
         this.agentsGroup.add(agentGroup);
@@ -340,6 +352,14 @@ export class ThreeOfficeScene {
     if (this.activeAgentId) {
       this.selectAgent(this.activeAgentId);
     }
+  }
+
+  public getInteractiveMeshesCount(): number {
+    return this.interactiveMeshes.length;
+  }
+
+  public getAgentMeshGroup(agentId: string): THREE.Group | undefined {
+    return this.agentMeshes.get(agentId);
   }
 
   private buildAgentAvatar(agent: AgentIdentity): THREE.Group {
@@ -652,7 +672,7 @@ export class ThreeOfficeScene {
     this.renderer.setSize(width, height);
   }
 
-  private animate(time: number): void {
+  public stepAnimation(time: number): void {
     if (this.isDisposed) return;
 
     // Smooth camera panning toward desiredTarget
@@ -661,14 +681,17 @@ export class ThreeOfficeScene {
       this.updateCameraPosition();
     }
 
-    // Subtle idle animation for ephemeral crystal agents
+    // Subtle idle animation strictly for EPHEMERAL crystal agents
     if (!this.options.reducedMotion) {
       const t = time * 0.002;
       this.agentMeshes.forEach((group) => {
-        if (group.children.length > 1 && group.children[1] instanceof THREE.Mesh) {
-          // Subtle hover bob
-          group.children[1].position.y = 0.58 + Math.sin(t + group.position.x) * 0.04;
-          group.children[1].rotation.y = t * 0.5;
+        // Enforce limitation: ONLY EPHEMERAL crystal agents animate, NEVER STANDING agents
+        if (group.userData?.agentType === 'EPHEMERAL') {
+          if (group.children.length > 1 && group.children[1] instanceof THREE.Mesh) {
+            // Subtle hover bob and crystal rotation
+            group.children[1].position.y = 0.58 + Math.sin(t + group.position.x) * 0.04;
+            group.children[1].rotation.y = t * 0.5;
+          }
         }
       });
 
@@ -678,6 +701,12 @@ export class ThreeOfficeScene {
         this.selectionRing.scale.set(s, s, s);
       }
     }
+  }
+
+  private animate(time: number): void {
+    if (this.isDisposed) return;
+
+    this.stepAnimation(time);
 
     this.renderer.render(this.scene, this.camera);
     this.animFrameId = requestAnimationFrame(this.animate);

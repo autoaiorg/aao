@@ -28,7 +28,7 @@ export const NAV_ITEMS: NavItem[] = [
   { key: 'alerts', label: 'Alertas' },
   { key: 'audit', label: 'Auditoría' },
   { key: 'operations', label: 'Operaciones' },
-  { key: 'office3d', label: 'Oficina Virtual', badge: 'F4', isPhaseFuture: true },
+  { key: 'office3d', label: 'Oficina Virtual' },
   { key: 'settings', label: 'Configuración' },
 ];
 

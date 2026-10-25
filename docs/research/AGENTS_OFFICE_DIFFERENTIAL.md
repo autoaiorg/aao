@@ -206,15 +206,15 @@ Los perfiles/unidades persistidos y la edición CEO ya están construidos (#134/
 - **No forma parte aún:** planificación automática, identidad de agente ficticia/efímera, coordinación paralela automática ni síntesis pretendida como resultado consolidado. Falta definir la asignación autorizada por hijo y la consolidación durable enlazada a ejecuciones/evidencia; la UI solo refleja estado canónico.
 - **Aceptación del primer incremento:** CEO puede confirmar un desglose de conversación en una transacción; padre e hijos tienen IDs persistidos en `INBOX`; dependencias intra-grupo sin ciclos; reintentos no duplican; board aplica scope; sin grants ni ejecuciones al crear; reinicio y relectura conservan el grafo. CI PR y post-merge verdes.
 
-### F3 — admisión consciente de dependencias (en construcción)
+### F3 — admisión consciente de dependencias (integrada; asignación y consolidación pendientes)
 
 - **Problema verificado:** aunque el DAG se persistía, `/v1/work/{id}/admit` enviaba `dependencies_satisfied=True` incondicionalmente; un hijo podía pasar a `READY` antes de completar sus prerrequisitos.
 - **Cambio en `fix/f3-dependency-aware-admission`:** la admisión lee los estados de prerrequisitos del mismo proyecto y toma bloqueos `FOR SHARE`; solo `DONE` satisface la dependencia. Un hijo bloqueado se conserva en `INBOX`; un hermano sin dependencias puede admitirse independientemente. El padre del grupo se rechaza como contenedor, no es trabajo ejecutable. No hay grants heredados ni nueva ruta de ejecución.
 - **Prueba de aceptación añadida:** PostgreSQL valida hijo bloqueado en `INBOX`, hermano independiente admitido, padre rechazado, prerequisito en `IN_REVIEW` todavía bloqueante y liberación del dependiente tras pasar a `DONE`.
-- **Validación local:** Ruff, `compileall`, `git diff --check` pasan; backend completo `610 passed, 48 skipped`. La prueba nueva requiere PostgreSQL desechable y está entre las omitidas localmente; falta CI de la rama.
-- No se ha inspeccionado ni verificado en ejecución un entorno PostgreSQL vivo en este trabajo; el diferencial de backend se basa en rutas y código del repositorio.
-- No se ejercitaron credenciales ni llamadas a modelo de Agents Office.
-- **Siguiente owner:** PM/backend define contrato mínimo de proyección con frontend; frontend implementa consumo y tests una vez estable el contrato. CEO solo interviene si aparece decisión estratégica o riesgo reservado, no por decisiones ordinarias de interfaz.
+- **Validación local:** Ruff, `compileall`, `git diff --check` pasan; backend completo `610 passed, 48 skipped`. La prueba nueva requiere PostgreSQL desechable y fue ejecutada en CI.
+- **Integrado:** PR #162 mergeada en `513c65989cc56249f72482cf37ecce5f6d1b2bd6`; checks PR runs `40245188564` y `40245192209`; CI post-merge `main` run `40245352064` (test/frontend verde).
+- No se ha inspeccionado ni verificado en ejecución un entorno PostgreSQL local; el diferencial se basa en rutas, código y CI. No se ejercitaron credenciales ni llamadas a modelo de Agents Office.
+- **Siguiente owner:** PM/backend concreta contrato mínimo para asignar hijos a identidades reales con permisos canónicos y enlazar resultados; frontend consume solo ese contrato. CEO interviene solo si aparece una decisión estratégica o riesgo reservado.
 
 
 ### Incremento posterior: LIVE fail-closed (`fix/office-live-organization-fail-closed`)
@@ -297,7 +297,7 @@ Los perfiles/unidades persistidos y la edición CEO ya están construidos (#134/
 - **Pruebas locales:** añadidas regresiones para cookie CEO revocada y para que un 403 AGENT no dispare el callback. Suite frontend completa: 156 tests en 18 archivos; build TypeScript/Vite y `git diff --check` pasan. La suite no sustituye una prueba de navegador contra la instancia local.
 - **Pendiente de integración:** commit/PR/CI de esta rama y prueba de UI con sesión cookie activa/invalidada; la ejecución principal de CI de #154 todavía estaba `in_progress` al comprobarla.
 
-### Incremento F2: propuesta de tareas a partir de la conversación completa (en construcción)
+### Incremento F2: propuesta de tareas a partir de la conversación completa (integrado; recuperación durable pendiente)
 
 - **Objetivo:** el CEO conversa primero con AAO y, cuando lo decide, pide una propuesta basada en el hilo persistido completo. No se transforma automáticamente cada mensaje en una tarea.
 - **Backend:** `POST /v1/projects/{project_id}/conversations/{conversation_id}/work-group-proposals` requiere CEO, recupera los mensajes del hilo en orden, los entrega al proveedor de conversación configurado y valida una respuesta JSON estructurada. Devuelve la propuesta editable, IDs de los mensajes fuente y provider/model. Si falta la configuración, la conversación no aporta mensajes, el resultado es inválido o no hay tareas acordadas, no crea trabajo. La generación registra evento de propuesta sin persistir el borrador como trabajo canónico.
@@ -305,6 +305,6 @@ Los perfiles/unidades persistidos y la edición CEO ya están construidos (#134/
 - **Consistencia del borrador:** una propuesta incluye el snapshot de IDs fuente en la confirmación. Bajo el bloqueo del hilo, el backend compara ese snapshot con los mensajes persistidos actuales y rechaza con `409` si el hilo cambió, sin insertar trabajo; hay que regenerar la propuesta. Los grupos redactados manualmente pueden omitir el snapshot. El frontend descarta la procedencia al cambiar de proyecto/hilo o iniciar otro turno.
 - **Autoridad y persistencia:** la conversación y los trabajos confirmados siguen en PostgreSQL; el borrador de propuesta es transitorio, sin estado operativo alternativo en React. El provider/model se muestran como procedencia de la propuesta, no como identidad AAO ni prueba de que las tareas estén aprobadas.
 - **Validación local observada:** `compileall`, Ruff; TypeScript, suite frontend completa (160 tests), build y suite backend completa (610 passed, 48 skipped) pasan. Build conserva advertencias de anotaciones de Zod y chunks superiores a 500 kB. Las pruebas PostgreSQL, incluida la integración añadida para autorización, transcript completo, no creación de trabajo y respuesta inválida, se omitieron porque no estaban configuradas las dos salvaguardas `AAO_TEST_POSTGRES_URL` y `AAO_TEST_DB_DISPOSABLE=yes`; se requiere CI/DB desechable para ejecución efectiva.
-- **Pendiente:** commit, PR, CI de PR y CI de `main`. La CI de `main` posterior a #162 ya terminó verde: run [40245352064](https://github.com/autoaiorg/aao/actions/runs/40245352064), frontend y test success.
+- **Integrado:** PR #163 fusionada por squash en `77092d3fdea34e272a673b6486be81253dfb3d80` (head `42005ed145fa43ba30564a1d401104f786e01a8d`). CI PR runs `40246301997` y `40246304748`; CI post-merge `main` run [40246459998](https://github.com/autoaiorg/aao/actions/runs/40246459998); test y frontend success.
 
 Este incremento hace explícito el requisito funcional del CEO: **conversar primero; estructurar después las tareas acordadas desde la conversación; confirmar antes de crear trabajo**. No implementa autonomía ni pospone el piloto real de modelo.

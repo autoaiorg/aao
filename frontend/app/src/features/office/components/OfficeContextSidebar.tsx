@@ -26,68 +26,144 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
   const roomAgents = agents.filter((a) => a.unitId === selectedRoomId);
   const activeAgent = roomAgents.find((a) => a.id === selectedAgentId) || agents.find((a) => a.id === selectedAgentId);
 
+  // Derived metrics for room
+  const executingAgentsCount = roomAgents.filter(
+    (a) => a.currentAssignments.some((asg) => asg.status === 'ACTIVE' && asg.taskId)
+  ).length;
+  const connectedAgentsCount = roomAgents.filter((a) => a.heartbeatStatus === 'HEALTHY').length;
+
   return (
     <aside
       aria-label="Panel contextual de departamento y agentes"
       style={{
         display: 'flex',
         flexDirection: 'column',
-        gap: '16px',
-        backgroundColor: 'var(--bg-surface, #0f172a)',
-        border: '1px solid var(--border-subtle, #334155)',
-        borderRadius: '16px',
-        padding: '20px',
+        gap: 'var(--space-4, 16px)',
+        backgroundColor: 'var(--bg-surface)',
+        border: '1px solid var(--border-subtle)',
+        borderRadius: 'var(--radius-lg, 16px)',
+        padding: 'var(--space-4, 18px)',
         minHeight: '520px',
+        boxShadow: 'var(--shadow-sm)',
       }}
     >
       {/* 1. Department Overview Header */}
-      <div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span
             style={{
               padding: '2px 8px',
-              borderRadius: '4px',
+              borderRadius: 'var(--radius-sm, 4px)',
               backgroundColor: roomConfig.color,
               color: '#ffffff',
               fontSize: '11px',
               fontWeight: 700,
+              letterSpacing: '0.5px',
             }}
           >
             {roomConfig.code}
           </span>
-          <span style={{ fontSize: '11px', color: '#94a3b8' }}>
-            {roomAgents.length} agentes {isDemo ? 'simulados' : 'registrados'}
+          <span
+            style={{
+              fontSize: '11px',
+              color: 'var(--text-muted)',
+              fontWeight: 500,
+            }}
+          >
+            {isDemo ? (
+              <span style={{ color: 'var(--status-warning-text)', fontWeight: 600 }}>
+                [DEMO] {roomAgents.length} simulados
+              </span>
+            ) : (
+              <span>{roomAgents.length} registrados</span>
+            )}
           </span>
         </div>
 
-        <h3 style={{ margin: '4px 0 6px 0', fontSize: '17px', fontWeight: 700, color: '#f8fafc' }}>
+        <h3
+          style={{
+            margin: '2px 0 0 0',
+            fontSize: '17px',
+            fontWeight: 700,
+            color: 'var(--text-primary)',
+            lineHeight: 1.3,
+          }}
+        >
           {unit?.name || roomConfig.name}
         </h3>
 
-        <div style={{ fontSize: '12px', color: '#38bdf8', fontWeight: 600, marginBottom: '8px' }}>
+        <div style={{ fontSize: '12px', color: 'var(--accent)', fontWeight: 600 }}>
           Responsable: {unit?.leadRole || 'Líder de Unidad'}
         </div>
 
-        <p style={{ margin: '0 0 12px 0', fontSize: '12px', color: '#94a3b8', lineHeight: 1.5 }}>
+        <p
+          style={{
+            margin: '0',
+            fontSize: '12px',
+            color: 'var(--text-secondary)',
+            lineHeight: 1.5,
+          }}
+        >
           {unit?.description || 'Departamento operativo de la organización digital autónoma.'}
         </p>
 
+        {/* Operational Indicators Row */}
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(3, 1fr)',
+            gap: '6px',
+            marginTop: '4px',
+            padding: '8px 10px',
+            backgroundColor: 'var(--bg-muted)',
+            border: '1px solid var(--border-subtle)',
+            borderRadius: 'var(--radius-md, 8px)',
+            textAlign: 'center',
+          }}
+        >
+          <div>
+            <div style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)' }}>
+              {roomAgents.length}
+            </div>
+            <div style={{ fontSize: '10px', color: 'var(--text-muted)', fontWeight: 500 }}>
+              Registrados
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: '14px', fontWeight: 700, color: 'var(--status-success-text)' }}>
+              {connectedAgentsCount}
+            </div>
+            <div style={{ fontSize: '10px', color: 'var(--text-muted)', fontWeight: 500 }}>
+              Conectados
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: '14px', fontWeight: 700, color: 'var(--accent)' }}>
+              {executingAgentsCount}
+            </div>
+            <div style={{ fontSize: '10px', color: 'var(--text-muted)', fontWeight: 500 }}>
+              Ejecutando
+            </div>
+          </div>
+        </div>
+
         {/* Cross-navigation shortcuts */}
-        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '4px' }}>
           <button
             type="button"
             disabled={!onNavigate}
             onClick={() => onNavigate?.('organization')}
             style={{
               flex: 1,
-              padding: '7px 10px',
-              borderRadius: '6px',
-              border: '1px solid #334155',
-              backgroundColor: '#1e293b',
-              color: '#f8fafc',
+              padding: '7px 8px',
+              borderRadius: 'var(--radius-md, 6px)',
+              border: '1px solid var(--border-subtle)',
+              backgroundColor: 'var(--bg-muted)',
+              color: 'var(--text-primary)',
               fontSize: '11px',
               fontWeight: 600,
               cursor: onNavigate ? 'pointer' : 'not-allowed',
+              opacity: onNavigate ? 1 : 0.6,
             }}
           >
             🏢 Ver Organigrama
@@ -98,14 +174,15 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
             onClick={() => onNavigate?.('kanban')}
             style={{
               flex: 1,
-              padding: '7px 10px',
-              borderRadius: '6px',
-              border: '1px solid #334155',
-              backgroundColor: '#1e293b',
-              color: '#f8fafc',
+              padding: '7px 8px',
+              borderRadius: 'var(--radius-md, 6px)',
+              border: '1px solid var(--border-subtle)',
+              backgroundColor: 'var(--bg-muted)',
+              color: 'var(--text-primary)',
               fontSize: '11px',
               fontWeight: 600,
               cursor: onNavigate ? 'pointer' : 'not-allowed',
+              opacity: onNavigate ? 1 : 0.6,
             }}
           >
             📋 Ver Tablero
@@ -116,14 +193,15 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
             onClick={() => onNavigate?.('projects')}
             style={{
               flex: 1,
-              padding: '7px 10px',
-              borderRadius: '6px',
-              border: '1px solid #334155',
-              backgroundColor: '#1e293b',
-              color: '#f8fafc',
+              padding: '7px 8px',
+              borderRadius: 'var(--radius-md, 6px)',
+              border: '1px solid var(--border-subtle)',
+              backgroundColor: 'var(--bg-muted)',
+              color: 'var(--text-primary)',
               fontSize: '11px',
               fontWeight: 600,
               cursor: onNavigate ? 'pointer' : 'not-allowed',
+              opacity: onNavigate ? 1 : 0.6,
             }}
           >
             📁 Proyectos
@@ -139,57 +217,140 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
           style={{
             display: 'flex',
             flexDirection: 'column',
-            gap: '12px',
-            padding: '16px',
-            backgroundColor: '#0a1628',
-            border: '1px solid #38bdf8',
-            borderRadius: '12px',
-            boxShadow: '0 0 16px rgba(56, 189, 248, 0.15)',
+            gap: 'var(--space-3, 12px)',
+            padding: 'var(--space-4, 16px)',
+            backgroundColor: 'var(--bg-muted)',
+            border: '2px solid var(--accent)',
+            borderRadius: 'var(--radius-lg, 12px)',
+            boxShadow: 'var(--shadow-md)',
           }}
         >
-          {/* Header */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          {/* Inspector Header */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px' }}>
             <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
                 <span
                   style={{
-                    padding: '2px 6px',
-                    borderRadius: '4px',
-                    backgroundColor: activeAgent.type === 'STANDING' ? '#1e40af' : '#0891b2',
-                    color: '#ffffff',
+                    padding: '2px 7px',
+                    borderRadius: 'var(--radius-sm, 4px)',
+                    backgroundColor: activeAgent.type === 'STANDING' ? 'var(--accent)' : 'var(--stage-in-review)',
+                    color: 'var(--text-inverse)',
                     fontSize: '10px',
                     fontWeight: 700,
                   }}
                 >
                   {activeAgent.type === 'STANDING' ? 'Plantilla Fija' : 'Agente Efímero'}
                 </span>
+
+                {/* Heartbeat Badge */}
                 <span
                   style={{
-                    padding: '2px 6px',
-                    borderRadius: '4px',
+                    padding: '2px 7px',
+                    borderRadius: 'var(--radius-sm, 4px)',
                     backgroundColor:
                       activeAgent.heartbeatStatus === 'HEALTHY'
-                        ? '#064e3b'
+                        ? 'var(--status-success-bg)'
                         : activeAgent.heartbeatStatus === 'STALE'
-                        ? '#713f12'
-                        : '#334155',
+                        ? 'var(--status-warning-bg)'
+                        : 'var(--bg-subtle)',
                     color:
                       activeAgent.heartbeatStatus === 'HEALTHY'
-                        ? '#34d399'
+                        ? 'var(--status-success-text)'
                         : activeAgent.heartbeatStatus === 'STALE'
-                        ? '#fef08a'
-                        : '#cbd5e1',
+                        ? 'var(--status-warning-text)'
+                        : 'var(--text-secondary)',
+                    border:
+                      activeAgent.heartbeatStatus === 'HEALTHY'
+                        ? '1px solid var(--status-success-border)'
+                        : activeAgent.heartbeatStatus === 'STALE'
+                        ? '1px solid var(--status-warning-border)'
+                        : '1px solid var(--border-subtle)',
                     fontSize: '10px',
                     fontWeight: 700,
                   }}
                 >
-                  {activeAgent.heartbeatStatus}
+                  {activeAgent.heartbeatStatus === 'HEALTHY'
+                    ? '● Conectado'
+                    : activeAgent.heartbeatStatus === 'STALE'
+                    ? '▲ Latido Vencido'
+                    : '○ Telemetría Desconocida'}
                 </span>
+
+                {/* Operational Execution Badge */}
+                {activeAgent.currentAssignments.some((asg) => asg.status === 'ACTIVE' && asg.taskId) ? (
+                  <span
+                    style={{
+                      padding: '2px 7px',
+                      borderRadius: 'var(--radius-sm, 4px)',
+                      backgroundColor: 'var(--status-info-bg)',
+                      color: 'var(--status-info-text)',
+                      border: '1px solid var(--status-info-border)',
+                      fontSize: '10px',
+                      fontWeight: 700,
+                    }}
+                  >
+                    ⚡ Ejecutando Tarea
+                  </span>
+                ) : activeAgent.currentAssignments.length > 0 ? (
+                  <span
+                    style={{
+                      padding: '2px 7px',
+                      borderRadius: 'var(--radius-sm, 4px)',
+                      backgroundColor: 'var(--bg-subtle)',
+                      color: 'var(--text-secondary)',
+                      fontSize: '10px',
+                      fontWeight: 600,
+                    }}
+                  >
+                    📋 Asignado
+                  </span>
+                ) : (
+                  <span
+                    style={{
+                      padding: '2px 7px',
+                      borderRadius: 'var(--radius-sm, 4px)',
+                      backgroundColor: 'var(--bg-subtle)',
+                      color: 'var(--text-muted)',
+                      fontSize: '10px',
+                      fontWeight: 600,
+                    }}
+                  >
+                    📁 Registrado (En espera)
+                  </span>
+                )}
+
+                {/* DEMO Tag */}
+                {(isDemo || activeAgent.isSyntheticDemo) && (
+                  <span
+                    style={{
+                      padding: '2px 6px',
+                      borderRadius: 'var(--radius-sm, 4px)',
+                      backgroundColor: 'var(--status-demo-bg)',
+                      color: 'var(--status-demo-text)',
+                      border: '1px solid var(--status-demo-border)',
+                      fontSize: '10px',
+                      fontWeight: 700,
+                    }}
+                  >
+                    DEMO SIMULADO
+                  </span>
+                )}
               </div>
-              <h4 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: '#f8fafc' }}>
+
+              <h4
+                style={{
+                  margin: '2px 0 2px 0',
+                  fontSize: '15px',
+                  fontWeight: 700,
+                  color: 'var(--text-primary)',
+                  lineHeight: 1.3,
+                }}
+              >
                 {activeAgent.name}
               </h4>
-              <div style={{ fontSize: '12px', color: '#94a3b8' }}>{activeAgent.roleTitle}</div>
+              <div style={{ fontSize: '12px', color: 'var(--text-secondary)', fontWeight: 500 }}>
+                {activeAgent.roleTitle}
+              </div>
             </div>
 
             <button
@@ -199,68 +360,87 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
               style={{
                 background: 'transparent',
                 border: 'none',
-                color: '#94a3b8',
+                color: 'var(--text-muted)',
                 cursor: 'pointer',
-                fontSize: '16px',
-                padding: '2px 6px',
+                fontSize: '18px',
+                padding: '4px 8px',
+                borderRadius: 'var(--radius-sm, 4px)',
+                lineHeight: 1,
               }}
             >
               ✕
             </button>
           </div>
 
-          {/* Telemetry info */}
+          {/* Telemetry & Evidence Info */}
           <div
             style={{
-              padding: '8px 10px',
-              backgroundColor: '#1e293b',
-              borderRadius: '6px',
+              padding: '9px 12px',
+              backgroundColor: 'var(--bg-surface)',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: 'var(--radius-md, 8px)',
               fontSize: '11px',
-              color: '#cbd5e1',
-              lineHeight: 1.4,
+              color: 'var(--text-secondary)',
+              lineHeight: 1.45,
             }}
           >
             <div>
-              <strong style={{ color: '#f8fafc' }}>Latido comprobado: </strong>
+              <strong style={{ color: 'var(--text-primary)' }}>Comprobación de presencia: </strong>
               <span>
                 {activeAgent.lastHeartbeatAt
                   ? new Date(activeAgent.lastHeartbeatAt).toLocaleTimeString()
-                  : 'Sin registro comprobable'}
+                  : 'Sin latido en tiempo real comprobado'}
               </span>
             </div>
-            <div style={{ color: '#94a3b8', fontSize: '10px', marginTop: '2px' }}>
+            <div style={{ color: 'var(--text-muted)', fontSize: '10px', marginTop: '3px' }}>
               {isDemo
-                ? 'Telemetría simulada localmente en modo demostración.'
-                : 'En LIVE, la ausencia de latido indica que el agente no está conectado.'}
+                ? 'Telemetría generada sintéticamente en modo DEMO.'
+                : 'En LIVE, la presencia se restringe a telemetría verificada sin inferir actividad.'}
             </div>
           </div>
 
           {/* Authority Boundary */}
           <div>
-            <div style={{ fontSize: '11px', fontWeight: 600, color: '#94a3b8', marginBottom: '2px' }}>
+            <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '3px' }}>
               Límite de Autoridad:
             </div>
-            <div style={{ fontSize: '12px', color: '#e2e8f0', lineHeight: 1.4 }}>
+            <div
+              style={{
+                fontSize: '12px',
+                color: 'var(--text-primary)',
+                lineHeight: 1.45,
+                backgroundColor: 'var(--bg-surface)',
+                border: '1px solid var(--border-subtle)',
+                borderRadius: 'var(--radius-md, 6px)',
+                padding: '8px 10px',
+              }}
+            >
               {activeAgent.authorityBoundary}
             </div>
           </div>
 
           {/* Capabilities */}
           <div>
-            <div style={{ fontSize: '11px', fontWeight: 600, color: '#94a3b8', marginBottom: '4px' }}>
-              Capacidades ({activeAgent.capabilities.length}):
+            <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px' }}>
+              Capacidades Certificadas ({activeAgent.capabilities.length}):
             </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
               {activeAgent.capabilities.map((c) => (
                 <span
                   key={c.id}
                   style={{
-                    padding: '2px 6px',
-                    borderRadius: '4px',
-                    backgroundColor: '#1e293b',
-                    border: '1px solid #334155',
-                    color: c.level === 'CERTIFIED' ? '#34d399' : '#e2e8f0',
+                    padding: '3px 8px',
+                    borderRadius: 'var(--radius-sm, 4px)',
+                    backgroundColor:
+                      c.level === 'CERTIFIED' ? 'var(--status-success-bg)' : 'var(--bg-surface)',
+                    border:
+                      c.level === 'CERTIFIED'
+                        ? '1px solid var(--status-success-border)'
+                        : '1px solid var(--border-subtle)',
+                    color:
+                      c.level === 'CERTIFIED' ? 'var(--status-success-text)' : 'var(--text-primary)',
                     fontSize: '10px',
+                    fontWeight: 500,
                   }}
                 >
                   {c.name} {c.verified ? '✓' : ''}
@@ -269,43 +449,57 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
             </div>
           </div>
 
-          {/* Assignments */}
-          {activeAgent.currentAssignments.length > 0 && (
-            <div>
-              <div style={{ fontSize: '11px', fontWeight: 600, color: '#94a3b8', marginBottom: '4px' }}>
-                Asignación Activa:
+          {/* Active Assignments */}
+          <div>
+            <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '5px' }}>
+              Asignación Operativa:
+            </div>
+            {activeAgent.currentAssignments.length === 0 ? (
+              <div
+                style={{
+                  padding: '8px 10px',
+                  backgroundColor: 'var(--bg-surface)',
+                  border: '1px dashed var(--border-subtle)',
+                  borderRadius: 'var(--radius-md, 6px)',
+                  fontSize: '11px',
+                  color: 'var(--text-muted)',
+                }}
+              >
+                Sin tareas asignadas en este momento.
               </div>
-              {activeAgent.currentAssignments.map((asg) => (
+            ) : (
+              activeAgent.currentAssignments.map((asg) => (
                 <div
                   key={asg.id}
                   style={{
-                    padding: '8px',
-                    backgroundColor: '#1e293b',
-                    borderRadius: '6px',
-                    border: '1px solid #334155',
+                    padding: '10px 12px',
+                    backgroundColor: 'var(--bg-surface)',
+                    borderRadius: 'var(--radius-md, 6px)',
+                    border: '1px solid var(--border-subtle)',
                     fontSize: '11px',
                     display: 'flex',
                     flexDirection: 'column',
-                    gap: '2px',
+                    gap: '3px',
                   }}
                 >
-                  <strong style={{ color: '#38bdf8' }}>{asg.projectName}</strong>
-                  {asg.taskTitle && <span style={{ color: '#f8fafc' }}>{asg.taskTitle}</span>}
-                  {asg.leaseExpiresAt && (
-                    <span style={{ fontSize: '10px', color: '#94a3b8' }}>
-                      Lease hasta: {new Date(asg.leaseExpiresAt).toLocaleTimeString()}
-                    </span>
-                  )}
+                  <strong style={{ color: 'var(--accent)', fontSize: '12px' }}>{asg.projectName}</strong>
+                  {asg.taskTitle && <span style={{ color: 'var(--text-primary)' }}>{asg.taskTitle}</span>}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                    <span>Asignado: {new Date(asg.assignedAt).toLocaleDateString()}</span>
+                    {asg.leaseExpiresAt && (
+                      <span>Lease: {new Date(asg.leaseExpiresAt).toLocaleTimeString()}</span>
+                    )}
+                  </div>
                 </div>
-              ))}
-            </div>
-          )}
+              ))
+            )}
+          </div>
         </div>
       ) : (
         /* 3. Room Agents List */
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: '12px', fontWeight: 600, color: '#cbd5e1' }}>
+            <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>
               Agentes en este departamento ({roomAgents.length})
             </span>
           </div>
@@ -313,13 +507,13 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
           {roomAgents.length === 0 ? (
             <div
               style={{
-                padding: '16px',
+                padding: '18px 12px',
                 textAlign: 'center',
-                backgroundColor: '#0a1628',
-                borderRadius: '8px',
-                border: '1px dashed #334155',
+                backgroundColor: 'var(--bg-muted)',
+                borderRadius: 'var(--radius-md, 8px)',
+                border: '1px dashed var(--border-subtle)',
                 fontSize: '12px',
-                color: '#94a3b8',
+                color: 'var(--text-muted)',
               }}
             >
               No hay agentes asignados a este departamento.
@@ -327,9 +521,9 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '280px', overflowY: 'auto' }}>
               {roomAgents.map((agent) => {
-                let dotColor = '#64748b';
-                if (agent.heartbeatStatus === 'HEALTHY') dotColor = '#22c55e';
-                else if (agent.heartbeatStatus === 'STALE') dotColor = '#eab308';
+                let dotColor = '#64748b'; // UNKNOWN
+                if (agent.heartbeatStatus === 'HEALTHY') dotColor = '#10b981';
+                else if (agent.heartbeatStatus === 'STALE') dotColor = '#f59e0b';
                 else if (agent.heartbeatStatus === 'UNAVAILABLE') dotColor = '#ef4444';
 
                 return (
@@ -342,13 +536,14 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
                       alignItems: 'center',
                       justifyContent: 'space-between',
                       padding: '8px 12px',
-                      borderRadius: '8px',
-                      backgroundColor: '#1e293b',
-                      border: '1px solid #334155',
-                      color: '#f8fafc',
+                      borderRadius: 'var(--radius-md, 8px)',
+                      backgroundColor: 'var(--bg-muted)',
+                      border: '1px solid var(--border-subtle)',
+                      color: 'var(--text-primary)',
                       cursor: 'pointer',
                       textAlign: 'left',
                       fontSize: '12px',
+                      transition: 'all 0.15s ease',
                     }}
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -358,15 +553,18 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
                           height: '8px',
                           borderRadius: '50%',
                           backgroundColor: dotColor,
+                          flexShrink: 0,
                         }}
                         aria-hidden="true"
                       />
                       <div>
-                        <div style={{ fontWeight: 600 }}>{agent.name}</div>
-                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>{agent.roleTitle}</div>
+                        <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{agent.name}</div>
+                        <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{agent.roleTitle}</div>
                       </div>
                     </div>
-                    <span style={{ fontSize: '11px', color: '#38bdf8' }}>Ficha →</span>
+                    <span style={{ fontSize: '11px', color: 'var(--accent)', fontWeight: 600, flexShrink: 0 }}>
+                      Ficha →
+                    </span>
                   </button>
                 );
               })}

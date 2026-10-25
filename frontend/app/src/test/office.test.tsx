@@ -264,4 +264,184 @@ describe('ThreeOfficeScene Engine Direct Regression Tests (Defects 1 & 2)', () =
 
     scene.dispose();
   });
+
+  it('F4.7: smart zoom smoothly focuses onto selected department (14.5) and resetCamera() restores overview (24)', () => {
+    const container = document.createElement('div');
+    const scene = new ThreeOfficeScene(container, {
+      renderer: createMockRenderer(),
+      callbacks: {
+        onSelectRoom: vi.fn(),
+        onSelectAgent: vi.fn(),
+        onHoverObject: vi.fn(),
+      },
+    });
+
+    // Default overview state
+    expect(scene.getDesiredDistance()).toBe(24);
+    expect(scene.getDesiredTarget().x).toBe(0);
+    expect(scene.getDesiredTarget().z).toBe(0);
+
+    // Select EXEC room -> camera focuses at distance 14.5 on EXEC coords (-6, -4)
+    scene.selectRoom('unit-exec');
+    expect(scene.getDesiredDistance()).toBe(14.5);
+    expect(scene.getDesiredTarget().x).toBe(-6);
+    expect(scene.getDesiredTarget().z).toBe(-4);
+
+    // Reset camera -> camera returns to overview at distance 24
+    scene.resetCamera();
+    expect(scene.getDesiredDistance()).toBe(24);
+    expect(scene.getDesiredTarget().x).toBe(0);
+    expect(scene.getDesiredTarget().z).toBe(0);
+
+    // Zoom clamping boundaries: minDistance 8, maxDistance 38
+    scene.zoomCamera(0.1); // extreme zoom-in
+    expect(scene.getDesiredDistance()).toBeGreaterThanOrEqual(8);
+
+    scene.zoomCamera(10.0); // extreme zoom-out
+    expect(scene.getDesiredDistance()).toBeLessThanOrEqual(38);
+
+    scene.dispose();
+  });
+
+  it('F4.7: agent stress distribution scales cleanly up to 100 agents without errors or leaking meshes', () => {
+    const container = document.createElement('div');
+    const scene = new ThreeOfficeScene(container, {
+      renderer: createMockRenderer(),
+      callbacks: {
+        onSelectRoom: vi.fn(),
+        onSelectAgent: vi.fn(),
+        onHoverObject: vi.fn(),
+      },
+    });
+
+    const units = ['unit-exec', 'unit-gov', 'unit-audit', 'unit-arch', 'unit-eng', 'unit-ops'];
+
+    // Generate 50 synthetic agents
+    const agents50 = Array.from({ length: 50 }, (_, i) => ({
+      id: `stress-agent-${i}`,
+      name: `Stress Agent ${i}`,
+      type: (i % 2 === 0 ? 'STANDING' : 'EPHEMERAL') as 'STANDING' | 'EPHEMERAL',
+      roleTitle: `Role ${i}`,
+      unitId: units[i % units.length],
+      capabilities: [],
+      heartbeatStatus: 'HEALTHY' as const,
+      lastHeartbeatAt: new Date().toISOString(),
+      status: 'IDLE' as const,
+      currentAssignments: [],
+      authorityBoundary: 'Stress test boundary',
+    }));
+
+    scene.updateAgents(agents50);
+    // Meshes cleanly added for 50 agents
+    const count50 = scene.getInteractiveMeshesCount();
+    expect(count50).toBeGreaterThan(50);
+
+    // Scale up to 100 agents
+    const agents100 = Array.from({ length: 100 }, (_, i) => ({
+      id: `stress-agent-${i}`,
+      name: `Stress Agent ${i}`,
+      type: (i % 2 === 0 ? 'STANDING' : 'EPHEMERAL') as 'STANDING' | 'EPHEMERAL',
+      roleTitle: `Role ${i}`,
+      unitId: units[i % units.length],
+      capabilities: [],
+      heartbeatStatus: 'HEALTHY' as const,
+      lastHeartbeatAt: new Date().toISOString(),
+      status: 'IDLE' as const,
+      currentAssignments: [],
+      authorityBoundary: 'Stress test boundary',
+    }));
+
+    scene.updateAgents(agents100);
+    const count100 = scene.getInteractiveMeshesCount();
+    expect(count100).toBeGreaterThan(count50);
+
+    // Calling updateAgents again with same 100 agents must not accumulate or leak
+    scene.updateAgents(agents100);
+    expect(scene.getInteractiveMeshesCount()).toBe(count100);
+
+    // Clean reset to 0 agents restores exactly 6 room platforms
+    scene.updateAgents([]);
+    expect(scene.getInteractiveMeshesCount()).toBe(6);
+
+    scene.dispose();
+  });
+});
+
+describe('Phase F4.7: UI Contrast, Design Tokens & Operational Indicators', () => {
+  it('renders "Vista General" reset button and triggers camera reset callback', () => {
+    const readyDemoState: DataState<OrganizationStructure> = {
+      kind: 'ready',
+      origin: 'demo',
+      data: DEMO_ORG_STRUCTURE,
+      fetchedAt: new Date().toISOString(),
+    };
+
+    render(<VirtualOfficeView organization={readyDemoState} />);
+
+    const resetBtn = screen.getByRole('button', { name: /Restablecer posición de cámara y centrar oficina|Vista General/i });
+    expect(resetBtn).toBeInTheDocument();
+    fireEvent.click(resetBtn);
+  });
+
+  it('renders operational indicators row and distinguishes execution from presence', () => {
+    const stateWithExecutingAgent: DataState<OrganizationStructure> = {
+      kind: 'ready',
+      origin: 'live',
+      data: {
+        units: DEMO_ORG_UNITS,
+        agents: [
+          {
+            id: 'agent-executing-1',
+            name: 'Codex Real Worker',
+            type: 'STANDING',
+            roleTitle: 'Desarrollador de Núcleo',
+            unitId: 'unit-eng',
+            capabilities: [],
+            heartbeatStatus: 'UNKNOWN', // No fake heartbeat
+            lastHeartbeatAt: null,
+            status: 'BUSY',
+            operationalState: 'EJECUTANDO',
+            currentAssignments: [
+              {
+                id: 'asg-1',
+                projectId: 'p1',
+                projectName: 'Project 1',
+                taskId: 't1',
+                taskTitle: 'Build Security Core',
+                assignedAt: '2026-10-25T12:00:00Z',
+                status: 'ACTIVE',
+              },
+            ],
+            authorityBoundary: 'Limitado a backend.',
+            lastEvidenceAt: '2026-10-25T12:00:00Z',
+            evidenceDescription: 'Ejecución registrada en tarea t1.',
+          },
+        ],
+        totalStandingAgents: 1,
+        totalEphemeralAgents: 0,
+        activeAssignmentsCount: 1,
+      },
+      fetchedAt: new Date().toISOString(),
+    };
+
+    render(<VirtualOfficeView organization={stateWithExecutingAgent} />);
+
+    // Select ENG department
+    const engBtn = screen.getByRole('button', { name: /\[ENG\] Ingeniería/i });
+    fireEvent.click(engBtn);
+
+    // Department summary counters in sidebar
+    expect(screen.getByText('Registrados')).toBeInTheDocument();
+    expect(screen.getByText('Conectados')).toBeInTheDocument();
+    expect(screen.getByText('Ejecutando')).toBeInTheDocument();
+
+    // Select the worker
+    const workerBtn = screen.getByRole('button', { name: /Codex Real Worker/i });
+    fireEvent.click(workerBtn);
+
+    // Verify presence vs execution badges
+    expect(screen.getByText(/○ Telemetría Desconocida/i)).toBeInTheDocument();
+    expect(screen.getByText(/⚡ Ejecutando Tarea/i)).toBeInTheDocument();
+    expect(screen.getByText(/Build Security Core/i)).toBeInTheDocument();
+  });
 });

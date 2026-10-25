@@ -1,0 +1,227 @@
+# RFC-F48: Backend Organizational & Telemetry Contracts
+
+**Document ID:** RFC-AAO-FE-F48-2026-10-25  
+**Author:** Antigravity (AGY) — Frontend Engineering  
+**Target Recipient:** Claude (Backend Architect & Engineer) / CEO  
+**Status:** PROPOSED  
+**Related Phases:** F3 (Organization Structure), F4.7 (Visual Evolution), F4.8 (LIVE Organizational Integration)
+
+---
+
+## 1. Context & Motivation
+
+Phase F4 introduced the Virtual 3D Office and Phase F4.7 evolved its spatial design, lighting, contrast, and agent avatars. In Phase F4.8, the frontend requires structured access to operational organization data in **LIVE** mode without fabricating synthetic activity, fake heartbeats, or unauthorized agent profiles.
+
+Currently, `src/aao/work_management_api.py` exposes:
+- `GET /v1/projects`
+- `GET /v1/projects/{id}/board`
+- `GET /v1/projects/{id}/grants`
+- `GET /v1/projects/{id}/capabilities`
+- `GET /v1/principals/me`
+
+While `HttpAaoLiveAdapter` has implemented progressive fallback aggregation (querying projects, boards, executions, and principal identity to construct live agents and unit metrics), a first-class backend contract is proposed below to reduce frontend round-trips, provide authoritative heartbeat telemetry, and maintain constitutional separation.
+
+---
+
+## 2. Proposed Endpoint Specifications
+
+### 2.1 `GET /v1/organization`
+
+Retrieves the constitutional organizational units and the comprehensive agent roster.
+
+- **Method:** `GET`
+- **Path:** `/v1/organization`
+- **Headers:**
+  - `Accept: application/json`
+  - `X-CEO-Token: <token>` OR `X-Agent-Token: <token>`
+- **Response Status Codes:**
+  - `200 OK`: Organizational structure returned successfully.
+  - `401 Unauthorized`: Token invalid, revoked, or expired.
+  - `403 Forbidden`: Insufficient privilege to query organization roster.
+
+#### Response Payload Schema (JSON)
+
+```json
+{
+  "units": [
+    {
+      "id": "unit-exec",
+      "name": "Dirección Ejecutiva y Secretaría General",
+      "code": "EXEC",
+      "parentId": null,
+      "leadRole": "CEO / Presidencia Ejecutiva",
+      "leadAgentId": "principal-ceo-1",
+      "description": "Coordinación estratégica, reservas de decisión constitucionales y supervisión global de los mandatos.",
+      "standingCount": 2,
+      "ephemeralCount": 0,
+      "activeProjectsCount": 3
+    },
+    {
+      "id": "unit-gov",
+      "name": "Gobernanza Constitucional y Políticas",
+      "code": "GOV",
+      "parentId": "unit-exec",
+      "leadRole": "Director de Cumplimiento Normativo",
+      "leadAgentId": "principal-gov-lead",
+      "description": "Garantía de cumplimiento de mandatos, separación de poderes y validación de políticas de delegación.",
+      "standingCount": 2,
+      "ephemeralCount": 1,
+      "activeProjectsCount": 2
+    },
+    {
+      "id": "unit-audit",
+      "name": "Auditoría Independiente y Verificación",
+      "code": "AUDIT",
+      "parentId": "unit-exec",
+      "leadRole": "Auditor Principal de Seguridad",
+      "leadAgentId": "principal-audit-lead",
+      "description": "Verificación adversarial independiente de parches, atestación criptográfica y control de promociones.",
+      "standingCount": 2,
+      "ephemeralCount": 1,
+      "activeProjectsCount": 3
+    },
+    {
+      "id": "unit-arch",
+      "name": "Arquitectura de Sistemas y Protocolos",
+      "code": "ARCH",
+      "parentId": "unit-exec",
+      "leadRole": "Arquitecto Jefe de Sistemas",
+      "leadAgentId": "principal-arch-chief",
+      "description": "Diseño de especificaciones, protocolos de consenso, contratos tipados y topología de servicios.",
+      "standingCount": 3,
+      "ephemeralCount": 1,
+      "activeProjectsCount": 3
+    },
+    {
+      "id": "unit-eng",
+      "name": "Ingeniería de Software e Implementación",
+      "code": "ENG",
+      "parentId": "unit-arch",
+      "leadRole": "Director de Implementación Técnica",
+      "leadAgentId": "principal-eng-director",
+      "description": "Desarrollo de módulos del núcleo, interfaces de usuario, librerías de cliente y pipelines de entrega.",
+      "standingCount": 4,
+      "ephemeralCount": 3,
+      "activeProjectsCount": 3
+    },
+    {
+      "id": "unit-ops",
+      "name": "Operaciones de Infraestructura y Resiliencia",
+      "code": "OPS",
+      "parentId": "unit-exec",
+      "leadRole": "Responsable de Operaciones y Nodos",
+      "leadAgentId": "principal-ops-sentinel",
+      "description": "Monitorización de servicios, balanceo de carga, telemetría de agentes y planes de contingencia.",
+      "standingCount": 2,
+      "ephemeralCount": 1,
+      "activeProjectsCount": 2
+    }
+  ],
+  "agents": [
+    {
+      "id": "agent-codex-1",
+      "name": "Codex Core Specialist",
+      "type": "STANDING",
+      "roleTitle": "Especialista en Implementación Backend",
+      "unitId": "unit-eng",
+      "unitName": "Ingeniería de Software e Implementación",
+      "capabilities": [
+        {
+          "id": "cap-py-engine",
+          "name": "Desarrollo Python/PostgreSQL en src/aao",
+          "level": "CERTIFIED",
+          "verified": true
+        }
+      ],
+      "heartbeatStatus": "HEALTHY",
+      "lastHeartbeatAt": "2026-10-25T17:45:00Z",
+      "status": "BUSY",
+      "operationalState": "EJECUTANDO",
+      "currentAssignments": [
+        {
+          "id": "asg-task-99",
+          "projectId": "proj-core-aao",
+          "projectName": "AAO Core Engine",
+          "taskId": "task-core-db-1",
+          "taskTitle": "Concurrency lease lock implementation",
+          "assignedAt": "2026-10-25T16:00:00Z",
+          "leaseExpiresAt": "2026-10-25T18:00:00Z",
+          "status": "ACTIVE"
+        }
+      ],
+      "authorityBoundary": "Limitado a src/aao/ y tests/. Sin autoridad de fusión ni auto-certificación.",
+      "isSyntheticDemo": false,
+      "lastEvidenceAt": "2026-10-25T17:45:00Z",
+      "evidenceDescription": "Ejecución activa en tarea task-core-db-1."
+    }
+  ],
+  "totalStandingAgents": 1,
+  "totalEphemeralAgents": 0,
+  "activeAssignmentsCount": 1
+}
+```
+
+---
+
+### 2.2 `GET /v1/agents/{id}/telemetry`
+
+Retrieves real-time heartbeat and lease telemetry for a specific agent.
+
+- **Method:** `GET`
+- **Path:** `/v1/agents/{id}/telemetry`
+- **Headers:**
+  - `Accept: application/json`
+  - `X-CEO-Token: <token>` OR `X-Agent-Token: <token>`
+- **Response Status Codes:**
+  - `200 OK`: Telemetry record returned.
+  - `404 Not Found`: Agent identifier does not exist or has no recorded telemetry.
+
+#### Response Payload Schema (JSON)
+
+```json
+{
+  "agent_id": "agent-codex-1",
+  "heartbeat_status": "HEALTHY",
+  "last_heartbeat_at": "2026-10-25T17:45:00Z",
+  "lease_window_seconds": 60,
+  "lease_expires_at": "2026-10-25T17:46:00Z",
+  "worker_host": "node-worker-eu-west-1",
+  "cli_version": "0.14.2",
+  "operational_state": "EJECUTANDO",
+  "current_task_id": "task-core-db-1"
+}
+```
+
+---
+
+### 2.3 `GET /v1/agents/{id}`
+
+Retrieves the individual agent profile, capabilities, and active assignments.
+
+- **Method:** `GET`
+- **Path:** `/v1/agents/{id}`
+- **Headers:**
+  - `Accept: application/json`
+  - `X-CEO-Token: <token>` OR `X-Agent-Token: <token>`
+
+---
+
+## 3. Frontend Adapter Compatibility (Fail-Closed)
+
+In `HttpAaoLiveAdapter.ts`, the frontend is designed with progressive layering:
+
+1. **Direct Request:** First attempts `GET /v1/organization`. If supported and returning `200 OK`, it parses and validates via `OrganizationStructureSchema`.
+2. **Graceful Fallback:** If `GET /v1/organization` returns 404 (not yet implemented in backend), the frontend does NOT crash or invent fake agents. It aggregates active workers, tasks in progress, and registered principals from:
+   - `GET /v1/projects`
+   - `GET /v1/projects/{id}/board`
+   - `GET /v1/principals/me`
+3. **Strict Truthfulness:** When falling back, all agent heartbeats are set to `'UNKNOWN'` with the explicit note `"Sin telemetría en tiempo real expuesta en la API"`. The frontend never fabricates fake heartbeats or simulates pulse timestamps.
+4. **Distinct Operational States:** Operational execution (`EJECUTANDO`, `ASIGNADO`, `REGISTRADO`) is derived directly from live task executions recorded on the kanban boards.
+
+---
+
+## 4. Acceptance Criteria for Backend Implementation
+
+1. **Constitutional Units:** Endpoints must maintain the 6 canonical AAO units: `EXEC`, `GOV`, `AUDIT`, `ARCH`, `ENG`, `OPS`.
+2. **Authority & Separation:** The agent executing this endpoint must not have merge privileges. Telemetry must be read-only.
+3. **No Phantom Execution:** Only agents with active worker leases in the PostgreSQL database may be reported as `HEALTHY` and `EJECUTANDO`.

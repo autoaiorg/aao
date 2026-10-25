@@ -77,17 +77,17 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
       style={{
         display: 'flex',
         flexDirection: 'column',
-        gap: '20px',
+        gap: 'var(--space-5, 20px)',
       }}
     >
       {/* 1. Header with Status Banner */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2, 8px)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '12px' }}>
           <div>
-            <h2 style={{ margin: '0 0 4px 0', fontSize: '22px', fontWeight: 700, color: 'var(--text-primary, #f8fafc)' }}>
+            <h2 style={{ margin: '0 0 4px 0', fontSize: '22px', fontWeight: 700, color: 'var(--text-primary)' }}>
               Oficina Virtual 3D · AAO
             </h2>
-            <p style={{ margin: 0, fontSize: '13px', color: 'var(--text-secondary, #94a3b8)' }}>
+            <p style={{ margin: 0, fontSize: '13px', color: 'var(--text-secondary)' }}>
               Entorno espacial tridimensional para la inspección visual de departamentos, puestos y telemetría de agentes.
             </p>
           </div>
@@ -98,13 +98,14 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
               onClick={onRefresh}
               style={{
                 padding: '8px 14px',
-                borderRadius: '8px',
-                border: '1px solid #334155',
-                backgroundColor: '#1e293b',
-                color: '#f8fafc',
+                borderRadius: 'var(--radius-md, 8px)',
+                border: '1px solid var(--border-subtle)',
+                backgroundColor: 'var(--bg-surface)',
+                color: 'var(--text-primary)',
                 fontSize: '12px',
                 fontWeight: 600,
                 cursor: 'pointer',
+                boxShadow: 'var(--shadow-sm)',
               }}
             >
               ↻ Actualizar
@@ -112,23 +113,38 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
           )}
         </div>
 
-        {/* Status Callout Banner */}
+        {/* Status Callout Banner with WCAG 2.2 AA Contrast */}
         <div
           role="status"
           style={{
-            padding: '10px 16px',
-            borderRadius: '8px',
-            backgroundColor: isDemo ? 'rgba(234, 179, 8, 0.12)' : data ? 'rgba(59, 130, 246, 0.12)' : 'rgba(100, 116, 139, 0.12)',
-            border: isDemo ? '1px solid rgba(234, 179, 8, 0.3)' : data ? '1px solid rgba(59, 130, 246, 0.3)' : '1px solid rgba(100, 116, 139, 0.3)',
-            color: isDemo ? '#fef08a' : data ? '#93c5fd' : '#cbd5e1',
+            padding: '12px 16px',
+            borderRadius: 'var(--radius-md, 8px)',
+            backgroundColor: isDemo
+              ? 'var(--status-demo-bg)'
+              : data
+              ? 'var(--status-info-bg)'
+              : 'var(--status-warning-bg)',
+            border: isDemo
+              ? '1px solid var(--status-demo-border)'
+              : data
+              ? '1px solid var(--status-info-border)'
+              : '1px solid var(--status-warning-border)',
+            color: isDemo
+              ? 'var(--status-demo-text)'
+              : data
+              ? 'var(--status-info-text)'
+              : 'var(--status-warning-text)',
             fontSize: '12px',
             fontWeight: 600,
             display: 'flex',
             alignItems: 'center',
-            gap: '8px',
+            gap: '10px',
+            lineHeight: 1.45,
           }}
         >
-          <span aria-hidden="true">{isDemo ? '⚠' : data ? 'ℹ' : '🔒'}</span>
+          <span aria-hidden="true" style={{ fontSize: '15px' }}>
+            {isDemo ? '⚠' : data ? 'ℹ' : '🔒'}
+          </span>
           <span>
             {isDemo
               ? 'DEMO · SIMULACIÓN 3D ACTIVA · Todos los departamentos, agentes y asignaciones son sintéticos y no representan datos de producción.'
@@ -161,7 +177,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
         style={{
           display: 'grid',
           gridTemplateColumns: 'minmax(0, 1fr) 340px',
-          gap: '20px',
+          gap: 'var(--space-5, 20px)',
           alignItems: 'start',
         }}
       >

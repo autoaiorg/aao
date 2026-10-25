@@ -258,26 +258,128 @@ describe('MockAaoDemoAdapter Fixtures Isolation', () => {
   });
 });
 
-describe('HttpAaoLiveAdapter F3 Defensive Handling', () => {
-  it('returns unavailable state for organization structure since backend has no /v1/organization yet', async () => {
+describe('HttpAaoLiveAdapter F3 & F4.8 Live Aggregation Handling', () => {
+  it('progressively aggregates live organization from projects and boards when /v1/organization is absent', async () => {
     const live = new HttpAaoLiveAdapter({ getToken: () => 'test-token' });
+
+    // Mock fetch for /v1/organization (404), /v1/projects (200), /v1/principals/me (200), /v1/projects/proj-1/board (200)
+    vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.includes('/v1/organization')) {
+        return { status: 404, ok: false, json: async () => ({}) } as Response;
+      }
+      if (u.includes('/v1/principals/me')) {
+        return {
+          status: 200,
+          ok: true,
+          json: async () => ({
+            principal_id: 'ceo-user',
+            kind: 'CEO',
+            auth_method: 'token',
+            enabled: true,
+            grants: [{ project_id: 'proj-1', capability: 'MANDATE_APPROVE', expires_at: null, active: true }],
+          }),
+        } as Response;
+      }
+      if (u.endsWith('/v1/projects')) {
+        return {
+          status: 200,
+          ok: true,
+          json: async () => [
+            { id: 'proj-1', name: 'Project Orion', state: 'ACTIVE' },
+          ],
+        } as Response;
+      }
+      if (u.includes('/board')) {
+        return {
+          status: 200,
+          ok: true,
+          json: async () => [
+            {
+              id: 'task-101',
+              title: 'Implement Core Security',
+              status: 'IN_PROGRESS',
+              executions: [
+                {
+                  id: 'exec-1',
+                  status: 'RUNNING',
+                  worker_id: 'worker-eng-codex',
+                  attempts: 1,
+                  created_at: '2026-10-25T12:00:00Z',
+                },
+              ],
+            },
+          ],
+        } as Response;
+      }
+      return { status: 404, ok: false, json: async () => ({}) } as Response;
+    });
+
     const org = await live.getOrganizationStructure();
 
-    expect(org.kind).toBe('unavailable');
-    if (org.kind === 'unavailable') {
-      expect(org.reason).toContain('El núcleo canónico de AAO no expone aún endpoints canónicos');
-      expect(org.retryable).toBe(false);
+    expect(org.kind).toBe('ready');
+    if (org.kind === 'ready') {
+      expect(org.origin).toBe('live');
+      expect(org.data.units).toHaveLength(6);
+      expect(org.data.agents.length).toBeGreaterThanOrEqual(2);
+
+      // Verify CEO agent mapped to EXEC
+      const ceoAgent = org.data.agents.find((a) => a.id === 'ceo-user');
+      expect(ceoAgent).toBeDefined();
+      expect(ceoAgent?.unitId).toBe('unit-exec');
+      expect(ceoAgent?.heartbeatStatus).toBe('UNKNOWN'); // Fail-closed: no fake heartbeat
+
+      // Verify Codex worker mapped to ENG with EJECUTANDO operational state
+      const codexAgent = org.data.agents.find((a) => a.id === 'worker-eng-codex');
+      expect(codexAgent).toBeDefined();
+      expect(codexAgent?.unitId).toBe('unit-eng');
+      expect(codexAgent?.operationalState).toBe('EJECUTANDO');
+      expect(codexAgent?.heartbeatStatus).toBe('UNKNOWN');
+      expect(codexAgent?.currentAssignments).toHaveLength(1);
     }
   });
 
-  it('returns unavailable state for agent details in live mode', async () => {
+  it('retrieves agent details from live aggregated roster or returns unavailable if not found', async () => {
     const live = new HttpAaoLiveAdapter({ getToken: () => 'test-token' });
-    const details = await live.getAgentDetails('agent-123');
 
-    expect(details.kind).toBe('unavailable');
-    if (details.kind === 'unavailable') {
-      expect(details.reason).toContain('No existe endpoint activo en el núcleo');
-      expect(details.retryable).toBe(false);
+    vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.includes('/v1/organization') || u.includes('/v1/agents/')) {
+        return { status: 404, ok: false, json: async () => ({}) } as Response;
+      }
+      if (u.includes('/v1/principals/me')) {
+        return {
+          status: 200,
+          ok: true,
+          json: async () => ({
+            principal_id: 'ceo-user',
+            kind: 'CEO',
+            auth_method: 'token',
+            enabled: true,
+            grants: [],
+          }),
+        } as Response;
+      }
+      if (u.endsWith('/v1/projects')) {
+        return { status: 200, ok: true, json: async () => [] } as Response;
+      }
+      return { status: 404, ok: false, json: async () => ({}) } as Response;
+    });
+
+    // Found agent
+    const details = await live.getAgentDetails('ceo-user');
+    expect(details.kind).toBe('ready');
+    if (details.kind === 'ready') {
+      expect(details.data.id).toBe('ceo-user');
+      expect(details.data.unitId).toBe('unit-exec');
+    }
+
+    // Missing agent
+    const missing = await live.getAgentDetails('non-existent-agent');
+    expect(missing.kind).toBe('unavailable');
+    if (missing.kind === 'unavailable') {
+      expect(missing.reason).toContain('no fue localizado');
+      expect(missing.retryable).toBe(false);
     }
   });
 });

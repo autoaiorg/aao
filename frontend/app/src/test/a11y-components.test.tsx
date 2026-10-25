@@ -1,5 +1,8 @@
 /**
- * End-to-End Accessibility & Keyboard Navigation Test Suite (WCAG 2.2 AA)
+ * Component-Level Accessibility & Keyboard Navigation Tests (Simulated DOM via JSDOM)
+ * NOTE: These are component integration tests using JSDOM.
+ * For functional tests running inside a real browser engine, see e2e/browser.spec.ts.
+ *
  * Verifies:
  * - Keyboard navigation (Tab, Enter, Space, Escape)
  * - Dialog closing (Escape, button click)

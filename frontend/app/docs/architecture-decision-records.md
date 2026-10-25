@@ -72,14 +72,15 @@ Tras la revisión preliminar de la PR #99 por el CEO, se identificaron cuatro ha
    - Eliminar la generación sintética de identidad CEO.
    - En sesión CEO, invocar `GET /v1/mandates` con la cabecera `X-CEO-Token`. Si el backend responde HTTP 200, la identidad se marca como `verificationStatus: 'verified'`. Si responde 403 o 503, se devuelve `forbidden` o `unavailable` sin asumir credenciales válidas.
 2. **Aislamiento reforzado de sesiones y política estricta de memoria volátil:**
-   - Generar `sessionId` mediante `crypto.randomUUID()` nativo (con fallback criptográfico `crypto.getRandomValues()`), garantizando entropía criptográfica y rotación obligatoria en cada inicio de sesión, cambio de credenciales, desconexión y alternancia de origen.
+   - Generar `sessionId` obligatoriamente mediante Web Crypto nativo (`crypto.randomUUID()` con fallback a `crypto.getRandomValues()`).
+   - **Eliminación taxativa del fallback pseudoaleatorio (`Math.random()`):** Si la API Web Crypto no estuviera disponible, el sistema arroja un error crítico explícito y deniega el arranque de sesión en lugar de degradar a generadores deterministas o inseguros.
    - **Memoria volátil exclusiva:** Las credenciales residen únicamente en el estado en memoria de React. Queda taxativamente prohibido el uso de `sessionStorage`, `localStorage`, `IndexedDB`, cookies o parámetros URL.
    - Vincular todas las claves de caché de TanStack Query a `sessionId`.
    - Implementar `HttpAaoLiveAdapter.abortAll()` para abortar inmediatamente todas las peticiones HTTP en vuelo al cerrar sesión o conmutar de modo, mitigando cualquier condición de carrera por respuestas de red retrasadas.
    - Ejecutar `queryClient.cancelQueries()` y `queryClient.clear()` en cada transición de credenciales.
 3. **Supresión estricta de consultas antes de establecer sesión válida:**
    - En modo LIVE, no se despacha ninguna consulta autenticada a endpoints protegidos hasta que exista una sesión activa con token en memoria (`enabled: origin === 'demo' || isAuthenticated`).
-   - Si no hay credencial, el adaptador `HttpAaoLiveAdapter` devuelve inmediatamente `{ kind: 'forbidden' }` sin realizar ninguna llamada de red `fetch`.
+   - Si no hay credencial, el adaptador `HttpAaoLiveAdapter` (con `requireAuth: true`) devuelve inmediatamente `{ kind: 'forbidden' }` sin realizar ninguna llamada de red `fetch`.
 4. **Preservación estricta de estados no reconocidos:**
    - Eliminar cualquier mutación silenciosa a `INBOX` en `WorkItemSchema` y en `HttpAaoLiveAdapter`.
    - Preservar el valor textual exacto del estado en `task.status` y marcar `isUnrecognizedStatus: true`.
@@ -88,6 +89,10 @@ Tras la revisión preliminar de la PR #99 por el CEO, se identificaron cuatro ha
    - Sustituir los elementos `div` interactivos por `<button type="button">` con `aria-pressed` (en la cartera del Dashboard) y `aria-haspopup="dialog"` (en las tarjetas del Kanban).
    - Añadir soporte para cierre mediante tecla `Escape` en `TaskDetailDrawer` y modales de autenticación.
    - Implementar **restauración automática del foco** hacia el elemento detonante (`trigger button`) cuando un diálogo o drawer se cierra, garantizando conformidad WCAG 2.2 AA.
+6. **Estratificación estricta de niveles de prueba:**
+   - **Pruebas de Componentes e Integración (JSDOM):** Confinadas en `src/test/` (71 pruebas pasando bajo Vitest), validando contratos de datos, renderizado defensivo y lógica de componentes en DOM simulado.
+   - **Pruebas Funcionales y E2E en Navegador Real (Playwright + Google Chrome):** Confinadas en `e2e/` (3 pruebas pasando bajo Chromium/Google Chrome real), validando navegación por teclado, foco activo real, eventos del motor de renderizado y ausencia de filtraciones en almacenamiento web real.
 
 ### Consecuencias
-- **Positivas:** Conformidad estricta con la Regla 1 (No fabricated results) y con las directivas de seguridad, memoria volátil y accesibilidad de AAO; 100% de aislamiento entre sesiones de usuario; trazabilidad de datos no canónicos; suite integral de pruebas unitarias, de integración, regresión y accesibilidad E2E pasando exitosamente.
+- **Positivas:** Conformidad estricta con la Regla 1 (No fabricated results) y con las directivas de seguridad, memoria volátil y accesibilidad de AAO; 100% de aislamiento entre sesiones de usuario; trazabilidad de datos no canónicos; suite integral de pruebas estratificadas (71 pruebas de componentes en Vitest + 3 pruebas funcionales en navegador real en Playwright) pasando exitosamente.
+- **Limitación de Gobernanza (Bloqueo de Integración Activo):** La infraestructura actual de agentes no dispone aún de un mecanismo de acreditación criptográfica o PKI para verificar la autoridad e identidad de auditores independientes externos. En estricta aplicación de la Regla 6 de AGENTS.md y GOV-REV-001, **se mantiene expresamente el bloqueo de integración**; la Pull Request permanece en estado no fusionado a la espera de la decisión soberana del CEO.

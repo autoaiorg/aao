@@ -217,16 +217,18 @@ export const TopBar: React.FC<TopBarProps> = ({
         />
 
         {/* Identity & Session */}
-        {isAuthenticated && principal ? (
+        {isAuthenticated ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Badge
-              variant={principal.verificationStatus === 'verified' ? 'success' : 'warning'}
-              size="md"
-            >
-              <span style={{ fontFamily: 'monospace' }}>
-                {principal.kind} [{principal.verificationStatus}]: {principal.principal_id.slice(0, 18)}...
-              </span>
-            </Badge>
+            {principal && (
+              <Badge
+                variant={principal.verificationStatus === 'verified' ? 'success' : 'warning'}
+                size="md"
+              >
+                <span style={{ fontFamily: 'monospace' }}>
+                  {principal.kind} [{principal.verificationStatus}]: {principal.principal_id.slice(0, 18)}...
+                </span>
+              </Badge>
+            )}
             <Button size="sm" variant="ghost" onClick={onLogout} title="Cerrar sesión en memoria">
               Desconectar
             </Button>

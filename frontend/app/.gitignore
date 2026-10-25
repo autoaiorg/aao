@@ -2,5 +2,7 @@ node_modules/
 dist/
 .vitest-cache/
 .vite/
+test-results/
+playwright-report/
 !src/data/
 !src/data/**

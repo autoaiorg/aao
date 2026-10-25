@@ -142,6 +142,22 @@ describe('P0 Finding 2: Aislamiento de Sesiones y Rotación de Identificador', (
     expect(logoutSessionId).not.toBe(switchSessionId);
   });
 
+  it('throws an explicit error if Web Crypto API is completely unavailable without pseudo-random fallback', () => {
+    const originalCrypto = globalThis.crypto;
+    try {
+      // @ts-expect-error forcing undefined crypto for testing security boundary
+      delete globalThis.crypto;
+
+      expect(() => {
+        renderHook(() => useAuth(), {
+          wrapper: ({ children }) => <AuthProvider>{children}</AuthProvider>,
+        });
+      }).toThrow(/CRITICAL SECURITY ERROR: Web Crypto API is unavailable/);
+    } finally {
+      globalThis.crypto = originalCrypto;
+    }
+  });
+
   it('HttpAaoLiveAdapter.abortAll() triggers abortion on in-flight requests', async () => {
     let capturedSignal: AbortSignal | undefined;
     vi.spyOn(global, 'fetch').mockImplementation((_url, options) => {

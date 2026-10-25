@@ -25,7 +25,9 @@ function generateSessionId(): string {
     crypto.getRandomValues(bytes);
     return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
   }
-  return `sess-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  throw new Error(
+    'CRITICAL SECURITY ERROR: Web Crypto API is unavailable. In-memory session IDs require cryptographic entropy and cannot fall back to pseudo-random generators.'
+  );
 }
 
 export interface AuthProviderProps {

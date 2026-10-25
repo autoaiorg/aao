@@ -1,0 +1,27 @@
+{
+  "auditor": "antigravity-adversarial-subagent",
+  "audit_subagent_conversation_id": "288772ec-2ffd-4e48-8105-fd7f949f0477",
+  "role": "Adversarial Security Reviewer",
+  "base": "5ba55b961796c639213d40479e765b442c9c6da7",
+  "head": "1ca5982e7aae4a0439b2c6ab8f5d62a66bc29624",
+  "checked_out_head": "1ca5982e7aae4a0439b2c6ab8f5d62a66bc29624",
+  "verdict": "APPROVED",
+  "report_file": "report.md",
+  "report_sha256": "54975ae4fe50842ef1d2dc8a16081d2b01f2ead93ab3de1643482310b703f009",
+  "criteria_evaluated": [
+    "reconciled_crypto_session_id_no_math_random",
+    "strict_volatile_memory_policy_zero_storage",
+    "session_isolation_delayed_http_abort_all",
+    "suppression_of_unauthenticated_queries_require_auth",
+    "accessibility_keyboard_nav_escape_focus_restoration",
+    "test_taxonomy_stratification_jsdom_and_real_chrome"
+  ],
+  "test_evidence": {
+    "vitest_component_tests": "71 passed / 0 failed / 11 test files",
+    "playwright_browser_e2e_tests": "3 passed / 0 failed / Google Chrome 155",
+    "pytest_legacy_control_center_tests": "23 passed / 0 failed",
+    "bundle_size_gzip_kb": 128.74
+  },
+  "governance_status": "INTEGRATION_GATE_VERIFIED_PENDING_CEO_DECISION",
+  "finished_at": "2026-10-25T11:15:00Z"
+}

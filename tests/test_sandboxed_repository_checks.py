@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from aao.sandboxed_repository_checks import (
+    CHECKS,
     RepositoryCheckError,
     _build_command,
     _candidate_sha,
@@ -27,15 +28,8 @@ def _candidate(repository: Path) -> None:
     (repository / "tests" / "test_module.py").write_text(
         "def test_value(): assert True\n", encoding="utf-8"
     )
-    for name in (
-        "test_core.py",
-        "test_planner.py",
-        "test_review.py",
-        "test_authorization.py",
-        "test_identity.py",
-        "test_execution.py",
-    ):
-        (repository / "tests" / name).write_text(
+    for name in CHECKS["core-unit"]:  # one placeholder per file of the real check list
+        (repository / name).write_text(
             "def test_candidate(): assert True\n", encoding="utf-8"
         )
     (repository / "pyproject.toml").write_text("[project]\nname='candidate'\n", encoding="utf-8")
@@ -81,23 +75,9 @@ def test_sandbox_command_has_no_candidate_command_or_secret_mounts(tmp_path: Pat
     assert "/home" not in command
     assert ".env.local" not in command
     assert "--" in command
-    assert (
-        command[-6:]
-        == [
-            "pytest",
-            "-q",
-            "-p",
-            "no:cacheprovider",
-            *(
-                "tests/test_core.py",
-                "tests/test_planner.py",
-                "tests/test_review.py",
-                "tests/test_authorization.py",
-                "tests/test_identity.py",
-                "tests/test_execution.py",
-            ),
-        ][-6:]
-    )
+    assert command[-(len(CHECKS["core-unit"]) + 4):] == [
+        "pytest", "-q", "-p", "no:cacheprovider", *CHECKS["core-unit"],
+    ]
 
 
 def test_fixed_check_runs_inside_bubblewrap_and_returns_candidate_sha(tmp_path: Path):
@@ -108,7 +88,7 @@ def test_fixed_check_runs_inside_bubblewrap_and_returns_candidate_sha(tmp_path: 
     assert result["kind"] == "aao.repository-check.v1"
     assert result["candidate_sha"] == _git(tmp_path, "rev-parse", "HEAD")
     if result["conclusion"] == "success":
-        assert "6 passed" in result["stdout"]
+        assert f"{len(CHECKS['core-unit'])} passed" in result["stdout"]
     else:
         # Some hosted runners install bubblewrap but forbid creating the
         # isolated network namespace. Accept only that explicit fail-closed

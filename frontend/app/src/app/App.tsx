@@ -1,0 +1,263 @@
+import React, { useState, useMemo, useCallback } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import type { DataOrigin, ProjectSummary } from '../domain/models';
+import { useAuth } from '../auth/AuthContext';
+import { HttpAaoLiveAdapter } from '../data/adapters/live/HttpAaoLiveAdapter';
+import { MockAaoDemoAdapter } from '../data/adapters/demo/MockAaoDemoAdapter';
+import type { AaoReadPort } from '../data/ports/AaoReadPort';
+
+import { AppShell } from '../components/layout/AppShell';
+import type { ActiveNavKey } from '../components/layout/SideNavigation';
+import { ErrorBoundary } from '../components/ui/ErrorBoundary';
+
+import { CeoDashboard } from '../features/dashboard/CeoDashboard';
+import { ProjectsView } from '../features/projects/ProjectsView';
+import { ProjectDetailView } from '../features/projects/ProjectDetailView';
+import { KanbanView } from '../features/kanban/KanbanView';
+import { DecisionsView } from '../features/decisions/DecisionsView';
+import { AlertsView } from '../features/alerts/AlertsView';
+import { AuditView } from '../features/audit/AuditView';
+import { OperationsView } from '../features/operations/OperationsView';
+import { OrganizationView } from '../features/future/OrganizationView';
+import { VirtualOfficeView } from '../features/future/VirtualOfficeView';
+import { ViewSettingsView } from '../features/future/ViewSettingsView';
+
+export const App: React.FC = () => {
+  const queryClient = useQueryClient();
+  const { token, role, isAuthenticated, setCredentials, logout } = useAuth();
+
+  const [origin, setOrigin] = useState<DataOrigin>('live');
+  const [activeNav, setActiveNav] = useState<ActiveNavKey>('dashboard');
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [detailedProjectId, setDetailedProjectId] = useState<string | null>(null);
+  const [staleTimeSeconds, setStaleTimeSeconds] = useState<number>(15);
+
+  // Switch origin cleanly with complete cache purge
+  const handleOriginChange = useCallback(
+    (newOrigin: DataOrigin) => {
+      if (newOrigin === origin) return;
+      queryClient.clear();
+      setOrigin(newOrigin);
+    },
+    [origin, queryClient]
+  );
+
+  // Initialize Port Adapter depending on origin
+  const port: AaoReadPort = useMemo(() => {
+    if (origin === 'demo') {
+      return new MockAaoDemoAdapter(40);
+    }
+    return new HttpAaoLiveAdapter({
+      getToken: () => token,
+      getAuthRole: () => role,
+      onUnauthorized: () => {
+        logout();
+        queryClient.clear();
+      },
+    });
+  }, [origin, token, role, logout, queryClient]);
+
+  // Query: Principal
+  const principalQuery = useQuery({
+    queryKey: ['principal', origin, isAuthenticated, role],
+    queryFn: () => port.getCurrentPrincipal(),
+    staleTime: staleTimeSeconds * 1000,
+  });
+
+  // Query: Projects List
+  const projectsQuery = useQuery({
+    queryKey: ['projects', origin, isAuthenticated],
+    queryFn: () => port.listProjects(),
+    staleTime: staleTimeSeconds * 1000,
+  });
+
+  const projectsList: ProjectSummary[] = useMemo(() => {
+    if (projectsQuery.data?.kind === 'ready') {
+      return projectsQuery.data.data;
+    }
+    return [];
+  }, [projectsQuery.data]);
+
+  // Query: CEO Overview
+  const overviewQuery = useQuery({
+    queryKey: ['ceo-overview', origin, selectedProjectId, isAuthenticated],
+    queryFn: () => port.getCeoOverview(selectedProjectId || undefined),
+    staleTime: staleTimeSeconds * 1000,
+  });
+
+  // Query: Selected Project Board (for Kanban)
+  const boardQuery = useQuery({
+    queryKey: ['board', origin, selectedProjectId, isAuthenticated],
+    queryFn: () => {
+      if (!selectedProjectId) {
+        return Promise.resolve({
+          kind: 'empty' as const,
+          origin,
+          fetchedAt: new Date().toISOString(),
+        });
+      }
+      return port.getProjectBoard(selectedProjectId);
+    },
+    enabled: !!selectedProjectId,
+    staleTime: staleTimeSeconds * 1000,
+  });
+
+  // Query: Detailed Project Capabilities
+  const capabilitiesQuery = useQuery({
+    queryKey: ['capabilities', origin, detailedProjectId, isAuthenticated],
+    queryFn: () => {
+      if (!detailedProjectId) {
+        return Promise.resolve({
+          kind: 'empty' as const,
+          origin,
+          fetchedAt: new Date().toISOString(),
+        });
+      }
+      return port.getProjectCapabilities(detailedProjectId);
+    },
+    enabled: !!detailedProjectId,
+    staleTime: staleTimeSeconds * 1000,
+  });
+
+  // Query: Detailed Project Evaluations
+  const evaluationsQuery = useQuery({
+    queryKey: ['evaluations', origin, detailedProjectId, isAuthenticated],
+    queryFn: () => {
+      if (!detailedProjectId) {
+        return Promise.resolve({
+          kind: 'empty' as const,
+          origin,
+          fetchedAt: new Date().toISOString(),
+        });
+      }
+      return port.getProjectEvaluations(detailedProjectId);
+    },
+    enabled: !!detailedProjectId,
+    staleTime: staleTimeSeconds * 1000,
+  });
+
+  // Refresh handler
+  const handleRefresh = useCallback(() => {
+    queryClient.invalidateQueries();
+  }, [queryClient]);
+
+  const detailedProject = projectsList.find((p) => p.id === detailedProjectId);
+  const selectedProject = projectsList.find((p) => p.id === selectedProjectId);
+
+  const principalData =
+    principalQuery.data?.kind === 'ready' ? principalQuery.data.data : null;
+
+  return (
+    <AppShell
+      origin={origin}
+      onOriginChange={handleOriginChange}
+      projects={projectsList}
+      selectedProjectId={selectedProjectId}
+      onProjectSelect={setSelectedProjectId}
+      principal={principalData}
+      isAuthenticated={isAuthenticated}
+      onLogin={setCredentials}
+      onLogout={logout}
+      activeNav={activeNav}
+      onNavSelect={(nav) => {
+        setDetailedProjectId(null);
+        setActiveNav(nav);
+      }}
+      fetchedAt={overviewQuery.data?.projects.kind === 'ready' ? overviewQuery.data.projects.fetchedAt : undefined}
+      isFetching={overviewQuery.isFetching || boardQuery.isFetching}
+      onRefresh={handleRefresh}
+    >
+      <ErrorBoundary>
+        {activeNav === 'dashboard' && overviewQuery.data && (
+          <CeoDashboard
+            overview={overviewQuery.data}
+            projects={projectsList}
+            selectedProjectId={selectedProjectId}
+            onSelectProject={setSelectedProjectId}
+            onNavigateTo={(target) => {
+              if (target === 'kanban') setActiveNav('kanban');
+              else if (target === 'projects') setActiveNav('projects');
+              else if (target === 'decisions') setActiveNav('decisions');
+              else if (target === 'audit') setActiveNav('audit');
+              else if (target === 'operations') setActiveNav('operations');
+            }}
+          />
+        )}
+
+        {activeNav === 'projects' && !detailedProjectId && (
+          <ProjectsView
+            projects={projectsList}
+            selectedProjectId={selectedProjectId}
+            onSelectProject={setSelectedProjectId}
+            onViewDetails={(id) => setDetailedProjectId(id)}
+          />
+        )}
+
+        {activeNav === 'projects' && detailedProjectId && detailedProject && (
+          <ProjectDetailView
+            project={detailedProject}
+            capabilitiesState={capabilitiesQuery.data || { kind: 'empty', origin, fetchedAt: '' }}
+            evaluationsState={evaluationsQuery.data || { kind: 'empty', origin, fetchedAt: '' }}
+            onBack={() => setDetailedProjectId(null)}
+            onOpenKanban={() => {
+              setSelectedProjectId(detailedProjectId);
+              setActiveNav('kanban');
+            }}
+            onRefresh={handleRefresh}
+          />
+        )}
+
+        {activeNav === 'kanban' && (
+          <KanbanView
+            boardState={boardQuery.data || { kind: 'empty', origin, fetchedAt: '' }}
+            selectedProjectId={selectedProjectId}
+            projectName={selectedProject?.name}
+            onRefresh={handleRefresh}
+          />
+        )}
+
+        {activeNav === 'decisions' && (
+          <DecisionsView
+            decisionsState={
+              overviewQuery.data?.decisions || {
+                kind: 'unavailable',
+                reason: 'Sin datos disponibles en esta vista',
+                retryable: false,
+              }
+            }
+            onRefresh={handleRefresh}
+          />
+        )}
+
+        {activeNav === 'alerts' && (
+          <AlertsView
+            alertsState={
+              overviewQuery.data?.alerts || {
+                kind: 'unavailable',
+                reason: 'Sin datos de alertas disponibles',
+                retryable: false,
+              }
+            }
+            onRefresh={handleRefresh}
+          />
+        )}
+
+        {activeNav === 'audit' && <AuditView />}
+
+        {activeNav === 'operations' && <OperationsView onRefreshAll={handleRefresh} />}
+
+        {activeNav === 'organization' && <OrganizationView />}
+
+        {activeNav === 'office3d' && <VirtualOfficeView />}
+
+        {activeNav === 'settings' && (
+          <ViewSettingsView
+            staleTimeSeconds={staleTimeSeconds}
+            onStaleTimeChange={setStaleTimeSeconds}
+            onClearCache={() => queryClient.clear()}
+          />
+        )}
+      </ErrorBoundary>
+    </AppShell>
+  );
+};

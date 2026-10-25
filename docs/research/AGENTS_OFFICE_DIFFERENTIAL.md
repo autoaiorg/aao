@@ -145,6 +145,15 @@ Estas pruebas son criterios de construcción y aceptación de producto; **no est
 
 El siguiente incremento útil es añadir perfiles organizativos persistentes y declarados por una autoridad autorizada; la proyección y el adapter ya existen y ahora fallan cerrado. Conversación, equipos o rutinas no son requisitos para ese trabajo ni para la operación del motor de ejecución.
 
+### Incremento de construcción siguiente: perfiles organizativos persistidos
+
+- Se añade migración `015_organization_profiles.sql`: unidades y perfiles se almacenan en PostgreSQL y referencian identidades existentes; son metadatos y **no** grants, credenciales ni estado de ejecución.
+- `PUT /v1/organization/units` y `PUT /v1/organization/profiles` son operaciones CEO-protegidas en el entorno de desarrollo/test, con registro de evento. Validan referencias declaradas; la jerarquía no puede auto-parentarse ni introducir ciclo directo por la ruta de escritura.
+- `GET /v1/organization` integra el perfil y las unidades declaradas en su proyección; para agentes, solo devuelve su propio perfil y unidad asociada; CEO recibe el roster declarado. Una identidad sin actividad conserva estado UNKNOWN. La metadata organizativa no altera alcance de proyectos ni grants.
+- El contrato del frontend acepta `managerId`; la visualización/edición de organigrama en la oficina aún requiere su propio incremento para que el CEO pueda gestionarlo desde la interfaz.
+- Validación en el contenedor PostgreSQL desechable: pruebas focalizadas de persistencia/proyección y scope, `2 passed`; `compileall`, Ruff, `git diff --check`, TypeScript y suite frontend (136 tests) pasaron. No se ha ejecutado el conjunto completo ni CI.
+- Siguiente: ampliar pruebas (ciclo jerárquico y límites de visibilidad), correr CI completa; luego conectar representación/edición de perfiles en la oficina sin estado duplicado.
+
 ## 8. Límites y siguientes responsables
 
 ### Seguimiento de construcción (rama `feat/agents-office-aa-integration`)

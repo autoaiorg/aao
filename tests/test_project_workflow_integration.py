@@ -118,6 +118,54 @@ def test_organization_projection_is_authenticated_and_project_scoped(monkeypatch
     not os.getenv("AAO_TEST_POSTGRES_URL") or os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
     reason="Explicit disposable PostgreSQL test database required",
 )
+def test_organization_profiles_are_persisted_and_do_not_create_grants(monkeypatch):
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "org-profile-ceo")
+    ceo = {"X-CEO-Token": "org-profile-ceo"}
+    with TestClient(app) as client:
+        principal = "org-profile-" + str(uuid4())
+        credential = client.post("/v1/principals/credentials", headers=ceo, json={
+            "principal_id": principal, "kind": "AGENT",
+        })
+        assert credential.status_code == 201
+        agent_headers = {"X-Agent-Token": credential.json()["token"]}
+        mandate = client.post("/v1/mandates", headers=ceo, json={
+            "title": "Organization profile " + str(uuid4()), "objective": "Metadata must not grant access",
+        }).json()["id"]
+        client.post(f"/v1/mandates/{mandate}/confirm", headers=ceo)
+        project = client.post("/v1/projects", headers=ceo, json={
+            "name": "Profile access boundary", "mandate_id": mandate,
+        }).json()["id"]
+        unit = {
+            "id": "unit-" + str(uuid4()), "name": "Research", "code": "R-" + str(uuid4()),
+            "parent_id": None, "lead_principal_id": principal, "enabled": True,
+        }
+        assert client.put("/v1/organization/units", json=unit).status_code == 403
+        assert client.put("/v1/organization/units", headers=ceo, json=unit).status_code == 200
+        profile = {
+            "principal_id": principal, "display_name": "Research Agent", "role_title": "Analyst",
+            "unit_id": unit["id"], "manager_principal_id": None, "enabled": True,
+        }
+        assert client.put("/v1/organization/profiles", headers=ceo, json=profile).status_code == 200
+        projection = client.get("/v1/organization", headers=ceo).json()
+        agent = next(row for row in projection["agents"] if row["id"] == principal)
+        assert agent["name"] == "Research Agent"
+        assert agent["roleTitle"] == "Analyst"
+        assert agent["unitId"] == unit["id"]
+        assert agent["status"] == "UNKNOWN"
+        assert any(row["id"] == unit["id"] for row in projection["units"])
+        assert client.get(f"/v1/projects/{project}/grants", headers=ceo).json() == []
+        scoped = client.get("/v1/organization", headers=agent_headers).json()
+        assert [item["id"] for item in scoped["agents"]] == [principal]
+        assert {item["id"] for item in scoped["units"]} == {unit["id"], "unit-unassigned"}
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="Explicit disposable PostgreSQL test database required",
+)
 def test_capability_catalog_is_project_scoped_and_does_not_grant_execution(monkeypatch):
     from aao.work_management_api import app
 

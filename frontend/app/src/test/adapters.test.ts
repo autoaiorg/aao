@@ -321,4 +321,27 @@ describe('HttpAaoLiveAdapter organization projection', () => {
     expect((await live.getOrganizationStructure()).kind).toBe('unavailable');
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it('writes organizational metadata only with CEO session and leaves authorization to backend too', async () => {
+    const fetch = vi.spyOn(global, 'fetch');
+    const agentSession = new HttpAaoLiveAdapter({ getToken: () => 'agent-token', getAuthRole: () => 'AGENT' });
+    expect((await agentSession.putOrganizationProfile({
+      principal_id: 'agent-a', display_name: 'Agent A', role_title: 'Engineer',
+      unit_id: null, manager_principal_id: null, enabled: true,
+    })).kind).toBe('forbidden');
+    expect(fetch).not.toHaveBeenCalled();
+
+    fetch.mockResolvedValueOnce({ status: 200, ok: true, json: async () => ({ id: 'unit-rnd' }) } as Response);
+    const ceoSession = new HttpAaoLiveAdapter({ getToken: () => 'ceo-token', getAuthRole: () => 'CEO', requireAuth: true });
+    const saved = await ceoSession.putOrganizationUnit({
+      id: 'unit-rnd', name: 'Research', code: 'RND', parent_id: null,
+      lead_principal_id: null, enabled: true,
+    });
+    expect(saved.kind).toBe('ready');
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('/v1/organization/units'), expect.objectContaining({
+      method: 'PUT',
+      headers: expect.objectContaining({ 'X-CEO-Token': 'ceo-token', 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ id: 'unit-rnd', name: 'Research', code: 'RND', parent_id: null, lead_principal_id: null, enabled: true }),
+    }));
+  });
 });

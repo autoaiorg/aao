@@ -12,10 +12,15 @@ import { MetricCard } from '../../components/ui/MetricCard';
 import { DataStatePanel } from '../../components/ui/DataStatePanel';
 import { Button } from '../../components/ui/Button';
 import { AgentDetailDrawer } from './AgentDetailDrawer';
+import { OrganizationManagementPanel } from './OrganizationManagementPanel';
+import type { OrganizationProfileCommand, OrganizationUnitCommand } from '../../data/ports/AaoOrganizationCommandPort';
 
 export interface OrganizationViewProps {
   orgState: DataState<OrganizationStructure>;
   onRefresh?: () => void;
+  canManageOrganization?: boolean;
+  onSaveUnit?: (input: OrganizationUnitCommand) => Promise<DataState<unknown>>;
+  onSaveProfile?: (input: OrganizationProfileCommand) => Promise<DataState<unknown>>;
 }
 
 export type OrgSubTab = 'organigrama' | 'agents' | 'matrix';
@@ -23,6 +28,9 @@ export type OrgSubTab = 'organigrama' | 'agents' | 'matrix';
 export const OrganizationView: React.FC<OrganizationViewProps> = ({
   orgState,
   onRefresh,
+  canManageOrganization = false,
+  onSaveUnit,
+  onSaveProfile,
 }) => {
   const [activeTab, setActiveTab] = useState<OrgSubTab>('organigrama');
   const [searchQuery, setSearchQuery] = useState('');
@@ -152,6 +160,16 @@ export const OrganizationView: React.FC<OrganizationViewProps> = ({
           subtitle={`${staleCount} desactualizados, ${unavailableOrUnknownCount} sin telemetría`}
         />
       </div>
+
+      {canManageOrganization && onSaveUnit && onSaveProfile && (
+        <OrganizationManagementPanel
+          units={units}
+          agents={agents}
+          onSaveUnit={onSaveUnit}
+          onSaveProfile={onSaveProfile}
+          onSaved={() => onRefresh?.()}
+        />
+      )}
 
       {/* Subnavigation Tabs */}
       <div

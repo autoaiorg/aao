@@ -45,6 +45,18 @@ describe('Phase F3: OrganizationView and Agent Structure', () => {
     expect(screen.getByText(/Arquitectura de Sistemas y Protocolos/i)).toBeInTheDocument();
   });
 
+  it('shows organization persistence controls only when enabled for the CEO view', () => {
+    const saveUnit = vi.fn().mockResolvedValue({ kind: 'ready', origin: 'live', data: {}, fetchedAt: 'now' });
+    const saveProfile = vi.fn().mockResolvedValue({ kind: 'ready', origin: 'live', data: {}, fetchedAt: 'now' });
+    const { rerender } = render(<OrganizationView orgState={readyState} />);
+    expect(screen.queryByText('Gestión organizativa')).not.toBeInTheDocument();
+
+    rerender(<OrganizationView orgState={readyState} canManageOrganization onSaveUnit={saveUnit} onSaveProfile={saveProfile} />);
+    expect(screen.getByText(/no concede permisos ni cambia asignaciones/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Guardar unidad' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Guardar perfil' })).toBeInTheDocument();
+  });
+
   it('navigates to Plantilla y Agentes tab and segregates standing vs ephemeral agents', () => {
     render(<OrganizationView orgState={readyState} />);
 

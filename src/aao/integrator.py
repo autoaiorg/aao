@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -230,6 +231,12 @@ def promote(repo: Path, remote: str, auth: dict[str, Any], signature: str,
     ledger_keys = registry["ledger_keys"]
     _validate_integrator_key_separation(registry)
     rows = verify(trust_sources.ledger, ledger_keys)
+    initial_ledger_head = rows[-1]["hash"] if rows else "0" * 64
+    decisions = [row for row in rows if row.get("candidate_sha") == auth.get("candidate_sha") and
+                 row.get("type") in {"audit-verdict", "veto"}]
+    if (not decisions or decisions[-1].get("report_sha256") != auth.get("expediente_sha256") or
+            decisions[-1].get("verdict") != "approve" or decisions[-1].get("veto") is True):
+        raise ValueError("authorization is not bound to the current ledger audit decision")
     current_time = now()
     if current_time.tzinfo is None:
         raise ValueError("clock must return timezone-aware datetime")
@@ -239,6 +246,7 @@ def promote(repo: Path, remote: str, auth: dict[str, Any], signature: str,
     if heartbeat is None:
         raise ValueError("valid supervisor heartbeat unavailable")
     heartbeat_ok = True
+    initial_heartbeat_digest = hashlib.sha256(trust_sources.heartbeat.read_bytes()).hexdigest()
     supervisor_head = heartbeat.get("ledger_head")
     supervisor_markers = heartbeat.get("pending_markers")
     if (not isinstance(supervisor_head, str) or not isinstance(supervisor_markers, dict) or
@@ -268,6 +276,7 @@ def promote(repo: Path, remote: str, auth: dict[str, Any], signature: str,
             resolved.update(values)
     seen = set(supervisor_markers.get(auth["candidate_sha"], []))
     present = set(markers)
+    initial_markers = set(markers)
     deleted = seen - present - resolved
     if deleted:
         raise ValueError("pending veto marker deleted")
@@ -347,9 +356,9 @@ def promote(repo: Path, remote: str, auth: dict[str, Any], signature: str,
             raise ValueError("staged commit tree differs from authorized merge tree")
         if staged_parents != expected_parents:
             raise ValueError("staged commit parents differ from authorized parents")
-    if ci_verified_sha == auth.get("candidate_sha") or (
-        staged_commit is not None and ci_verified_sha == staged_commit
-    ):
+    # Required checks count only when verified on M itself (the staged merge commit that will be published), never on
+    # the PR head (E2E_PR_PIPELINE invariant; Codex pre-audit r1 A-01).
+    if staged_commit is not None and ci_verified_sha == staged_commit:
         state["ci_candidate_sha"] = auth["candidate_sha"]
     reasons = validate(auth, signature, state)
     if not all((ra01, ra02, ra03, ra07, ra09)):
@@ -386,6 +395,31 @@ def promote(repo: Path, remote: str, auth: dict[str, Any], signature: str,
         after_recheck()
     if callable(git_token):
         git_token = git_token()
+    # Final custody fence: changes after this read and before receive-pack are
+    # an unavoidable residual race without a shared lock/transaction with the
+    # independent supervisor and ledger writers.
+    latest_rows = verify(trust_sources.ledger, ledger_keys)
+    latest_head = latest_rows[-1]["hash"] if latest_rows else "0" * 64
+    if latest_head != initial_ledger_head:
+        raise RuntimeError("ledger changed during promotion")
+    latest_decisions = [row for row in latest_rows if row.get("candidate_sha") == auth.get("candidate_sha") and
+                        row.get("type") in {"audit-verdict", "veto"}]
+    if (not latest_decisions or latest_decisions[-1].get("report_sha256") != auth.get("expediente_sha256") or
+            latest_decisions[-1].get("verdict") != "approve" or latest_decisions[-1].get("veto") is True):
+        raise RuntimeError("current audit decision changed during promotion")
+    # Do not consume the monotonic heartbeat sequence twice in one promotion;
+    # compare the freshly read signed heartbeat bytes to the validated snapshot.
+    if hashlib.sha256(trust_sources.heartbeat.read_bytes()).hexdigest() != initial_heartbeat_digest:
+        raise RuntimeError("supervisor heartbeat changed during promotion")
+    try:
+        latest_markers = set(pending_vetoes(Path(str(trust_sources.ledger) + ".pending-vetoes"),
+                                           auth["candidate_sha"], trust_sources.ledger.stat().st_uid))
+    except (PendingVetoError, OSError, ValueError) as error:
+        raise RuntimeError(f"pending veto markers cannot be re-read before push: {error}") from error
+    if latest_markers != initial_markers:
+        raise RuntimeError("pending veto markers changed during promotion")
+    if active_vetoes(latest_rows, ledger_keys) or open_incidents(latest_rows):
+        raise RuntimeError("ledger veto or incident appeared during promotion")
     result = _conditional_push(repo, remote_url, ref, base, commit, git_token)
     if result.returncode:
         # A client/network error does not prove that the server rejected the

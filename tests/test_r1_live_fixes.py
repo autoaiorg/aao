@@ -73,6 +73,11 @@ def test_dispatch_gate_path_and_file_are_group_readable_not_writable(tmp_path, m
     inbox.mkdir(); reports.mkdir()
     request_id = "a" * 64
     (reports / request_id).mkdir(mode=0o700)
+    audit_dir = reports / ("b" * 64) / "audit"
+    audit_dir.mkdir(parents=True)
+    (audit_dir / "report.json").write_text("{}")
+    monkeypatch.setattr(auditor_dispatch, "load_anchor", lambda *_: {})
+    monkeypatch.setattr(auditor_dispatch, "ledger_rows", lambda _anchor: [{"hash": "d" * 64}])
     (inbox / f"{request_id}.json").write_text(json.dumps({"schema": "aao.audit-request.v1", "type": "gate",
         "id": "b" * 64, "promoted_sha": "c" * 40, "repo": "owner/project", "pr_number": 1}))
     monkeypatch.setattr(auditor_dispatch, "verify_promotion", lambda *args, **kwargs: (True, ()))
@@ -85,6 +90,37 @@ def test_dispatch_gate_path_and_file_are_group_readable_not_writable(tmp_path, m
     info = directory.stat()
     assert stat.S_IMODE(info.st_mode) == 0o750
     assert stat.S_IMODE((directory / "gate.json").stat().st_mode) == 0o640
+
+
+def test_dispatch_re_evaluates_gate_when_ledger_head_changes(tmp_path, monkeypatch):
+    inbox, reports = tmp_path / "inbox", tmp_path / "reports"
+    inbox.mkdir(); reports.mkdir()
+    audit_id = "b" * 64
+    report_dir = reports / audit_id / "audit"
+    report_dir.mkdir(parents=True)
+    (report_dir / "report.json").write_text('{"verdict":"approve"}')
+    (reports / audit_id / "manifest.json").write_text("{}")
+    (report_dir / "report.sig").write_text("signature")
+    request_id = "a" * 64
+    request_path = inbox / f"{request_id}.json"
+    request_path.write_text(json.dumps({"schema": "aao.audit-request.v1", "type": "gate",
+        "id": audit_id, "promoted_sha": "c" * 40, "repo": "owner/project", "pr_number": 1}))
+    current = {"head": "d" * 64}
+    monkeypatch.setattr(auditor_dispatch, "load_anchor", lambda *_: {})
+    monkeypatch.setattr(auditor_dispatch, "ledger_rows", lambda _anchor: [{"hash": current["head"]}])
+    monkeypatch.setattr(auditor_dispatch, "verify_promotion", lambda *args, **kwargs: (True, ()))
+    published = []
+    class Client:
+        def create_check_run(self, *args):
+            published.append(args)
+
+    auditor_dispatch.dispatch_once(inbox, reports, tmp_path / "key", Client())
+    gate_path = reports / request_id / "gate.json"
+    assert json.loads(gate_path.read_text())["ledger_head"] == current["head"]
+    current["head"] = "e" * 64
+    auditor_dispatch.dispatch_once(inbox, reports, tmp_path / "key", Client())
+    assert len(published) == 2
+    assert json.loads(gate_path.read_text())["ledger_head"] == current["head"]
 
 
 def test_r1_inbox_atomic_json_is_world_readable_but_state_default_stays_private(tmp_path):

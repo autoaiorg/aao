@@ -17,18 +17,23 @@ for id in $A $B $C; do
   [[ $(jq -r .enforcement "$OUT/ruleset-$id.before.json") == active ]] || { echo "ruleset $id not active before seeding; refusing" >&2; exit 1; }
 done
 restore() { for id in $A $B; do gh api -X PUT "repos/$R/rulesets/$id" -f enforcement=active >/dev/null || true; done; }
-trap restore EXIT
+# Every exit after disabling (normal or failure) ends here: all three rulesets must match the saved config exactly,
+# otherwise the script fails loudly and the trial must stop (Codex pre-audit, p2p3 A-01).
+verify_restored() {
+  local id bad=0
+  for id in $A $B $C; do
+    if gh api "repos/$R/rulesets/$id" --jq "$norm" > "$OUT/ruleset-$id.after.json" && diff -q "$OUT/ruleset-$id.before.json" "$OUT/ruleset-$id.after.json" >/dev/null; then
+      echo "ruleset $id restored (identical)"
+    else echo "RULESET $id DIFFERS from the saved config (or unreadable)"; diff "$OUT/ruleset-$id.before.json" "$OUT/ruleset-$id.after.json" || true; bad=1; fi
+  done | tee -a "$OUT/seed.txt"
+  ! grep -q DIFFERS "$OUT/seed.txt" || { echo "PROTECTION NOT RESTORED: stop the trial and restore by hand from $OUT/ruleset-*.before.json" >&2; return 1; }
+}
+trap 'restore; verify_restored || exit 1' EXIT
 for id in $A $B; do gh api -X PUT "repos/$R/rulesets/$id" -f enforcement=disabled >/dev/null; done
 sha=$(gh api -X PUT "repos/$R/contents/.github/workflows/test.yml" \
   -f message="ci: minimal test workflow for the P2/P3 trial" -f content="$(base64 -w0 "$WF")" --jq .commit.sha)
 echo "workflow commit $sha" | tee "$OUT/seed.txt"
 restore; trap - EXIT
-ok=1
-for id in $A $B $C; do
-  gh api "repos/$R/rulesets/$id" --jq "$norm" > "$OUT/ruleset-$id.after.json"
-  if diff -q "$OUT/ruleset-$id.before.json" "$OUT/ruleset-$id.after.json" >/dev/null; then echo "ruleset $id restored (identical)"
-  else echo "RULESET $id DIFFERS from the saved config:"; diff "$OUT/ruleset-$id.before.json" "$OUT/ruleset-$id.after.json" || true; ok=0; fi
-done | tee -a "$OUT/seed.txt"
-grep -q DIFFERS "$OUT/seed.txt" && { echo "PROTECTION NOT RESTORED: stop the trial (evidence in $OUT)" >&2; exit 1; }
+verify_restored || exit 1
 sha256sum "$OUT"/* | tee "$OUT/SHA256SUMS"
 echo "OK: protection restored; evidence in $OUT"

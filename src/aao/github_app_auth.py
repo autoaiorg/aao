@@ -149,11 +149,21 @@ class GitHubAppClient:
         installation_id = installation.body.get("id")
         if not isinstance(installation_id, int):
             raise GitHubAuthError("installation lookup returned no installation id")
-        body = {"repository_names": [repo]} if repository_names else {}
+        # The REST API accepts `repositories`, not `repository_names`. Keep the
+        # equivalence/audit path deliberately installation-wide by omitting it.
+        body = {"repositories": [repo]} if repository_names else {}
         response = self._request("POST", f"/app/installations/{installation_id}/access_tokens", token=jwt,
                                  body=body)
         if response.status != 201 or not isinstance(response.body, dict) or not response.body.get("token"):
             raise GitHubAuthError(f"installation token request failed with HTTP {response.status}")
+        if repository_names:
+            granted = response.body.get("repositories")
+            names = []
+            if isinstance(granted, list):
+                names = [item.get("full_name") or item.get("name")
+                         for item in granted if isinstance(item, dict)]
+            if len(names) != 1 or names[0] not in {repo, f"{owner}/{repo}"}:
+                raise GitHubAuthError("installation token repository scope does not match requested repository")
         self._installation_token = str(response.body["token"])
         self._installation_id = installation_id
         return self._installation_token

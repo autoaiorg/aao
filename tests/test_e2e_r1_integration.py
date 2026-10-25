@@ -196,13 +196,21 @@ def test_r1_signed_audit_issues_exact_authorization(audit_setup, tmp_path, monke
     assert subprocess.run(["git", "--git-dir", str(bare), "rev-parse", "refs/heads/main"],
                           check=True, capture_output=True, text=True).stdout.strip() == data["target_sha"]
     env["heartbeat"]()  # integrator consumes heartbeat sequence even on rejected attempts
+    # Required checks are only accepted on M (the staged merge), as r1_pipeline does.
+    m = subprocess.run(["git", "-C", str(env["repo"]), "commit-tree", data["result_tree"],
+                        "-p", data["target_sha"], "-p", data["candidate_sha"]], input="R1 staged merge\n",
+                       check=True, capture_output=True, text=True,
+                       env={**os.environ, "GIT_AUTHOR_NAME": "aao-integrator",
+                            "GIT_AUTHOR_EMAIL": "aao-integrator@users.noreply.github.com",
+                            "GIT_COMMITTER_NAME": "aao-integrator",
+                            "GIT_COMMITTER_EMAIL": "aao-integrator@users.noreply.github.com"}).stdout.strip()
     def move_main_after_authorization():
         subprocess.run(["git", "--git-dir", str(bare), "update-ref", "refs/heads/main",
                         data["candidate_sha"]], check=True)
     with pytest.raises(RuntimeError, match="remote base moved"):
         promote(env["repo"], "origin", doc, sig, sources, identity_provider=_identity(),
                 observed_repo=doc["repo"], observed_pr_number=doc["pr_number"],
-                ci_verified_sha=doc["candidate_sha"],
+                staged_commit=m, ci_verified_sha=m,
                 before_push=move_main_after_authorization, now=lambda: datetime.now(UTC))
     assert subprocess.run(["git", "--git-dir", str(bare), "rev-parse", "refs/heads/main"],
                           check=True, capture_output=True, text=True).stdout.strip() == data["candidate_sha"]
@@ -213,7 +221,7 @@ def test_r1_signed_audit_issues_exact_authorization(audit_setup, tmp_path, monke
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
     commit = promote(env["repo"], "origin", doc, sig, sources, identity_provider=_identity(),
                      observed_repo=doc["repo"], observed_pr_number=doc["pr_number"],
-                     ci_verified_sha=data["candidate_sha"],
+                     staged_commit=m, ci_verified_sha=m,
                      now=lambda: datetime.now(UTC))
     assert _git(env["repo"], "show", "-s", "--format=%an <%ae>%n%cn <%ce>", commit).splitlines() == [
         "aao-integrator <aao-integrator@users.noreply.github.com>",

@@ -22,6 +22,7 @@ from typing import Any
 from urllib.parse import quote
 
 from aao.github_app_auth import GitHubAppClient
+from aao.governance_ledger import verify as verify_ledger
 from aao.identity_attribution import GitHubIdentityProvider
 from aao.integrator import TrustSources, promote
 
@@ -283,7 +284,18 @@ def integrator_tick(github: Any, git_remote: str, mirror: str | Path, inbox: str
                 state.update(status="staged", staged_commit=staged, staged_ref=staged_ref)
             gate_id = hashlib.sha256(_canonical([key, "gate", staged])).hexdigest()
             gate_path = reports / gate_id / "gate.json"
-            if not gate_path.is_file():
+            current_rows = verify_ledger(trust_sources.ledger, trust_registry["ledger_keys"])
+            current_ledger_head = current_rows[-1]["hash"] if current_rows else "0" * 64
+            current_decision_sha = hashlib.sha256(verdict_path.read_bytes()).hexdigest()
+            gate_is_current = False
+            if gate_path.is_file():
+                try:
+                    existing_gate = json.loads(gate_path.read_text())
+                    gate_is_current = (existing_gate.get("ledger_head") == current_ledger_head and
+                                       existing_gate.get("audit_decision_sha256") == current_decision_sha)
+                except (OSError, ValueError, AttributeError):
+                    gate_is_current = False
+            if not gate_is_current:
                 _atomic_json(inbox / f"{gate_id}.json", {"schema": "aao.audit-request.v1", "type": "gate",
                             "id": key, "promoted_sha": staged, "repo": owner_repo, "pr_number": number}, mode=0o644)
                 _atomic_json(state_path, state); results.append(state); continue

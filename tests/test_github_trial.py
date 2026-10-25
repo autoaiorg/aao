@@ -61,7 +61,7 @@ def api_server(monkeypatch):
     FakeGitHub.calls = []
     FakeGitHub.responses = {
         ("GET", "/repos/org/trial/installation"): (200, {"id": 901}),
-        ("POST", "/app/installations/901/access_tokens"): (201, {"token": "never-store-this-token", "expires_at": "2030-01-01T00:00:00Z"}),
+        ("POST", "/app/installations/901/access_tokens"): (201, {"token": "never-store-this-token", "expires_at": "2030-01-01T00:00:00Z", "repositories": [{"full_name": "org/trial"}]}),
         ("GET", "/installation"): (200, {"id": 901}),
         ("DELETE", "/installation/token"): (204, {}),
     }
@@ -136,7 +136,7 @@ def test_token_is_memory_only_and_not_printed(tmp_path, monkeypatch, api_server,
     assert not list(tmp_path.glob("*token*"))
     assert all("never-store-this-token" not in str(call) for call in FakeGitHub.calls)
     assert all(call[2] for call in FakeGitHub.calls)
-    assert json.loads(FakeGitHub.calls[1][3]) == {"repository_names": ["trial"]}
+    assert json.loads(FakeGitHub.calls[1][3]) == {"repositories": ["trial"]}
     assert FakeGitHub.calls[-1][1] == "/installation/token"
 
 
@@ -149,6 +149,20 @@ def test_installation_token_can_be_unrestricted_for_scope_audit(tmp_path, monkey
     monkeypatch.setattr(auth, "create_jwt", lambda *_: "jwt-for-test")
     assert client.installation_token("org", "trial", repository_names=False) == "never-store-this-token"
     assert json.loads(FakeGitHub.calls[1][3]) == {}
+
+
+def test_scoped_installation_token_fails_closed_if_github_returns_broader_scope(tmp_path, monkeypatch, api_server):
+    key = tmp_path / "app.pem"
+    key.write_text("unused")
+    client = object.__new__(auth.GitHubAppClient)
+    client.app_id, client._key_path, client.api_base, client.timeout = 77, key, api_server, 5
+    client._installation_token = None
+    FakeGitHub.responses[("POST", "/app/installations/901/access_tokens")] = (
+        201, {"token": "broad-token", "repositories": [{"full_name": "org/trial"}, {"name": "other"}]})
+    monkeypatch.setattr(auth, "create_jwt", lambda *_: "jwt-for-test")
+    with pytest.raises(auth.GitHubAuthError, match="scope does not match"):
+        client.installation_token("org", "trial")
+    assert client._installation_token is None
 
 
 def test_rejects_wrong_uid(monkeypatch):
@@ -569,10 +583,10 @@ def test_p3_07_integrator_requires_non_fast_forward_rule_for_both_refs(monkeypat
         pushes.append(refspec)
         return _push_record(refspec, "remote: GH013: non_fast_forward rule violation")
     monkeypatch.setattr(trial, "_git_push", fake_push)
-    status, _, _ = trial.run_test("P3-07", "org", "trial", "aao-integrator", client)
+    status, reason, _ = trial.run_test("P3-07", "org", "trial", "aao-integrator", client)
     assert status == "PASS"
-    assert pushes == [f"+{candidate}:refs/heads/main",
-                      f"+{candidate}:refs/heads/aao-staging/{candidate[:12]}"]
+    assert "staging ref absent" in reason and "main only" in reason
+    assert pushes == [f"+{candidate}:refs/heads/main"]
 
 
 
@@ -658,8 +672,12 @@ def test_p3_12_forced_non_fast_forward_must_be_server_rejected(monkeypatch):
 def test_a14_requires_workflows_permission_denial_and_accepted_control(monkeypatch):
     main, parent = "a" * 40, "b" * 40
     base = "/repos/org/trial"
+    branch = "aao-trial/no-workflows-20261024T210029-560027569Z"
+    monkeypatch.setenv("AAO_TRIAL_RUN_ID", "20261024T210029.560027569Z")
     client = RefClient({base: [(200, {"fork": True, "parent": {"full_name": "org/parent"}})],
-                        base + "/git/ref/heads/main": [_ref_reply(main), _ref_reply(main)]})
+                        base + "/git/ref/heads/main": [_ref_reply(main), _ref_reply(main)],
+                        base + f"/git/ref/heads/{branch}": [(404, {"message": "Not Found"}),
+                                                             _ref_reply(parent)]})
     monkeypatch.setenv("AAO_GITHUB_TRIAL_FORK_PARENT", "org/parent")
     monkeypatch.setattr(trial.subprocess, "run", lambda args, **_kw: type(
         "Result", (), {"stdout": ".github/workflows/ci.yml\n" if "diff-tree" in args else parent + "\n"})())
@@ -672,7 +690,36 @@ def test_a14_requires_workflows_permission_denial_and_accepted_control(monkeypat
     monkeypatch.setattr(trial, "_git_push", fake_push)
     status, _, _ = trial.run_test("A-14", "org", "trial", "aao-probe-noworkflows", client)
     assert status == "PASS"
-    assert pushes == ["HEAD:refs/heads/main", f"{parent}:refs/heads/aao-trial/no-workflows-{parent[:12]}"]
+    assert pushes == ["HEAD:refs/heads/main", f"{parent}:refs/heads/{branch}"]
+
+
+def test_trial_run_id_sanitizer_handles_runner_timestamp(monkeypatch):
+    monkeypatch.setenv("AAO_TRIAL_RUN_ID", "20261024T210029.560027569Z")
+    assert trial._run_branch_id() == "20261024T210029-560027569Z"
+
+
+def test_a09_requires_permission_denial_on_absent_unprotected_branch(monkeypatch):
+    monkeypatch.setenv("AAO_TRIAL_RUN_ID", "20261024T210029.560027569Z")
+    base = "/repos/org/trial"
+    branch = "aao-trial/a09-20261024T210029-560027569Z"
+    client = RefClient({base + "/issues": [(201, {"number": 1})],
+                        base + f"/git/ref/heads/{branch}": [(404, {"message": "Not Found"}),
+                                                            (404, {"message": "Not Found"})]})
+    pushes = []
+    def denied(_client, _repo, refspec, **_kwargs):
+        pushes.append(refspec)
+        return _push_record(refspec, "remote: Permission to org/trial.git denied to notifier", code=1)
+    monkeypatch.setattr(trial, "_git_push", denied)
+    status, reason, _ = trial.run_test("A-09", "org", "trial", "aao-notifier", client)
+    assert status == "PASS" and "unprotected disposable-branch" in reason
+    assert pushes == [f"HEAD:refs/heads/{branch}"]
+
+    monkeypatch.setattr(trial, "_git_push", lambda *_a, **_k: _push_record(
+        "push", "remote: GH013: Repository rule violations found", code=1))
+    client = RefClient({base + "/issues": [(201, {"number": 1})],
+                        base + f"/git/ref/heads/{branch}": [(404, {"message": "Not Found"}),
+                                                            (404, {"message": "Not Found"})]})
+    assert trial.run_test("A-09", "org", "trial", "aao-notifier", client)[0] == "FAIL"
 
 
 def test_p3_09_ceo_pass_requires_restrict_updates_attribution():
@@ -835,8 +882,15 @@ def test_explicit_stage_commit_is_integrator_only_and_named_trial_branch(monkeyp
     monkeypatch.setattr(trial.subprocess, "run", lambda *_a, **_k: type("Result", (), {"stdout": "c" * 40})())
     pushes = []
     monkeypatch.setattr(trial, "_git_push", lambda _client, repo, ref: pushes.append((repo, ref)) or {"status": 0})
+    refs = iter([(404, None), (200, "c" * 40)])
+    reads = []
+    def ref_sha(*args):
+        reads.append(args[2])
+        return next(refs)
+    monkeypatch.setattr(trial, "_ref_sha", ref_sha)
     status, _, evidence = trial.run_test("STAGE-COMMIT", "org", "trial", "aao-integrator", DummyClient([]))
     assert status == "PASS" and pushes == [("org/trial", "cccccccccccccccccccccccccccccccccccccccc:refs/heads/aao-trial/explicit-candidate")]
+    assert reads == ["explicit-candidate", "explicit-candidate"]
     assert any(x.get("sha") == "c" * 40 for x in evidence)
     status, _, _ = trial.run_test("STAGE-COMMIT", "org", "trial", "aao-auditor", DummyClient([]))
     assert status == "NOT RUN"
@@ -996,10 +1050,11 @@ def test_promotion_phase_requires_staged_sha_green_checks_and_cas(monkeypatch):
         (200, {"check_runs": [{"name": "aao-audit", "status": "completed", "conclusion": "success", "app": {"id": 77}}, {"name": "test", "status": "completed", "conclusion": "success", "app": {"id": 1}}]}),
         (200, {"object": {"sha": "d" * 40}}),
         (200, {"node_id": "R_kgDOtrial"}),
+        (200, {"head": {"sha": "b" * 40}, "state": "open"}),
         (200, {"data": {"updateRefs": {"refs": [{"name": "refs/heads/main"}]}}}),
         (200, {"object": {"sha": "d" * 40}}),
         (200, {"sha": "d" * 40, "tree": {"sha": "c" * 40}, "parents": [{"sha": "a" * 40}, {"sha": "b" * 40}]}),
-        (200, {"merged": True}),
+        (200, {"merged": True, "head": {"sha": "b" * 40}}),
     ])
     status, _, evidence = trial.run_test("A-05", "org", "trial", "aao-integrator", client)
     assert status == "PASS"
@@ -1008,6 +1063,31 @@ def test_promotion_phase_requires_staged_sha_green_checks_and_cas(monkeypatch):
     assert mutation["variables"]["input"]["repositoryId"] == "R_kgDOtrial"
     assert "refs {" not in mutation["query"]
     assert any(item.get("sha") == "d" * 40 and item.get("status") == "green" for item in evidence)
+
+
+def test_trial_promotion_rejects_merged_pr_with_different_head(monkeypatch):
+    _fake_git(monkeypatch)
+    for key, value in {"AAO_GITHUB_TRIAL_PR": "8", "AAO_GITHUB_TRIAL_PR_HEAD": "b" * 40,
+                       "AAO_GITHUB_TRIAL_PHASE": "promote", "AAO_GITHUB_TRIAL_PROMOTE_SHA": "d" * 40}.items():
+        monkeypatch.setenv(key, value)
+    replies = [
+        (200, [{"number": 8, "head": {"sha": "b" * 40}}]),
+        (200, {"number": 8, "head": {"sha": "b" * 40}, "base": {"ref": "main"}}),
+        (200, {"object": {"sha": "a" * 40}}),
+        (200, {"id": 77, "owner": {"login": "autoaiorg"}}),
+        (200, {"tree": {"sha": "c" * 40}, "parents": [{"sha": "a" * 40}, {"sha": "b" * 40}]}),
+        (200, {"object": {"sha": "d" * 40}}),
+        (200, {"check_runs": [{"name": "aao-audit", "status": "completed", "conclusion": "success", "app": {"id": 77}}, {"name": "test", "status": "completed", "conclusion": "success", "app": {"id": 1}}]}),
+        (200, {"object": {"sha": "d" * 40}}),
+        (200, {"node_id": "R_kgDOtrial"}),
+        (200, {"head": {"sha": "b" * 40}, "state": "open"}),
+        (200, {"data": {"updateRefs": {"refs": [{"name": "refs/heads/main"}]}}}),
+        (200, {"object": {"sha": "d" * 40}}),
+        (200, {"sha": "d" * 40, "tree": {"sha": "c" * 40}, "parents": [{"sha": "a" * 40}, {"sha": "b" * 40}]}),
+        (200, {"merged": True, "head": {"sha": "e" * 40}}),
+    ]
+    status, reason, _ = trial.run_test("A-05", "org", "trial", "aao-integrator", DummyClient(replies))
+    assert status == "FAIL" and "authorized PR head" in reason
 
 
 def test_all_update_refs_inputs_include_repository_id():

@@ -209,6 +209,18 @@ def _push_rejection_pass(item: dict, unchanged: bool, expected: str = "protected
     return item.get("exit_code", 0) != 0 and item.get("server_rejected") is True and reason_matches and unchanged
 
 
+def _run_branch_id() -> str:
+    """Sanitize the runner's timestamp (which includes a dot) for Git ref names."""
+    return re.sub(r"[^A-Za-z0-9-]", "-", os.environ.get("AAO_TRIAL_RUN_ID") or f"manual-{os.getpid()}")
+
+
+def _permission_denial(item: dict) -> bool:
+    response = str(item.get("response", "")).lower()
+    return (item.get("exit_code", 0) != 0 and item.get("server_rejected") is True and
+            (("permission to " in response and " denied" in response) or
+             "resource not accessible" in response or "403" in response))
+
+
 _REQUIRED_CHECKS_EXPECTED = re.compile(
     r"\d+ of \d+ required status checks? (?:is|are) expected|required status check \"[^\"]+\" is expected")
 
@@ -390,6 +402,14 @@ def _merge_trial_pr(client: GitHubAppClient, base: str, evidence: list[dict]) ->
     repository_id = repository.get("response", {}).get("node_id") if isinstance(repository.get("response"), dict) else None
     if repository["status"] != 200 or not repository_id:
         return "FAIL", "could not resolve repository node id for updateRefs", evidence
+    # Checks may take minutes: re-read PR immediately before conditional promotion.
+    pr_before_update = _api(client, "GET", f"{base}/pulls/{number}")
+    evidence.append(pr_before_update)
+    pr_before_body = pr_before_update.get("response")
+    pr_before_head = pr_before_body.get("head", {}).get("sha") if isinstance(pr_before_body, dict) else None
+    if (pr_before_update.get("status") != 200 or pr_before_head != candidate or
+            pr_before_body.get("state") != "open"):
+        return "FAIL", "PR head/state changed before updateRefs promotion", evidence
     query = {"query": "mutation($input: UpdateRefsInput!) { updateRefs(input: $input) { clientMutationId } }",
              "variables": {"input": {"repositoryId": repository_id, "refUpdates": [{"name": "refs/heads/main", "oid": merge_sha,
                                                         "beforeOid": base_sha}]}}}
@@ -407,9 +427,10 @@ def _merge_trial_pr(client: GitHubAppClient, base: str, evidence: list[dict]) ->
     parents = [item.get("sha") for item in commit.get("parents", [])] if isinstance(commit, dict) else []
     actual_tree = commit.get("tree", {}).get("sha") if isinstance(commit, dict) else None
     merged = isinstance(pr_after.get("response"), dict) and pr_after["response"].get("merged") is True
-    if actual_main == merge_sha and actual_tree == tree and parents == [base_sha, candidate] and merged:
+    final_pr_head = pr_after.get("response", {}).get("head", {}).get("sha") if isinstance(pr_after.get("response"), dict) else None
+    if actual_main == merge_sha and actual_tree == tree and parents == [base_sha, candidate] and merged and final_pr_head == candidate:
         return "PASS", f"main promoted to verified merge commit {merge_sha}; PR {number} is merged", evidence
-    return "FAIL", "promotion verification failed: main, tree, parents, or PR merged state differs", evidence
+    return "FAIL", "promotion verification failed: main, tree, parents, PR merged state, or authorized PR head differs", evidence
 
 
 def _local_head() -> str | None:
@@ -570,8 +591,9 @@ def _run_equivalence(owner: str, repo: str, role: str, client: GitHubAppClient) 
         return "FAIL", "positive-control candidate SHA unavailable in local clone", evidence
     if not re.fullmatch(r"[0-9a-f]{40,64}", sha):
         return "FAIL", "positive-control candidate SHA is malformed", evidence
-    run_id = os.environ.get("AAO_TRIAL_RUN_ID", "")
-    if not re.fullmatch(r"[A-Za-z0-9-]{1,64}", run_id):
+    raw_run_id = os.environ.get("AAO_TRIAL_RUN_ID", "")
+    run_id = re.sub(r"[^A-Za-z0-9-]", "-", raw_run_id)
+    if not run_id or not re.fullmatch(r"[A-Za-z0-9-]{1,96}", run_id):
         return "FAIL", "AAO_TRIAL_RUN_ID is required for a unique fork positive-control branch", evidence
     branch = f"aao-trial/equivalence-{run_id}-{sha[:12]}"
     before_status, before_sha = _ref_sha(client, f"/repos/{fork}", branch, evidence)
@@ -663,10 +685,14 @@ def _run_test(test_id: str, owner: str, repo: str, role: str, client: GitHubAppC
         expected_sha = os.environ.get("AAO_GITHUB_TRIAL_EXPECTED_SHA", "")
         if expected_sha and (not re.fullmatch(r"[0-9a-f]{40}", expected_sha) or sha != expected_sha):
             return "FAIL", "local staged commit SHA does not match runner candidate", evidence
+        before_status, before_sha = _ref_sha(client, base, branch.removeprefix("aao-trial/"), evidence)
+        if before_status != 404:
+            return "FAIL", "explicit staging branch was not absent before the positive control", evidence
         item = _git_push(client, f"{owner}/{repo}", f"{sha}:refs/heads/{branch}")
         evidence.append(item)
-        if item.get("status") != 0:
-            return "FAIL", "integrator could not stage explicit local commit", evidence
+        after_status, after_sha = _ref_sha(client, base, branch.removeprefix("aao-trial/"), evidence)
+        if item.get("status") != 0 or after_status != 200 or after_sha != sha or before_sha is not None:
+            return "FAIL", "integrator did not create the explicit staging ref at the local commit", evidence
         evidence.append({"method": "staged commit", "sha": sha, "branch": branch})
         return "PASS", f"staged local commit {sha} on {branch}", evidence
     if not _trial_repo_allowed(owner, repo):
@@ -745,13 +771,16 @@ def _run_test(test_id: str, owner: str, repo: str, role: str, client: GitHubAppC
         evidence.append(item)
         if item["status"] not in (200, 201):
             return "FAIL", f"issue creation returned HTTP {item['status']}", evidence
-        before = _main_sha(client, base, evidence)
-        if not before:
-            return "FAIL", "issue created but could not read main before push", evidence
-        push = _git_push(client, f"{owner}/{repo}", "HEAD:refs/heads/main")
+        branch = f"aao-trial/a09-{_run_branch_id()}"
+        branch_status, branch_before = _ref_sha(client, base, branch, evidence)
+        if branch_status == 200:
+            return "NOT RUN", "A-09 disposable branch already exists; use a new AAO_TRIAL_RUN_ID", evidence
+        if branch_status != 404:
+            return "FAIL", "could not establish absent A-09 disposable branch", evidence
+        push = _git_push(client, f"{owner}/{repo}", f"HEAD:refs/heads/{branch}")
         evidence.append(push)
-        unchanged = _verify_unchanged(client, base, before, evidence)
-        return ("PASS", "issue created; server denied protected-branch push; main unchanged", evidence) if _push_rejection_pass(push, unchanged) else ("FAIL", "issue created but push failure cause or remote state did not match", evidence)
+        unchanged = _ref_unchanged(client, base, branch, branch_status, branch_before, evidence)
+        return ("PASS", "issue created; unprotected disposable-branch push was denied for permission; branch remains absent", evidence) if _permission_denial(push) and unchanged else ("FAIL", "issue created but push was not denied specifically for permission or branch state changed", evidence)
     if test_id == "A-10":
         target = _api(client, "GET", base)
         evidence.append(target)
@@ -831,10 +860,15 @@ def _run_test(test_id: str, owner: str, repo: str, role: str, client: GitHubAppC
         unchanged = _verify_unchanged(client, base, before, evidence)
         if not expected or not unchanged:
             return "FAIL", "workflow push was not rejected for missing workflows permission or fork main changed", evidence
-        branch = f"refs/heads/aao-trial/no-workflows-{parent_sha[:12]}"
+        branch = f"refs/heads/aao-trial/no-workflows-{_run_branch_id()}"
+        branch_status, branch_before = _ref_sha(client, base, branch.removeprefix("refs/heads/"), evidence)
+        if branch_status != 404:
+            return "FAIL", "non-workflow control ref was not absent before push", evidence
         positive = _git_push(client, f"{owner}/{repo}", f"{parent_sha}:{branch}")
         evidence.append(positive)
-        accepted = positive.get("exit_code") == 0 and positive.get("status") == 0
+        after_status, after_sha = _ref_sha(client, base, branch.removeprefix("refs/heads/"), evidence)
+        accepted = (positive.get("exit_code") == 0 and positive.get("status") == 0 and
+                    after_status == 200 and after_sha == parent_sha and branch_before is None)
         return ("PASS", "workflow push denied for missing workflows permission; non-workflow control push accepted", evidence) if accepted else ("FAIL", "workflow push denial passed but non-workflow control push was not accepted", evidence)
     if test_id == "A-07":
         # The runner disabled ruleset A first (P3-11). The CEO pushes a fully checked fast-forward to main; the
@@ -961,13 +995,20 @@ def _run_test(test_id: str, owner: str, repo: str, role: str, client: GitHubAppC
                 return "INCONCLUSIVE", checks_reason, evidence
             main_item = _git_push(client, f"{owner}/{repo}", f"+{candidate}:refs/heads/main", no_verify=True)
             evidence.append(main_item)
-            stage_item = _git_push(client, f"{owner}/{repo}", f"+{candidate}:refs/heads/{stage}", no_verify=True)
-            evidence.append(stage_item)
             main_unchanged = _verify_unchanged(client, base, before, evidence)
-            stage_unchanged = _ref_unchanged(client, base, stage, stage_status, stage_before, evidence)
-            if main_unchanged and stage_unchanged and all(item.get("exit_code", 0) != 0 and item.get("server_rejected") is True for item in (main_item, stage_item)):
-                if not all(_rejection_attributable(item, "non-fast-forward") for item in (main_item, stage_item)):
+            attempted = [main_item]
+            if stage_status == 200:
+                stage_item = _git_push(client, f"{owner}/{repo}", f"+{candidate}:refs/heads/{stage}", no_verify=True)
+                evidence.append(stage_item)
+                stage_unchanged = _ref_unchanged(client, base, stage, stage_status, stage_before, evidence)
+                attempted.append(stage_item)
+            else:
+                stage_unchanged = True
+            if main_unchanged and stage_unchanged and all(item.get("exit_code", 0) != 0 and item.get("server_rejected") is True for item in attempted):
+                if not all(_rejection_attributable(item, "non-fast-forward") for item in attempted):
                     return "INCONCLUSIVE", "server rejected forced updates but did not attribute both to non_fast_forward", evidence
+                if stage_status == 404:
+                    return "PASS", "server rejected forced main update specifically for non_fast_forward; staging ref absent, so main only was tested", evidence
                 return "PASS", "server rejected forced updates specifically for non_fast_forward; both refs unchanged", evidence
             return "FAIL", "forced main/staging updates were accepted, not server-rejected, or a ref changed", evidence
         else:

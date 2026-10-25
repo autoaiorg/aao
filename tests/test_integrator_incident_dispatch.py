@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 from aao import auditor_dispatch
+from aao.governance_ledger import append as append_ledger
 from aao.governance_ledger import open_incidents, verify
 from aao.integration_authorization import canonical
 
@@ -41,15 +42,19 @@ def _dispatch_fixture(tmp_path, monkeypatch):
     ledger.write_bytes(b"")
     registry = tmp_path / "registry.json"
     registry.write_text(json.dumps({"integrator_key_id": "integrator", "ledger_keys": {
-        "integrator": {"public_key": str(integrator_public)}}}))
+        "integrator": {"public_key": str(integrator_public)},
+        "auditor": {"public_key": str(auditor_public), "can_record_incidents": True,
+                    "can_resolve_incidents": True}}}))
     registry.chmod(0o600)
     anchor = {"ledger_path": str(ledger), "policy": {"auditor_id": "auditor"}}
     monkeypatch.setattr(auditor_dispatch, "load_anchor", lambda *_: anchor)
     monkeypatch.setattr(auditor_dispatch, "_ledger", lambda _anchor: ledger)
-    monkeypatch.setattr(auditor_dispatch, "_ledger_keys", lambda _anchor, _dir: {
-        "auditor": {"public_key": str(auditor_public)}})
+    auditor_keys = {"auditor": {"public_key": str(auditor_public), "can_record_incidents": True,
+                                "can_resolve_incidents": True}}
+    monkeypatch.setattr(auditor_dispatch, "_ledger_keys", lambda _anchor, _dir: auditor_keys)
     monkeypatch.setattr(auditor_dispatch, "ledger_rows", lambda _anchor: verify(ledger, {
-        "auditor": {"public_key": str(auditor_public)}}))
+        "auditor": {"public_key": str(auditor_public), "can_record_incidents": True,
+                    "can_resolve_incidents": True}}))
     inbox, reports = tmp_path / "inbox", tmp_path / "reports"
     inbox.mkdir()
     def submit(payload, name=None):
@@ -71,17 +76,39 @@ def test_dispatch_appends_one_auditor_signed_incident_and_is_idempotent(tmp_path
         anchor_path=tmp_path / "unused-anchor", trust_registry_path=tmp_path / "registry.json",
         trust_registry_owner_uids=(os.getuid(),))
     assert result == [{"id": "a" * 40, "status": "recorded"}]
-    rows = verify(ledger, {"auditor": str(auditor_public)})
+    rows = verify(ledger, {"auditor": {"public_key": str(auditor_public), "can_record_incidents": True,
+                                        "can_resolve_incidents": True}})
     assert len(rows) == 1
     assert rows[0]["type"] == "integrator-incident"
     assert rows[0]["key_id"] == "auditor"
+    assert rows[0]["id"] == payload["id"]
     assert rows[0]["incident"]["id"] == payload["id"]
     assert open_incidents(rows) == rows
     result = auditor_dispatch.dispatch_once(inbox, reports, auditor_private, object(),
         anchor_path=tmp_path / "unused-anchor", trust_registry_path=tmp_path / "registry.json",
         trust_registry_owner_uids=(os.getuid(),))
     assert result == [{"id": "a" * 40, "status": "ignored", "reason": "incident already recorded"}]
-    assert len(verify(ledger, {"auditor": str(auditor_public)})) == 1
+    assert len(verify(ledger, {"auditor": {"public_key": str(auditor_public), "can_record_incidents": True,
+                                           "can_resolve_incidents": True}})) == 1
+
+
+def test_integrator_incident_resolves_through_normal_ledger_path(tmp_path, monkeypatch):
+    _result, ledger, auditor_public, _, _, submit, inbox, reports, auditor_private = _dispatch_fixture(tmp_path, monkeypatch)
+    payload = _incident()
+    submit(payload)
+    auditor_dispatch.dispatch_once(inbox, reports, auditor_private, object(),
+        anchor_path=tmp_path / "unused-anchor", trust_registry_path=tmp_path / "registry.json",
+        trust_registry_owner_uids=(os.getuid(),))
+    keys = {"auditor": {"public_key": str(auditor_public), "can_record_incidents": True,
+                        "can_resolve_incidents": True}}
+    rows = verify(ledger, keys)
+    incident = rows[0]
+    append_ledger(ledger, {"type": "incident-resolution", "target": incident["id"],
+        "incident_hash": incident["hash"], "resolved_at": "2026-10-25T10:00:00Z"},
+        "auditor", auditor_private, keys)
+    resolved_rows = verify(ledger, keys)
+    assert resolved_rows[0]["id"] == payload["id"]
+    assert open_incidents(resolved_rows) == []
 
 
 def test_dispatch_defaults_trust_registry_owner_to_root_or_aao_trust(tmp_path, monkeypatch):
@@ -92,7 +119,9 @@ def test_dispatch_defaults_trust_registry_owner_to_root_or_aao_trust(tmp_path, m
     result = auditor_dispatch.dispatch_once(inbox, reports, auditor_private, object(),
         anchor_path=tmp_path / "unused-anchor", trust_registry_path=tmp_path / "registry.json")
     assert result[0]["status"] == "recorded"
-    assert open_incidents(verify(ledger, {"auditor": str(auditor_public)}))
+    assert open_incidents(verify(ledger, {"auditor": {"public_key": str(auditor_public),
+                                                       "can_record_incidents": True,
+                                                       "can_resolve_incidents": True}}))
 
 
 def test_invalid_incidents_never_reach_ledger(tmp_path, monkeypatch):

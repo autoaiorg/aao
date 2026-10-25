@@ -17,7 +17,8 @@
 #   trust-root-upgrade  OPT-IN (--trust-root-upgrade): move an INSTALLED trust root to a newer audited REV:
 #                backs up config + frozen trees, keeps keys, ledger and ledger.anchor, regenerates the
 #                registry (optionally --ra-status RA-0x=PASS, a CEO decision), verifier PASS, dispatch back on.
-#   integrator   OPT-IN (--enable-integrator): only if every RA in the installed registry is PASS.
+#   integrator   OPT-IN (--enable-integrator): only if every RA in the installed registry is PASS and the served
+#                repository's rulesets verify exactly (scripts/governance/canonical_protection.py verify).
 #   --audit-exception CEO-DEC-...: accept a substitute (codex) attestation only for that recorded CEO exception.
 #
 # Default is a dry run that prints what it would do. Fail closed. Phases 1-4 are re-runnable and never
@@ -373,6 +374,13 @@ if ((ENABLE_INTEGRATOR)); then
   python3 -I -c 'import json,sys; s=json.load(open(sys.argv[1]))["ra_status"]; need={"RA-01","RA-02","RA-03","RA-07","RA-09"}
 bad=sorted(need-{k for k,v in s.items() if v=="PASS"}|set(s)-need); sys.exit("RA not exactly PASS: "+", ".join(bad) if bad else 0)' /srv/aao/trust/registry.json \
     || die "the integrator stays off until the P2/P3 trial sets every RA to PASS in the registry"
+  # CEO-DEC-P2P3-2026-10-24 §5: never enable the integrator while main lacks verified preventive protection. The
+  # rulesets of the repository the integrator serves are checked with the CEO's read access (exact A/B/C shape).
+  irepo=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["repo"])' /etc/aao-integrator/config.json) \
+    || die "cannot read the integrator repository from /etc/aao-integrator/config.json"
+  runuser -u "$CEO" -- env -i HOME="$(getent passwd "$CEO" | cut -d: -f6)" PATH=/usr/bin:/bin \
+    python3 -I - --repo "$irepo" verify < "$SRC/scripts/governance/canonical_protection.py" \
+    || die "rulesets of $irepo are not the verified A/B/C protection: the integrator stays off"
   run systemctl enable --now aao-integrator-tick.timer
 fi
 say "done (apply=$APPLY). Log: $LOG"

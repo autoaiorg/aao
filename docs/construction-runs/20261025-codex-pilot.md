@@ -18,7 +18,7 @@ Se ejecutó en la instancia de desarrollo: PostgreSQL `compose.dev.yaml` y API e
 | Aislamiento | Sonda `codex_isolation_probe.py` antes del lanzamiento: `ok: true`, sin fugas |
 | Candidato | `27a09c00b0401ac2e860fc699fa35246bd4cbc04`, en `refs/aao/candidates/…`, autor `aao-implementer-202610251730@agents.aao.invalid` |
 | Propuesta | `15f5e873-d094-4f27-8685-75bbd75f58c4`, patch_sha256 `67650abde859cff9…`, solo `tests/test_planner.py` (+21 líneas, 2 tests) |
-| Check en sandbox | `core-unit` success, salida 0, 966 ms, `extra_tests` vacío (ver límites) |
+| Check en sandbox | `core-unit` success, salida 0, 966 ms: «21 passed, 1 skipped». `tests/test_planner.py` está en la lista fija de `core-unit`, así que los 2 tests nuevos se ejecutaron en el sandbox (22 tests recogidos en el candidato frente a 20 en la base). `extra_tests` está vacío porque solo recoge ficheros de tests nuevos |
 | Evidencia | `sha256:8a30ce1332ac6118f064121fcfe3978ddf5f6a06b2b4aef467c451fd399ed7e5`, registro del check, almacenada y emitida por el implementador |
 | Revisión | `f7776db3-df5d-4a25-b51b-cdd9e0381aa8` APPROVE, `aao-auditor-202610251730` (AUDITOR), sobre el SHA candidato |
 | PR | [#114](https://github.com/autoaiorg/aao/pull/114): rama `aao/work-185cc836-…-27a09c00b040`, CI en verde; la fusionó el CEO, merge commit `547842297ddec6984f98252fbe4bd6fe3c8c2c17`; CI de `main` en verde |
@@ -63,7 +63,8 @@ Se ejecutó en la instancia de desarrollo: PostgreSQL `compose.dev.yaml` y API e
 ## Límites
 
 - **Las tres identidades AAO las operó Claude.** Están separadas en AAO, pero no en el sistema operativo. La separación real de identidades es un criterio del traspaso.
-- **El check en sandbox solo ejecuta los tests que el parche añade.** Este parche modificaba un fichero de tests existente, así que los tests nuevos no se ejecutaron en el sandbox (`extra_tests` vacío). Los cubrió la suite completa del auditor y la CI de la PR. Mejora candidata: incluir en el check también los ficheros de tests modificados que no necesiten el host.
+- **El check en sandbox ejecuta su lista fija más los ficheros de tests nuevos.** Un fichero de tests ya existente que no esté en la lista de `core-unit` y que el parche modifique no se ejecuta en el sandbox: lo cubren la suite del auditor y la CI de la PR. En este piloto no ocurrió, porque `tests/test_planner.py` está en la lista.
+  - *Corrección:* la primera versión de este registro (#115) decía que los tests nuevos no se habían ejecutado en el sandbox. Era falso: la salida del check y el recuento de tests lo desmienten.
 - **La evidencia que cita la revisión es el registro del check.** El auditor no puede registrar evidencia, porque `register_evidence` solo admite AGENT. El detalle de la auditoría está en este documento.
 - **Coste y tokens no se midieron.** No se ha comprobado si `codex exec` los reporta; queda pendiente para el incremento I5 de [`RONIN_DIFFERENTIAL.md`](../research/RONIN_DIFFERENTIAL.md).
 - **La autorización del piloto termina aquí.** Usar Codex en otras tareas requiere una nueva autorización del CEO.

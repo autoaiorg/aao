@@ -56,6 +56,14 @@ jobs:
           psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/012_patch_proposals.sql
           psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/013_work_description.sql
           psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/014_execution_retry.sql
+      - name: TEMP sandbox diagnostics
+        run: |
+          ulimit -a
+          PY=$(python -c 'import sys;print(sys.base_prefix)')/bin/python3
+          prlimit --as=1073741824 $PY -c "import threading; t=threading.Thread(target=lambda: print('as ok')); t.start(); t.join()" || echo "as rc=$?"
+          prlimit --nproc=64 $PY -c "import threading; t=threading.Thread(target=lambda: print('nproc ok')); t.start(); t.join()" || echo "nproc rc=$?"
+          prlimit --cpu=90 --as=1073741824 --fsize=8388608 --nproc=64 --nofile=64 $PY -c "import threading; t=threading.Thread(target=lambda: print('all ok')); t.start(); t.join()" || echo "all rc=$?"
+          bwrap --unshare-all --ro-bind / / prlimit --nproc=64 $PY -c "import threading; t=threading.Thread(target=lambda: print('bwrap nproc ok')); t.start(); t.join()" || echo "bwrap nproc rc=$?"
       - run: python -m compileall -q src tests
       - run: python -m ruff check src tests
       - name: Run unit and PostgreSQL integration tests with warnings as errors

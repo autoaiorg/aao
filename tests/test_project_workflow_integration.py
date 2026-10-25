@@ -896,6 +896,19 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         assert rejected.status_code == 422 and "model_profile.backend" in rejected.text
         registered = client.post(f"/v1/projects/{project}/capabilities", headers=agent, json=capability)
         assert registered.status_code == 201, registered.text
+        # I4: a codex entry ranked higher in the catalog. Routing recommends it only while codex is activated, and
+        # staging refuses it once activation is gone, whatever the recorded recommendation said.
+        codex = {**capability, "capability_id": "aao.agent-runner.codex", "contract": {
+            **capability["contract"], "model_profile": {"backend": "codex", "provider": "openai", "model": "gpt-6-luna",
+                                                        "seats": ["patch.tests"], "quality": {"patch.tests": 4}}}}
+        assert client.post(f"/v1/projects/{project}/capabilities", headers=agent, json=codex).status_code == 201
+        routed = client.post(f"/v1/work/{work}/route-model", headers=agent, json={"seat": "patch.tests"}).json()
+        assert routed["capability_id"] == "aao.agent-runner" and routed["execution_authorized"] is False
+        assert ["aao.agent-runner.codex@1.0.0", "backend codex not activated"] in routed["rejected"]
+        monkeypatch.setenv("AAO_AGENT_PROVIDER", "codex")
+        routed = client.post(f"/v1/work/{work}/route-model", headers=agent, json={"seat": "patch.tests"}).json()
+        assert routed["capability_id"] == "aao.agent-runner.codex"
+        monkeypatch.delenv("AAO_AGENT_PROVIDER")
         evaluation = client.post(f"/v1/projects/{project}/capability-evaluations", headers=agent, json={
             "task_id": work,
             "options": [{"choice": c, "fit": f, "security": f, "cost": f, "time": f, "tokens": f, "maintenance": f}
@@ -906,6 +919,9 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         assert evaluation.status_code == 201, evaluation.text
         assert client.post(f"/v1/work/{work}/admit", headers=agent).status_code == 200
         run = {"capability_id": "aao.agent-runner", "version": "1.0.0", "base_sha": base_sha}
+        refused = client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json={
+            "capability_id": "aao.agent-runner.codex", "version": "1.0.0", "base_sha": base_sha})
+        assert refused.status_code == 409 and "not activated" in refused.text
         staged = client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run)
         assert staged.status_code == 202, staged.text
         assert client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run).json()["execution_id"] == staged.json()["execution_id"]

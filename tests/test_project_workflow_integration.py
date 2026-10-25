@@ -1,4 +1,5 @@
 """PostgreSQL integration tests, opt-in for explicitly disposable databases."""
+import json
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -366,7 +367,11 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         monkeypatch.setattr(conversation_provider, "stream_reply", fails_once)
         retry_turn = {"body": "Otra consulta", "idempotency_key": failure_key}
         failed = client.post(turn_url, headers=ceo, json=retry_turn)
-        assert '"code":"TEST_PROVIDER_FAILURE"' in failed.text
+        error_payloads = [
+            json.loads(line.removeprefix("data: "))
+            for line in failed.text.splitlines() if line.startswith("data: ")
+        ]
+        assert any(payload.get("code") == "TEST_PROVIDER_FAILURE" for payload in error_payloads)
         failed_message = client.get(
             f"/v1/projects/{project}/conversations/{conversation_id}/messages", headers=ceo,
         ).json()

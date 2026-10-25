@@ -55,6 +55,10 @@ describe('Phase F3: OrganizationView and Agent Structure', () => {
     expect(screen.getByText(/no concede permisos ni cambia asignaciones/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Guardar unidad' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Guardar perfil' })).toBeInTheDocument();
+    expect(document.querySelectorAll('.organization-management__form')).toHaveLength(2);
+    expect(document.querySelector('.organization-management__forms')).toContainElement(
+      screen.getByRole('button', { name: 'Guardar unidad' }).closest('form'),
+    );
   });
 
   it('navigates to Plantilla y Agentes tab and segregates standing vs ephemeral agents', () => {

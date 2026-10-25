@@ -348,8 +348,10 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
             f"/v1/projects/{project}/conversations/{conversation_id}/messages", headers=ceo,
         ).json()
         assert sum(message["body"] == turn["body"] for message in turn_messages) == 1
+        assert any(message["body"] == "Conversación persistida." for message in turn_messages)
         assert any(
-            message["body"] == "Conversación persistida." and message["turn_status"] == "COMPLETED"
+            message["body"] == turn["body"] and message["sender"] == "CEO"
+            and message["turn_status"] == "COMPLETED"
             for message in turn_messages
         )
 

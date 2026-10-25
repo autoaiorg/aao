@@ -79,6 +79,80 @@ def test_postgres_mandate_project_grant_work_admission(monkeypatch):
     os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
     reason="PostgreSQL integration requires an explicitly disposable test database",
 )
+def test_work_group_admission_waits_for_prerequisites_and_rejects_parent(monkeypatch):
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "dependency-ceo")
+    ceo = {"X-CEO-Token": "dependency-ceo"}
+    with TestClient(app) as client:
+        principal = "dependency-agent-" + str(uuid4())
+        credential = client.post("/v1/principals/credentials", headers=ceo, json={
+            "principal_id": principal, "kind": "AGENT",
+        })
+        assert credential.status_code == 201, credential.text
+        worker = {"X-Agent-Token": credential.json()["token"]}
+
+        mandate = client.post("/v1/mandates", headers=ceo, json={
+            "title": "Dependency admission " + str(uuid4()), "objective": "Test prerequisites",
+        }).json()["id"]
+        assert client.post(f"/v1/mandates/{mandate}/confirm", headers=ceo).status_code == 200
+        project = client.post("/v1/projects", headers=ceo, json={
+            "name": "Dependency admission", "mandate_id": mandate,
+        }).json()["id"]
+        assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
+            "principal_id": principal, "capability": "work.admit",
+        }).status_code == 201
+        conversation = client.post(f"/v1/projects/{project}/conversations", headers=ceo, json={
+            "title": "Dependency plan",
+        }).json()["id"]
+        group_response = client.post(
+            f"/v1/projects/{project}/conversations/{conversation}/work-groups",
+            headers=ceo,
+            json={
+                "idempotency_key": str(uuid4()), "title": "Plan", "description": "Plan summary",
+                "acceptance_criteria": ["All results are reviewed"],
+                "tasks": [
+                    {"key": "prerequisite", "title": "Prerequisite", "acceptance_criteria": ["Done"]},
+                    {"key": "parallel", "title": "Independent sibling", "acceptance_criteria": ["Done"]},
+                    {"key": "dependent", "title": "Dependent", "acceptance_criteria": ["Done"],
+                     "depends_on": ["prerequisite"]},
+                ],
+            },
+        )
+        assert group_response.status_code == 201, group_response.text
+        group = group_response.json()
+        ids = {task["title"]: task["id"] for task in group["tasks"]}
+
+        # An unresolved prerequisite blocks the dependent child without changing
+        # its canonical INBOX state; an independent sibling remains admissible.
+        blocked = client.post(f"/v1/work/{ids['Dependent']}/admit", headers=worker)
+        assert blocked.status_code == 409
+        assert "Dependencies unresolved" in blocked.text
+        assert client.post(f"/v1/work/{ids['Independent sibling']}/admit", headers=worker).status_code == 200
+        assert client.post(f"/v1/work/{group['parent_work_id']}/admit", headers=worker).status_code == 409
+
+        with connect_postgres() as db:
+            state = db.execute(
+                "SELECT status FROM work_items WHERE id=%s", (ids["Dependent"],),
+            ).fetchone()[0]
+            db.execute("UPDATE work_items SET status='IN_REVIEW' WHERE id=%s", (ids["Prerequisite"],))
+        assert state == "INBOX"
+        still_blocked = client.post(f"/v1/work/{ids['Dependent']}/admit", headers=worker)
+        assert still_blocked.status_code == 409
+        with connect_postgres() as db:
+            db.execute("UPDATE work_items SET status='DONE' WHERE id=%s", (ids["Prerequisite"],))
+        admitted = client.post(f"/v1/work/{ids['Dependent']}/admit", headers=worker)
+        assert admitted.status_code == 200, admitted.text
+        assert admitted.json()["status"] == "READY"
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or
+    os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="PostgreSQL integration requires an explicitly disposable test database",
+)
 def test_ceo_work_request_creates_only_audited_inbox_item(monkeypatch):
     from aao.postgresql_connection import connect_postgres
     from aao.work_management_api import app

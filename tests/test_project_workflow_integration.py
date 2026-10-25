@@ -911,6 +911,7 @@ def test_w2a_agent_run_produces_a_tested_candidate_retries_after_failure_and_is_
         outcome = run_one(identity, token, project_id=project, seconds=400)
         board = client.get(f"/v1/projects/{project}/board", headers=agent).json()
         last = next(i for i in board if i["id"] == work)["executions"][-1]["result"]
+        print(last.get("check", {}).get("stderr"))  # shown by pytest only on failure
         assert outcome["status"] == "SUCCEEDED", (last.get("error"), last.get("check", {}).get("stderr"),
                                                   last.get("check", {}).get("stdout"))
         board = client.get(f"/v1/projects/{project}/board", headers=agent).json()

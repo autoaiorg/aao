@@ -333,7 +333,10 @@ export const App: React.FC = () => {
           />
         )}
 
-        {activeNav === 'office3d' && <VirtualOfficeView />}
+        {activeNav === 'office3d' && <VirtualOfficeView
+          organization={organizationQuery.data || {kind:'unavailable',reason:'No hay API de organización disponible',retryable:false}}
+          onNavigate={setActiveNav}
+        />}
 
         {activeNav === 'settings' && (
           <ViewSettingsView

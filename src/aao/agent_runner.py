@@ -49,16 +49,16 @@ def codex_release() -> Path:
 _MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 
 
-def backend_identity(backend: str) -> dict:
+def backend_identity(backend: str, model: str | None = None) -> dict:
     """Who produces the patch, for the evidence: provider, model and the real CLI release.
 
-    ``model`` is the one pinned with AAO_AGENT_CODEX_MODEL (passed to codex as ``-m``); None means the CLI's
-    own default, which AAO does not observe and therefore does not record."""
+    ``model`` comes from the selected capability's model_profile, else from AAO_AGENT_CODEX_MODEL; it is passed to
+    codex as ``-m``. None means the CLI's own default, which AAO does not observe and therefore does not record."""
     if backend != "codex":
         return {"backend": backend, "provider": "fixture", "model": None, "backend_version": "fixture-v1"}
-    model = os.getenv("AAO_AGENT_CODEX_MODEL") or None
+    model = model or os.getenv("AAO_AGENT_CODEX_MODEL") or None
     if model is not None and not _MODEL.fullmatch(model):
-        raise AgentRunnerError("invalid AAO_AGENT_CODEX_MODEL")
+        raise AgentRunnerError("invalid codex model id")
     try:
         version = "codex-cli " + codex_release().name
     except AgentRunnerError:
@@ -135,7 +135,7 @@ def _commit_candidate(clone: Path, env: dict, *, author_email: str, message: str
 
 
 def run_agent_patch(repository, base_sha: str, instructions: str, *, backend: str,
-                    timeout: int, patch_file: str | None = None,
+                    timeout: int, patch_file: str | None = None, model: str | None = None,
                     candidate_store: str | Path | None = None, author_email: str = "agent@aao.invalid",
                     commit_message: str = "AAO candidate", check_id: str | None = None) -> dict:
     if not _SHA.fullmatch(base_sha):
@@ -153,7 +153,7 @@ def run_agent_patch(repository, base_sha: str, instructions: str, *, backend: st
         raise AgentRunnerError("codex backend disabled; CEO provider activation required (AAO_AGENT_PROVIDER=codex)")
     if backend not in {"fixture", "codex"}:
         raise AgentRunnerError("unsupported agent backend")
-    identity = backend_identity(backend)
+    identity = backend_identity(backend, model)
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="aao-agent-run-") as tmp:
         clone = Path(tmp) / "repo"

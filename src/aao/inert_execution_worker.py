@@ -36,6 +36,16 @@ def run_one(worker_id: str, agent_credential: str, *, project_id: str, seconds: 
         )
         with tx() as db:
             row = db.execute("SELECT w.title,w.description,w.acceptance_criteria,w.author_id FROM work_items w JOIN execution_queue q ON q.work_id=w.id WHERE q.id=%s", (execution_id,)).fetchone()
+            # The staged capability decides what runs; the environment is only the fallback for capabilities
+            # registered without a model_profile.
+            cap = db.execute("SELECT c.contract->'model_profile' FROM capability_versions c JOIN execution_queue q "
+                             "ON q.project_id=c.project_id WHERE q.id=%s AND c.capability_id=%s AND c.version=%s",
+                             (execution_id, selected["capability_id"], selected["version"])).fetchone()
+        profile = cap[0] if cap and isinstance(cap[0], dict) else None
+        backend = profile["backend"] if profile else os.getenv("AAO_AGENT_BACKEND", "codex")
+        model = profile.get("model") if profile else None
+        source = {"capability_id": selected["capability_id"], "capability_version": selected["version"],
+                  "backend_source": "capability" if profile else "environment"}
         if not row or str(row[3]) != worker_id:
             result = {"kind": selected["type"], "conclusion": "failure", "error": "assigned agent mismatch"}
         else:
@@ -53,7 +63,7 @@ def run_one(worker_id: str, agent_credential: str, *, project_id: str, seconds: 
                     raise ValueError(f"lease must exceed {CHECK_BUDGET_SECONDS}s to run the agent and its checks")
                 from aao.agent_runner import run_agent_patch
                 run = run_agent_patch(repository, selected["base_sha"], instructions,
-                                      backend=os.getenv("AAO_AGENT_BACKEND", "codex"),
+                                      backend=backend, model=model,
                                       timeout=agent_timeout, patch_file=os.getenv("AAO_AGENT_FIXTURE_PATCH"),
                                       candidate_store=store, author_email=f"{worker_id}@agents.aao.invalid",
                                       commit_message=f"{title}\n\nAAO-Work: {lease.get('work_id')}\n"
@@ -95,12 +105,13 @@ def run_one(worker_id: str, agent_credential: str, *, project_id: str, seconds: 
             except (ValueError, RuntimeError, HTTPException) as exc:
                 from aao.agent_runner import backend_identity
                 try:
-                    identity = backend_identity(os.getenv("AAO_AGENT_BACKEND", "codex"))
+                    identity = backend_identity(backend, model)
                 except ValueError:
-                    identity = {"backend": os.getenv("AAO_AGENT_BACKEND", "codex")}
+                    identity = {"backend": backend}
                 result = {"kind": selected["type"], "conclusion": "failure", **identity,
                           "elapsed_seconds": round((datetime.now(UTC) - started_at).total_seconds(), 3),
                           "exit_status": None, "error": str(exc)[:500]}
+        result.update(source)
         complete(execution_id, lease["token"], worker_id, result, agent_credential=agent_credential)
         status = "FAILED" if result.get("conclusion") == "failure" else "SUCCEEDED"
         return {"status": status, "execution_id": execution_id}

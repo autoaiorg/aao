@@ -30,12 +30,13 @@ Este fichero agradece a los proyectos de terceros que han influido en AAO y deja
 |---|---|---|---|
 | Registrar qué modelo ejecuta cada tarea, con sus propiedades (proveedor, modelo) | `config/modelConfig.mjs` (catálogo por modelo) | `agent_runner.backend_identity()`: proveedor, modelo fijado y versión real del CLI en la evidencia de cada ejecución; el panel de la tarea en el Control Center los muestra. AAO hace lo **contrario** que RONIN en un punto: RONIN oculta el modelo (`model_hidden`, ADR-010) y AAO lo exige como evidencia | #113 |
 | Detectar bucles de un agente | `middleware/loopDetection.mjs` (llamadas repetidas a herramientas) | `stage_agent_run`: rechaza un intento nuevo si los dos últimos acabaron igual (mismo parche y mismo resultado). Se compara entre intentos, no entre llamadas a herramientas | #116 |
+| Roles de modelo (*seats*) y catálogo de modelos | `config/modelConfig.mjs` (`seat`, `getModelsBySeat`) | Bloque `model_profile` (backend, proveedor, modelo, seats) en el contrato de la capacidad `agent`, validado al registrarla. El worker ejecuta lo que dice la capacidad del job, no el entorno. El modelo es un dato del catálogo; registrar una capacidad no activa el proveedor | I3 |
 
-**Inspiraciones planificadas, sin implementar** (incrementos I3–I6 del análisis):
+**Inspiraciones planificadas, sin implementar** (incrementos I4–I6 del análisis):
 
 | Idea de RONIN | Origen en RONIN | Plan en AAO |
 |---|---|---|
-| Roles de modelo (*seats*) y catálogo de modelos con coste, límites y calidad | `config/modelConfig.mjs` (`seat`, `cost`, `getModelsBySeat`) | Bloque `model_profile` en el contrato de la capacidad `agent`. AAO conoce las capacidades de sus modelos, no sus nombres |
+| Coste, límites y calidad por modelo en el catálogo | `config/modelConfig.mjs` (`cost`, `maxTokens`) | Ampliar `model_profile` con `quality`, `cost`, `limits` y `data_classes` para el router (I4/I5) |
 | Selección de modelo según la tarea | `router/intelligence-router.mjs` | Función pura `route()` que solo recomienda. La activación del proveedor (CEO) y la autorización de ejecución quedan separadas |
 | Presupuesto por niveles y comprobación previa a la llamada | `observability/costTracker.mjs`, `intelligence/costGuardrail.mjs` | Filtro de presupuesto en el router y bloqueo en el staging, persistidos en PostgreSQL y sin rebajas silenciosas |
 | Árbol de tareas y cronología del ciclo | `forge/forgeTaskTree.mjs`, `api/cycleManager.mjs`, `dashboard/index.html` | Presentación de los intentos en el Control Center sobre los datos que AAO ya persiste |

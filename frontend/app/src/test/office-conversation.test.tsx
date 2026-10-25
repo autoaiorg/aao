@@ -32,6 +32,7 @@ describe('office persistent project conversation', () => {
       createWorkRequestFromMessage: vi.fn(),
       createWorkRequestFromConversation: vi.fn(),
       createWorkGroupFromConversation: vi.fn(),
+      proposeWorkGroupFromConversation: vi.fn(),
     };
     setup(port);
     await screen.findByText('Preparar el plan');
@@ -54,7 +55,7 @@ describe('office persistent project conversation', () => {
       streamCEOConversationTurn: vi.fn()
         .mockResolvedValueOnce(interrupted)
         .mockResolvedValueOnce(ready({ message_id: 'reply-1' })),
-      createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(), createWorkGroupFromConversation: vi.fn(),
+      createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(), createWorkGroupFromConversation: vi.fn(), proposeWorkGroupFromConversation: vi.fn(),
     };
     setup(port);
     await screen.findByText('Preparar el plan');
@@ -82,6 +83,14 @@ describe('office persistent project conversation', () => {
         parent_work_id: 'work-parent', status: 'INBOX', created: true,
         tasks: [{ id: 'work-child', title: 'Documentar', status: 'INBOX', depends_on: [] }],
       })),
+      proposeWorkGroupFromConversation: vi.fn().mockResolvedValue(ready({
+        proposal: {
+          title: 'Plan acordado', description: 'Resultado del hilo',
+          acceptance_criteria: ['Criterios trazables'],
+          tasks: [{ key: 'research', title: 'Investigar', description: 'Revisar fuentes', acceptance_criteria: ['Fuentes registradas'], depends_on: [] }],
+        },
+        based_on_message_ids: ['message-1', 'message-2'], provider: 'openai-compatible', model: 'test-model', persisted_as_work: false,
+      })),
     };
     setup(port);
     await screen.findByText('Propongo documentar los hallazgos.');
@@ -106,5 +115,32 @@ describe('office persistent project conversation', () => {
     }));
     expect(await screen.findByText(/no se ha admitido ni ejecutado/)).toBeInTheDocument();
     expect(port.createWorkRequestFromMessage).not.toHaveBeenCalled();
+  });
+
+  it('asks AAO for a reviewable breakdown based on the whole persisted thread', async () => {
+    const port: AaoConversationPort = {
+      listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
+      listConversationMessages: vi.fn().mockResolvedValue(ready([
+        message, { ...message, id: 'message-2', sender: 'AAO', body: 'Acuerdo del hilo.' },
+      ])),
+      createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(), streamCEOConversationTurn: vi.fn(),
+      createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(), createWorkGroupFromConversation: vi.fn(),
+      proposeWorkGroupFromConversation: vi.fn().mockResolvedValue(ready({
+        proposal: {
+          title: 'Plan acordado', description: 'Resultado del hilo',
+          acceptance_criteria: ['Criterios trazables'],
+          tasks: [{ key: 'research', title: 'Investigar', description: 'Revisar fuentes', acceptance_criteria: ['Fuentes registradas'], depends_on: [] }],
+        },
+        based_on_message_ids: ['message-1', 'message-2'], provider: 'openai-compatible', model: 'test-model', persisted_as_work: false,
+      })),
+    };
+    setup(port);
+    await screen.findByText('Acuerdo del hilo.');
+    fireEvent.click(screen.getByRole('button', { name: 'Proponer desglose con AAO' }));
+    expect(await screen.findByDisplayValue('Plan acordado')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('Investigar')).toBeInTheDocument();
+    expect(await screen.findByText(/a partir de 2 mensajes/)).toBeInTheDocument();
+    expect(port.proposeWorkGroupFromConversation).toHaveBeenCalledWith('project-active', 'conversation-1');
+    expect(port.createWorkGroupFromConversation).not.toHaveBeenCalled();
   });
 });

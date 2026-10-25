@@ -15,7 +15,7 @@
 import type { AaoReadPort } from '../../ports/AaoReadPort';
 import type { AaoOrganizationCommandPort, OrganizationProfileCommand, OrganizationUnitCommand } from '../../ports/AaoOrganizationCommandPort';
 import type { AaoWorkCommandPort, CEOWorkRequest, CreatedWorkRequest } from '../../ports/AaoWorkCommandPort';
-import type { AaoConversationPort, ConversationWorkGroupInput, ConversationWorkGroupResult, ConversationWorkRequestInput, ConversationWorkRequestResult, ProjectConversation, ProjectConversationMessage } from '../../ports/AaoConversationPort';
+import type { AaoConversationPort, ConversationWorkGroupInput, ConversationWorkGroupProposal, ConversationWorkGroupResult, ConversationWorkRequestInput, ConversationWorkRequestResult, ProjectConversation, ProjectConversationMessage } from '../../ports/AaoConversationPort';
 import type {
   PrincipalSummary,
   ProjectSummary,
@@ -102,12 +102,13 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
   private async request<T>(
     endpoint: string,
     schema?: z.ZodType<T>,
-    options: RequestInit = {}
+    options: RequestInit = {},
+    timeoutMs = this.timeoutMs,
   ): Promise<DataState<T>> {
     const controller = new AbortController();
     this.activeControllers.add(controller);
 
-    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     const headers: Record<string, string> = {
       Accept: 'application/json',
@@ -222,7 +223,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
         return {
           kind: 'error',
           code: 'TIMEOUT',
-          message: `La solicitud a ${endpoint} fue cancelada o excedió el tiempo límite (${this.timeoutMs}ms)`,
+          message: `La solicitud a ${endpoint} fue cancelada o excedió el tiempo límite (${timeoutMs}ms)`,
           retryable: true,
         };
       }
@@ -1021,6 +1022,29 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
         })),
       }),
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) },
+    );
+  }
+
+  async proposeWorkGroupFromConversation(
+    projectId: string,
+    conversationId: string,
+  ): Promise<DataState<ConversationWorkGroupProposal>> {
+    if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede pedir una propuesta de tareas.' };
+    return this.request(
+      `/v1/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/work-group-proposals`,
+      z.object({
+        proposal: z.object({
+          title: z.string(), description: z.string(), acceptance_criteria: z.array(z.string()),
+          tasks: z.array(z.object({
+            key: z.string(), title: z.string(), description: z.string(),
+            acceptance_criteria: z.array(z.string()), depends_on: z.array(z.string()),
+          })),
+        }),
+        based_on_message_ids: z.array(z.string().uuid()),
+        provider: z.string(), model: z.string(), persisted_as_work: z.literal(false),
+      }),
+      { method: 'POST' },
+      75_000,
     );
   }
 

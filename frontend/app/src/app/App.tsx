@@ -392,7 +392,8 @@ export const App: React.FC = () => {
                   retryable: false,
                 }
               }
-              onNavigate={(target) => {
+              onNavigate={(target, projectId) => {
+                if (projectId) setSelectedProjectId(projectId);
                 if (target === 'organization') setActiveNav('organization');
                 else if (target === 'kanban') setActiveNav('kanban');
                 else if (target === 'projects') setActiveNav('projects');

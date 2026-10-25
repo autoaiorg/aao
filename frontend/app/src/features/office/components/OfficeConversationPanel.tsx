@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { DataState, ProjectSummary } from '../../../domain/models';
 import type { AaoConversationPort, ProjectConversationMessage } from '../../../data/ports/AaoConversationPort';
 import { Button } from '../../../components/ui/Button';
+import './office-forms.css';
 
 interface OfficeConversationPanelProps {
   projects: DataState<ProjectSummary[]>;
@@ -86,19 +87,19 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
   };
 
   const renderMessage = (message: ProjectConversationMessage) => (
-    <li key={message.id} style={{ listStyle: 'none', borderLeft: `3px solid ${message.sender === 'CEO' ? 'var(--accent-primary, #2563eb)' : 'var(--status-success-text, #16803c)'}`, padding: '8px 12px', background: 'var(--bg-subtle, #f8fafc)', borderRadius: 6 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11, color: 'var(--text-secondary)' }}>
+    <li key={message.id} className={`office-conversation-message office-conversation-message--${message.sender.toLowerCase()}`}>
+      <div className="office-conversation-message__meta">
         <strong>{message.sender}</strong><time dateTime={message.created_at}>{new Date(message.created_at).toLocaleString()}</time>
       </div>
-      <p style={{ margin: '6px 0 0', whiteSpace: 'pre-wrap', fontSize: 13 }}>{message.body}</p>
+      <p className="office-conversation-message__body">{message.body}</p>
       {message.related_work_id && <button type="button" onClick={() => onOpenBoard(projectId)} style={{ marginTop: 6 }}>Trabajo {message.related_work_id}</button>}
     </li>
   );
 
   return (
-    <section aria-labelledby="office-conversation-title" style={{ border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg, 12px)', padding: 16, background: 'var(--bg-surface)' }}>
-      <h3 id="office-conversation-title" style={{ margin: '0 0 4px', fontSize: 16 }}>Conversación de proyecto (persistente)</h3>
-      <p style={{ margin: '0 0 14px', color: 'var(--text-secondary)', fontSize: 12 }}>
+    <section aria-labelledby="office-conversation-title" className="office-form-panel">
+      <h3 id="office-conversation-title" className="office-form-panel__title">Conversación de proyecto (persistente)</h3>
+      <p className="office-form-panel__description">
         Los mensajes se guardan en AAO. Este incremento no genera respuestas ni ejecuta instrucciones; las órdenes de trabajo deben registrarse explícitamente en Entrada.
       </p>
       {projects.kind !== 'ready' ? (
@@ -106,21 +107,21 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
       ) : activeProjects.length === 0 ? (
         <p role="status">No hay proyectos activos para iniciar una conversación.</p>
       ) : (
-        <div style={{ display: 'grid', gap: 12, maxWidth: 760 }}>
-          <label style={{ display: 'grid', gap: 4, fontSize: 12 }}>Proyecto activo
-            <select aria-label="Proyecto de conversación" value={projectId} onChange={(event) => { setProjectId(event.target.value); setConversationId(''); }}>
+        <div className="office-conversation-content">
+          <label className="office-form-field office-conversation-project">Proyecto activo
+            <select className="office-form-control" aria-label="Proyecto de conversación" value={projectId} onChange={(event) => { setProjectId(event.target.value); setConversationId(''); }}>
               {activeProjects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
             </select>
           </label>
-          <form onSubmit={createConversation} style={{ display: 'flex', gap: 8, alignItems: 'end', flexWrap: 'wrap' }}>
-            <label style={{ display: 'grid', gap: 4, flex: '1 1 260px', fontSize: 12 }}>Nuevo hilo
-              <input aria-label="Título de conversación" required maxLength={200} value={newTitle} onChange={(event) => setNewTitle(event.target.value)} />
+          <form onSubmit={createConversation} className="office-conversation-create">
+            <label className="office-form-field">Nuevo hilo
+              <input className="office-form-control" aria-label="Título de conversación" required maxLength={200} value={newTitle} onChange={(event) => setNewTitle(event.target.value)} />
             </label>
             <Button type="submit" disabled={!newTitle.trim()}>Crear hilo</Button>
           </form>
           {conversations.length > 0 && (
-            <label style={{ display: 'grid', gap: 4, fontSize: 12 }}>Hilo guardado
-              <select aria-label="Hilo guardado" value={conversationId} onChange={(event) => setConversationId(event.target.value)}>
+            <label className="office-form-field office-conversation-project">Hilo guardado
+              <select className="office-form-control" aria-label="Hilo guardado" value={conversationId} onChange={(event) => setConversationId(event.target.value)}>
                 {conversations.map((conversation) => <option key={conversation.id} value={conversation.id}>{conversation.title}</option>)}
               </select>
             </label>
@@ -131,13 +132,13 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
             <>
               {messagesQuery.isLoading && <p role="status">Cargando mensajes…</p>}
               {messagesQuery.data && messagesQuery.data.kind !== 'ready' && <p role="alert">{stateMessage(messagesQuery.data)}</p>}
-              <ol aria-label="Mensajes de la conversación" style={{ display: 'grid', gap: 8, padding: 0, margin: 0 }}>
+              <ol aria-label="Mensajes de la conversación" className="office-conversation-list">
                 {messages.map(renderMessage)}
                 {messages.length === 0 && <li role="status" style={{ listStyle: 'none', color: 'var(--text-secondary)', fontSize: 12 }}>El hilo aún no tiene mensajes.</li>}
               </ol>
               <form onSubmit={sendMessage} style={{ display: 'grid', gap: 8 }}>
-                <label style={{ display: 'grid', gap: 4, fontSize: 12 }}>Mensaje CEO
-                  <textarea aria-label="Mensaje CEO" required maxLength={10000} rows={3} value={draft} onChange={(event) => setDraft(event.target.value)} />
+                <label className="office-form-field">Mensaje CEO
+                  <textarea className="office-form-control office-form-control--textarea" aria-label="Mensaje CEO" required maxLength={10000} rows={3} value={draft} onChange={(event) => setDraft(event.target.value)} />
                 </label>
                 <div><Button type="submit" disabled={!draft.trim()}>Guardar mensaje</Button></div>
               </form>

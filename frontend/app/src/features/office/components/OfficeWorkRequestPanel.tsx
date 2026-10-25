@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import type { DataState, ProjectSummary } from '../../../domain/models';
 import type { CEOWorkRequest, CreatedWorkRequest } from '../../../data/ports/AaoWorkCommandPort';
 import { Button } from '../../../components/ui/Button';
+import './office-forms.css';
 
 interface OfficeWorkRequestPanelProps {
   projects: DataState<ProjectSummary[]>;
@@ -42,15 +43,10 @@ export const OfficeWorkRequestPanel: React.FC<OfficeWorkRequestPanelProps> = ({
     }
   };
 
-  const inputStyle: React.CSSProperties = {
-    width: '100%', padding: '8px 10px', border: '1px solid var(--border-subtle)',
-    borderRadius: 'var(--radius-sm, 6px)', background: 'var(--bg-surface)', color: 'var(--text-primary)',
-  };
-
   return (
-    <section aria-labelledby="office-work-request-title" style={{ border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg, 12px)', padding: 16, background: 'var(--bg-surface)' }}>
-      <h3 id="office-work-request-title" style={{ margin: '0 0 4px', fontSize: 16 }}>Dirigir trabajo a un proyecto</h3>
-      <p style={{ margin: '0 0 14px', color: 'var(--text-secondary)', fontSize: 12 }}>
+    <section aria-labelledby="office-work-request-title" className="office-form-panel">
+      <h3 id="office-work-request-title" className="office-form-panel__title">Dirigir trabajo a un proyecto</h3>
+      <p className="office-form-panel__description">
         Crea una solicitud persistente en Entrada. No la admite ni inicia una ejecución.
       </p>
       {projects.kind !== 'ready' ? (
@@ -60,23 +56,23 @@ export const OfficeWorkRequestPanel: React.FC<OfficeWorkRequestPanelProps> = ({
       ) : activeProjects.length === 0 ? (
         <p role="status" style={{ color: 'var(--text-secondary)', fontSize: 13 }}>No hay proyectos activos disponibles.</p>
       ) : (
-        <form onSubmit={submit} style={{ display: 'grid', gap: 10, maxWidth: 720 }}>
-          <label style={{ display: 'grid', gap: 4, fontSize: 12 }}>Proyecto activo
-            <select aria-label="Proyecto activo" required value={projectId} onChange={(event) => setProjectId(event.target.value)} style={inputStyle}>
+        <form onSubmit={submit} className="office-work-request-form">
+          <label className="office-form-field">Proyecto activo
+            <select className="office-form-control" aria-label="Proyecto activo" required value={projectId} onChange={(event) => setProjectId(event.target.value)}>
               <option value="">Selecciona un proyecto</option>
               {activeProjects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
             </select>
           </label>
-          <label style={{ display: 'grid', gap: 4, fontSize: 12 }}>Solicitud
-            <input aria-label="Solicitud" required maxLength={200} value={title} onChange={(event) => setTitle(event.target.value)} style={inputStyle} />
+          <label className="office-form-field">Solicitud
+            <input className="office-form-control" aria-label="Solicitud" required maxLength={200} value={title} onChange={(event) => setTitle(event.target.value)} />
           </label>
-          <label style={{ display: 'grid', gap: 4, fontSize: 12 }}>Contexto (opcional)
-            <textarea aria-label="Contexto" maxLength={5000} rows={3} value={description} onChange={(event) => setDescription(event.target.value)} style={inputStyle} />
+          <label className="office-form-field">Contexto (opcional)
+            <textarea className="office-form-control office-form-control--textarea" aria-label="Contexto" maxLength={5000} rows={3} value={description} onChange={(event) => setDescription(event.target.value)} />
           </label>
-          <label style={{ display: 'grid', gap: 4, fontSize: 12 }}>Criterios de aceptación (uno por línea)
-            <textarea aria-label="Criterios de aceptación" required rows={3} value={criteria} onChange={(event) => setCriteria(event.target.value)} style={inputStyle} />
+          <label className="office-form-field">Criterios de aceptación (uno por línea)
+            <textarea className="office-form-control office-form-control--textarea" aria-label="Criterios de aceptación" required rows={3} value={criteria} onChange={(event) => setCriteria(event.target.value)} />
           </label>
-          <div><Button type="submit" disabled={saving || !projectId || !title.trim() || !criteria.trim()}>{saving ? 'Guardando…' : 'Registrar en Entrada'}</Button></div>
+          <div className="office-form-field--wide office-form-actions"><Button type="submit" disabled={saving || !projectId || !title.trim() || !criteria.trim()}>{saving ? 'Guardando…' : 'Registrar en Entrada'}</Button></div>
         </form>
       )}
       {result?.kind === 'ready' && (

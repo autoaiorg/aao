@@ -15,4 +15,35 @@ if (typeof window !== 'undefined') {
       dispatchEvent: () => false,
     };
   };
+
+  // Mock HTMLCanvasElement.prototype.getContext for JSDOM
+  if (typeof HTMLCanvasElement !== 'undefined') {
+    HTMLCanvasElement.prototype.getContext = function (type: string) {
+      if (type === '2d') {
+        return {
+          fillRect: () => {},
+          clearRect: () => {},
+          getImageData: () => ({ data: new Array(4) }),
+          putImageData: () => {},
+          createImageData: () => [],
+          setTransform: () => {},
+          drawImage: () => {},
+          save: () => {},
+          fillText: () => {},
+          restore: () => {},
+          beginPath: () => {},
+          moveTo: () => {},
+          lineTo: () => {},
+          closePath: () => {},
+          stroke: () => {},
+          fill: () => {},
+          arc: () => {},
+          roundRect: () => {},
+          createLinearGradient: () => ({ addColorStop: () => {} }),
+          measureText: () => ({ width: 50 }),
+        } as unknown as CanvasRenderingContext2D;
+      }
+      return null;
+    } as unknown as typeof HTMLCanvasElement.prototype.getContext;
+  }
 }

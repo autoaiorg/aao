@@ -41,6 +41,7 @@ Los siguientes recursos NO existen en la API del backend actual. El frontend rep
 5. **Agentes asignables:** `/v1/projects/{id}/assignable-agents` no está expuesto en HEAD.
 6. **Promociones o firmas constitucionales:** no expuestas en HTTP para frontend.
 7. **Estructura Organizativa y Telemetría de Agentes (F3):** no existen actualmente `/v1/organization` ni `/v1/agents` en el backend canónico. `HttpAaoLiveAdapter` devuelve estrictamente `kind: 'unavailable'` sin inventar actividad ni fingir presencia de agentes. El catálogo de unidades y plantilla opera con contratos desacoplados y se expone con fixtures sintéticas en modo DEMO.
+8. **Presencia Espacial y Telemetría Tridimensional (F4):** no existen actualmente `/v1/office/spatial-state` ni `/v1/agents/{id}/telemetry` en el backend canónico. La Oficina Virtual opera de manera desacoplada y defensiva: en modo LIVE reporta explícitamente `SIN CONEXIÓN AL NÚCLEO EN LIVE (F3/F4)` sin simular agentes falsos; en modo DEMO despliega el entorno 3D WebGL (y su alternativa 2D accesible) con los 6 pabellones departamentales y telemetría sintética demostrativa.
 
 ---
 

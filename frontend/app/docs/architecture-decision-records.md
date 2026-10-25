@@ -134,3 +134,35 @@ El Mandato Ejecutivo `AAO-CEO-F3-2026-10-25` autoriza el desarrollo de la Fase F
 ### Consecuencias
 - **Positivas:** Entrega completa de los requisitos de F3 con cero acoplamiento indebido al núcleo; visualización clara de la jerarquía de AAO y límites de autoridad; 100% de pase en suites de prueba (86 pruebas en Vitest + 4 pruebas en navegador real Playwright Google Chrome + 23 pruebas de regresión en pytest).
 - **Riesgos residuales:** El backend canónico no dispone todavía de endpoints operativos para F3; en consecuencia, en modo LIVE la vista reporta honestamente su indisponibilidad a la espera de la implementación de `/v1/organization` en el núcleo por el equipo responsable.
+
+---
+
+## ADR 006: Oficina Virtual 3D (WebGL / Three.js), Carga Diferida (Code-Splitting) y Plano 2D Accesible (Fase F4)
+
+### Contexto
+El Mandato de Continuación F4: Oficina Virtual 3D encarga evolucionar la implementación geométrica preliminar (F4.1) hacia un entorno tridimensional funcional, espacialmente estructurado e integrado con el AAO Control Center. Dicho entorno debe permitir al CEO recorrer los departamentos de AAO, visualizar la plantilla fija y los agentes efímeros, inspeccionar sus responsabilidades, límites de autoridad y telemetría, sin comprometer el presupuesto de rendimiento (< 250 kB gzip para la aplicación principal) ni degradar la accesibilidad WCAG 2.2 AA.
+
+### Decisión
+1. **Motor Espacial Desacoplado Three.js (`ThreeOfficeScene.ts`):**
+   - Se diseña un motor Three.js encapsulado e independiente de React, encargado de gestionar la escena WebGL, iluminación ambiental y focal, cámara de órbita suave con interpolación amortiguada (lerp), pabellones hexagonales/rectangulares para cada uno de los 6 departamentos (EXEC, GOV, ARCH, ENG, OPS, AUDIT), escritorios, pilares y rótulos volumétricos en lienzo 2D flotante.
+   - **Diferenciación visual estricta de agentes:** Los agentes persistentes (`STANDING`) se representan mediante cuerpos sólidos y cilíndricos con balizas de color, mientras que los agentes temporales (`EPHEMERAL`) se modelan como pirámides/prismas translúcidos flotantes.
+   - **Auras de telemetría basadas en evidencia:** Anillos emisivos de luz en la base del agente reflejan el estado verificado: verde esmeralda (`HEALTHY`), amarillo ámbar (`STALE`), rojo carmesí (`UNAVAILABLE`) o gris pizarra (`UNKNOWN`).
+   - **Gestión exhaustiva de ciclo de vida:** Implementación de `dispose()` sistemático para liberar geometrías, materiales, texturas de lienzo y desmontar observadores de redimensionamiento (ResizeObserver), evitando fugas de memoria en la GPU o en el hilo principal.
+2. **Carga Diferida y Code-Splitting Obligatorio (`React.lazy`):**
+   - Para no sobrecargar el tiempo de arranque de los usuarios que solo visitan el Dashboard o el Tablero Kanban, `VirtualOfficeView` se importa dinámicamente mediante `React.lazy()` envuelto en `Suspense` con un esqueleto de carga accesible.
+   - **Medición de peso:** El bundle principal se mantiene en **137.26 kB gzip** (muy por debajo del límite de 250 kB), segregándose el motor Three.js en un chunk asíncrono de **146.11 kB gzip** cargado exclusivamente al navegar a la oficina.
+3. **Plano 2D Accesible y Detección Automática de Capacidades (`Office2DPlan.tsx`):**
+   - En cumplimiento estricto del ADR 003 y de WCAG 2.2 AA, se provee una vista alternativa en plano de cuadrícula 2D (`Office2DPlan`), navegable al 100% mediante teclado y compatible con lectores de pantalla.
+   - `Office3DCanvas` detecta si el navegador o entorno de ejecución dispone de contexto WebGL. En ausencia de aceleración 3D (o en navegadores restringidos), se muestra un aviso explicativo y un botón directo para conmutar al Plano 2D Accesible.
+   - Se incorpora control y detección de `prefers-reduced-motion: reduce` para pausar rotaciones automáticas y transiciones bruscas.
+4. **Panel Contextual de Inspección y Navegación Cruzada (`OfficeContextSidebar.tsx`):**
+   - Al seleccionar un departamento o interactuar con un agente (mediante clic espacial en 3D, navegación en 2D o chips de filtro), la barra lateral se sincroniza inmediatamente.
+   - Exhibe la tarjeta técnica del agente con tipo, estado de latido, última comprobación, límite constitucional de autoridad, capacidades verificadas y asignaciones activas de tareas.
+   - Proporciona botones de salto inmediato hacia el Organigrama (`organization`), el Tablero de Trabajo (`kanban`) o la lista de Proyectos (`projects`).
+5. **Honestidad en Telemetría y Separación LIVE/DEMO:**
+   - En modo LIVE, se informa explícitamente de que los edificios son conceptuales y que el núcleo no expone aún contratos de presencia 3D en tiempo real.
+   - En modo DEMO, se rotula de forma destacada la simulación sintética de los 6 departamentos y 12 agentes.
+
+### Consecuencias
+- **Positivas:** Experiencia inmersiva tridimensional de alta calidad estética e informativa para el CEO; estricto cumplimiento de accesibilidad y rendimiento; cero interferencias con el backend del núcleo ni con otros desarrollos en paralelo.
+- **Verificación:** 99 pruebas automatizadas pasando en Vitest (incluyendo 9 pruebas de componentes F4), 5 pruebas E2E en navegador real Google Chrome pasando en Playwright (incluyendo el flujo completo de la Oficina Virtual 3D y 2D), y 23 pruebas de regresión en pytest pasando al 100%.

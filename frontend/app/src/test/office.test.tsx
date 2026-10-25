@@ -1,0 +1,267 @@
+import { describe, it, expect, vi } from 'vitest';
+import * as THREE from 'three';
+import { render, screen, fireEvent, within } from '@testing-library/react';
+import { VirtualOfficeView } from '../features/office/VirtualOfficeView';
+import { Office2DPlan } from '../features/office/components/Office2DPlan';
+import { ThreeOfficeScene } from '../features/office/engine/ThreeOfficeScene';
+import type { DataState, OrganizationStructure } from '../domain/models';
+import { DEMO_ORG_STRUCTURE, DEMO_AGENTS, DEMO_ORG_UNITS } from '../data/adapters/demo/fixtures';
+
+describe('Phase F4: VirtualOfficeView & 3D Office Experience', () => {
+  const readyDemoState: DataState<OrganizationStructure> = {
+    kind: 'ready',
+    origin: 'demo',
+    data: DEMO_ORG_STRUCTURE,
+    fetchedAt: new Date().toISOString(),
+  };
+
+  const unavailableLiveState: DataState<OrganizationStructure> = {
+    kind: 'unavailable',
+    reason:
+      'El núcleo canónico de AAO no expone aún endpoints públicos para la estructura organizativa ni la telemetría de agentes (F3/F4).',
+    retryable: false,
+  };
+
+  it('renders honest callout in LIVE when backend F4 endpoints are absent', () => {
+    render(<VirtualOfficeView organization={unavailableLiveState} />);
+
+    expect(screen.getByText(/Oficina Virtual 3D · AAO/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/SIN CONEXIÓN AL NÚCLEO EN LIVE \(F3\/F4\)/i)
+    ).toBeInTheDocument();
+  });
+
+  it('renders DEMO simulation banner in demo mode with active 3D controls', () => {
+    render(<VirtualOfficeView organization={readyDemoState} />);
+
+    expect(
+      screen.getByText(/DEMO · SIMULACIÓN 3D ACTIVA · Todos los departamentos, agentes y asignaciones son sintéticos/i)
+    ).toBeInTheDocument();
+
+    const toolbar = screen.getByRole('toolbar', { name: /Barra de herramientas de la Oficina Virtual/i });
+
+    // Mode buttons in toolbar
+    expect(within(toolbar).getByRole('button', { name: /Vista 3D \(WebGL\)/i })).toBeInTheDocument();
+    expect(within(toolbar).getByRole('button', { name: /Plano 2D Accesible/i })).toBeInTheDocument();
+  });
+
+  it('toggles between 3D viewport and 2D accessible blueprint map', () => {
+    render(<VirtualOfficeView organization={readyDemoState} />);
+
+    const toolbar = screen.getByRole('toolbar', { name: /Barra de herramientas de la Oficina Virtual/i });
+    const plan2dBtn = within(toolbar).getByRole('button', { name: /Plano 2D Accesible/i });
+    fireEvent.click(plan2dBtn);
+
+    // 2D plan region is now active
+    expect(screen.getByRole('region', { name: /Plano 2D accesible de la oficina de AAO/i })).toBeInTheDocument();
+
+    // Switch back to 3D
+    const view3dBtn = within(toolbar).getByRole('button', { name: /Vista 3D \(WebGL\)/i });
+    fireEvent.click(view3dBtn);
+
+    expect(screen.queryByRole('region', { name: /Plano 2D accesible de la oficina de AAO/i })).not.toBeInTheDocument();
+  });
+
+  it('selects department via department chips and updates sidebar context', () => {
+    render(<VirtualOfficeView organization={readyDemoState} />);
+
+    // Click on [AUDIT] chip
+    const auditBtn = screen.getByRole('button', { name: /\[AUDIT\] Auditoría/i });
+    fireEvent.click(auditBtn);
+
+    // Sidebar updates to show Auditoría Independiente
+    expect(screen.getByRole('heading', { level: 3, name: /Auditoría Independiente/i })).toBeInTheDocument();
+  });
+
+  it('selects agent and displays complete contextual inspector with capabilities and authority boundary', () => {
+    render(<VirtualOfficeView organization={readyDemoState} />);
+
+    // Find agent button in sidebar
+    const agentBtn = screen.getByRole('button', { name: /Asistente de Presidencia/i });
+    fireEvent.click(agentBtn);
+
+    // Contextual inspector region appears
+    const inspector = screen.getByRole('region', { name: /Ficha técnica de Asistente de Presidencia/i });
+    expect(inspector).toBeInTheDocument();
+    expect(screen.getByText(/Supervisión consultiva. No auto-aprueba mandatos/i)).toBeInTheDocument();
+    expect(screen.getByText(/Recepción y emisión de mandatos ejecutivos/i)).toBeInTheDocument();
+
+    // Close button dismisses inspector
+    const closeBtn = screen.getByRole('button', { name: /Cerrar ficha de agente/i });
+    fireEvent.click(closeBtn);
+
+    expect(screen.queryByRole('region', { name: /Ficha técnica de Asistente de Presidencia/i })).not.toBeInTheDocument();
+  });
+
+  it('filters agents in the office using search input and type filter', () => {
+    render(<VirtualOfficeView organization={readyDemoState} />);
+
+    // Search input
+    const searchInput = screen.getByPlaceholderText(/Buscar agente o capacidad.../i);
+    fireEvent.change(searchInput, { target: { value: 'Antigravity' } });
+
+    // Switch to 2D plan to easily verify rendered agents across rooms
+    const toolbar = screen.getByRole('toolbar', { name: /Barra de herramientas de la Oficina Virtual/i });
+    const plan2dBtn = within(toolbar).getByRole('button', { name: /Plano 2D Accesible/i });
+    fireEvent.click(plan2dBtn);
+
+    expect(screen.getByText(/Especialista en Frontend y Accesibilidad \(Antigravity\)/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Asistente de Presidencia/i)).not.toBeInTheDocument();
+
+    // Filter by type
+    const typeSelect = screen.getByLabelText(/Filtrar por tipo de agente/i);
+    fireEvent.change(typeSelect, { target: { value: 'EPHEMERAL' } });
+
+    // Antigravity is STANDING so it is filtered out
+    expect(screen.queryByText(/Especialista en Frontend y Accesibilidad/i)).not.toBeInTheDocument();
+  });
+
+  it('triggers onNavigate shortcuts for cross-view integration', () => {
+    const onNavigate = vi.fn();
+    render(<VirtualOfficeView organization={readyDemoState} onNavigate={onNavigate} />);
+
+    const orgShortcut = screen.getByRole('button', { name: /Ver Organigrama/i });
+    fireEvent.click(orgShortcut);
+    expect(onNavigate).toHaveBeenCalledWith('organization');
+
+    const kanbanShortcut = screen.getByRole('button', { name: /Ver Tablero/i });
+    fireEvent.click(kanbanShortcut);
+    expect(onNavigate).toHaveBeenCalledWith('kanban');
+
+    const projectsShortcut = screen.getByRole('button', { name: /Proyectos/i });
+    fireEvent.click(projectsShortcut);
+    expect(onNavigate).toHaveBeenCalledWith('projects');
+  });
+
+  it('toggles reduced motion accessibility mode', () => {
+    render(<VirtualOfficeView organization={readyDemoState} />);
+
+    const motionBtn = screen.getByRole('button', { name: /Animación Estándar|Movimiento Reducido/i });
+    fireEvent.click(motionBtn);
+
+    expect(screen.getByText(/Movimiento Reducido \(Activo\)/i)).toBeInTheDocument();
+  });
+});
+
+describe('Office2DPlan Component Direct Test', () => {
+  it('renders all 6 departments and handles room and agent selection', () => {
+    const onSelectRoom = vi.fn();
+    const onSelectAgent = vi.fn();
+
+    render(
+      <Office2DPlan
+        units={DEMO_ORG_UNITS}
+        agents={DEMO_AGENTS}
+        selectedRoomId="unit-exec"
+        selectedAgentId={null}
+        onSelectRoom={onSelectRoom}
+        onSelectAgent={onSelectAgent}
+        isDemo={true}
+      />
+    );
+
+    // 6 departments rendered as headings
+    expect(screen.getByRole('heading', { level: 4, name: /Dirección Ejecutiva/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 4, name: /Gobernanza Constitucional/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 4, name: /Auditoría Independiente/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 4, name: /Arquitectura de Sistemas/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 4, name: /Ingeniería de Software/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 4, name: /Operaciones de Infraestructura/i })).toBeInTheDocument();
+
+    // Select department
+    const govBtn = screen.getByRole('button', { name: /Gobernanza Constitucional/i });
+    fireEvent.click(govBtn);
+    expect(onSelectRoom).toHaveBeenCalledWith('unit-gov');
+  });
+});
+
+describe('ThreeOfficeScene Engine Direct Regression Tests (Defects 1 & 2)', () => {
+  const createMockRenderer = () =>
+    ({
+      setSize: vi.fn(),
+      setPixelRatio: vi.fn(),
+      render: vi.fn(),
+      domElement: document.createElement('canvas'),
+      shadowMap: { enabled: false, type: 0 },
+      dispose: vi.fn(),
+    } as unknown as THREE.WebGLRenderer);
+
+  it('Defect 1: updateAgents() removes obsolete agent references from interactiveMeshes to prevent memory leaks and raycast accumulation', () => {
+    const container = document.createElement('div');
+    const scene = new ThreeOfficeScene(container, {
+      renderer: createMockRenderer(),
+      callbacks: {
+        onSelectRoom: vi.fn(),
+        onSelectAgent: vi.fn(),
+        onHoverObject: vi.fn(),
+      },
+    });
+
+    // Initially, interactiveMeshes contains the 6 room platforms
+    expect(scene.getInteractiveMeshesCount()).toBe(6);
+
+    // First agent update with DEMO_AGENTS
+    scene.updateAgents(DEMO_AGENTS);
+    const countAfterFirstUpdate = scene.getInteractiveMeshesCount();
+    expect(countAfterFirstUpdate).toBeGreaterThan(6);
+
+    // Second agent update with DEMO_AGENTS (must NOT accumulate or leak old meshes)
+    scene.updateAgents(DEMO_AGENTS);
+    expect(scene.getInteractiveMeshesCount()).toBe(countAfterFirstUpdate);
+
+    // Third agent update with empty array: should cleanly revert to exactly 6 room platforms
+    scene.updateAgents([]);
+    expect(scene.getInteractiveMeshesCount()).toBe(6);
+
+    scene.dispose();
+  });
+
+  it('Defect 2: stepAnimation() strictly animates EPHEMERAL crystal agents and leaves STANDING agent geometry stationary', () => {
+    const container = document.createElement('div');
+    const scene = new ThreeOfficeScene(container, {
+      renderer: createMockRenderer(),
+      callbacks: {
+        onSelectRoom: vi.fn(),
+        onSelectAgent: vi.fn(),
+        onHoverObject: vi.fn(),
+      },
+    });
+
+    scene.updateAgents(DEMO_AGENTS);
+
+    // Identify a standing agent (e.g. Asistente de Presidencia / CEO Chair)
+    const standingAgent = DEMO_AGENTS.find((a) => a.type === 'STANDING');
+    expect(standingAgent).toBeDefined();
+
+    // Identify an ephemeral agent (e.g. Sincronizador de Documentación / Doc Bot)
+    const ephemeralAgent = DEMO_AGENTS.find((a) => a.type === 'EPHEMERAL');
+    expect(ephemeralAgent).toBeDefined();
+
+    const standingGroup = scene.getAgentMeshGroup(standingAgent!.id);
+    const ephemeralGroup = scene.getAgentMeshGroup(ephemeralAgent!.id);
+    expect(standingGroup).toBeDefined();
+    expect(ephemeralGroup).toBeDefined();
+
+    // Initial positions of children[1]:
+    // Standing: pedestal at y = 0.06, rotation.y = 0
+    expect(standingGroup!.children[1].position.y).toBeCloseTo(0.06);
+    expect(standingGroup!.children[1].rotation.y).toBe(0);
+
+    // Ephemeral: floating crystal initial y = 0.58
+    expect(ephemeralGroup!.children[1].position.y).toBeCloseTo(0.58);
+    expect(ephemeralGroup!.children[1].rotation.y).toBe(0);
+
+    // Execute animation step at t = 1000ms
+    scene.stepAnimation(1000);
+
+    // STANDING agent geometry must remain strictly unchanged
+    expect(standingGroup!.children[1].position.y).toBeCloseTo(0.06);
+    expect(standingGroup!.children[1].rotation.y).toBe(0);
+
+    // EPHEMERAL agent crystal geometry MUST have rotated and bobbed
+    expect(ephemeralGroup!.children[1].rotation.y).toBeCloseTo(1000 * 0.002 * 0.5);
+    expect(ephemeralGroup!.children[1].position.y).not.toBe(0.58);
+
+    scene.dispose();
+  });
+});

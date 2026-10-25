@@ -77,11 +77,17 @@ export class ThreeOfficeScene {
     if (!options.renderer) {
       this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
       this.renderer.shadowMap.enabled = true;
-      this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      this.renderer.shadowMap.type = THREE.PCFShadowMap;
     }
-    if (!container.contains(this.renderer.domElement)) {
-      container.appendChild(this.renderer.domElement);
+    this.renderer.domElement.style.display = 'block';
+    this.renderer.domElement.style.width = '100%';
+    this.renderer.domElement.style.height = '100%';
+
+    // Ensure container is clean before appending new canvas
+    while (container.firstChild) {
+      container.removeChild(container.firstChild);
     }
+    container.appendChild(this.renderer.domElement);
 
     // 4. Hierarchy Groups
     this.scene.add(this.walkwaysGroup);
@@ -1070,6 +1076,9 @@ export class ThreeOfficeScene {
     this.disposeHierarchy(this.scene);
     if (this.renderer && typeof this.renderer.dispose === 'function') {
       this.renderer.dispose();
+    }
+    if (dom && typeof dom.remove === 'function') {
+      dom.remove();
     }
   }
 }

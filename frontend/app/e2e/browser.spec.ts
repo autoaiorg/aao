@@ -274,5 +274,16 @@ test.describe('Real Browser Functional & Accessibility Suite (Google Chrome)', (
 
     // View changes to Organization
     await expect(page.getByRole('heading', { level: 2, name: /Organización y Estructura de Agentes/i })).toBeVisible();
+
+    // 11. Navigate back to "Oficina Virtual", switch 2D -> 3D and verify single active canvas with no orphan leaks
+    await officeNav.click();
+    await expect(toolbar).toBeVisible();
+    await view3dBtn.click();
+    const canvasCount = await page.evaluate(() => document.querySelectorAll('canvas').length);
+    expect(canvasCount).toBe(1);
+    const canvasBox = await page.locator('canvas').boundingBox();
+    expect(canvasBox).not.toBeNull();
+    expect(canvasBox!.width).toBeGreaterThan(400);
+    expect(canvasBox!.height).toBeGreaterThan(400);
   });
 });

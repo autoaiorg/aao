@@ -303,6 +303,60 @@ describe('ThreeOfficeScene Engine Direct Regression Tests (Defects 1 & 2)', () =
     scene.dispose();
   });
 
+  it('cleans up DOM canvas elements on dispose and cleans container on instantiation, preventing double-mount canvas accumulation', () => {
+    const container = document.createElement('div');
+    const mockRenderer1 = createMockRenderer();
+    const scene1 = new ThreeOfficeScene(container, {
+      renderer: mockRenderer1,
+      callbacks: {
+        onSelectRoom: vi.fn(),
+        onSelectAgent: vi.fn(),
+        onHoverObject: vi.fn(),
+      },
+    });
+
+    expect(container.querySelectorAll('canvas').length).toBe(1);
+
+    // Simulate React StrictMode unmount: dispose removes the canvas from container
+    scene1.dispose();
+    expect(container.querySelectorAll('canvas').length).toBe(0);
+
+    // Simulate React StrictMode second mount: exactly one canvas is appended
+    const mockRenderer2 = createMockRenderer();
+    const scene2 = new ThreeOfficeScene(container, {
+      renderer: mockRenderer2,
+      callbacks: {
+        onSelectRoom: vi.fn(),
+        onSelectAgent: vi.fn(),
+        onHoverObject: vi.fn(),
+      },
+    });
+
+    expect(container.querySelectorAll('canvas').length).toBe(1);
+    expect(container.firstChild).toBe(mockRenderer2.domElement);
+    scene2.dispose();
+    expect(container.querySelectorAll('canvas').length).toBe(0);
+
+    // If an orphan element is present in the container prior to instantiation, constructor cleans it
+    const orphanCanvas = document.createElement('canvas');
+    container.appendChild(orphanCanvas);
+    expect(container.querySelectorAll('canvas').length).toBe(1);
+
+    const mockRenderer3 = createMockRenderer();
+    const scene3 = new ThreeOfficeScene(container, {
+      renderer: mockRenderer3,
+      callbacks: {
+        onSelectRoom: vi.fn(),
+        onSelectAgent: vi.fn(),
+        onHoverObject: vi.fn(),
+      },
+    });
+    expect(container.querySelectorAll('canvas').length).toBe(1);
+    expect(container.firstChild).toBe(mockRenderer3.domElement);
+    scene3.dispose();
+    expect(container.querySelectorAll('canvas').length).toBe(0);
+  });
+
   it('F4.7: agent stress distribution scales cleanly up to 100 agents without errors or leaking meshes', () => {
     const container = document.createElement('div');
     const scene = new ThreeOfficeScene(container, {

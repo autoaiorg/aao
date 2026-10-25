@@ -154,6 +154,7 @@ class CEOWorkRequest(BaseModel):
 
 class ConversationWorkRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=5000)
     acceptance_criteria: list[str] = Field(min_length=1)
 
     @field_validator("title")
@@ -171,6 +172,18 @@ class ConversationWorkRequest(BaseModel):
         if any(not value for value in criteria):
             raise ValueError("Acceptance criteria must not be blank")
         return criteria
+
+
+class ConversationThreadWorkRequest(ConversationWorkRequest):
+    description: str = Field(min_length=1, max_length=5000)
+
+    @field_validator("description")
+    @classmethod
+    def thread_description_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Work description must not be blank")
+        return value
 
 
 class ProjectConversationRequest(BaseModel):
@@ -1291,6 +1304,39 @@ def create_work_request_from_conversation_message(
             "UPDATE project_conversations SET updated_at=clock_timestamp() WHERE id=%s",
             (conversation_id,),
         )
+    return {"id": work_id, "status": "INBOX", "created": True}
+
+
+@app.post("/v1/projects/{project_id}/conversations/{conversation_id}/work-requests", status_code=201)
+def create_work_request_from_conversation(
+    project_id: str,
+    conversation_id: str,
+    payload: ConversationThreadWorkRequest,
+    _: str = Depends(require_ceo),
+):
+    """Turn the CEO-reviewed outcome of a full conversation into canonical INBOX work."""
+    with tx() as db:
+        project = db.execute(
+            "SELECT state FROM projects WHERE id=%s FOR UPDATE", (project_id,),
+        ).fetchone()
+        if not project:
+            raise HTTPException(404, "Project not found")
+        if project[0] != "ACTIVE":
+            raise HTTPException(409, "Project not active")
+        conversation = db.execute(
+            "SELECT id FROM project_conversations WHERE id=%s AND project_id=%s FOR UPDATE",
+            (conversation_id, project_id),
+        ).fetchone()
+        if not conversation:
+            raise HTTPException(404, "Conversation not found")
+        work_id = _insert_ceo_work_request(
+            db, project_id, payload.title, payload.description,
+            payload.acceptance_criteria,
+        )
+        audit(db, work_id, "work.requested_from_conversation", {
+            "project_id": project_id, "conversation_id": conversation_id,
+            "actor": "ceo", "status": "INBOX", "admitted": False,
+        })
     return {"id": work_id, "status": "INBOX", "created": True}
 
 

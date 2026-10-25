@@ -30,6 +30,7 @@ describe('office persistent project conversation', () => {
         return ready({ message_id: 'response-1' });
       }),
       createWorkRequestFromMessage: vi.fn(),
+      createWorkRequestFromConversation: vi.fn(),
     };
     setup(port);
     await screen.findByText('Preparar el plan');
@@ -41,62 +42,25 @@ describe('office persistent project conversation', () => {
     expect(screen.queryByRole('option', { name: 'Proyecto pausado' })).not.toBeInTheDocument();
   });
 
-  it('allows the CEO to turn an AAO proposal into an explicit INBOX task', async () => {
-    const assistantMessage = { ...message, sender: 'AAO' as const, body: 'Propuesta: revisar el presupuesto' };
+  it('structures a CEO-confirmed task from the conversation thread, not an individual message', async () => {
     const port: AaoConversationPort = {
       listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
-      listConversationMessages: vi.fn().mockResolvedValue(ready([assistantMessage])),
-      createProjectConversation: vi.fn(),
-      appendCEOConversationMessage: vi.fn(),
-      streamCEOConversationTurn: vi.fn(),
-      createWorkRequestFromMessage: vi.fn().mockResolvedValue(ready({ id: 'work-1', status: 'INBOX', created: true })),
+      listConversationMessages: vi.fn().mockResolvedValue(ready([message, { ...message, id: 'message-2', sender: 'AAO', body: 'Propongo documentar los hallazgos.' } ])),
+      createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(), streamCEOConversationTurn: vi.fn(),
+      createWorkRequestFromMessage: vi.fn(),
+      createWorkRequestFromConversation: vi.fn().mockResolvedValue(ready({ id: 'work-1', status: 'INBOX', created: true })),
     };
     setup(port);
-    await screen.findByText('Propuesta: revisar el presupuesto');
-    fireEvent.click(screen.getByRole('button', { name: 'Convertir en solicitud de trabajo…' }));
-    fireEvent.change(screen.getByLabelText('Título del trabajo para message-1'), { target: { value: 'Revisar presupuesto' } });
-    fireEvent.change(screen.getByLabelText('Criterios de aceptación para message-1'), { target: { value: 'Informe revisado' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Crear solicitud INBOX' }));
-    await waitFor(() => expect(port.createWorkRequestFromMessage).toHaveBeenCalledWith('project-active', 'conversation-1', 'message-1', {
-      title: 'Revisar presupuesto', acceptance_criteria: ['Informe revisado'],
+    await screen.findByText('Propongo documentar los hallazgos.');
+    expect(screen.queryByRole('button', { name: /Convertir en solicitud/ })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Título de tarea desde conversación'), { target: { value: 'Documentar hallazgos' } });
+    fireEvent.change(screen.getByLabelText('Descripción de tarea desde conversación'), { target: { value: 'A partir del hilo, documentar los hallazgos acordados.' } });
+    fireEvent.change(screen.getByLabelText('Criterios de aceptación de tarea desde conversación'), { target: { value: 'Hallazgos documentados\nCEO puede revisarlos' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar y crear en Entrada' }));
+    await waitFor(() => expect(port.createWorkRequestFromConversation).toHaveBeenCalledWith('project-active', 'conversation-1', {
+      title: 'Documentar hallazgos', description: 'A partir del hilo, documentar los hallazgos acordados.', acceptance_criteria: ['Hallazgos documentados', 'CEO puede revisarlos'],
     }));
-  });
-
-  it('requires explicit title and acceptance criteria, then links the persisted work request', async () => {
-    const onOpenBoard = vi.fn();
-    const workId = '00000000-0000-4000-8000-000000000042';
-    let linkedWorkId: string | null = null;
-    const port: AaoConversationPort = {
-      listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
-      listConversationMessages: vi.fn().mockImplementation(async () => ready([{
-        ...message, related_work_id: linkedWorkId, work_status: linkedWorkId ? 'INBOX' : null,
-        latest_execution: linkedWorkId ? { id: '00000000-0000-4000-8000-000000000043', status: 'SUCCEEDED', backend: 'codex', provider: 'openai', model: 'gpt-6-luna' } : null,
-      }])),
-      createProjectConversation: vi.fn(),
-      appendCEOConversationMessage: vi.fn(),
-      streamCEOConversationTurn: vi.fn(),
-      createWorkRequestFromMessage: vi.fn().mockImplementation(async () => {
-        linkedWorkId = workId;
-        return ready({ id: workId, status: 'INBOX', created: true });
-      }),
-    };
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(<QueryClientProvider client={client}><OfficeConversationPanel projects={projects} port={port} sessionId="session-work" onOpenBoard={onOpenBoard} /></QueryClientProvider>);
-
-    await screen.findByText('Preparar el plan');
-    fireEvent.click(screen.getByRole('button', { name: 'Convertir en solicitud de trabajo…' }));
-    fireEvent.change(screen.getByLabelText('Título del trabajo para message-1'), { target: { value: 'Preparar análisis' } });
-    fireEvent.change(screen.getByLabelText('Criterios de aceptación para message-1'), { target: { value: 'Hallazgos documentados\nRevisión completada' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Crear solicitud INBOX' }));
-
-    await waitFor(() => expect(port.createWorkRequestFromMessage).toHaveBeenCalledWith('project-active', 'conversation-1', 'message-1', {
-      title: 'Preparar análisis', acceptance_criteria: ['Hallazgos documentados', 'Revisión completada'],
-    }));
-    await waitFor(() => expect(screen.getByRole('button', { name: `Abrir trabajo ${workId}` })).toBeInTheDocument());
-    expect(screen.getByText('Estado del trabajo: INBOX')).toBeInTheDocument();
-    expect(screen.getByText(/Última ejecución SUCCEEDED · openai \/ gpt-6-luna/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: `Abrir trabajo ${workId}` }));
-    expect(onOpenBoard).toHaveBeenCalledWith('project-active');
-    expect(screen.getByText(/no se ha admitido ni ejecutado/)).toBeInTheDocument();
+    expect(await screen.findByText(/no se ha admitido ni ejecutado/)).toBeInTheDocument();
+    expect(port.createWorkRequestFromMessage).not.toHaveBeenCalled();
   });
 });

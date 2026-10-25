@@ -6,9 +6,13 @@ import { Office3DCanvas, type WebGLCanvasHandle } from './components/Office3DCan
 import { Office2DPlan } from './components/Office2DPlan';
 import { OfficeContextSidebar } from './components/OfficeContextSidebar';
 import { AgentDetailDrawer } from '../organization/AgentDetailDrawer';
+import { OfficeWorkRequestPanel } from './components/OfficeWorkRequestPanel';
 
 export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
   organization,
+  projects = { kind: 'unavailable', reason: 'Lista de proyectos no disponible.', retryable: true },
+  canCreateWorkRequest = false,
+  onCreateWorkRequest,
   onNavigate,
   onRefresh,
 }) => {
@@ -253,6 +257,14 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
           isDemo={isDemo}
         />
       </div>
+
+      {canCreateWorkRequest && onCreateWorkRequest && !isDemo && (
+        <OfficeWorkRequestPanel
+          projects={projects}
+          onCreate={onCreateWorkRequest}
+          onOpenBoard={(projectId) => onNavigate?.('kanban', projectId)}
+        />
+      )}
 
       {/* Enriched Agent Drawer */}
       <AgentDetailDrawer agent={drawerAgent} onClose={() => setDrawerAgent(null)} />

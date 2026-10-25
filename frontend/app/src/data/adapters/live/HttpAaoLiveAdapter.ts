@@ -14,6 +14,7 @@
 
 import type { AaoReadPort } from '../../ports/AaoReadPort';
 import type { AaoOrganizationCommandPort, OrganizationProfileCommand, OrganizationUnitCommand } from '../../ports/AaoOrganizationCommandPort';
+import type { AaoWorkCommandPort, CEOWorkRequest, CreatedWorkRequest } from '../../ports/AaoWorkCommandPort';
 import type {
   PrincipalSummary,
   ProjectSummary,
@@ -54,7 +55,7 @@ export interface HttpLiveAdapterConfig {
   requireAuth?: boolean;
 }
 
-export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPort {
+export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPort, AaoWorkCommandPort {
   private baseUrl: string;
   private timeoutMs: number;
   private getToken: () => string | null;
@@ -782,6 +783,21 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
     });
+  }
+
+  async createCEOWorkRequest(projectId: string, input: CEOWorkRequest): Promise<DataState<CreatedWorkRequest>> {
+    if (this.getAuthRole() !== 'CEO') {
+      return { kind: 'forbidden', reason: 'Solo la sesión CEO puede registrar una solicitud de trabajo.' };
+    }
+    return this.request(
+      `/v1/projects/${encodeURIComponent(projectId)}/work-requests`,
+      z.object({ id: z.string().uuid(), status: z.literal('INBOX') }),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+    );
   }
 
   async getAgentDetails(agentId: string): Promise<DataState<AgentIdentity>> {

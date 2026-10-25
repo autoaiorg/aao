@@ -958,11 +958,15 @@ def test_w2a_agent_run_produces_a_tested_candidate_retries_after_failure_and_is_
         assert approval.status_code == 201, approval.text
         assert approval.json()["status"] == "VERIFIED"
 
-        # W2b: a separate publisher (PM) principal pushes exactly the approved SHA and opens the PR.
-        from aao.pr_publisher import PublishError, publish
-        publisher_id = "w2b-pm-" + str(uuid4())
-        publisher = client.post("/v1/principals/credentials", headers=ceo,
-                                json={"principal_id": publisher_id, "kind": "AGENT"}).json()["token"]
+        # W2b: two publisher principals (implementer identity pushes, PM opens the PR), neither the author.
+        from aao.pr_publisher import PublishError, open_pull_request, push_candidate
+
+        def principal(prefix):
+            pid = prefix + str(uuid4())
+            return pid, client.post("/v1/principals/credentials", headers=ceo,
+                                    json={"principal_id": pid, "kind": "AGENT"}).json()["token"]
+        pusher_id, pusher = principal("w2b-impl-")
+        publisher_id, publisher = principal("w2b-pm-")
         remote = tmp_path / "github.git"  # stands in for GitHub; it already has the base, like the real fork
         subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
         subprocess.run(["git", "--git-dir", str(remote), "config", "receive.shallowUpdate", "true"], check=True)
@@ -977,20 +981,24 @@ def test_w2a_agent_run_produces_a_tested_candidate_retries_after_failure_and_is_
             return {"number": 7, "url": "https://github.invalid/autoaiorg/aao/pull/7"}
 
         with pytest.raises(PublishError, match="Project grant required"):
-            publish(work, publisher, store=store, push=push, open_pr=open_pr)
-        assert client.post(f"/v1/projects/{project}/grants", headers=ceo,
-                           json={"principal_id": identity, "capability": "code.publish"}).status_code == 201
+            push_candidate(work, pusher, store=store, push=push)
+        for pid in (identity, pusher_id, publisher_id):
+            assert client.post(f"/v1/projects/{project}/grants", headers=ceo,
+                               json={"principal_id": pid, "capability": "code.publish"}).status_code == 201
         with pytest.raises(PublishError, match="cannot publish its own work"):
-            publish(work, token, store=store, push=push, open_pr=open_pr)
-        assert client.post(f"/v1/projects/{project}/grants", headers=ceo,
-                           json={"principal_id": publisher_id, "capability": "code.publish"}).status_code == 201
-        published = publish(work, publisher, store=store, push=push, open_pr=open_pr)
-        assert published["status"] == "PUBLISHED" and published["candidate_sha"] == candidate_sha
-        branch = published["branch"]
+            push_candidate(work, token, store=store, push=push)
+        with pytest.raises(PublishError, match="has not been pushed"):
+            open_pull_request(work, publisher, open_pr=open_pr)
+        pushed = push_candidate(work, pusher, store=store, push=push)
+        assert pushed["status"] == "PUSHED" and pushed["candidate_sha"] == candidate_sha
+        branch = pushed["branch"]
         assert subprocess.run(["git", "--git-dir", str(remote), "rev-parse", f"refs/heads/{branch}"],
                               capture_output=True, text=True, check=True).stdout.strip() == candidate_sha
+        assert push_candidate(work, pusher, store=store, push=push)["status"] == "ALREADY_PUSHED"
+        published = open_pull_request(work, publisher, open_pr=open_pr)
+        assert published["status"] == "PUBLISHED" and published["pusher"] == pusher_id
         assert opened == [(branch, "aao: Add a notes test", opened[0][2])] and candidate_sha in opened[0][2]
-        assert publish(work, publisher, store=store, push=push, open_pr=open_pr)["status"] == "ALREADY_PUBLISHED"
+        assert open_pull_request(work, publisher, open_pr=open_pr)["status"] == "ALREADY_PUBLISHED"
         assert len(opened) == 1
         board = client.get(f"/v1/projects/{project}/board", headers=agent).json()
         prs = next(item for item in board if item["id"] == work)["pull_requests"]

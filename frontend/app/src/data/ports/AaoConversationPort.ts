@@ -23,6 +23,8 @@ export interface ProjectConversationMessage {
   } | null;
   provider?: string | null;
   model?: string | null;
+  turn_status?: 'PENDING' | 'COMPLETED' | 'FAILED' | null;
+  turn_error_code?: string | null;
   created_at: string;
 }
 
@@ -47,6 +49,7 @@ export interface AaoConversationPort {
     projectId: string,
     conversationId: string,
     body: string,
+    idempotencyKey: string,
     onDelta: (delta: string) => void,
   ): Promise<DataState<{ message_id: string }>>;
   createWorkRequestFromMessage(

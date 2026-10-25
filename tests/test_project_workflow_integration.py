@@ -1,4 +1,5 @@
 """PostgreSQL integration tests, opt-in for explicitly disposable databases."""
+import json
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -155,6 +156,7 @@ def test_ceo_work_request_creates_only_audited_inbox_item(monkeypatch):
     reason="PostgreSQL integration requires an explicitly disposable test database",
 )
 def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeypatch):
+    from aao import conversation_provider
     from aao.postgresql_connection import connect_postgres
     from aao.work_management_api import app
 
@@ -320,6 +322,67 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         )
         assert thread_audit[1]["conversation_id"] == conversation_id
         assert thread_audit[1]["admitted"] is False
+
+        provider_calls = 0
+        def successful_provider(_messages):
+            nonlocal provider_calls
+            provider_calls += 1
+            yield "Conversación persistida."
+        monkeypatch.setattr(conversation_provider, "stream_reply", successful_provider)
+        turn = {
+            "body": "Resume los acuerdos del hilo",
+            "idempotency_key": str(uuid4()),
+        }
+        turn_url = f"/v1/projects/{project}/conversations/{conversation_id}/turns"
+        first_turn = client.post(turn_url, headers=ceo, json=turn)
+        assert first_turn.status_code == 200
+        # SSE data is JSON-escaped by json.dumps (including non-ASCII text).
+        assert '"delta": "Conversaci\\u00f3n persistida."' in first_turn.text
+        replayed_turn = client.post(turn_url, headers=ceo, json=turn)
+        assert replayed_turn.status_code == 200
+        assert replayed_turn.text == first_turn.text
+        assert provider_calls == 1
+        assert client.post(turn_url, headers=ceo, json={
+            **turn, "body": "Different body with the same key",
+        }).status_code == 409
+        turn_messages = client.get(
+            f"/v1/projects/{project}/conversations/{conversation_id}/messages", headers=ceo,
+        ).json()
+        assert sum(message["body"] == turn["body"] for message in turn_messages) == 1
+        assert any(message["body"] == "Conversación persistida." for message in turn_messages)
+        assert any(
+            message["body"] == turn["body"] and message["sender"] == "CEO"
+            and message["turn_status"] == "COMPLETED"
+            for message in turn_messages
+        )
+
+        failure_key = str(uuid4())
+        failure_calls = 0
+        def fails_once(_messages):
+            nonlocal failure_calls
+            failure_calls += 1
+            if failure_calls == 1:
+                raise conversation_provider.ProviderUnavailable("TEST_PROVIDER_FAILURE", "temporary failure")
+            yield "Respuesta recuperada."
+        monkeypatch.setattr(conversation_provider, "stream_reply", fails_once)
+        retry_turn = {"body": "Otra consulta", "idempotency_key": failure_key}
+        failed = client.post(turn_url, headers=ceo, json=retry_turn)
+        error_payloads = [
+            json.loads(line.removeprefix("data: "))
+            for line in failed.text.splitlines() if line.startswith("data: ")
+        ]
+        assert any(payload.get("code") == "TEST_PROVIDER_FAILURE" for payload in error_payloads)
+        failed_message = client.get(
+            f"/v1/projects/{project}/conversations/{conversation_id}/messages", headers=ceo,
+        ).json()
+        assert any(
+            message["body"] == retry_turn["body"] and message["turn_status"] == "FAILED"
+            and message["turn_error_code"] == "TEST_PROVIDER_FAILURE"
+            for message in failed_message
+        )
+        recovered = client.post(turn_url, headers=ceo, json=retry_turn)
+        assert "Respuesta recuperada." in recovered.text
+        assert failure_calls == 2
 
         pending_message = client.post(
             f"/v1/projects/{project}/conversations/{conversation_id}/messages",

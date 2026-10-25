@@ -24,6 +24,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
   const [streamingReply, setStreamingReply] = useState('');
   const [pendingUserMessage, setPendingUserMessage] = useState('');
   const [sendingTurn, setSendingTurn] = useState(false);
+  const [turnIdempotencyKey, setTurnIdempotencyKey] = useState('');
   const [requestTitle, setRequestTitle] = useState('');
   const [requestDescription, setRequestDescription] = useState('');
   const [requestCriteria, setRequestCriteria] = useState('');
@@ -79,13 +80,16 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
     setPendingUserMessage(message);
     setStreamingReply('');
     setSendingTurn(true);
-    const result = await port.streamCEOConversationTurn(projectId, conversationId, message, (delta) => {
+    const idempotencyKey = turnIdempotencyKey || crypto.randomUUID();
+    setTurnIdempotencyKey(idempotencyKey);
+    const result = await port.streamCEOConversationTurn(projectId, conversationId, message, idempotencyKey, (delta) => {
       setStreamingReply((current) => current + delta);
     });
     setSendingTurn(false);
     if (result.kind === 'ready') {
       setStreamingReply('');
       setPendingUserMessage('');
+      setTurnIdempotencyKey('');
       setNotice('Respuesta AAO recibida y persistida. No se ha creado ni ejecutado trabajo.');
       await queryClient.invalidateQueries({ queryKey: ['office-conversation-messages', sessionId, projectId, conversationId] });
       await queryClient.invalidateQueries({ queryKey: ['office-conversations', sessionId, projectId] });
@@ -116,6 +120,8 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
       {message.sender === 'AAO' && message.provider && (
         <small>Proveedor: {message.provider}{message.model ? ` · modelo ${message.model}` : ''}</small>
       )}
+      {message.turn_status === 'FAILED' && <p role="alert">La respuesta de AAO falló ({message.turn_error_code ?? 'ERROR'}). Puedes reenviar el mensaje para reintentar.</p>}
+      {message.turn_status === 'PENDING' && <p role="status">AAO está procesando esta respuesta.</p>}
       {message.related_work_id ? (
         <div className="office-conversation-message__work-link">
           <Button type="button" size="sm" onClick={() => onOpenBoard(projectId)}>
@@ -177,7 +183,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
               </ol>
               <form onSubmit={sendMessage} style={{ display: 'grid', gap: 8 }}>
                 <label className="office-form-field">Mensaje CEO
-                  <textarea className="office-form-control office-form-control--textarea" aria-label="Mensaje CEO" required maxLength={10000} rows={3} value={draft} onChange={(event) => setDraft(event.target.value)} disabled={sendingTurn} />
+                  <textarea className="office-form-control office-form-control--textarea" aria-label="Mensaje CEO" required maxLength={10000} rows={3} value={draft} onChange={(event) => { setDraft(event.target.value); setTurnIdempotencyKey(''); }} disabled={sendingTurn} />
                 </label>
                 <div><Button type="submit" disabled={!draft.trim() || sendingTurn}>{sendingTurn ? 'AAO está respondiendo…' : 'Enviar a AAO'}</Button></div>
               </form>

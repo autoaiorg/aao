@@ -17,7 +17,7 @@
 |---|---|---|
 | Mandato, proyecto y objetivo | **Existe** | `POST/GET /v1/mandates`, `/v1/projects`, `confirm`, `state` |
 | Tarea (work) | **Existe** | `POST /v1/projects/{id}/work`, `admit`, `progress` |
-| Agente ejecutor (la tarea produce un parche) | **Existe** (W1, #100). Backend `fixture` probado de extremo a extremo; backend `codex` sin ejercitar: requiere activar el proveedor y resolver su autenticación con `HOME` aislado | `agent_runner.py`, `inert_execution_worker.py`, `stage-agent-run` |
+| Agente ejecutor (la tarea produce un parche) | **Existe** (W1, #100). Backend `fixture` probado de extremo a extremo. Backend `codex` ejercitado en el piloto autorizado (`gpt-6-luna`, tarea DONE, PR #114: [registro](construction-runs/20261025-codex-pilot.md)); sigue desactivado para la ejecución general | `agent_runner.py`, `inert_execution_worker.py`, `stage-agent-run` |
 | Ejecución acotada y tests | **Existe** (W2a). La misma ejecución confirma el parche como commit candidato con identidad fija, lo guarda en `refs/aao/candidates/<sha>` de un repositorio bare y corre `core-unit` más los tests que añade el parche en sandbox bwrap. Una tarea con un intento fallido puede relanzarse | `agent_runner.py`, `sandboxed_repository_checks.py`, migración 014 |
 | Propuesta de parche y validación | **Existe** | `patch-proposals`, `validate`, `patch_proposals.py` |
 | Auditoría independiente | **Existe** en dos piezas: reviews en la API y el servicio de auditoría de manifiestos. Desde W2a, la API acepta APPROVE del auditor sobre el SHA candidato probado (tarea → VERIFIED). VERIFIED → DONE sigue bloqueado hasta W3 | `reviews`, `review.py`, `independent_audit.py`, `manifest_audit.py`, `auditor_dispatch.py` |
@@ -53,4 +53,4 @@ Los planes anteriores (M2-A en `CLOSURE_PLAN.md`, F4 en `F4_PENDING_WORK.md`) qu
 
 ## Operación real (2026-10-25)
 
-El ciclo se ha ejecutado en la instancia de desarrollo con estado persistente: [`construction-runs/20261025-self-development-cycle.md`](construction-runs/20261025-self-development-cycle.md). Una tarea real produjo las PR #104 (cerrada: la CI falló y la tarea volvió a IN_PROGRESS) y #106 (tercer intento). Falta la fusión del CEO y la reconciliación a DONE. El proveedor `codex` sigue desactivado; su prueba está preparada en [`CODEX_PROVIDER_ACTIVATION_E2E.md`](CODEX_PROVIDER_ACTIVATION_E2E.md).
+El ciclo se ha ejecutado en la instancia de desarrollo con estado persistente: [`construction-runs/20261025-self-development-cycle.md`](construction-runs/20261025-self-development-cycle.md). Una tarea real produjo las PR #104 (cerrada: la CI falló y la tarea volvió a IN_PROGRESS) y #106 (tercer intento). La tarea llegó a DONE tras fusionarse #106. El piloto de Codex se ejecutó el 2026-10-25 con autorización del CEO: Codex escribió el parche, la tarea quedó en DONE y la PR #114 se fusionó ([registro](construction-runs/20261025-codex-pilot.md)). Fuera del piloto, el proveedor sigue desactivado.

@@ -61,7 +61,19 @@ def run_one(worker_id: str, agent_credential: str, *, project_id: str, seconds: 
                     principal = _authenticate_request_principal(agent_credential, "AGENT")
                     if principal != worker_id:
                         raise ValueError("worker credential does not authenticate the claiming agent")
-                    proposal = persist_patch_proposal(str(lease.get("work_id")), principal, selected["base_sha"], run["patch"])
+                    try:
+                        proposal = persist_patch_proposal(str(lease.get("work_id")), principal, selected["base_sha"], run["patch"])
+                    except HTTPException as exc:
+                        # A retry that reproduces an earlier attempt's patch reuses that proposal.
+                        if exc.status_code != 409 or not str(exc.detail).startswith("Identical patch proposal"):
+                            raise
+                        with tx() as db:
+                            existing = db.execute(
+                                "SELECT id FROM patch_proposals WHERE work_id=%s AND base_sha=%s AND patch_sha256=%s",
+                                (str(lease.get("work_id")), selected["base_sha"], run["patch_sha256"])).fetchone()
+                        if not existing:
+                            raise
+                        proposal = {"proposal_id": str(existing[0])}
                     tested = run["check"].get("conclusion") == "success"
                     result = {"kind": selected["type"], "proposal_id": proposal["proposal_id"],
                               "patch_sha256": run["patch_sha256"], "changed_paths": run["changed_paths"],

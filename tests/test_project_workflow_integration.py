@@ -908,6 +908,17 @@ def test_w2a_agent_run_produces_a_tested_candidate_retries_after_failure_and_is_
         restaged = client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run)
         assert restaged.status_code == 202, restaged.text
         assert restaged.json()["execution_id"] != staged.json()["execution_id"]
+        # Attempt 2: an infrastructure failure of the checks fails the run after its proposal is stored...
+        import aao.sandboxed_repository_checks as checks
+        real_check = checks.run_repository_check
+
+        def broken(*_args, **_kwargs):
+            raise checks.RepositoryCheckError("sandbox unavailable")
+        monkeypatch.setattr(checks, "run_repository_check", broken)
+        assert run_one(identity, token, project_id=project, seconds=400)["status"] == "FAILED"
+        monkeypatch.setattr(checks, "run_repository_check", real_check)
+        # ...and attempt 3 reproduces the same patch: it reuses that proposal instead of failing on it.
+        assert client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run).status_code == 202
         outcome = run_one(identity, token, project_id=project, seconds=400)
         board = client.get(f"/v1/projects/{project}/board", headers=agent).json()
         last = next(i for i in board if i["id"] == work)["executions"][-1]["result"]
@@ -916,9 +927,11 @@ def test_w2a_agent_run_produces_a_tested_candidate_retries_after_failure_and_is_
                                                   last.get("check", {}).get("stdout"))
         board = client.get(f"/v1/projects/{project}/board", headers=agent).json()
         item = next(item for item in board if item["id"] == work)
-        failed, succeeded = item["executions"]
+        failed, infra_failed, succeeded = item["executions"]
         assert failed["status"] == "FAILED" and failed["result"]["check"]["conclusion"] == "failure"
+        assert infra_failed["status"] == "FAILED" and infra_failed["result"]["check"]["error"] == "sandbox unavailable"
         result = succeeded["result"]
+        assert result["proposal_id"] == infra_failed["result"]["proposal_id"]
         assert succeeded["status"] == "SUCCEEDED" and result["check"]["conclusion"] == "success", result
         assert result["check"]["extra_tests"] == ["tests/test_notes.py"]
         candidate_sha = result["candidate_sha"]

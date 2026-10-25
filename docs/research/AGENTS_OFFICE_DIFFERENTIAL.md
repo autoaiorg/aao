@@ -76,7 +76,7 @@ A SHA `95d8427` no existía `/v1/organization`; se implementó en PR #129 (`e807
 ### Falta o no se encontró en el alcance
 
 - Telemetría de presencia/heartbeat y feed de actividad unificado en la oficina. Estado de ejecución sigue siendo evidencia de trabajo, no presencia general del agente.
-- Conversación CEO-agente persistente en el producto; equipos temporales padre/hijos durables; calendario/rutinas con ejecución servidor; visualización de conocimiento corporativo unificada; feedback/skills versionadas asociadas al catálogo.
+- Conversación CEO-AAO completa en producto (hay un primer contrato backend de transcripción persistente, pero aún no UI integrada ni respuestas AAO enlazadas a ejecuciones); equipos temporales padre/hijos durables; calendario/rutinas con ejecución servidor; visualización de conocimiento corporativo unificada; feedback/skills versionadas asociadas al catálogo.
 - Dirección de proyectos desde la oficina: ya se puede registrar una solicitud CEO en un proyecto activo. La ruta nueva crea un `work_item` canónico `INBOX`, con autor `ceo` y evento `work.requested`; no lo admite ni ejecuta. El endpoint de creación AGENT existente sigue exigiendo `work.create` y no se suplanta esa identidad.
 
 ## 5. Propuesta incremental
@@ -157,6 +157,12 @@ Los perfiles/unidades persistidos y la edición CEO ya están construidos (#134/
 - Nota histórica al fusionar #134: faltaban ciclo jerárquico y conexión UI. La gestión llegó con #137 y las escrituras concurrentes de jerarquía se cerraron con #139; la revisión independiente final de los límites de visibilidad continúa diferida al candidato y no se afirma aquí.
 
 ## 8. Límites y siguientes responsables
+
+### F2 — primer incremento de persistencia de conversaciones (en construcción)
+
+- **Backend:** migración `016_project_conversations.sql` introduce hilos ligados a proyectos activos y mensajes durables con emisor, hora del servidor y referencia opcional a un `work_item`. Rutas CEO-only permiten crear/listar hilos, recuperar mensajes al reabrirlos y persistir un mensaje CEO. Se auditan creación y mensajes. No ejecutan modelos, no fabrican respuestas AAO ni crean/admiten trabajo por enviar texto.
+- **Límite deliberado:** este es solo el contrato persistente inicial. Falta conectarlo a la Oficina Virtual, definir cómo órdenes explícitas producen `work_id` canónico y cómo respuestas AAO se producen bajo la autorización vigente con evidencia de ejecución/modelo. Las solicitudes ambiguas no se convierten automáticamente en trabajo; no hay fallback conversacional simulado.
+- **Aceptación focal:** integración PostgreSQL prueba autenticación CEO, creación y reapertura del mismo hilo/mensaje, aislamiento por proyecto y que el mensaje por sí solo no genera tareas ni ejecuciones.
 
 ### Seguimiento de construcción (rama `feat/agents-office-aa-integration`)
 

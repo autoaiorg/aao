@@ -154,6 +154,74 @@ def test_ceo_work_request_creates_only_audited_inbox_item(monkeypatch):
     os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
     reason="PostgreSQL integration requires an explicitly disposable test database",
 )
+def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeypatch):
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "conversation-ceo")
+    ceo = {"X-CEO-Token": "conversation-ceo"}
+    with TestClient(app) as client:
+        assert client.post(
+            "/v1/projects/not-a-project/conversations", json={"title": "Notes"},
+        ).status_code == 403
+        mandate = client.post("/v1/mandates", headers=ceo, json={
+            "title": "Conversation mandate " + str(uuid4()), "objective": "Persistence test",
+        }).json()["id"]
+        assert client.post(f"/v1/mandates/{mandate}/confirm", headers=ceo).status_code == 200
+        project = client.post("/v1/projects", headers=ceo, json={
+            "name": "Conversation project", "mandate_id": mandate,
+        }).json()["id"]
+
+        created = client.post(
+            f"/v1/projects/{project}/conversations", headers=ceo,
+            json={"title": "Pilot discussion"},
+        )
+        assert created.status_code == 201, created.text
+        conversation_id = created.json()["id"]
+        message = client.post(
+            f"/v1/projects/{project}/conversations/{conversation_id}/messages",
+            headers=ceo, json={"body": "Please investigate the real execution evidence."},
+        )
+        assert message.status_code == 201, message.text
+        assert message.json()["sender"] == "CEO"
+        assert message.json()["related_work_id"] is None
+
+        # Reopening the project thread returns the same persisted objects. No
+        # synthetic AAO answer, work item, execution or grant is introduced.
+        listed = client.get(f"/v1/projects/{project}/conversations", headers=ceo)
+        assert listed.status_code == 200
+        assert [item["id"] for item in listed.json()] == [conversation_id]
+        reopened = client.get(
+            f"/v1/projects/{project}/conversations/{conversation_id}/messages", headers=ceo,
+        )
+        assert reopened.status_code == 200
+        assert [item["id"] for item in reopened.json()] == [message.json()["id"]]
+        assert reopened.json()[0]["body"] == "Please investigate the real execution evidence."
+        assert not any(item["sender"] == "AAO" for item in reopened.json())
+        assert client.get(
+            f"/v1/projects/{uuid4()}/conversations/{conversation_id}/messages", headers=ceo,
+        ).status_code == 404
+        with connect_postgres() as db:
+            counts = db.execute(
+                "SELECT (SELECT count(*) FROM work_items WHERE project_id=%s),"
+                "(SELECT count(*) FROM execution_queue e JOIN work_items w ON w.id=e.work_id "
+                "WHERE w.project_id=%s)", (project, project),
+            ).fetchone()
+            audit_event = db.execute(
+                "SELECT details FROM events WHERE subject_id=%s "
+                "AND kind='conversation.message.created'", (conversation_id,),
+            ).fetchone()
+        assert counts[0] == 0
+        assert counts[1] == 0
+        assert audit_event and audit_event[0]["actor"] == "ceo"
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or
+    os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="PostgreSQL integration requires an explicitly disposable test database",
+)
 def test_organization_projection_is_authenticated_and_project_scoped(monkeypatch):
     from aao.work_management_api import app
     monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])

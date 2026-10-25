@@ -104,6 +104,30 @@ class CEOWorkRequest(BaseModel):
     description: str = Field(default="", max_length=5000)
 
 
+class ProjectConversationRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+
+    @field_validator("title")
+    @classmethod
+    def title_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Conversation title must not be blank")
+        return value
+
+
+class ProjectConversationMessageRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=10000)
+
+    @field_validator("body")
+    @classmethod
+    def body_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Conversation message must not be blank")
+        return value
+
+
 class ReviewRequest(BaseModel):
     decision: str = Field(pattern="^(APPROVE|REJECT|VETO)$")
     candidate_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
@@ -1014,6 +1038,112 @@ def create_ceo_work_request(
             "admitted": False,
         })
     return {"id": work_id, "status": "INBOX"}
+
+
+@app.post("/v1/projects/{project_id}/conversations", status_code=201)
+def create_project_conversation(
+    project_id: str,
+    payload: ProjectConversationRequest,
+    _: str = Depends(require_ceo),
+):
+    """Create a persistent project discussion; this does not call a model."""
+    conversation_id = str(uuid4())
+    with tx() as db:
+        project = db.execute(
+            "SELECT state FROM projects WHERE id=%s FOR SHARE", (project_id,),
+        ).fetchone()
+        if not project:
+            raise HTTPException(404, "Project not found")
+        if project[0] != "ACTIVE":
+            raise HTTPException(409, "Project not active")
+        db.execute(
+            "INSERT INTO project_conversations(id,project_id,title,created_by) "
+            "VALUES (%s,%s,%s,'ceo')",
+            (conversation_id, project_id, payload.title),
+        )
+        audit(db, conversation_id, "conversation.created", {
+            "project_id": project_id, "actor": "ceo",
+        })
+    return {"id": conversation_id, "project_id": project_id, "title": payload.title}
+
+
+@app.get("/v1/projects/{project_id}/conversations")
+def list_project_conversations(project_id: str, _: str = Depends(require_ceo)):
+    with tx() as db:
+        if not db.execute("SELECT 1 FROM projects WHERE id=%s", (project_id,)).fetchone():
+            raise HTTPException(404, "Project not found")
+        rows = db.execute(
+            "SELECT id,title,created_at,updated_at FROM project_conversations "
+            "WHERE project_id=%s ORDER BY updated_at DESC,id",
+            (project_id,),
+        ).fetchall()
+    return [
+        {"id": str(row[0]), "project_id": project_id, "title": row[1],
+         "created_at": row[2], "updated_at": row[3]}
+        for row in rows
+    ]
+
+
+@app.get("/v1/projects/{project_id}/conversations/{conversation_id}/messages")
+def list_project_conversation_messages(
+    project_id: str, conversation_id: str, _: str = Depends(require_ceo),
+):
+    with tx() as db:
+        if not db.execute(
+            "SELECT 1 FROM project_conversations WHERE id=%s AND project_id=%s",
+            (conversation_id, project_id),
+        ).fetchone():
+            raise HTTPException(404, "Conversation not found")
+        rows = db.execute(
+            "SELECT id,sender,body,related_work_id,created_at "
+            "FROM project_conversation_messages WHERE conversation_id=%s "
+            "ORDER BY created_at,id", (conversation_id,),
+        ).fetchall()
+    return [
+        {"id": str(row[0]), "sender": row[1], "body": row[2],
+         "related_work_id": str(row[3]) if row[3] else None, "created_at": row[4]}
+        for row in rows
+    ]
+
+
+@app.post("/v1/projects/{project_id}/conversations/{conversation_id}/messages", status_code=201)
+def append_project_conversation_message(
+    project_id: str,
+    conversation_id: str,
+    payload: ProjectConversationMessageRequest,
+    _: str = Depends(require_ceo),
+):
+    """Persist a CEO message. No agent/model response is fabricated or invoked."""
+    message_id = str(uuid4())
+    with tx() as db:
+        row = db.execute(
+            "SELECT p.state FROM project_conversations c JOIN projects p ON p.id=c.project_id "
+            "WHERE c.id=%s AND c.project_id=%s FOR UPDATE OF c",
+            (conversation_id, project_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Conversation not found")
+        if row[0] != "ACTIVE":
+            raise HTTPException(409, "Project not active")
+        db.execute(
+            "INSERT INTO project_conversation_messages(id,conversation_id,sender,body) "
+            "VALUES (%s,%s,'CEO',%s)", (message_id, conversation_id, payload.body),
+        )
+        db.execute(
+            "UPDATE project_conversations SET updated_at=clock_timestamp() WHERE id=%s",
+            (conversation_id,),
+        )
+        audit(db, conversation_id, "conversation.message.created", {
+            "message_id": message_id, "actor": "ceo", "sender": "CEO",
+        })
+        created_at = db.execute(
+            "SELECT created_at FROM project_conversation_messages WHERE id=%s",
+            (message_id,),
+        ).fetchone()[0]
+    return {
+        "id": message_id, "sender": "CEO", "body": payload.body,
+        "related_work_id": None, "created_at": created_at,
+    }
 
 
 @app.get("/v1/projects/{project_id}/board")

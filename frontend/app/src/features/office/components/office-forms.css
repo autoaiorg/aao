@@ -1,0 +1,139 @@
+.office-form-panel {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg, 12px);
+  padding: clamp(16px, 2vw, 24px);
+  background: var(--bg-surface);
+}
+
+.office-form-panel__title {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+
+.office-form-panel__description {
+  margin: 0 0 18px;
+  max-width: 80ch;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.office-work-request-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 18px;
+  max-width: 960px;
+}
+
+.office-form-field {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.office-form-field--wide {
+  grid-column: 1 / -1;
+}
+
+.office-form-control {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--border-strong, #cbd5e1);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font: inherit;
+  font-weight: 400;
+}
+
+.office-form-control:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.office-form-control--textarea {
+  min-height: 88px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.office-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.office-conversation-content {
+  display: grid;
+  gap: 16px;
+  max-width: 960px;
+}
+
+.office-conversation-project {
+  max-width: 520px;
+}
+
+.office-conversation-create {
+  display: grid;
+  grid-template-columns: minmax(0, 560px) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.office-conversation-list {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  margin: 0;
+}
+
+.office-conversation-message {
+  list-style: none;
+  border-left: 3px solid var(--office-message-accent);
+  padding: 10px 12px;
+  background: var(--bg-muted, #f1f5f9);
+  border-radius: var(--radius-sm, 6px);
+  overflow-wrap: anywhere;
+}
+
+.office-conversation-message--ceo {
+  --office-message-accent: var(--accent-primary, #2563eb);
+}
+
+.office-conversation-message--aao {
+  --office-message-accent: var(--status-success-text, #16803c);
+}
+
+.office-conversation-message__meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.office-conversation-message__body {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  font-size: 13px;
+}
+
+@media (max-width: 700px) {
+  .office-work-request-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .office-form-field--wide {
+    grid-column: auto;
+  }
+
+  .office-conversation-create {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+}

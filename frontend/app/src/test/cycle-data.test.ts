@@ -59,6 +59,7 @@ describe('Task outcome in the board (PR state and outside-cycle resolution)', ()
       ok([
         {
           id: 'w2', title: 'Docs', status: 'DONE', acceptance_criteria: ['c'], executions: [], reviews: [],
+          parent_work_id: 'parent-1', depends_on: ['w1'], work_group_id: null,
           pull_requests: [{ pr_number: 104, pr_url: 'u', candidate_sha: 'a'.repeat(40), state: 'CLOSED_UNMERGED' }],
           resolution: { reason: 'Merged by hand in #107', pr_number: 107, merge_commit_sha: 'f'.repeat(40), resolved_by: 'ceo' },
         },
@@ -70,6 +71,8 @@ describe('Task outcome in the board (PR state and outside-cycle resolution)', ()
       const task = result.data.stages.DONE[0];
       expect(task.pullRequests?.[0].state).toBe('CLOSED_UNMERGED');
       expect(task.resolution?.pr_number).toBe(107);
+      expect(task.parentWorkId).toBe('parent-1');
+      expect(task.dependsOn).toEqual(['w1']);
     }
   });
 

@@ -15,7 +15,7 @@
 import type { AaoReadPort } from '../../ports/AaoReadPort';
 import type { AaoOrganizationCommandPort, OrganizationProfileCommand, OrganizationUnitCommand } from '../../ports/AaoOrganizationCommandPort';
 import type { AaoWorkCommandPort, CEOWorkRequest, CreatedWorkRequest } from '../../ports/AaoWorkCommandPort';
-import type { AaoConversationPort, ConversationWorkRequestInput, ConversationWorkRequestResult, ProjectConversation, ProjectConversationMessage } from '../../ports/AaoConversationPort';
+import type { AaoConversationPort, ConversationWorkGroupInput, ConversationWorkGroupResult, ConversationWorkRequestInput, ConversationWorkRequestResult, ProjectConversation, ProjectConversationMessage } from '../../ports/AaoConversationPort';
 import type {
   PrincipalSummary,
   ProjectSummary,
@@ -516,6 +516,11 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
           acceptanceCriteria: Array.isArray(itemObj.acceptance_criteria)
             ? (itemObj.acceptance_criteria as string[])
             : [],
+          parentWorkId: typeof itemObj.parent_work_id === 'string' ? itemObj.parent_work_id : null,
+          dependsOn: Array.isArray(itemObj.depends_on)
+            ? itemObj.depends_on.filter((id): id is string => typeof id === 'string')
+            : [],
+          workGroupId: typeof itemObj.work_group_id === 'string' ? itemObj.work_group_id : null,
           evidence: Array.isArray(itemObj.evidence) ? itemObj.evidence : [],
           executions: Array.isArray(itemObj.executions)
             ? (itemObj.executions as TaskItem['executions'])
@@ -996,6 +1001,25 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
     return this.request(
       `/v1/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/work-requests`,
       z.object({ id: z.string().uuid(), status: z.string(), created: z.boolean() }),
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) },
+    );
+  }
+
+  async createWorkGroupFromConversation(
+    projectId: string,
+    conversationId: string,
+    input: ConversationWorkGroupInput,
+  ): Promise<DataState<ConversationWorkGroupResult>> {
+    if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede estructurar un desglose desde una conversación.' };
+    return this.request(
+      `/v1/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/work-groups`,
+      z.object({
+        id: z.string().uuid(), project_id: z.string().uuid(), conversation_id: z.string().uuid(),
+        parent_work_id: z.string().uuid(), status: z.string(), created: z.boolean(),
+        tasks: z.array(z.object({
+          id: z.string().uuid(), title: z.string(), status: z.string(), depends_on: z.array(z.string().uuid()),
+        })),
+      }),
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) },
     );
   }

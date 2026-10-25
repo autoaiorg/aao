@@ -167,3 +167,39 @@
   gap: 8px;
   flex-wrap: wrap;
 }
+
+.office-conversation-task-list {
+  display: grid;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.office-conversation-task {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border-subtle, #cbd5e1);
+  border-radius: var(--radius-sm, 6px);
+}
+
+.office-conversation-task legend,
+.office-conversation-dependencies legend {
+  padding: 0 4px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.office-conversation-dependencies {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  border: 0;
+  padding: 0;
+}
+
+.office-conversation-dependencies label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}

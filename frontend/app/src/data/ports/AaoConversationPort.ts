@@ -40,6 +40,27 @@ export interface ConversationWorkRequestResult {
   created: boolean;
 }
 
+export interface ConversationWorkGroupInput extends ConversationWorkRequestInput {
+  idempotency_key: string;
+  tasks: Array<{
+    key: string;
+    title: string;
+    description: string;
+    acceptance_criteria: string[];
+    depends_on: string[];
+  }>;
+}
+
+export interface ConversationWorkGroupResult {
+  id: string;
+  project_id: string;
+  conversation_id: string;
+  parent_work_id: string;
+  status: string;
+  created: boolean;
+  tasks: Array<{ id: string; title: string; status: string; depends_on: string[] }>;
+}
+
 export interface AaoConversationPort {
   listProjectConversations(projectId: string): Promise<DataState<ProjectConversation[]>>;
   listConversationMessages(projectId: string, conversationId: string): Promise<DataState<ProjectConversationMessage[]>>;
@@ -63,4 +84,9 @@ export interface AaoConversationPort {
     conversationId: string,
     input: ConversationWorkRequestInput,
   ): Promise<DataState<ConversationWorkRequestResult>>;
+  createWorkGroupFromConversation(
+    projectId: string,
+    conversationId: string,
+    input: ConversationWorkGroupInput,
+  ): Promise<DataState<ConversationWorkGroupResult>>;
 }

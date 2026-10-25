@@ -162,6 +162,12 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
       }
 
       if (response.status === 403) {
+        // Cookie-backed CEO sessions are used only for CEO-scoped API access. A
+        // rejection means the browser's local auth state is stale (for example,
+        // the server session was revoked); clear that state instead of leaving
+        // the shell showing a verified CEO indefinitely. Do not apply this to
+        // ordinary bearer/agent 403s, which can be resource-level denials.
+        if (cookieSession && this.onUnauthorized) this.onUnauthorized();
         return {
           kind: 'forbidden',
           reason: 'Permisos insuficientes para acceder a este recurso (HTTP 403).',
@@ -265,6 +271,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
         });
 
         if (response.status === 401 || response.status === 403) {
+          if (cookieSession && this.onUnauthorized) this.onUnauthorized();
           return {
             kind: 'forbidden',
             reason: 'Credencial de desarrollo CEO rechazada por el backend (HTTP 403). Autenticación no comprobada.',
@@ -427,6 +434,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
         };
       }
       if (response.status === 403) {
+        if (cookieSession && this.onUnauthorized) this.onUnauthorized();
         return {
           kind: 'forbidden',
           reason: 'No tiene permiso project.read para consultar este tablero (HTTP 403).',

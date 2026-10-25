@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useCallback } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type { DataOrigin, ProjectSummary } from '../domain/models';
+import type { DataOrigin, ProjectSummary, CeoOverview } from '../domain/models';
 import { useAuth } from '../auth/AuthContext';
 import { HttpAaoLiveAdapter } from '../data/adapters/live/HttpAaoLiveAdapter';
 import { MockAaoDemoAdapter } from '../data/adapters/demo/MockAaoDemoAdapter';
@@ -40,6 +40,7 @@ export const App: React.FC = () => {
     return new HttpAaoLiveAdapter({
       getToken: () => token,
       getAuthRole: () => role,
+      requireAuth: true,
       onUnauthorized: () => {
         logout();
         queryClient.cancelQueries();
@@ -77,11 +78,12 @@ export const App: React.FC = () => {
     logout();
   }, [port, queryClient, logout]);
 
-  // P0 Finding 2: Query keys strictly bound to sessionId, origin, and credentials
+  // P0 Finding 2 & P0 Finding 4: Query keys bound to sessionId; queries suppressed in LIVE mode until valid session exists
   // Query: Principal
   const principalQuery = useQuery({
     queryKey: ['principal', origin, isAuthenticated, role, sessionId],
     queryFn: () => port.getCurrentPrincipal(),
+    enabled: origin === 'demo' || isAuthenticated,
     staleTime: staleTimeSeconds * 1000,
   });
 
@@ -89,6 +91,7 @@ export const App: React.FC = () => {
   const projectsQuery = useQuery({
     queryKey: ['projects', origin, isAuthenticated, sessionId],
     queryFn: () => port.listProjects(),
+    enabled: origin === 'demo' || isAuthenticated,
     staleTime: staleTimeSeconds * 1000,
   });
 
@@ -103,6 +106,7 @@ export const App: React.FC = () => {
   const overviewQuery = useQuery({
     queryKey: ['ceo-overview', origin, selectedProjectId, isAuthenticated, sessionId],
     queryFn: () => port.getCeoOverview(selectedProjectId || undefined),
+    enabled: origin === 'demo' || isAuthenticated,
     staleTime: staleTimeSeconds * 1000,
   });
 
@@ -119,7 +123,7 @@ export const App: React.FC = () => {
       }
       return port.getProjectBoard(selectedProjectId);
     },
-    enabled: !!selectedProjectId,
+    enabled: (origin === 'demo' || isAuthenticated) && !!selectedProjectId,
     staleTime: staleTimeSeconds * 1000,
   });
 
@@ -136,7 +140,7 @@ export const App: React.FC = () => {
       }
       return port.getProjectCapabilities(detailedProjectId);
     },
-    enabled: !!detailedProjectId,
+    enabled: (origin === 'demo' || isAuthenticated) && !!detailedProjectId,
     staleTime: staleTimeSeconds * 1000,
   });
 
@@ -153,7 +157,7 @@ export const App: React.FC = () => {
       }
       return port.getProjectEvaluations(detailedProjectId);
     },
-    enabled: !!detailedProjectId,
+    enabled: (origin === 'demo' || isAuthenticated) && !!detailedProjectId,
     staleTime: staleTimeSeconds * 1000,
   });
 
@@ -167,6 +171,18 @@ export const App: React.FC = () => {
 
   const principalData =
     principalQuery.data?.kind === 'ready' ? principalQuery.data.data : null;
+
+  const fallbackOverview: CeoOverview = useMemo(
+    () => ({
+      projects: { kind: 'empty', origin, fetchedAt: '' },
+      work: { kind: 'empty', origin, fetchedAt: '' },
+      governance: { kind: 'empty', origin, fetchedAt: '' },
+      operations: { kind: 'empty', origin, fetchedAt: '' },
+      alerts: { kind: 'empty', origin, fetchedAt: '' },
+      decisions: { kind: 'empty', origin, fetchedAt: '' },
+    }),
+    [origin]
+  );
 
   return (
     <AppShell
@@ -189,20 +205,48 @@ export const App: React.FC = () => {
       onRefresh={handleRefresh}
     >
       <ErrorBoundary>
-        {activeNav === 'dashboard' && overviewQuery.data && (
-          <CeoDashboard
-            overview={overviewQuery.data}
-            projects={projectsList}
-            selectedProjectId={selectedProjectId}
-            onSelectProject={setSelectedProjectId}
-            onNavigateTo={(target) => {
-              if (target === 'kanban') setActiveNav('kanban');
-              else if (target === 'projects') setActiveNav('projects');
-              else if (target === 'decisions') setActiveNav('decisions');
-              else if (target === 'audit') setActiveNav('audit');
-              else if (target === 'operations') setActiveNav('operations');
-            }}
-          />
+        {activeNav === 'dashboard' && (
+          <>
+            {origin === 'live' && !isAuthenticated && (
+              <div
+                role="status"
+                aria-label="Aviso de sesión en espera de credencial"
+                style={{
+                  marginBottom: '16px',
+                  padding: '12px 16px',
+                  borderRadius: 'var(--radius-md)',
+                  backgroundColor: 'var(--bg-surface)',
+                  border: '1px solid var(--border-focus)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '10px',
+                }}
+              >
+                <span style={{ fontSize: '18px' }} aria-hidden="true">🔒</span>
+                <div>
+                  <strong style={{ fontSize: '13px', color: 'var(--text-primary)', display: 'block' }}>
+                    Sesión LIVE en espera de credencial
+                  </strong>
+                  <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                    No se emiten consultas contra la API hasta autenticar la sesión en memoria volátil. Use el botón &quot;Credencial de Acceso&quot; superior.
+                  </span>
+                </div>
+              </div>
+            )}
+            <CeoDashboard
+              overview={overviewQuery.data || fallbackOverview}
+              projects={projectsList}
+              selectedProjectId={selectedProjectId}
+              onSelectProject={setSelectedProjectId}
+              onNavigateTo={(target) => {
+                if (target === 'kanban') setActiveNav('kanban');
+                else if (target === 'projects') setActiveNav('projects');
+                else if (target === 'decisions') setActiveNav('decisions');
+                else if (target === 'audit') setActiveNav('audit');
+                else if (target === 'operations') setActiveNav('operations');
+              }}
+            />
+          </>
         )}
 
         {activeNav === 'projects' && !detailedProjectId && (

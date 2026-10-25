@@ -7,19 +7,38 @@ import { Badge } from '../../components/ui/Card';
 export interface TaskDetailDrawerProps {
   task: TaskItem | null;
   onClose: () => void;
+  triggerElement?: HTMLElement | null;
 }
 
-export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({ task, onClose }) => {
+export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
+  task,
+  onClose,
+  triggerElement,
+}) => {
+  const closeButtonRef = React.useRef<HTMLButtonElement | null>(null);
+  const previouslyFocusedElement = React.useRef<HTMLElement | null>(null);
+
+  const handleClose = React.useCallback(() => {
+    onClose();
+    setTimeout(() => {
+      previouslyFocusedElement.current?.focus();
+    }, 0);
+  }, [onClose]);
+
   React.useEffect(() => {
     if (!task) return;
+    previouslyFocusedElement.current =
+      triggerElement || (document.activeElement as HTMLElement | null);
+    closeButtonRef.current?.focus();
+
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onClose();
+        handleClose();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [task, onClose]);
+  }, [task, triggerElement, handleClose]);
 
   if (!task) return null;
 
@@ -36,7 +55,7 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({ task, onClos
         justifyContent: 'flex-end',
         zIndex: 100,
       }}
-      onClick={onClose}
+      onClick={handleClose}
     >
       <div
         style={{
@@ -69,8 +88,9 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({ task, onClos
             </h2>
           </div>
           <button
+            ref={closeButtonRef}
             type="button"
-            onClick={onClose}
+            onClick={handleClose}
             aria-label="Cerrar panel de tarea"
             style={{
               padding: '6px 10px',

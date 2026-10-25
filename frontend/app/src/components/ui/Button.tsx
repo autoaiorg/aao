@@ -6,14 +6,14 @@ export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElemen
   children: React.ReactNode;
 }
 
-export const Button: React.FC<ButtonProps> = ({
+export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(({
   variant = 'secondary',
   size = 'md',
   className = '',
   disabled,
   children,
   ...props
-}) => {
+}, ref) => {
   const sizeStyles: Record<string, React.CSSProperties> = {
     sm: { padding: '4px 8px', fontSize: '12px', minHeight: '32px' },
     md: { padding: '8px 14px', fontSize: '14px', minHeight: '38px' },
@@ -63,8 +63,10 @@ export const Button: React.FC<ButtonProps> = ({
   };
 
   return (
-    <button disabled={disabled} style={style} className={`aao-button ${className}`} {...props}>
+    <button ref={ref} disabled={disabled} style={style} className={`aao-button ${className}`} {...props}>
       {children}
     </button>
   );
-};
+});
+
+Button.displayName = 'Button';

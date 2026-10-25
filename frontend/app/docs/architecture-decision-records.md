@@ -58,31 +58,36 @@ La visión a largo plazo de AAO incluye una oficina virtual 3D para la visualiza
 
 ---
 
-## ADR 004: Resolución de Hallazgos de Revisión del CEO (Identidad, Aislamiento y Accesibilidad)
+## ADR 004: Resolución de Hallazgos de Revisión del CEO (Identidad, Aislamiento, Memoria Volátil y Accesibilidad)
 
 ### Contexto
-Tras la revisión preliminar de la PR #99 por el CEO, se identificaron cuatro hallazgos críticos:
+Tras la revisión preliminar de la PR #99 por el CEO, se identificaron cuatro hallazgos críticos, complementados por precisiones en la segunda revisión:
 1. **P0 — Identidad CEO:** Se detectó que el adaptador live devolvía una identidad CEO sintética estática sin comprobar su autenticidad contra el backend.
-2. **P0 — Aislamiento de sesiones:** Riesgo de persistencia de datos previos en caché o colisión con peticiones asíncronas lentas tras logout o alternancia LIVE/DEMO.
+2. **P0 — Aislamiento de sesiones y política de memoria:** Riesgo de persistencia de datos previos en caché o colisión con peticiones asíncronas lentas tras logout o alternancia LIVE/DEMO. Necesidad de reconciliar la generación de `sessionId` con `crypto.randomUUID()` y eliminar cualquier ambigüedad documental sobre `sessionStorage`.
 3. **P1 — Estados desconocidos:** La capa de parseo convertía silenciosamente estados no reconocidos a `INBOX`, comprometiendo la integridad semántica de los datos.
-4. **P1 — Accesibilidad:** Existían contenedores `div` interactivos sin semántica adecuada de teclado ni atributos ARIA.
+4. **P1 — Accesibilidad (WCAG 2.2 AA):** Existían contenedores `div` interactivos sin semántica adecuada de teclado ni atributos ARIA, y carencia de restauración de foco tras cierre de diálogos.
 
 ### Decisión
 1. **Verificación real de identidad CEO:**
    - Eliminar la generación sintética de identidad CEO.
    - En sesión CEO, invocar `GET /v1/mandates` con la cabecera `X-CEO-Token`. Si el backend responde HTTP 200, la identidad se marca como `verificationStatus: 'verified'`. Si responde 403 o 503, se devuelve `forbidden` o `unavailable` sin asumir credenciales válidas.
-2. **Aislamiento reforzado de sesiones:**
-   - Incorporar un identificador de sesión volátil `sessionId` en `AuthContext` que rota obligatoriamente en cada inicio de sesión, cambio de credenciales, desconexión y alternancia de origen.
+2. **Aislamiento reforzado de sesiones y política estricta de memoria volátil:**
+   - Generar `sessionId` mediante `crypto.randomUUID()` nativo (con fallback criptográfico `crypto.getRandomValues()`), garantizando entropía criptográfica y rotación obligatoria en cada inicio de sesión, cambio de credenciales, desconexión y alternancia de origen.
+   - **Memoria volátil exclusiva:** Las credenciales residen únicamente en el estado en memoria de React. Queda taxativamente prohibido el uso de `sessionStorage`, `localStorage`, `IndexedDB`, cookies o parámetros URL.
    - Vincular todas las claves de caché de TanStack Query a `sessionId`.
-   - Implementar `HttpAaoLiveAdapter.abortAll()` para abortar inmediatamente todas las peticiones HTTP en vuelo al cerrar sesión o conmutar de modo.
+   - Implementar `HttpAaoLiveAdapter.abortAll()` para abortar inmediatamente todas las peticiones HTTP en vuelo al cerrar sesión o conmutar de modo, mitigando cualquier condición de carrera por respuestas de red retrasadas.
    - Ejecutar `queryClient.cancelQueries()` y `queryClient.clear()` en cada transición de credenciales.
-3. **Preservación estricta de estados no reconocidos:**
+3. **Supresión estricta de consultas antes de establecer sesión válida:**
+   - En modo LIVE, no se despacha ninguna consulta autenticada a endpoints protegidos hasta que exista una sesión activa con token en memoria (`enabled: origin === 'demo' || isAuthenticated`).
+   - Si no hay credencial, el adaptador `HttpAaoLiveAdapter` devuelve inmediatamente `{ kind: 'forbidden' }` sin realizar ninguna llamada de red `fetch`.
+4. **Preservación estricta de estados no reconocidos:**
    - Eliminar cualquier mutación silenciosa a `INBOX` en `WorkItemSchema` y en `HttpAaoLiveAdapter`.
    - Preservar el valor textual exacto del estado en `task.status` y marcar `isUnrecognizedStatus: true`.
    - Segregar las tareas no canónicas en `unrecognizedItems` y presentarlas en una columna dedicada de aviso en el Kanban, manteniendo intacta la semántica del ciclo de 6 estados para las tareas válidas.
-4. **Sustitución semántica de accesibilidad:**
+5. **Sustitución semántica de accesibilidad y restauración de foco:**
    - Sustituir los elementos `div` interactivos por `<button type="button">` con `aria-pressed` (en la cartera del Dashboard) y `aria-haspopup="dialog"` (en las tarjetas del Kanban).
    - Añadir soporte para cierre mediante tecla `Escape` en `TaskDetailDrawer` y modales de autenticación.
+   - Implementar **restauración automática del foco** hacia el elemento detonante (`trigger button`) cuando un diálogo o drawer se cierra, garantizando conformidad WCAG 2.2 AA.
 
 ### Consecuencias
-- **Positivas:** Conformidad estricta con la Regla 1 (No fabricated results) y con las directivas de seguridad y accesibilidad de AAO; 100% de aislamiento entre sesiones de usuario; trazabilidad de datos no canónicos; 61 pruebas unitarias y de regresión pasando exitosamente.
+- **Positivas:** Conformidad estricta con la Regla 1 (No fabricated results) y con las directivas de seguridad, memoria volátil y accesibilidad de AAO; 100% de aislamiento entre sesiones de usuario; trazabilidad de datos no canónicos; suite integral de pruebas unitarias, de integración, regresión y accesibilidad E2E pasando exitosamente.

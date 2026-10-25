@@ -2,9 +2,11 @@
  * AuthContext
  * Enforces memory-only credential retention and strict session isolation.
  *
- * Rules:
- * - NO localStorage, sessionStorage, cookies, or URL storage.
- * - Rotates sessionId on login, logout, and credential updates.
+ * Strict Volatile Memory Policy:
+ * - Credentials (tokens) reside EXCLUSIVELY in volatile runtime memory (React state).
+ * - Under NO circumstances may credentials be written to sessionStorage, localStorage,
+ *   IndexedDB, cookies, or URL search parameters.
+ * - Rotates sessionId cryptographically on login, logout, and credential updates using crypto.randomUUID().
  * - Logout completely purges the token, aborts pending queries, and cleans caches.
  * - Token is never logged or exposed in error messages.
  */
@@ -15,6 +17,14 @@ import type { AuthState, AuthContextValue, AuthRole } from './types';
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 function generateSessionId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  }
   return `sess-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 }
 

@@ -39,6 +39,7 @@ export interface HttpLiveAdapterConfig {
   getToken?: () => string | null;
   getAuthRole?: () => 'AGENT' | 'CEO';
   onUnauthorized?: () => void;
+  requireAuth?: boolean;
 }
 
 export class HttpAaoLiveAdapter implements AaoReadPort {
@@ -47,6 +48,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
   private getToken: () => string | null;
   private getAuthRole: () => 'AGENT' | 'CEO';
   private onUnauthorized?: () => void;
+  private requireAuth: boolean;
   private activeControllers: Set<AbortController> = new Set();
 
   constructor(config: HttpLiveAdapterConfig = {}) {
@@ -55,6 +57,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
     this.getToken = config.getToken ?? (() => null);
     this.getAuthRole = config.getAuthRole ?? (() => 'AGENT');
     this.onUnauthorized = config.onUnauthorized;
+    this.requireAuth = config.requireAuth ?? false;
   }
 
   /**
@@ -88,6 +91,15 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
     };
 
     const token = this.getToken();
+    if (this.requireAuth && !token) {
+      clearTimeout(timeoutId);
+      this.activeControllers.delete(controller);
+      return {
+        kind: 'forbidden',
+        reason: 'Credencial no suministrada en memoria. Se requiere autenticación antes de consultar el backend.',
+      };
+    }
+
     if (token) {
       const role = this.getAuthRole();
       if (role === 'CEO') {
@@ -348,6 +360,15 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
 
     const headers: Record<string, string> = { Accept: 'application/json' };
     const token = this.getToken();
+    if (this.requireAuth && !token) {
+      clearTimeout(timeoutId);
+      this.activeControllers.delete(controller);
+      return {
+        kind: 'forbidden',
+        reason: 'Credencial no suministrada en memoria. Se requiere autenticación antes de consultar el backend.',
+      };
+    }
+
     if (token) {
       const role = this.getAuthRole();
       if (role === 'CEO') {
@@ -556,6 +577,17 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
 
   async getCeoOverview(projectId?: string): Promise<CeoOverview> {
     const now = new Date().toISOString();
+
+    if (this.requireAuth && !this.getToken()) {
+      return {
+        projects: { kind: 'forbidden', reason: 'Credencial no suministrada en memoria. Se requiere autenticación.' },
+        work: { kind: 'forbidden', reason: 'Credencial no suministrada en memoria. Se requiere autenticación.' },
+        governance: { kind: 'forbidden', reason: 'Credencial no suministrada en memoria. Se requiere autenticación.' },
+        operations: { kind: 'forbidden', reason: 'Credencial no suministrada en memoria. Se requiere autenticación.' },
+        alerts: { kind: 'forbidden', reason: 'Credencial no suministrada en memoria. Se requiere autenticación.' },
+        decisions: { kind: 'forbidden', reason: 'Credencial no suministrada en memoria. Se requiere autenticación.' },
+      };
+    }
 
     // 1. Projects
     const projectsState = await this.listProjects();

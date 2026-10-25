@@ -18,7 +18,7 @@ describe('HttpAaoLiveAdapter Contract & Error Handling', () => {
       json: async () => mockProjects,
     } as Response);
 
-    const adapter = new HttpAaoLiveAdapter();
+    const adapter = new HttpAaoLiveAdapter({ getToken: () => 'valid-mock-token' });
     const result = await adapter.listProjects();
 
     expect(result.kind).toBe('ready');
@@ -36,7 +36,7 @@ describe('HttpAaoLiveAdapter Contract & Error Handling', () => {
       json: async () => [],
     } as Response);
 
-    const adapter = new HttpAaoLiveAdapter();
+    const adapter = new HttpAaoLiveAdapter({ getToken: () => 'valid-mock-token' });
     const result = await adapter.listProjects();
 
     expect(result.kind).toBe('empty');
@@ -70,7 +70,7 @@ describe('HttpAaoLiveAdapter Contract & Error Handling', () => {
       statusText: 'Forbidden',
     } as Response);
 
-    const adapter = new HttpAaoLiveAdapter();
+    const adapter = new HttpAaoLiveAdapter({ getToken: () => 'valid-mock-token' });
     const result = await adapter.getProjectBoard('proj-restricted');
 
     expect(result.kind).toBe('forbidden');
@@ -86,7 +86,7 @@ describe('HttpAaoLiveAdapter Contract & Error Handling', () => {
       statusText: 'Not Found',
     } as Response);
 
-    const adapter = new HttpAaoLiveAdapter();
+    const adapter = new HttpAaoLiveAdapter({ getToken: () => 'valid-mock-token' });
     const result = await adapter.getProjectBoard('proj-missing');
 
     expect(result.kind).toBe('unavailable');
@@ -102,7 +102,7 @@ describe('HttpAaoLiveAdapter Contract & Error Handling', () => {
       statusText: 'Internal Server Error',
     } as Response);
 
-    const adapter = new HttpAaoLiveAdapter();
+    const adapter = new HttpAaoLiveAdapter({ getToken: () => 'valid-mock-token' });
     const result = await adapter.getProjectBoard('proj-crash');
 
     expect(result.kind).toBe('error');
@@ -119,7 +119,7 @@ describe('HttpAaoLiveAdapter Contract & Error Handling', () => {
       json: async () => [{ invalid_field_only: true }],
     } as Response);
 
-    const adapter = new HttpAaoLiveAdapter();
+    const adapter = new HttpAaoLiveAdapter({ getToken: () => 'valid-mock-token' });
     const result = await adapter.listProjects();
 
     expect(result.kind).toBe('error');
@@ -127,6 +127,22 @@ describe('HttpAaoLiveAdapter Contract & Error Handling', () => {
       expect(result.code).toBe('SCHEMA_VALIDATION_ERROR');
       expect(result.retryable).toBe(false);
     }
+  });
+
+  it('strictly prevents unauthenticated queries: returns forbidden without calling fetch if token is absent', async () => {
+    const fetchSpy = vi.spyOn(global, 'fetch');
+    const adapter = new HttpAaoLiveAdapter({ requireAuth: true }); // getToken returns null
+
+    const projectsResult = await adapter.listProjects();
+    expect(projectsResult.kind).toBe('forbidden');
+
+    const boardResult = await adapter.getProjectBoard('proj-1');
+    expect(boardResult.kind).toBe('forbidden');
+
+    const principalResult = await adapter.getCurrentPrincipal();
+    expect(principalResult.kind).toBe('forbidden');
+
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('injects X-Agent-Token header when agent token is present', async () => {

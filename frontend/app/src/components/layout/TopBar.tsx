@@ -38,20 +38,34 @@ export const TopBar: React.FC<TopBarProps> = ({
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [inputToken, setInputToken] = useState('');
   const [selectedRole, setSelectedRole] = useState<'AGENT' | 'CEO'>('AGENT');
+  const loginTriggerRef = React.useRef<HTMLButtonElement | null>(null);
+  const tokenInputRef = React.useRef<HTMLInputElement | null>(null);
+
+  const openLoginModal = () => {
+    setShowLoginModal(true);
+  };
+
+  const closeLoginModal = () => {
+    setShowLoginModal(false);
+    setInputToken('');
+    setTimeout(() => {
+      loginTriggerRef.current?.focus();
+    }, 0);
+  };
 
   const handleLoginSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputToken.trim()) return;
     onLogin(inputToken.trim(), selectedRole);
-    setInputToken('');
-    setShowLoginModal(false);
+    closeLoginModal();
   };
 
   React.useEffect(() => {
     if (!showLoginModal) return;
+    tokenInputRef.current?.focus();
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        setShowLoginModal(false);
+        closeLoginModal();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -218,7 +232,14 @@ export const TopBar: React.FC<TopBarProps> = ({
             </Button>
           </div>
         ) : (
-          <Button size="sm" variant="outline" onClick={() => setShowLoginModal(true)}>
+          <Button
+            ref={loginTriggerRef}
+            size="sm"
+            variant="outline"
+            onClick={openLoginModal}
+            aria-haspopup="dialog"
+            aria-expanded={showLoginModal}
+          >
             Credencial de Acceso
           </Button>
         )}
@@ -292,6 +313,7 @@ export const TopBar: React.FC<TopBarProps> = ({
                   Valor del Token Secreto
                 </label>
                 <input
+                  ref={tokenInputRef}
                   id="auth-token-input"
                   type="password"
                   value={inputToken}
@@ -310,7 +332,7 @@ export const TopBar: React.FC<TopBarProps> = ({
               </div>
 
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
-                <Button type="button" variant="ghost" onClick={() => setShowLoginModal(false)}>
+                <Button type="button" variant="ghost" onClick={closeLoginModal}>
                   Cancelar
                 </Button>
                 <Button type="submit" variant="primary">

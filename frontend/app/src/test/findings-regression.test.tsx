@@ -107,7 +107,7 @@ describe('P0 Finding 1: Identidad CEO y Verificación Real', () => {
 });
 
 describe('P0 Finding 2: Aislamiento de Sesiones y Rotación de Identificador', () => {
-  it('rotates sessionId on login and logout, preventing stale query cache collisions', () => {
+  it('rotates sessionId on login and logout using cryptographic UUID entropy', () => {
     const wrapper = ({ children }: { children: React.ReactNode }) => (
       <AuthProvider>{children}</AuthProvider>
     );
@@ -115,7 +115,9 @@ describe('P0 Finding 2: Aislamiento de Sesiones y Rotación de Identificador', (
     const { result } = renderHook(() => useAuth(), { wrapper });
 
     const initialSessionId = result.current.sessionId;
-    expect(initialSessionId).toMatch(/^sess-/);
+    expect(initialSessionId).toBeDefined();
+    expect(typeof initialSessionId).toBe('string');
+    expect(initialSessionId.length).toBeGreaterThan(15);
 
     act(() => {
       result.current.setCredentials('token-session-1', 'AGENT', 'agent-a');
@@ -123,6 +125,7 @@ describe('P0 Finding 2: Aislamiento de Sesiones y Rotación de Identificador', (
 
     const loginSessionId = result.current.sessionId;
     expect(loginSessionId).not.toBe(initialSessionId);
+    expect(loginSessionId.length).toBeGreaterThan(15);
 
     act(() => {
       result.current.setCredentials('token-session-2', 'AGENT', 'agent-b');
@@ -155,7 +158,7 @@ describe('P0 Finding 2: Aislamiento de Sesiones y Rotación de Identificador', (
       });
     });
 
-    const adapter = new HttpAaoLiveAdapter();
+    const adapter = new HttpAaoLiveAdapter({ getToken: () => 'valid-bearer-token' });
     // Fire a request without awaiting it
     const promise = adapter.getProjectBoard('proj-hang');
 
@@ -172,6 +175,119 @@ describe('P0 Finding 2: Aislamiento de Sesiones y Rotación de Identificador', (
     if (result.kind === 'error') {
       expect(result.code).toBe('TIMEOUT');
     }
+  });
+
+  it('handles delayed HTTP responses during credential switch without cross-session contamination', async () => {
+    let sessionAAborted = false;
+
+    vi.spyOn(global, 'fetch').mockImplementation((_url, options) => {
+      const signal = options?.signal as AbortSignal;
+      const headers = options?.headers as Record<string, string>;
+
+      if (headers?.['X-Agent-Token'] === 'token-session-a') {
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => {
+            sessionAAborted = true;
+            reject(new DOMException('Session A was aborted', 'AbortError'));
+          });
+        });
+      }
+
+      // Session B responds immediately
+      return Promise.resolve({
+        status: 200,
+        ok: true,
+        json: async () => [{ id: 'proj-session-b', name: 'Project Session B', state: 'ACTIVE' }],
+      } as Response);
+    });
+
+    let currentToken = 'token-session-a';
+    const adapter = new HttpAaoLiveAdapter({
+      getToken: () => currentToken,
+      getAuthRole: () => 'AGENT',
+    });
+
+    // 1. Session A starts an async request (delayed in flight)
+    const sessionAPromise = adapter.listProjects();
+
+    // 2. Before Session A resolves, credentials switch to Session B
+    currentToken = 'token-session-b';
+    adapter.abortAll(); // Aborts all Session A requests
+
+    expect(sessionAAborted).toBe(true);
+
+    // 3. Session B makes its own request
+    const sessionBResult = await adapter.listProjects();
+    expect(sessionBResult.kind).toBe('ready');
+    if (sessionBResult.kind === 'ready') {
+      expect(sessionBResult.data[0].id).toBe('proj-session-b');
+    }
+
+    // 4. Session A finishes with error/abort without affecting Session B
+    const sessionAResult = await sessionAPromise;
+    expect(sessionAResult.kind).toBe('error');
+  });
+
+  it('handles delayed HTTP responses during logout: aborts active queries and keeps storage empty', async () => {
+    let capturedSignal: AbortSignal | undefined;
+    vi.spyOn(global, 'fetch').mockImplementation((_url, options) => {
+      capturedSignal = options?.signal as AbortSignal;
+      return new Promise((_, reject) => {
+        capturedSignal?.addEventListener('abort', () => {
+          reject(new DOMException('Aborted by logout', 'AbortError'));
+        });
+      });
+    });
+
+    let token: string | null = 'test-token-to-logout';
+    const adapter = new HttpAaoLiveAdapter({
+      getToken: () => token,
+      getAuthRole: () => 'AGENT',
+    });
+
+    const pendingPromise = adapter.listProjects();
+    expect(capturedSignal?.aborted).toBe(false);
+
+    // Logout occurs
+    token = null;
+    adapter.abortAll();
+
+    expect(capturedSignal?.aborted).toBe(true);
+    const result = await pendingPromise;
+    expect(result.kind).toBe('error');
+
+    // Memory-only check: verify storage is untouched
+    expect(localStorage.getItem('token')).toBeNull();
+    expect(sessionStorage.getItem('token')).toBeNull();
+    expect(sessionStorage.length).toBe(0);
+    expect(localStorage.length).toBe(0);
+  });
+
+  it('guarantees ZERO network calls before a valid session is established', async () => {
+    const fetchSpy = vi.spyOn(global, 'fetch');
+    const unauthenticatedAdapter = new HttpAaoLiveAdapter({
+      getToken: () => null,
+      getAuthRole: () => 'AGENT',
+      requireAuth: true,
+    });
+
+    // None of these should execute fetch
+    const p1 = await unauthenticatedAdapter.getCurrentPrincipal();
+    const p2 = await unauthenticatedAdapter.listProjects();
+    const p3 = await unauthenticatedAdapter.getProjectBoard('proj-x');
+    const p4 = await unauthenticatedAdapter.getProjectCapabilities('proj-x');
+    const p5 = await unauthenticatedAdapter.getProjectEvaluations('proj-x');
+    const p6 = await unauthenticatedAdapter.getCeoOverview('proj-x');
+
+    expect(p1.kind).toBe('forbidden');
+    expect(p2.kind).toBe('forbidden');
+    expect(p3.kind).toBe('forbidden');
+    expect(p4.kind).toBe('forbidden');
+    expect(p5.kind).toBe('forbidden');
+    expect(p6.projects.kind).toBe('forbidden');
+
+    // 0 network requests dispatched!
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
 

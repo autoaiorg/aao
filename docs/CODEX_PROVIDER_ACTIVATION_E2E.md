@@ -1,6 +1,6 @@
 # Piloto acotado: Codex como agente ejecutor para una sola tarea
 
-**Estado:** el procedimiento está preparado y sus garantías están **demostradas**. El piloto **no se ha ejecutado** y queda pendiente de la autorización expresa del CEO. Esta autorización cubre solo esta tarea y no activa el proveedor para la ejecución general.
+**Estado:** el piloto se **ejecutó el 2026-10-25** con la autorización expresa del CEO (`gpt-6-luna`, esfuerzo medium). La tarea quedó en DONE y la PR #114 se fusionó; [registro](construction-runs/20261025-codex-pilot.md). La autorización cubrió solo esa tarea y no activa el proveedor para la ejecución general.
 
 **Por defecto:** el proveedor está desactivado. `agent_runner` rechaza el backend `codex` si falta `AAO_AGENT_PROVIDER=codex` y también si falta un `AAO_AGENT_CODEX_HOME` dedicado. Esas dos variables se exportan solo en el proceso del worker del piloto.
 

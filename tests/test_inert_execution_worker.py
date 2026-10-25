@@ -97,7 +97,8 @@ def test_agent_worker_reads_task_instructions_and_persists_proposal(monkeypatch)
         return {"patch": "patch", "patch_sha256": "b" * 64, "changed_paths": ["src/aao/x.py"],
                 "candidate_sha": "c" * 40, "candidate_ref": "refs/aao/candidates/" + "c" * 40,
                 "check": {"conclusion": "success"},
-                "backend": "fixture", "backend_version": "fixture-v1", "elapsed_seconds": .01, "exit_status": 0}
+                "backend": "fixture", "provider": "fixture", "model": None, "backend_version": "fixture-v1",
+                "elapsed_seconds": .01, "exit_status": 0}
     monkeypatch.setattr("aao.agent_runner.run_agent_patch", runner)
     monkeypatch.setattr("aao.work_management_api.persist_patch_proposal", lambda *args: {"proposal_id": "proposal-1"})
     # The worker authenticates its own credential before proposing (same check as the API).
@@ -105,7 +106,9 @@ def test_agent_worker_reads_task_instructions_and_persists_proposal(monkeypatch)
     completed = []
     monkeypatch.setattr(worker, "complete", lambda *args, **kwargs: completed.append(args))
     assert worker.run_one("agent-1", "credential", project_id="project-1", seconds=30)["status"] == "FAILED"
-    assert "lease must exceed" in completed.pop()[3]["error"]
+    failed = completed.pop()[3]
+    assert "lease must exceed" in failed["error"]
+    assert (failed["backend"], failed["provider"], failed["backend_version"]) == ("fixture", "fixture", "fixture-v1")
     outcome = worker.run_one("agent-1", "credential", project_id="project-1", seconds=400)
     assert outcome["status"] == "SUCCEEDED"
     assert completed[0][3]["candidate_sha"] == "c" * 40
@@ -114,6 +117,8 @@ def test_agent_worker_reads_task_instructions_and_persists_proposal(monkeypatch)
     assert "from DB" in captured["instructions"] and "task desc" in captured["instructions"]
     assert "queue" not in captured["instructions"].lower()
     assert completed[0][3]["proposal_id"] == "proposal-1"
+    assert {k: completed[0][3][k] for k in ("backend", "provider", "model", "backend_version")} == {
+        "backend": "fixture", "provider": "fixture", "model": None, "backend_version": "fixture-v1"}
 
 
 def test_agent_worker_empty_diff_fails_without_proposal(monkeypatch):

@@ -5,7 +5,9 @@ import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Card';
 
 /** Reads the fields the backend records for an agent run; anything else is left out, never invented. */
-function runSummary(result: unknown): { conclusion?: string; candidate?: string; check?: string; error?: string } {
+export function runSummary(result: unknown): {
+  conclusion?: string; candidate?: string; check?: string; agent?: string; error?: string;
+} {
   if (typeof result !== 'object' || result === null) return {};
   const r = result as Record<string, unknown>;
   const check = typeof r.check === 'object' && r.check !== null ? (r.check as Record<string, unknown>) : null;
@@ -15,6 +17,10 @@ function runSummary(result: unknown): { conclusion?: string; candidate?: string;
     candidate: str(r.candidate_sha),
     check: check
       ? `${str(check.check_id) ?? 'check'}: ${str(check.conclusion) ?? '?'} (exit ${String(check.exit_code ?? '?')})`
+      : undefined,
+    // Provider, pinned model and CLI release as recorded; an unpinned model shows as the CLI default.
+    agent: str(r.provider)
+      ? [str(r.provider), str(r.model) ?? 'modelo por defecto del CLI', str(r.backend_version)].filter(Boolean).join(' · ')
       : undefined,
     error: str(r.error),
   };
@@ -179,6 +185,9 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
                           <div style={{ fontFamily: 'monospace', color: 'var(--text-muted)', marginTop: '2px' }}>
                             Candidato: {run.candidate}
                           </div>
+                        )}
+                        {run.agent && (
+                          <div style={{ color: 'var(--text-secondary)', marginTop: '2px' }}>Agente: {run.agent}</div>
                         )}
                         {run.check && (
                           <div style={{ color: 'var(--text-secondary)', marginTop: '2px' }}>Pruebas: {run.check}</div>

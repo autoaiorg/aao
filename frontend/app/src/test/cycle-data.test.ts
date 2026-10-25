@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { HttpAaoLiveAdapter } from '../data/adapters/live/HttpAaoLiveAdapter';
 import { MockAaoDemoAdapter } from '../data/adapters/demo/MockAaoDemoAdapter';
+import { runSummary } from '../features/kanban/TaskDetailDrawer';
 
 const ok = (body: unknown) => ({ status: 200, ok: true, json: async () => body }) as Response;
 
@@ -70,5 +71,13 @@ describe('Task outcome in the board (PR state and outside-cycle resolution)', ()
       expect(task.pullRequests?.[0].state).toBe('CLOSED_UNMERGED');
       expect(task.resolution?.pr_number).toBe(107);
     }
+  });
+
+  it('shows which provider, model and CLI release produced a run, without inventing a model', () => {
+    expect(runSummary({ provider: 'openai', model: 'gpt-5.1-codex', backend_version: 'codex-cli 0.164.0' }).agent)
+      .toBe('openai · gpt-5.1-codex · codex-cli 0.164.0');
+    expect(runSummary({ provider: 'openai', model: null, backend_version: 'codex-cli 0.164.0' }).agent)
+      .toBe('openai · modelo por defecto del CLI · codex-cli 0.164.0');
+    expect(runSummary({ backend: 'codex', backend_version: 'codex-cli' }).agent).toBeUndefined();
   });
 });

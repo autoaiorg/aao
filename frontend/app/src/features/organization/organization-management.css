@@ -1,0 +1,104 @@
+.organization-management {
+  display: grid;
+  gap: 20px;
+}
+
+.organization-management__heading h3 {
+  margin: 0;
+}
+
+.organization-management__heading p {
+  max-width: 84ch;
+  margin: 6px 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.organization-management__forms {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.organization-management__form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 14px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md, 8px);
+  background: var(--bg-app);
+}
+
+.organization-management__form h4 {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 14px;
+}
+
+.organization-management__field {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.organization-management__field--wide {
+  grid-column: 1 / -1;
+}
+
+.organization-management__control {
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong, #cbd5e1);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font: inherit;
+  font-weight: 400;
+}
+
+.organization-management__control:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.organization-management__submit {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
+.organization-management__message {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+@media (max-width: 850px) {
+  .organization-management__forms {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 560px) {
+  .organization-management__form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .organization-management__form h4,
+  .organization-management__field--wide,
+  .organization-management__submit {
+    grid-column: auto;
+  }
+
+  .organization-management__submit button {
+    width: 100%;
+  }
+}

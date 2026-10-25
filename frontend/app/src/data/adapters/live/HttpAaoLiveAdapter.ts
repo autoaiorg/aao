@@ -984,6 +984,19 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
     );
   }
 
+  async createWorkRequestFromConversation(
+    projectId: string,
+    conversationId: string,
+    input: ConversationWorkRequestInput,
+  ): Promise<DataState<ConversationWorkRequestResult>> {
+    if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede estructurar trabajo desde una conversación.' };
+    return this.request(
+      `/v1/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/work-requests`,
+      z.object({ id: z.string().uuid(), status: z.string(), created: z.boolean() }),
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) },
+    );
+  }
+
   async getAgentDetails(agentId: string): Promise<DataState<AgentIdentity>> {
     // 1. Attempt canonical direct endpoint
     try {

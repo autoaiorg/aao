@@ -28,6 +28,7 @@ export interface ProjectConversationMessage {
 
 export interface ConversationWorkRequestInput {
   title: string;
+  description: string;
   acceptance_criteria: string[];
 }
 
@@ -52,6 +53,11 @@ export interface AaoConversationPort {
     projectId: string,
     conversationId: string,
     messageId: string,
+    input: ConversationWorkRequestInput,
+  ): Promise<DataState<ConversationWorkRequestResult>>;
+  createWorkRequestFromConversation(
+    projectId: string,
+    conversationId: string,
     input: ConversationWorkRequestInput,
   ): Promise<DataState<ConversationWorkRequestResult>>;
 }

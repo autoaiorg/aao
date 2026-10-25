@@ -76,7 +76,7 @@ A SHA `95d8427` no existía `/v1/organization`; se implementó en PR #129 (`e807
 ### Falta o no se encontró en el alcance
 
 - Telemetría de presencia/heartbeat y feed de actividad unificado en la oficina. Estado de ejecución sigue siendo evidencia de trabajo, no presencia general del agente.
-- Conversación CEO-AAO completa en producto (hay un primer contrato backend de transcripción persistente, pero aún no UI integrada ni respuestas AAO enlazadas a ejecuciones); equipos temporales padre/hijos durables; calendario/rutinas con ejecución servidor; visualización de conocimiento corporativo unificada; feedback/skills versionadas asociadas al catálogo.
+- La conversación CEO-AAO ya tiene UI persistente, respuesta incremental mediante proveedor opt-in y estructuración explícita de trabajo desde el hilo; aún no se integra con ejecuciones de agentes. Siguen pendientes equipos temporales padre/hijos durables; calendario/rutinas con ejecución servidor; visualización de conocimiento corporativo unificada; feedback/skills versionadas asociadas al catálogo.
 - Dirección de proyectos desde la oficina: ya se puede registrar una solicitud CEO en un proyecto activo. La ruta nueva crea un `work_item` canónico `INBOX`, con autor `ceo` y evento `work.requested`; no lo admite ni ejecuta. El endpoint de creación AGENT existente sigue exigiendo `work.create` y no se suplanta esa identidad.
 
 ## 5. Propuesta incremental
@@ -144,7 +144,7 @@ Estas pruebas son criterios de construcción y aceptación de producto; **no est
 | 3 | Diseñar persistencia de conversación solo después de validar flujo de trabajo y autorización | UI de conversación CEO-AAO ligada a proyecto; emitir órdenes por flujo de trabajo existente, no llamadas directas a modelo |
 | 4 | Modelo padre/hijos, coordinador paralelo y scheduler durable solo si piloto/producto los justifica | Mostrar tareas hijas, calendario y conocimiento consumiendo contratos canónicos |
 
-Los perfiles/unidades persistidos y la edición CEO ya están construidos (#134/#137), y su representación dinámica LIVE en 2D está construida (#136). El siguiente bloque prioritario de producto es cerrar F1: una vía autorizada para que el CEO dirija trabajo desde la oficina, con los mismos registros de `work_items` y visibilidad de board/oficina. A continuación F2 requiere conversación persistente, vinculada a proyecto y trabajo. Equipos (F3) y calendario/conocimiento/skills (F4) quedan después; no son precondiciones para el piloto real de modelo.
+Los perfiles/unidades persistidos y la edición CEO ya están construidos (#134/#137), y su representación dinámica LIVE en 2D está construida (#136). F1 permite dirigir trabajo desde la oficina mediante los mismos registros `work_items` y visibilidad de board/oficina. F2 ahora incluye conversación persistente CEO-AAO y creación explícita de trabajo INBOX desde un resumen revisado del hilo; queda vincularla a ejecuciones reales y robustecer la recuperación de turnos. Equipos (F3) y calendario/conocimiento/skills (F4) siguen después; no son precondiciones para el piloto real de modelo.
 
 ### Incremento de construcción siguiente: perfiles organizativos persistidos
 
@@ -246,6 +246,11 @@ Los perfiles/unidades persistidos y la edición CEO ya están construidos (#134/
 - **Sesión CEO web:** PR #148, merge `0d15f063d82a4f2967ad73d554d9bd715cee107a`. La sesión del navegador se restaura con cookie opaca `HttpOnly`/`Secure`/`SameSite=Strict`; la sesión y su digest persisten en PostgreSQL (migración 017), hay protección CSRF/Origin y logout revoca la sesión. El bearer se intercambia únicamente en dev/test; el frontend no persiste el token. CI de PR pasó en las ejecuciones 40239191768 y 40239196441 (test y frontend). La PR habilita la continuidad de sesión; no convierte todavía el panel en un agente conversacional.
 - **Conversación CEO → solicitud canónica:** PR #149, merge `972386da0ec4fcb010a17778642136641294c43e`. Sobre un mensaje CEO persistido, una acción explícita pide título y criterios de aceptación, crea un único `work_item` en `INBOX` y enlaza mensaje y trabajo en la misma transacción PostgreSQL. El reintento reutiliza el trabajo enlazado; la interfaz enlaza al tablero real.
 - **Límites comprobados por alcance de implementación:** no interpreta automáticamente el texto, no llama a modelo, no crea respuesta de AAO, no concede grants, no admite ni inicia ejecución. El cuerpo de mensaje se conserva como descripción. Las pruebas cubren autorización/scope, linkage, reintento sin duplicados, INBOX y ausencia de grant/cola; las pruebas frontend cubren los campos obligatorios y navegación. CI de #149 pasó antes de merge (40238912263 y 40238917281). Estas piezas hacen persistente y accionable una parte de F2, pero no satisfacen la aceptación de respuesta conversacional vinculada a una ejecución/proveedor real.
+
+### Incremento F2: estructurar trabajo después de conversar (en construcción)
+
+- El flujo operativo no debe convertir mensajes individuales en tareas. Tras el intercambio persistido, el CEO revisa una síntesis en campos editables de título, descripción y criterios de aceptación; al confirmar, el backend crea un `work_item` canónico en `INBOX` y registra el `conversation_id` de origen en el evento de auditoría. No admite ni ejecuta el trabajo.
+- Esta estructuración es deliberada y revisada por el CEO; no equivale a que el modelo cree tareas automáticamente ni a descomposición paralela. Los datos del hilo permanecen en PostgreSQL y la creación usa el backend canónico; no hay segundo estado de negocio en el frontend.
 - **Incidente local de migración 016:** la base `aao_dev` recibió `db/postgres/016_project_conversations.sql` y la lectura posterior confirmó registro de migración y tablas. No se ha registrado prueba E2E de navegador tras aplicar esa migración; no usarlo como evidencia de operación integral.
 
 ### Presentación de formularios organizativos

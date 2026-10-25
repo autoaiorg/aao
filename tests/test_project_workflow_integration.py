@@ -191,7 +191,7 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
             f"/v1/projects/{project}/conversations/{conversation_id}/messages/"
             f"{message.json()['id']}/work-request"
         )
-        conversion = {"title": "Investigate evidence", "acceptance_criteria": ["Evidence linked"]}
+        conversion = {"title": "Investigate evidence", "description": "Review execution evidence", "acceptance_criteria": ["Evidence linked"]}
         assert client.post(conversion_url, json=conversion).status_code == 403
         other_mandate = client.post("/v1/mandates", headers=ceo, json={
             "title": "Other conversation mandate " + str(uuid4()), "objective": "Scope test",
@@ -292,6 +292,34 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         assert work_audit[0]["source_message_id"] == message.json()["id"]
         assert work_audit[0]["admitted"] is False
         assert link_audit[0]["work_id"] == work_id
+
+        # Task structuring references the complete persisted thread, not an
+        # individual message; only CEO confirmation creates canonical INBOX work.
+        thread_task = client.post(
+            f"/v1/projects/{project}/conversations/{conversation_id}/work-requests",
+            headers=ceo, json={
+                "title": "Synthesize discussion", "description": "CEO-reviewed outcome of the discussion",
+                "acceptance_criteria": ["Decision and evidence recorded"],
+            },
+        )
+        assert thread_task.status_code == 201, thread_task.text
+        thread_work_id = thread_task.json()["id"]
+        assert thread_task.json()["status"] == "INBOX"
+        assert client.get(f"/v1/projects/{project}/board", headers=ceo).json()
+        with connect_postgres() as db:
+            thread_work = db.execute(
+                "SELECT project_id,author_id,status,description FROM work_items WHERE id=%s",
+                (thread_work_id,),
+            ).fetchone()
+            thread_audit = db.execute(
+                "SELECT kind,details FROM events WHERE subject_id=%s AND kind='work.requested_from_conversation'",
+                (thread_work_id,),
+            ).fetchone()
+        assert (str(thread_work[0]), *thread_work[1:]) == (
+            project, "ceo", "INBOX", "CEO-reviewed outcome of the discussion",
+        )
+        assert thread_audit[1]["conversation_id"] == conversation_id
+        assert thread_audit[1]["admitted"] is False
 
         pending_message = client.post(
             f"/v1/projects/{project}/conversations/{conversation_id}/messages",

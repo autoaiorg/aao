@@ -816,9 +816,10 @@ def test_registered_repository_check_requires_task_selection_before_queue_claim(
     not os.getenv("AAO_TEST_POSTGRES_URL") or os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
     reason="Explicit disposable PostgreSQL database required",
 )
-def test_w2a_agent_run_produces_a_tested_candidate_retries_after_failure_and_is_reviewable(monkeypatch, tmp_path):
-    """W1+W2a end to end: an agent run turns an admitted task into a patch proposal and a candidate commit,
-    tests it in the sandbox, a failed attempt can be re-run, and the auditor approves the tested candidate SHA."""
+def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp_path):
+    """W1-W3 end to end: an agent run turns an admitted task into a proposal and a candidate commit tested in
+    the sandbox; failed attempts can be re-run; the auditor approves the tested SHA; a separate publisher pushes
+    exactly that SHA and opens the PR; the merged PR makes the task DONE; the activity feed shows each step."""
     import subprocess
 
     from aao.inert_execution_worker import run_one
@@ -957,4 +958,80 @@ def test_w2a_agent_run_produces_a_tested_candidate_retries_after_failure_and_is_
             "decision": "APPROVE", "candidate_sha": candidate_sha, "evidence": [evidence_ref]})
         assert approval.status_code == 201, approval.text
         assert approval.json()["status"] == "VERIFIED"
+
+        # W2b: two publisher principals (implementer identity pushes, PM opens the PR), neither the author.
+        from aao.pr_publisher import PublishError, open_pull_request, push_candidate
+
+        def principal(prefix):
+            pid = prefix + str(uuid4())
+            return pid, client.post("/v1/principals/credentials", headers=ceo,
+                                    json={"principal_id": pid, "kind": "AGENT"}).json()["token"]
+        pusher_id, pusher = principal("w2b-impl-")
+        publisher_id, publisher = principal("w2b-pm-")
+        remote = tmp_path / "github.git"  # stands in for GitHub; it already has the base, like the real fork
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+        subprocess.run(["git", "--git-dir", str(remote), "config", "receive.shallowUpdate", "true"], check=True)
+        subprocess.run(["git", "-C", str(repo), "push", "-q", str(remote), "HEAD:refs/heads/main"], check=True)
+        opened = []
+
+        def push(sha, branch):
+            subprocess.run(["git", "--git-dir", str(store), "push", "-q", str(remote), f"{sha}:refs/heads/{branch}"], check=True)
+
+        def open_pr(branch, title, body):
+            opened.append((branch, title, body))
+            head = subprocess.run(["git", "--git-dir", str(remote), "rev-parse", f"refs/heads/{branch}"],
+                                  capture_output=True, text=True, check=True).stdout.strip()
+            return {"number": 7, "url": "https://github.invalid/autoaiorg/aao/pull/7", "head_sha": head}
+
+        with pytest.raises(PublishError, match="Project grant required"):
+            push_candidate(work, pusher, store=store, push=push)
+        for pid in (identity, pusher_id, publisher_id):
+            assert client.post(f"/v1/projects/{project}/grants", headers=ceo,
+                               json={"principal_id": pid, "capability": "code.publish"}).status_code == 201
+        with pytest.raises(PublishError, match="cannot publish its own work"):
+            push_candidate(work, token, store=store, push=push)
+        with pytest.raises(PublishError, match="has not been pushed"):
+            open_pull_request(work, publisher, open_pr=open_pr)
+        pushed = push_candidate(work, pusher, store=store, push=push)
+        assert pushed["status"] == "PUSHED" and pushed["candidate_sha"] == candidate_sha
+        branch = pushed["branch"]
+        assert subprocess.run(["git", "--git-dir", str(remote), "rev-parse", f"refs/heads/{branch}"],
+                              capture_output=True, text=True, check=True).stdout.strip() == candidate_sha
+        assert push_candidate(work, pusher, store=store, push=push)["status"] == "ALREADY_PUSHED"
+        # A fork branch moved after the push is never recorded as the task's PR.
+        subprocess.run(["git", "--git-dir", str(remote), "update-ref", f"refs/heads/{branch}", base_sha], check=True)
+        with pytest.raises(PublishError, match="head is not the approved candidate"):
+            open_pull_request(work, publisher, open_pr=open_pr)
+        subprocess.run(["git", "--git-dir", str(remote), "update-ref", f"refs/heads/{branch}", candidate_sha], check=True)
+        opened.clear()
+        published = open_pull_request(work, publisher, open_pr=open_pr)
+        assert published["status"] == "PUBLISHED" and published["pusher"] == pusher_id
+        assert opened == [(branch, "aao: Add a notes test", opened[0][2])] and candidate_sha in opened[0][2]
+        assert open_pull_request(work, publisher, open_pr=open_pr)["status"] == "ALREADY_PUBLISHED"
+        assert len(opened) == 1
+        board = client.get(f"/v1/projects/{project}/board", headers=agent).json()
+        prs = next(item for item in board if item["id"] == work)["pull_requests"]
+        assert [(pr["pr_number"], pr["candidate_sha"], pr["publisher"]) for pr in prs] == [(7, candidate_sha, publisher_id)]
+
+        # W3: the task becomes DONE only once the PR is merged with the approved SHA as its head.
+        from aao.pr_publisher import reconcile
+        pr_state = {"state": "open", "merged": False, "merge_commit_sha": None, "head_sha": candidate_sha}
+        assert reconcile(work, publisher, get_pr=lambda n: pr_state)["status"] == "OPEN"
+        with pytest.raises(PublishError, match="head no longer matches"):
+            reconcile(work, publisher, get_pr=lambda n: {**pr_state, "head_sha": "f" * 40})
+        merge_sha = "e" * 40
+        pr_state.update(state="closed", merged=True, merge_commit_sha=merge_sha)
+        done = reconcile(work, publisher, get_pr=lambda n: pr_state)
+        assert done["status"] == "DONE" and done["merge_commit_sha"] == merge_sha
+        assert reconcile(work, publisher, get_pr=lambda n: pr_state) == {"status": "DONE"}
+        board = client.get(f"/v1/projects/{project}/board", headers=ceo).json()
+        assert next(item for item in board if item["id"] == work)["status"] == "DONE"
+        activity = client.get(f"/v1/projects/{project}/activity", headers=agent)
+        assert activity.status_code == 200, activity.text
+        kinds = [event["kind"] for event in activity.json()]
+        assert kinds[0] == "work.completed" and activity.json()[0]["details"]["merge_commit_sha"] == merge_sha
+        for kind in ("work.admitted", "execution.staged", "execution.claimed", "execution.completed",
+                     "work.patch_proposed", "work.reviewed", "work.pr_opened"):
+            assert kind in kinds, kind
+        assert client.get(f"/v1/projects/{project}/activity?limit=0", headers=ceo).status_code == 422
     assert subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True, check=True).stdout == ""

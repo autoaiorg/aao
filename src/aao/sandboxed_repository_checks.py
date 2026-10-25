@@ -24,6 +24,8 @@ CHECKS: dict[str, tuple[str, ...]] = {
         "tests/test_authorization.py",
         "tests/test_identity.py",
         "tests/test_execution.py",
+        "tests/test_agent_runner.py",
+        "tests/test_pr_publisher.py",
     ),
 }
 _EXTRA_TEST = re.compile(r"^tests/test_[A-Za-z0-9_]+\.py$")

@@ -27,7 +27,7 @@ def _git(repo: Path, *args: str, timeout: int = 30) -> str:
     except (OSError, subprocess.SubprocessError) as exc:
         raise AgentRunnerError("isolated Git operation failed") from exc
     if p.returncode:
-        raise AgentRunnerError("configured source repository or base revision unavailable")
+        raise AgentRunnerError(f"isolated git {args[0]} failed: configured repository or revision unavailable")
     return p.stdout
 
 _EMAIL = re.compile(r"^[A-Za-z0-9._+-]{1,64}@[A-Za-z0-9.-]{1,128}$")
@@ -50,6 +50,8 @@ def _commit_candidate(clone: Path, env: dict, *, author_email: str, message: str
     if not store.exists():
         store.parent.mkdir(parents=True, exist_ok=True)
         _git(store.parent, "init", "--quiet", "--bare", str(store))
+        # Accept candidates from shallow sources (e.g. a depth-1 CI checkout).
+        _git(store, "config", "receive.shallowUpdate", "true")
     ref = f"refs/aao/candidates/{candidate_sha}"
     _git(clone, "push", "--quiet", str(store), f"HEAD:{ref}")
     result: dict = {"candidate_sha": candidate_sha, "candidate_ref": ref}
@@ -91,7 +93,7 @@ def run_agent_patch(repository, base_sha: str, instructions: str, *, backend: st
         clone = Path(tmp) / "repo"
         clone.mkdir(mode=0o700)
         _git(clone, "init", "--quiet")
-        _git(clone, "-c", "protocol.file.allow=always", "fetch", "--no-tags", "--no-recurse-submodules", str(source), base_sha)
+        _git(clone, "-c", "protocol.file.allow=always", "fetch", "--depth=1", "--no-tags", "--no-recurse-submodules", str(source), base_sha)
         _git(clone, "-c", "core.hooksPath=/dev/null", "checkout", "--quiet", "--detach", "FETCH_HEAD")
         env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(Path(tmp) / "home"), "LANG": "C.UTF-8",
                "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_NO_REPLACE_OBJECTS": "1",

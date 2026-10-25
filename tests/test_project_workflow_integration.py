@@ -827,7 +827,7 @@ def test_w2a_agent_run_produces_a_tested_candidate_retries_after_failure_and_is_
     # The fixture repository is this checkout's HEAD, so the sandboxed core-unit check has real tests to run.
     root = Path(__file__).resolve().parents[1]
     repo = tmp_path / "self-dev"
-    subprocess.run(["git", "clone", "-q", "--no-hardlinks", str(root), str(repo)], check=True)
+    subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{root}", str(repo)], check=True)  # shallow, like CI
     base_sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
     store = tmp_path / "candidates.git"
 

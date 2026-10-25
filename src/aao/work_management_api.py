@@ -720,6 +720,7 @@ def change_project_state(
 
 
 def read_principal(
+    request: Request = None,  # type: ignore[assignment]
     x_ceo_token: str | None = Header(None),
     x_agent_token: str | None = Header(None),
 ):
@@ -727,6 +728,16 @@ def read_principal(
     if (_ceo_bearer_enabled() and ceo and x_ceo_token
             and secrets.compare_digest(ceo, x_ceo_token)):
         return _CEO_PRINCIPAL
+    cookie_value = request.cookies.get(CEO_SESSION_COOKIE) if request else None
+    if _ceo_bearer_enabled() and cookie_value:
+        with tx() as db:
+            row = db.execute(
+                "SELECT 1 FROM ceo_browser_sessions WHERE session_digest=%s "
+                "AND revoked_at IS NULL AND expires_at > clock_timestamp()",
+                (_session_digest(cookie_value),),
+            ).fetchone()
+        if row:
+            return _CEO_PRINCIPAL
     if x_agent_token is not None:
         from aao.principal_credentials import PrincipalDenied
         try:

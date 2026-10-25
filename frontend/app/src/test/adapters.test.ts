@@ -212,4 +212,72 @@ describe('MockAaoDemoAdapter Fixtures Isolation', () => {
       expect(board.data.totalCount).toBeGreaterThan(0);
     }
   });
+
+  it('provides structured organization and segregated agent roster in demo mode', async () => {
+    const demo = new MockAaoDemoAdapter(0);
+    const org = await demo.getOrganizationStructure();
+
+    expect(org.kind).toBe('ready');
+    if (org.kind === 'ready') {
+      expect(org.origin).toBe('demo');
+      expect(org.data.units.length).toBeGreaterThan(0);
+      expect(org.data.agents.length).toBeGreaterThan(0);
+      expect(org.data.totalStandingAgents).toBeGreaterThan(0);
+      expect(org.data.totalEphemeralAgents).toBeGreaterThan(0);
+
+      // Verify segregation: standing agents vs ephemeral agents
+      const standing = org.data.agents.filter((a) => a.type === 'STANDING');
+      const ephemeral = org.data.agents.filter((a) => a.type === 'EPHEMERAL');
+      expect(standing.length).toBe(org.data.totalStandingAgents);
+      expect(ephemeral.length).toBe(org.data.totalEphemeralAgents);
+
+      // Verify realistic heartbeat presence without fabricating active heartbeats on unavailable agents
+      const unavailable = org.data.agents.filter((a) => a.heartbeatStatus === 'UNAVAILABLE');
+      expect(unavailable.length).toBeGreaterThan(0);
+      for (const a of unavailable) {
+        expect(a.lastHeartbeatAt).toBeNull();
+      }
+    }
+  });
+
+  it('retrieves detailed agent info or returns error when agent is not found', async () => {
+    const demo = new MockAaoDemoAdapter(0);
+
+    const found = await demo.getAgentDetails('agent-demo-fe-specialist');
+    expect(found.kind).toBe('ready');
+    if (found.kind === 'ready') {
+      expect(found.data.name).toContain('Antigravity');
+      expect(found.data.authorityBoundary).toContain('frontend/app/');
+    }
+
+    const missing = await demo.getAgentDetails('agent-nonexistent');
+    expect(missing.kind).toBe('error');
+    if (missing.kind === 'error') {
+      expect(missing.code).toBe('AGENT_NOT_FOUND');
+    }
+  });
+});
+
+describe('HttpAaoLiveAdapter F3 Defensive Handling', () => {
+  it('returns unavailable state for organization structure since backend has no /v1/organization yet', async () => {
+    const live = new HttpAaoLiveAdapter({ getToken: () => 'test-token' });
+    const org = await live.getOrganizationStructure();
+
+    expect(org.kind).toBe('unavailable');
+    if (org.kind === 'unavailable') {
+      expect(org.reason).toContain('El núcleo canónico de AAO no expone aún endpoints canónicos');
+      expect(org.retryable).toBe(false);
+    }
+  });
+
+  it('returns unavailable state for agent details in live mode', async () => {
+    const live = new HttpAaoLiveAdapter({ getToken: () => 'test-token' });
+    const details = await live.getAgentDetails('agent-123');
+
+    expect(details.kind).toBe('unavailable');
+    if (details.kind === 'unavailable') {
+      expect(details.reason).toContain('No existe endpoint activo en el núcleo');
+      expect(details.retryable).toBe(false);
+    }
+  });
 });

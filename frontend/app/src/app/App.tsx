@@ -18,7 +18,7 @@ import { DecisionsView } from '../features/decisions/DecisionsView';
 import { AlertsView } from '../features/alerts/AlertsView';
 import { AuditView } from '../features/audit/AuditView';
 import { OperationsView } from '../features/operations/OperationsView';
-import { OrganizationView } from '../features/future/OrganizationView';
+import { OrganizationView } from '../features/organization/OrganizationView';
 import { VirtualOfficeView } from '../features/future/VirtualOfficeView';
 import { ViewSettingsView } from '../features/future/ViewSettingsView';
 
@@ -161,6 +161,14 @@ export const App: React.FC = () => {
     staleTime: staleTimeSeconds * 1000,
   });
 
+  // Query: Organization Structure (Phase F3)
+  const organizationQuery = useQuery({
+    queryKey: ['organization', origin, isAuthenticated, sessionId],
+    queryFn: () => port.getOrganizationStructure(),
+    enabled: true,
+    staleTime: staleTimeSeconds * 1000,
+  });
+
   // Refresh handler
   const handleRefresh = useCallback(() => {
     queryClient.invalidateQueries();
@@ -201,7 +209,7 @@ export const App: React.FC = () => {
         setActiveNav(nav);
       }}
       fetchedAt={overviewQuery.data?.projects.kind === 'ready' ? overviewQuery.data.projects.fetchedAt : undefined}
-      isFetching={overviewQuery.isFetching || boardQuery.isFetching}
+      isFetching={overviewQuery.isFetching || boardQuery.isFetching || organizationQuery.isFetching}
       onRefresh={handleRefresh}
     >
       <ErrorBoundary>
@@ -311,7 +319,19 @@ export const App: React.FC = () => {
 
         {activeNav === 'operations' && <OperationsView onRefreshAll={handleRefresh} />}
 
-        {activeNav === 'organization' && <OrganizationView />}
+        {activeNav === 'organization' && (
+          <OrganizationView
+            orgState={
+              organizationQuery.data || {
+                kind: 'unavailable',
+                reason:
+                  'El núcleo canónico de AAO no expone aún endpoints públicos para la estructura organizativa ni la telemetría de agentes (F3).',
+                retryable: false,
+              }
+            }
+            onRefresh={handleRefresh}
+          />
+        )}
 
         {activeNav === 'office3d' && <VirtualOfficeView />}
 

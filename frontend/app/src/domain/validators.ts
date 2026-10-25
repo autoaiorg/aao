@@ -94,3 +94,76 @@ export const CapabilityEvaluationSchema = z.object({
   created_at: z.string(),
   task_title: z.string().optional(),
 });
+
+// Phase F3: Organization and Agent Structure Schemas
+export const AgentTypeSchema = z.enum(['STANDING', 'EPHEMERAL']);
+
+export const AgentHeartbeatStatusSchema = z.enum([
+  'HEALTHY',
+  'STALE',
+  'UNKNOWN',
+  'UNAVAILABLE',
+]);
+
+export const AgentOperationalStatusSchema = z.enum([
+  'IDLE',
+  'BUSY',
+  'PAUSED',
+  'OFFLINE',
+  'DECOMMISSIONED',
+]);
+
+export const AgentCapabilitySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  level: z.enum(['BASIC', 'ADVANCED', 'CERTIFIED']),
+  verified: z.boolean().default(false),
+});
+
+export const AgentAssignmentSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  projectName: z.string(),
+  taskId: z.string().optional(),
+  taskTitle: z.string().optional(),
+  assignedAt: z.string(),
+  leaseExpiresAt: z.string().nullable().optional(),
+  status: z.enum(['ACTIVE', 'EXPIRED', 'COMPLETED']),
+});
+
+export const AgentIdentitySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  type: AgentTypeSchema,
+  roleTitle: z.string(),
+  unitId: z.string(),
+  unitName: z.string().optional(),
+  capabilities: z.array(AgentCapabilitySchema).default([]),
+  heartbeatStatus: AgentHeartbeatStatusSchema,
+  lastHeartbeatAt: z.string().nullable().default(null),
+  status: AgentOperationalStatusSchema,
+  currentAssignments: z.array(AgentAssignmentSchema).default([]),
+  authorityBoundary: z.string(),
+  isSyntheticDemo: z.boolean().optional(),
+});
+
+export const OrgUnitSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  code: z.string(),
+  parentId: z.string().nullable(),
+  leadRole: z.string(),
+  leadAgentId: z.string().nullable(),
+  description: z.string(),
+  standingCount: z.number().default(0),
+  ephemeralCount: z.number().default(0),
+  activeProjectsCount: z.number().default(0),
+});
+
+export const OrganizationStructureSchema = z.object({
+  units: z.array(OrgUnitSchema),
+  agents: z.array(AgentIdentitySchema),
+  totalStandingAgents: z.number().default(0),
+  totalEphemeralAgents: z.number().default(0),
+  activeAssignmentsCount: z.number().default(0),
+});

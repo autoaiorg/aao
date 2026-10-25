@@ -178,6 +178,10 @@ def _build_command(repository: Path, check_id: str, site_packages: Path,
         "--setenv",
         "PYTHONHOME",
         "/opt/aao-python",
+        # A shared-libpython interpreter (e.g. CI's hostedtoolcache) must load its own
+        # libpython, not a different patch release from /usr.
+        *(("--setenv", "LD_LIBRARY_PATH", "/opt/aao-python/lib")
+          if any((python_root / "lib").glob("libpython3*.so*")) else ()),
         "--setenv",
         "PYTHONDONTWRITEBYTECODE",
         "1",

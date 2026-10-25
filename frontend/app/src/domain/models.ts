@@ -203,3 +203,78 @@ export interface CeoOverview {
   alerts: DataState<AlertSummary[]>;
   decisions: DataState<DecisionSummary[]>;
 }
+
+// ---------------------------------------------------------------------------
+// Phase F3: Organization and Agent Structure Models
+// Spec: AAO-FE-ARCH-2026-10-25 Section 14 & Mandate AAO-CEO-F3-2026-10-25
+// ---------------------------------------------------------------------------
+
+export type AgentType = 'STANDING' | 'EPHEMERAL';
+
+export type AgentHeartbeatStatus =
+  | 'HEALTHY'       // Recent verified heartbeat within lease/window
+  | 'STALE'         // Heartbeat timestamp exceeded freshness window
+  | 'UNKNOWN'       // Agent declared or registered, heartbeat endpoint unconfigured
+  | 'UNAVAILABLE';   // Backend heartbeat provider unreachable or offline
+
+export type AgentOperationalStatus =
+  | 'IDLE'
+  | 'BUSY'
+  | 'PAUSED'
+  | 'OFFLINE'
+  | 'DECOMMISSIONED';
+
+export interface AgentCapability {
+  id: string;
+  name: string;
+  level: 'BASIC' | 'ADVANCED' | 'CERTIFIED';
+  verified: boolean;
+}
+
+export interface AgentAssignment {
+  id: string;
+  projectId: string;
+  projectName: string;
+  taskId?: string;
+  taskTitle?: string;
+  assignedAt: string;
+  leaseExpiresAt?: string | null;
+  status: 'ACTIVE' | 'EXPIRED' | 'COMPLETED';
+}
+
+export interface AgentIdentity {
+  id: string;
+  name: string;
+  type: AgentType;
+  roleTitle: string;
+  unitId: string;
+  unitName?: string;
+  capabilities: AgentCapability[];
+  heartbeatStatus: AgentHeartbeatStatus;
+  lastHeartbeatAt: string | null;
+  status: AgentOperationalStatus;
+  currentAssignments: AgentAssignment[];
+  authorityBoundary: string;
+  isSyntheticDemo?: boolean;
+}
+
+export interface OrgUnit {
+  id: string;
+  name: string;
+  code: string;
+  parentId: string | null;
+  leadRole: string;
+  leadAgentId: string | null;
+  description: string;
+  standingCount: number;
+  ephemeralCount: number;
+  activeProjectsCount: number;
+}
+
+export interface OrganizationStructure {
+  units: OrgUnit[];
+  agents: AgentIdentity[];
+  totalStandingAgents: number;
+  totalEphemeralAgents: number;
+  activeAssignmentsCount: number;
+}

@@ -96,3 +96,41 @@ Tras la revisión preliminar de la PR #99 por el CEO, se identificaron cuatro ha
 ### Consecuencias
 - **Positivas:** Conformidad estricta con la Regla 1 (No fabricated results) y con las directivas de seguridad, memoria volátil y accesibilidad de AAO; 100% de aislamiento entre sesiones de usuario; trazabilidad de datos no canónicos; suite integral de pruebas estratificadas (71 pruebas de componentes en Vitest + 3 pruebas funcionales en navegador real en Playwright) pasando exitosamente.
 - **Limitación de Gobernanza (Bloqueo de Integración Activo):** La infraestructura actual de agentes no dispone aún de un mecanismo de acreditación criptográfica o PKI para verificar la autoridad e identidad de auditores independientes externos. En estricta aplicación de la Regla 6 de AGENTS.md y GOV-REV-001, **se mantiene expresamente el bloqueo de integración**; la Pull Request permanece en estado no fusionado a la espera de la decisión soberana del CEO.
+
+---
+
+## ADR 005: Modelado de Organización, Segregación de Plantilla vs Agentes Efímeros y Honestidad en Telemetría (Fase F3)
+
+### Contexto
+El Mandato Ejecutivo `AAO-CEO-F3-2026-10-25` autoriza el desarrollo de la Fase F3: Organización y Estructura de Agentes, estableciendo los siguientes requisitos no negociables:
+1. Visualización de unidades organizativas, jerarquías de supervisión y puestos de responsabilidad.
+2. Segregación estricta entre agentes persistentes de plantilla fija (`STANDING`) y agentes temporales delegados a tareas/evaluaciones (`EPHEMERAL`).
+3. Matriz de competencias, capacidades y asignaciones por proyecto.
+4. Contratos tipados y adaptadores desacoplados para futuros servicios del núcleo (`AaoReadPort`).
+5. Principio de honestidad técnica: representar expresamente los estados no disponibles y **nunca inventar presencia, latidos (heartbeats) ni actividad operativa** sin telemetría verificada.
+6. Vistas plenamente accesibles (WCAG 2.2 AA) con navegación por teclado y pruebas automatizadas en Vitest y Playwright real.
+7. Ámbito estrictamente de solo lectura y observabilidad: sin mutaciones, sin creación operativa de agentes ni alteración de permisos.
+
+### Decisión
+1. **Contratos tipados y esquemas Zod en dominio:**
+   - Se definen las interfaces `OrgUnit`, `AgentIdentity`, `AgentType`, `AgentHeartbeatStatus`, `AgentOperationalStatus`, `AgentCapability`, `AgentAssignment` y `OrganizationStructure` en `src/domain/models.ts`.
+   - Se implementan parsers defensivos en tiempo de ejecución con Zod (`OrgUnitSchema`, `AgentIdentitySchema`, `OrganizationStructureSchema`) en `src/domain/validators.ts`.
+2. **Segregación categórica de agentes:**
+   - Se discrimina taxativamente entre agentes de plantilla persistente (`STANDING`, como Arquitecto Jefe, Auditor Principal, Custodio de Políticas) y agentes efímeros (`EPHEMERAL`, como ejecutores de propuestas W1, evaluadores de candidatos W2, escáneres SAST y sincronizadores documentales).
+3. **Honestidad estricta en telemetría y latidos:**
+   - El estado de telemetría de cada agente se computa de forma estricta: `HEALTHY` (latido reciente comprobado con marca temporal), `STALE` (latido vencido o desactualizado), `UNKNOWN` (sin proveedor de telemetría configurado) y `UNAVAILABLE` (servicio de telemetría inalcanzable).
+   - Queda prohibido deducir que un agente está "vivo" o "en línea" únicamente por su registro o nombre.
+4. **Desacoplamiento de adaptadores y fail-closed en LIVE:**
+   - La interfaz `AaoReadPort` se extiende con `getOrganizationStructure(): Promise<DataState<OrganizationStructure>>` y `getAgentDetails(agentId: string): Promise<DataState<AgentIdentity>>`.
+   - En `HttpAaoLiveAdapter`: Dado que el núcleo actual no expone aún `/v1/organization` ni `/v1/agents`, el adaptador devuelve de forma honesta `kind: 'unavailable'`, documentando que el módulo se activará cuando la API canónica publique dichos contratos.
+   - En `MockAaoDemoAdapter`: Se provee una estructura completa de 6 unidades organizativas jerárquicas y 12 agentes representativos, etiquetados de forma visible como entidades sintéticas de demostración arquitectónica (`isSyntheticDemo: true`).
+5. **Arquitectura de componentes y accesibilidad (WCAG 2.2 AA):**
+   - Se implementa `OrganizationView.tsx` estructurado en tres sub-pestañas accesibles (`role="tab"`, `aria-selected`): Organigrama y Jerarquías, Plantilla y Agentes, y Matriz de Puestos y Capacidades.
+   - Se implementa `AgentDetailDrawer.tsx` con atributos de diálogo accesible (`role="dialog"`, `aria-modal="true"`, `aria-labelledby`), captura de tecla `Escape` y restauración garantizada del foco hacia el botón de apertura.
+6. **Integración limpia en el Shell:**
+   - Se activa la opción "Organización" en `SideNavigation.tsx` eliminando la etiqueta de fase futura.
+   - En `App.tsx`, las consultas se enlazan al ciclo de vida del adaptador y se purgan ordenadamente al cambiar de sesión.
+
+### Consecuencias
+- **Positivas:** Entrega completa de los requisitos de F3 con cero acoplamiento indebido al núcleo; visualización clara de la jerarquía de AAO y límites de autoridad; 100% de pase en suites de prueba (86 pruebas en Vitest + 4 pruebas en navegador real Playwright Google Chrome + 23 pruebas de regresión en pytest).
+- **Riesgos residuales:** El backend canónico no dispone todavía de endpoints operativos para F3; en consecuencia, en modo LIVE la vista reporta honestamente su indisponibilidad a la espera de la implementación de `/v1/organization` en el núcleo por el equipo responsable.

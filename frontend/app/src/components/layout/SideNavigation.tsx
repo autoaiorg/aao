@@ -23,7 +23,7 @@ export const NAV_ITEMS: NavItem[] = [
   { key: 'dashboard', label: 'Resumen' },
   { key: 'projects', label: 'Proyectos' },
   { key: 'kanban', label: 'Trabajo / Tablero' },
-  { key: 'organization', label: 'Organización', badge: 'F3', isPhaseFuture: true },
+  { key: 'organization', label: 'Organización' },
   { key: 'decisions', label: 'Decisiones' },
   { key: 'alerts', label: 'Alertas' },
   { key: 'audit', label: 'Auditoría' },

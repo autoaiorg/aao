@@ -5,6 +5,9 @@ import {
   WorkItemSchema,
   CapabilitySchema,
   CapabilityEvaluationSchema,
+  OrgUnitSchema,
+  AgentIdentitySchema,
+  OrganizationStructureSchema,
 } from '../domain/validators';
 
 describe('Defensive Schema Validation', () => {
@@ -90,5 +93,57 @@ describe('Defensive Schema Validation', () => {
     };
     const parsed = CapabilityEvaluationSchema.safeParse(raw);
     expect(parsed.success).toBe(true);
+  });
+
+  it('validates OrgUnitSchema and AgentIdentitySchema correctly', () => {
+    const rawUnit = {
+      id: 'unit-arch',
+      name: 'Arquitectura de Sistemas',
+      code: 'ARCH',
+      parentId: null,
+      leadRole: 'Arquitecto Jefe',
+      leadAgentId: 'agent-1',
+      description: 'Diseño de protocolos',
+      standingCount: 2,
+      ephemeralCount: 1,
+      activeProjectsCount: 1,
+    };
+    const unitParsed = OrgUnitSchema.safeParse(rawUnit);
+    expect(unitParsed.success).toBe(true);
+
+    const rawAgent = {
+      id: 'agent-1',
+      name: 'Agente Prueba',
+      type: 'STANDING',
+      roleTitle: 'Desarrollador',
+      unitId: 'unit-arch',
+      capabilities: [
+        { id: 'c1', name: 'TypeScript', level: 'CERTIFIED', verified: true },
+      ],
+      heartbeatStatus: 'HEALTHY',
+      lastHeartbeatAt: '2026-10-25T10:00:00Z',
+      status: 'IDLE',
+      currentAssignments: [],
+      authorityBoundary: 'Solo lectura',
+    };
+    const agentParsed = AgentIdentitySchema.safeParse(rawAgent);
+    expect(agentParsed.success).toBe(true);
+
+    const rawOrg = {
+      units: [unitParsed.data],
+      agents: [agentParsed.data],
+      totalStandingAgents: 1,
+      totalEphemeralAgents: 0,
+      activeAssignmentsCount: 0,
+    };
+    const orgParsed = OrganizationStructureSchema.safeParse(rawOrg);
+    expect(orgParsed.success).toBe(true);
+
+    const invalidAgent = {
+      id: 'agent-bad',
+      type: 'INVALID_TYPE',
+    };
+    const badParsed = AgentIdentitySchema.safeParse(invalidAgent);
+    expect(badParsed.success).toBe(false);
   });
 });

@@ -137,4 +137,72 @@ test.describe('Real Browser Functional & Accessibility Suite (Google Chrome)', (
     expect(storageCheck3.localLen).toBe(0);
     expect(storageCheck3.sessionLen).toBe(0);
   });
+
+  test('F3 Organization & Agent Structure: hierarchy, filtering, drawer Escape dismissal and focus restoration', async ({ page }) => {
+    // 1. Navigate to "Organización" in LIVE mode
+    const orgNav = page.getByRole('button', { name: 'Organización' });
+    await expect(orgNav).toBeVisible();
+    await orgNav.click();
+
+    // 2. In LIVE mode, verify honest technical notice is shown (no fake endpoints fabricated)
+    await expect(page.getByText(/Organización y Estructura de Agentes/i)).toBeVisible();
+    await expect(page.getByText(/El núcleo canónico de AAO no expone aún endpoints/i)).toBeVisible();
+
+    // 3. Switch to DEMO mode to load rich organizational structure
+    const demoButton = page.getByRole('button', { name: /DEMO/i });
+    await demoButton.click();
+    await expect(page.getByText(/DEMO · DATOS SIMULADOS/i)).toBeVisible();
+
+    // 4. Verify metrics row
+    await expect(page.getByText('Unidades Organizativas')).toBeVisible();
+    await expect(page.getByText('Plantilla Fija (Standing)')).toBeVisible();
+    await expect(page.getByText('Agentes Efímeros (Temporales)')).toBeVisible();
+
+    // 5. Verify Organigram shows executive and subordinate units
+    await expect(page.getByText(/Dirección Ejecutiva y Secretaría General/i)).toBeVisible();
+    await expect(page.getByText(/Arquitectura de Sistemas y Protocolos/i)).toBeVisible();
+
+    // 6. Switch to "Plantilla y Agentes" tab
+    const agentsTab = page.getByRole('tab', { name: /Plantilla y Agentes/i });
+    await agentsTab.click();
+
+    // 7. Verify search filtering
+    const searchInput = page.locator('#agent-search-input');
+    await expect(searchInput).toBeVisible();
+    await searchInput.fill('Antigravity');
+    await expect(page.getByText(/Especialista en Frontend y Accesibilidad \(Antigravity\)/i)).toBeVisible();
+    await expect(page.getByText(/Claude Core/i)).not.toBeVisible();
+
+    // Clear search
+    await searchInput.clear();
+    await expect(page.getByText(/Claude Core/i)).toBeVisible();
+
+    // 8. Open Agent Detail Drawer via keyboard
+    const detailBtn = page.getByRole('button', {
+      name: /Ver ficha técnica de Especialista en Frontend y Accesibilidad \(Antigravity\)/i,
+    });
+    await expect(detailBtn).toBeVisible();
+    await detailBtn.focus();
+    await expect(detailBtn).toBeFocused();
+    await page.keyboard.press('Enter');
+
+    // 9. Verify drawer dialog is open and accessible
+    const drawerDialog = page.getByRole('dialog');
+    await expect(drawerDialog).toBeVisible();
+    await expect(page.getByText(/Límite Constitucional de Autoridad/i)).toBeVisible();
+    await expect(page.getByText(/Confinado estrictamente a frontend\/app\//i)).toBeVisible();
+
+    // 10. Press Escape key to dismiss drawer
+    await page.keyboard.press('Escape');
+    await expect(drawerDialog).not.toBeVisible();
+
+    // 11. Focus restored to trigger button in real browser DOM
+    await expect(detailBtn).toBeFocused();
+
+    // 12. Switch to "Puestos y Capacidades" matrix tab
+    const matrixTab = page.getByRole('tab', { name: /Puestos y Capacidades/i });
+    await matrixTab.click();
+    await expect(page.getByRole('table')).toBeVisible();
+    await expect(page.getByText(/Matriz de Puestos y Capacidades:/i)).toBeVisible();
+  });
 });

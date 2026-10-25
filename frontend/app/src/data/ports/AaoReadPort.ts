@@ -10,6 +10,8 @@ import type {
   CapabilitySummary,
   EvaluationSummary,
   CeoOverview,
+  OrganizationStructure,
+  AgentIdentity,
   DataState,
 } from '../../domain/models';
 
@@ -20,4 +22,7 @@ export interface AaoReadPort {
   getProjectCapabilities(projectId: string): Promise<DataState<CapabilitySummary[]>>;
   getProjectEvaluations(projectId: string): Promise<DataState<EvaluationSummary[]>>;
   getCeoOverview(projectId?: string): Promise<CeoOverview>;
+  // Phase F3: Organization & Agent Structure
+  getOrganizationStructure(): Promise<DataState<OrganizationStructure>>;
+  getAgentDetails(agentId: string): Promise<DataState<AgentIdentity>>;
 }

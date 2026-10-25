@@ -20,6 +20,8 @@ import type {
   CapabilitySummary,
   EvaluationSummary,
   CeoOverview,
+  OrganizationStructure,
+  AgentIdentity,
   DataState,
   BoardStage,
   TaskItem,
@@ -704,6 +706,26 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
       operations: operationsState,
       alerts: alertsState,
       decisions: decisionsState,
+    };
+  }
+
+  // Phase F3: Organization and Agent Structure
+  async getOrganizationStructure(): Promise<DataState<OrganizationStructure>> {
+    // Backend API src/aao does not yet expose /v1/organization or /v1/agents.
+    // Strictly report unavailable state; never fabricate fake live agents or synthetic activity.
+    return {
+      kind: 'unavailable',
+      reason:
+        'El núcleo canónico de AAO no expone aún endpoints canónicos para la estructura organizativa ni la telemetría de agentes (F3). Este módulo permanece en modo consulta y se conectará en cuanto la API incorpore /v1/organization.',
+      retryable: false,
+    };
+  }
+
+  async getAgentDetails(agentId: string): Promise<DataState<AgentIdentity>> {
+    return {
+      kind: 'unavailable',
+      reason: `No existe endpoint activo en el núcleo para consultar la ficha técnica del agente ${agentId} en modo LIVE.`,
+      retryable: false,
     };
   }
 }

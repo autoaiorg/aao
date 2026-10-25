@@ -978,7 +978,9 @@ def test_w2a_agent_run_produces_a_tested_candidate_retries_after_failure_and_is_
 
         def open_pr(branch, title, body):
             opened.append((branch, title, body))
-            return {"number": 7, "url": "https://github.invalid/autoaiorg/aao/pull/7"}
+            head = subprocess.run(["git", "--git-dir", str(remote), "rev-parse", f"refs/heads/{branch}"],
+                                  capture_output=True, text=True, check=True).stdout.strip()
+            return {"number": 7, "url": "https://github.invalid/autoaiorg/aao/pull/7", "head_sha": head}
 
         with pytest.raises(PublishError, match="Project grant required"):
             push_candidate(work, pusher, store=store, push=push)
@@ -995,6 +997,12 @@ def test_w2a_agent_run_produces_a_tested_candidate_retries_after_failure_and_is_
         assert subprocess.run(["git", "--git-dir", str(remote), "rev-parse", f"refs/heads/{branch}"],
                               capture_output=True, text=True, check=True).stdout.strip() == candidate_sha
         assert push_candidate(work, pusher, store=store, push=push)["status"] == "ALREADY_PUSHED"
+        # A fork branch moved after the push is never recorded as the task's PR.
+        subprocess.run(["git", "--git-dir", str(remote), "update-ref", f"refs/heads/{branch}", base_sha], check=True)
+        with pytest.raises(PublishError, match="head is not the approved candidate"):
+            open_pull_request(work, publisher, open_pr=open_pr)
+        subprocess.run(["git", "--git-dir", str(remote), "update-ref", f"refs/heads/{branch}", candidate_sha], check=True)
+        opened.clear()
         published = open_pull_request(work, publisher, open_pr=open_pr)
         assert published["status"] == "PUBLISHED" and published["pusher"] == pusher_id
         assert opened == [(branch, "aao: Add a notes test", opened[0][2])] and candidate_sha in opened[0][2]

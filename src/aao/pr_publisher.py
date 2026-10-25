@@ -7,7 +7,7 @@ and re-checks in the candidate store that the commit's only parent is the propos
 base and that its tree equals base + the stored patch. It pushes exactly that SHA.
 
 Two steps, one per identity: ``push_candidate`` (implementer) and ``open_pull_request`` (PM).
-GitHub access is injected: ``push(sha, branch)`` and ``open_pr(branch, title, body)``.
+GitHub access is injected: ``push(sha, branch)`` and ``open_pr(branch, title, body)`` (returns number, url and head_sha).
 ``github_publisher`` builds them from GitHub Apps; tests use local bare remotes.
 Run it as a one-shot process (scripts/publish_candidate.py) so App keys never reach the API.
 """
@@ -138,6 +138,9 @@ def open_pull_request(work_id: str, credential: str, *, open_pr: Callable[[str, 
             f"- proposal: `{c['proposal_id']}`\n- approval review: `{c['review_id']}`\n"
             f"- pushed by: `{pushed['pusher']}`; opened by: `{c['principal']}`\n")
     pr = open_pr(pushed["branch"], f"aao: {c['title']}", body)
+    if pr.get("head_sha") != c["candidate_sha"]:
+        # The fork branch moved after the push: never record an unapproved head as this task's PR.
+        raise PublishError("opened pull request head is not the approved candidate")
     record = {**pushed, "publisher": c["principal"], "pr_number": int(pr["number"]), "pr_url": str(pr["url"])}
     with tx() as db:
         audit(db, work_id, "work.pr_opened", record)
@@ -176,7 +179,9 @@ def github_publisher(store: str | Path) -> tuple[Callable[[str, str], None], Cal
         try:
             client.installation_token(owner, repo)
             existing = client.request("GET", f"/repos/{base_repo}/pulls?state=open&head={head}")
-            if existing.status == 200 and isinstance(existing.body, list) and existing.body:
+            if existing.status != 200 or not isinstance(existing.body, list):
+                raise PublishError(f"pull request lookup failed with HTTP {existing.status}")
+            if existing.body:
                 pr = existing.body[0]
             else:
                 created = client.request("POST", f"/repos/{base_repo}/pulls",
@@ -184,7 +189,7 @@ def github_publisher(store: str | Path) -> tuple[Callable[[str, str], None], Cal
                 if created.status != 201 or not isinstance(created.body, dict):
                     raise PublishError(f"pull request creation failed with HTTP {created.status}")
                 pr = created.body
-            return {"number": pr["number"], "url": pr["html_url"]}
+            return {"number": pr["number"], "url": pr["html_url"], "head_sha": (pr.get("head") or {}).get("sha")}
         finally:
             client.close()
 

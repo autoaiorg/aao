@@ -500,70 +500,55 @@ describe('RONIN F4.9 Integration — Live Adapter Mapping & Grounding', () => {
     }
   });
 
-  it('HttpAaoLiveAdapter.getOrganizationStructure associates RONIN executions with agents without fabricating active execution', async () => {
-    const rawProjects = [
-      { id: 'proj-1', name: 'Proyecto 1', state: 'ACTIVE' },
-    ];
-
-    const rawBoard = [
-      {
-        id: 'task-1',
-        title: 'Tarea RONIN',
-        status: 'IN_PROGRESS',
-        executions: [
-          {
-            id: 'exec-1',
-            status: 'running',
-            worker_id: 'agent-ronin-01',
-            attempts: 1,
-            created_at: '2026-10-25T11:00:00Z',
-            // Notice: lease_expires_at is null or absent!
-            result: {
-              provider: 'google',
-              model: 'gemini-2.5-pro',
-              cost_estimate_usd: 0.04,
-            },
-          },
-        ],
-      },
-    ];
-
-    vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
-      const u = String(url);
-      if (u.includes('/v1/organization')) {
-        return { status: 404, ok: false, json: async () => ({}) } as Response;
-      }
-      if (u.includes('/v1/principals/me')) {
-        return { status: 404, ok: false, json: async () => ({}) } as Response;
-      }
-      if (u.endsWith('/v1/projects')) {
-        return { status: 200, ok: true, json: async () => rawProjects } as Response;
-      }
-      if (u.includes('/board')) {
-        return { status: 200, ok: true, json: async () => rawBoard } as Response;
-      }
-      return { status: 404, ok: false, json: async () => ({}) } as Response;
-    });
+  it('HttpAaoLiveAdapter consumes backend-attributed RONIN execution without fabricating active execution', async () => {
+    const projection = {
+      units: [{
+        id: 'unit-unassigned', name: 'Adscripción desconocida', code: 'UNKNOWN',
+        parentId: null, leadRole: 'Desconocido', leadAgentId: null,
+        description: 'Agrupación visual; no representa un departamento persistido.',
+        standingCount: 0, ephemeralCount: 0, activeProjectsCount: 0,
+      }],
+      agents: [{
+        id: 'agent-ronin-01', name: 'agent-ronin-01', type: 'UNKNOWN',
+        roleTitle: 'Principal observado en ejecución', unitId: 'unit-unassigned',
+        unitName: 'Adscripción desconocida', capabilities: [], heartbeatStatus: 'UNKNOWN',
+        lastHeartbeatAt: null, status: 'UNKNOWN', operationalState: 'DESCONOCIDO',
+        currentAssignments: [{
+          id: 'exec-1', projectId: 'proj-1', projectName: 'Proyecto 1', taskId: 'task-1',
+          taskTitle: 'Tarea RONIN', assignedAt: '2026-10-25T11:00:00Z',
+          leaseExpiresAt: null, status: 'UNKNOWN',
+        }],
+        executionHistory: [{
+          id: 'exec-1', taskId: 'task-1', taskTitle: 'Tarea RONIN', projectId: 'proj-1',
+          projectName: 'Proyecto 1', status: 'RUNNING', attempts: 1,
+          createdAt: '2026-10-25T11:00:00Z', leaseExpiresAt: null, workerId: 'agent-ronin-01',
+          provider: 'google', model: 'gemini-2.5-pro', costEstimateUsd: 0.04,
+          rawResult: { provider: 'google', model: 'gemini-2.5-pro', cost_estimate_usd: 0.04 },
+        }],
+        authorityBoundary: 'La autoridad depende de grants por proyecto; identidad organizativa desconocida.',
+        isSyntheticDemo: false,
+        evidenceDescription: 'Identidad derivada de ejecuciones persistidas.',
+        lastEvidenceAt: '2026-10-25T11:00:00Z',
+      }],
+      totalStandingAgents: 0, totalEphemeralAgents: 0, totalUnknownAgents: 1,
+      activeAssignmentsCount: 0,
+      coverage: { totalProjects: 1, inspectedProjects: 1, failedProjects: 0, isPartial: false },
+    };
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce({
+      status: 200, ok: true, json: async () => projection,
+    } as Response);
 
     const adapter = new HttpAaoLiveAdapter({ getToken: () => 'test-token' });
     const result = await adapter.getOrganizationStructure();
-
     expect(result.kind).toBe('ready');
     if (result.kind === 'ready') {
       const agent = result.data.agents.find((a) => a.id === 'agent-ronin-01');
-      expect(agent).toBeDefined();
-
-      // Execution history must be populated with observed provider and model
-      expect(agent?.executionHistory).toBeDefined();
-      expect(agent?.executionHistory?.length).toBeGreaterThan(0);
       expect(agent?.executionHistory?.[0].provider).toBe('google');
       expect(agent?.executionHistory?.[0].model).toBe('gemini-2.5-pro');
       expect(agent?.executionHistory?.[0].costEstimateUsd).toBe(0.04);
-
-      // GROUNDING: Without an active unexpired lease accredited by backend,
-      // operationalState MUST NOT be 'EJECUTANDO'!
       expect(agent?.operationalState).not.toBe('EJECUTANDO');
-      expect(['REGISTRADO', 'DESCONOCIDO']).toContain(agent?.operationalState);
+      expect(agent?.currentAssignments[0].status).toBe('UNKNOWN');
     }
+    expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 });

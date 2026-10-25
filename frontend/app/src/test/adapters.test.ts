@@ -258,444 +258,67 @@ describe('MockAaoDemoAdapter Fixtures Isolation', () => {
   });
 });
 
-describe('HttpAaoLiveAdapter F3 & F4.8 Live Aggregation Handling (Negative Regressions & Verifiable Evidence)', () => {
-  it('uses the canonical persisted organization projection when available', async () => {
+describe('HttpAaoLiveAdapter organization projection', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const projection = {
+    units: [{
+      id: 'unit-unassigned', name: 'Adscripción desconocida', code: 'UNKNOWN',
+      parentId: null, leadRole: 'Desconocido', leadAgentId: null,
+      description: 'Agrupación visual; no representa un departamento persistido.',
+      standingCount: 0, ephemeralCount: 0, activeProjectsCount: 0,
+    }],
+    agents: [], totalStandingAgents: 0, totalEphemeralAgents: 0,
+    totalUnknownAgents: 0, activeAssignmentsCount: 0,
+    coverage: { totalProjects: 0, inspectedProjects: 0, failedProjects: 0, isPartial: false },
+  };
+
+  it('consumes the canonical persisted projection without frontend fan-out', async () => {
     const live = new HttpAaoLiveAdapter({ getToken: () => 'test-token' });
-    vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
-      if (String(url).includes('/v1/organization')) {
-        return {
-          status: 200,
-          ok: true,
-          json: async () => ({
-            units: [{
-              id: 'unit-unassigned', name: 'Adscripción desconocida', code: 'UNKNOWN',
-              parentId: null, leadRole: 'Desconocido', leadAgentId: null,
-              description: 'Agrupación visual; no representa un departamento persistido.',
-              standingCount: 0, ephemeralCount: 0, activeProjectsCount: 0,
-            }],
-            agents: [], totalStandingAgents: 0, totalEphemeralAgents: 0,
-            totalUnknownAgents: 0, activeAssignmentsCount: 0,
-            coverage: { totalProjects: 2, inspectedProjects: 2, failedProjects: 0, isPartial: false },
-          }),
-        } as Response;
-      }
-      return { status: 500, ok: false, json: async () => ({}) } as Response;
-    });
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce({
+      status: 200, ok: true, json: async () => projection,
+    } as Response);
 
     const result = await live.getOrganizationStructure();
     expect(result.kind).toBe('ready');
-    if (result.kind === 'ready') {
-      expect(result.data.coverage?.totalProjects).toBe(2);
-      expect(result.data.agents).toEqual([]);
-    }
+    if (result.kind === 'ready') expect(result.data.agents).toEqual([]);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/v1/organization'), expect.any(Object),
+    );
+  });
+
+  it('does not call projects/boards or invent departments when the organization API is absent', async () => {
+    const live = new HttpAaoLiveAdapter({ getToken: () => 'test-token' });
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce({
+      status: 404, ok: false, json: async () => ({}),
+    } as Response);
+
+    const result = await live.getOrganizationStructure();
+    expect(result.kind).toBe('unavailable');
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
-  it('strictly rejects heuristics: does NOT infer departments or types from worker_id strings and maps to unknown unit', async () => {
+  it('preserves forbidden and schema-error states without falling back to another data source', async () => {
     const live = new HttpAaoLiveAdapter({ getToken: () => 'test-token' });
+    const fetch = vi.spyOn(global, 'fetch');
+    fetch.mockResolvedValueOnce({ status: 403, ok: false, json: async () => ({}) } as Response);
+    expect((await live.getOrganizationStructure()).kind).toBe('forbidden');
 
-    vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
-      const u = String(url);
-      if (u.includes('/v1/organization')) {
-        return { status: 404, ok: false, json: async () => ({}) } as Response;
-      }
-      if (u.includes('/v1/principals/me')) {
-        return {
-          status: 200,
-          ok: true,
-          json: async () => ({
-            principal_id: 'ceo-user',
-            kind: 'CEO',
-            auth_method: 'token',
-            enabled: true,
-            grants: [],
-          }),
-        } as Response;
-      }
-      if (u.endsWith('/v1/projects')) {
-        return {
-          status: 200,
-          ok: true,
-          json: async () => [{ id: 'proj-1', name: 'Project Orion', state: 'ACTIVE' }],
-        } as Response;
-      }
-      if (u.includes('/board')) {
-        return {
-          status: 200,
-          ok: true,
-          json: async () => [
-            {
-              id: 'task-101',
-              title: 'Task with workers',
-              status: 'READY',
-              executions: [
-                {
-                  id: 'exec-hist-1',
-                  status: 'ASSIGNED',
-                  worker_id: 'worker-eng-codex', // Has 'eng' in name, but MUST NOT be assigned to unit-eng!
-                  attempts: 1,
-                  created_at: '2026-10-25T12:00:00Z',
-                },
-                {
-                  id: 'exec-hist-2',
-                  status: 'ASSIGNED',
-                  worker_id: 'subagent-ops-sentinel', // Has 'ops' and 'subagent', but MUST NOT be unit-ops or EPHEMERAL!
-                  attempts: 1,
-                  created_at: '2026-10-25T12:00:00Z',
-                },
-              ],
-            },
-          ],
-        } as Response;
-      }
-      return { status: 404, ok: false, json: async () => ({}) } as Response;
-    });
-
-    const org = await live.getOrganizationStructure();
-    expect(org.kind).toBe('ready');
-    if (org.kind === 'ready') {
-      // 1. Point 1 Negative Check: workers with 'eng' and 'ops' MUST NOT be mapped to unit-eng or unit-ops
-      const codex = org.data.agents.find((a) => a.id === 'worker-eng-codex');
-      expect(codex).toBeDefined();
-      expect(codex?.unitId).toBe('unit-unassigned');
-      expect(codex?.unitName).toBe('Departamento desconocido');
-
-      const sentinel = org.data.agents.find((a) => a.id === 'subagent-ops-sentinel');
-      expect(sentinel).toBeDefined();
-      expect(sentinel?.unitId).toBe('unit-unassigned');
-      expect(sentinel?.unitName).toBe('Departamento desconocido');
-
-      // 2. Point 3 Negative Check: type must be UNKNOWN, not inferred from 'worker' or 'subagent'
-      expect(codex?.type).toBe('UNKNOWN');
-      expect(sentinel?.type).toBe('UNKNOWN');
-
-      // 3. Point 4 Negative Check: leadAgentId must be null for all units
-      for (const unit of org.data.units) {
-        expect(unit.leadAgentId).toBeNull();
-      }
-
-      // 4. CEO Point 3 (PR #122 review): CEO principal MUST NOT be deduced to unit-exec or STANDING
-      const ceo = org.data.agents.find((a) => a.id === 'ceo-user');
-      expect(ceo).toBeDefined();
-      expect(ceo?.unitId).toBe('unit-unassigned');
-      expect(ceo?.unitName).toBe('Departamento desconocido');
-      expect(ceo?.type).toBe('UNKNOWN');
-      expect(ceo?.roleTitle).toContain('CEO');
-      expect(ceo?.lastEvidenceAt).toBeNull();
-    }
+    fetch.mockResolvedValueOnce({
+      status: 200, ok: true, json: async () => ({ agents: 'invalid' }),
+    } as Response);
+    const invalid = await live.getOrganizationStructure();
+    expect(invalid.kind).toBe('error');
+    expect(global.fetch).toHaveBeenCalledTimes(2);
   });
 
-  it('strictly validates execution vigency: no fixed 5-minute window; requires backend accredited active lease', async () => {
-    const live = new HttpAaoLiveAdapter({ getToken: () => 'test-token' });
-
-    vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
-      const u = String(url);
-      if (u.includes('/v1/organization')) {
-        return { status: 404, ok: false, json: async () => ({}) } as Response;
-      }
-      if (u.includes('/v1/principals/me')) {
-        return { status: 404, ok: false, json: async () => ({}) } as Response;
-      }
-      if (u.endsWith('/v1/projects')) {
-        return {
-          status: 200,
-          ok: true,
-          json: async () => [{ id: 'proj-1', name: 'Project Orion', state: 'ACTIVE' }],
-        } as Response;
-      }
-      if (u.includes('/board')) {
-        return {
-          status: 200,
-          ok: true,
-          json: async () => [
-            {
-              id: 'task-no-lease',
-              title: 'Task marked IN_PROGRESS with recent execution but NO lease accredited',
-              status: 'IN_PROGRESS',
-              executions: [
-                {
-                  id: 'exec-no-lease-1',
-                  status: 'RUNNING',
-                  worker_id: 'worker-no-lease',
-                  attempts: 1,
-                  created_at: new Date(Date.now() - 30 * 1000).toISOString(), // 30s ago, but NO lease_expires_at!
-                },
-              ],
-            },
-            {
-              id: 'task-active-lease',
-              title: 'Task executing with valid accredited lease',
-              status: 'IN_PROGRESS',
-              executions: [
-                {
-                  id: 'exec-lease-active',
-                  status: 'RUNNING',
-                  worker_id: 'worker-active-lease',
-                  attempts: 1,
-                  created_at: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
-                  lease_expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(), // Valid unexpired lease
-                },
-              ],
-            },
-            {
-              id: 'task-expired-lease',
-              title: 'Task with expired lease',
-              status: 'IN_PROGRESS',
-              executions: [
-                {
-                  id: 'exec-lease-expired',
-                  status: 'RUNNING',
-                  worker_id: 'worker-expired-lease',
-                  attempts: 1,
-                  created_at: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
-                  lease_expires_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(), // Expired lease
-                },
-              ],
-            },
-          ],
-        } as Response;
-      }
-      return { status: 404, ok: false, json: async () => ({}) } as Response;
-    });
-
-    const org = await live.getOrganizationStructure();
-    expect(org.kind).toBe('ready');
-    if (org.kind === 'ready') {
-      // 1. Worker with RUNNING status but NO lease accredited: must be UNKNOWN vigency, NOT EJECUTANDO
-      const workerNoLease = org.data.agents.find((a) => a.id === 'worker-no-lease');
-      expect(workerNoLease).toBeDefined();
-      expect(workerNoLease?.operationalState).toBe('DESCONOCIDO');
-      expect(workerNoLease?.status).toBe('UNKNOWN');
-      expect(workerNoLease?.currentAssignments[0].status).toBe('UNKNOWN');
-
-      // 2. Worker with RUNNING status and accredited unexpired lease: IS EJECUTANDO and ACTIVE
-      const workerActiveLease = org.data.agents.find((a) => a.id === 'worker-active-lease');
-      expect(workerActiveLease).toBeDefined();
-      expect(workerActiveLease?.operationalState).toBe('EJECUTANDO');
-      expect(workerActiveLease?.status).toBe('BUSY');
-      expect(workerActiveLease?.currentAssignments[0].status).toBe('ACTIVE');
-
-      // 3. Worker with RUNNING status but expired lease: must be EXPIRED assignment
-      const workerExpiredLease = org.data.agents.find((a) => a.id === 'worker-expired-lease');
-      expect(workerExpiredLease).toBeDefined();
-      expect(workerExpiredLease?.currentAssignments[0].status).toBe('EXPIRED');
-
-      // 4. Only accredited active assignments count in activeAssignmentsCount
-      expect(org.data.activeAssignmentsCount).toBe(1);
-    }
-  });
-
-  it('strictly separates project grants from technical capabilities: grants do NOT produce certified capabilities', async () => {
-    const live = new HttpAaoLiveAdapter({ getToken: () => 'test-token' });
-
-    vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
-      const u = String(url);
-      if (u.includes('/v1/organization')) {
-        return { status: 404, ok: false, json: async () => ({}) } as Response;
-      }
-      if (u.includes('/v1/principals/me/grants')) {
-        return {
-          status: 200,
-          ok: true,
-          json: async () => [
-            {
-              project_id: 'p1',
-              capability: 'project.read',
-              active: true,
-              expires_at: '2026-10-26T00:00:00Z',
-            },
-            {
-              project_id: 'p1',
-              capability: 'work.claim',
-              active: true,
-              expires_at: null,
-            },
-          ],
-        } as Response;
-      }
-      if (u.includes('/v1/principals/me')) {
-        return {
-          status: 200,
-          ok: true,
-          json: async () => ({
-            principal_id: 'agent-grantee',
-            kind: 'AGENT',
-            auth_method: 'token',
-            enabled: true,
-            grants: [
-              {
-                project_id: 'p1',
-                capability: 'project.read',
-                active: true,
-                expires_at: '2026-10-26T00:00:00Z',
-              },
-              {
-                project_id: 'p1',
-                capability: 'work.claim',
-                active: true,
-                expires_at: null,
-              },
-            ],
-          }),
-        } as Response;
-      }
-      if (u.endsWith('/v1/projects')) {
-        return { status: 200, ok: true, json: async () => [{ id: 'p1', name: 'P1' }] } as Response;
-      }
-      if (u.includes('/board')) {
-        return { status: 200, ok: true, json: async () => [] } as Response;
-      }
-      return { status: 404, ok: false, json: async () => ({}) } as Response;
-    });
-
-    const org = await live.getOrganizationStructure();
-    expect(org.kind).toBe('ready');
-    if (org.kind === 'ready') {
-      const agent = org.data.agents.find((a) => a.id === 'agent-grantee');
-      expect(agent).toBeDefined();
-      // CEO Point 2: grants MUST NOT be translated to capabilities as CERTIFIED!
-      expect(agent?.capabilities).toEqual([]);
-      // Must be recorded in grants as permissions
-      expect(agent?.grants).toBeDefined();
-      expect(agent?.grants?.length).toBe(2);
-      expect(agent?.grants?.[0].permission).toBe('project.read');
-      expect(agent?.grants?.[0].active).toBe(true);
-      expect(agent?.grants?.[1].permission).toBe('work.claim');
-    }
-  });
-
-  it('strictly separates reviews from certifications: task reviews do NOT grant certified capabilities', async () => {
-    const live = new HttpAaoLiveAdapter({ getToken: () => 'test-token' });
-
-    vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
-      const u = String(url);
-      if (u.includes('/v1/organization') || u.includes('/v1/principals/me')) {
-        return { status: 404, ok: false, json: async () => ({}) } as Response;
-      }
-      if (u.endsWith('/v1/projects')) {
-        return { status: 200, ok: true, json: async () => [{ id: 'p1', name: 'P1' }] } as Response;
-      }
-      if (u.includes('/board')) {
-        return {
-          status: 200,
-          ok: true,
-          json: async () => [
-            {
-              id: 'task-reviewed',
-              title: 'Security audit candidate',
-              status: 'VERIFIED',
-              reviews: [
-                {
-                  id: 'rev-1',
-                  work_id: 'task-reviewed',
-                  reviewer_id: 'auditor-independent-ronin',
-                  decision: 'APPROVED',
-                  created_at: '2026-10-25T14:30:00Z',
-                },
-              ],
-            },
-          ],
-        } as Response;
-      }
-      return { status: 404, ok: false, json: async () => ({}) } as Response;
-    });
-
-    const org = await live.getOrganizationStructure();
-    expect(org.kind).toBe('ready');
-    if (org.kind === 'ready') {
-      const reviewer = org.data.agents.find((a) => a.id === 'auditor-independent-ronin');
-      expect(reviewer).toBeDefined();
-      // CEO Point 5: MUST NOT have synthetic CERTIFIED capabilities
-      expect(reviewer?.capabilities).toEqual([]);
-      expect(reviewer?.unitId).toBe('unit-unassigned');
-      expect(reviewer?.type).toBe('UNKNOWN');
-      expect(reviewer?.lastEvidenceAt).toBe('2026-10-25T14:30:00Z');
-      expect(reviewer?.evidenceDescription).toContain('No constituye certificación formal');
-    }
-  });
-
-  it('inspects all projects without a silent 10-project limit and records coverage completeness', async () => {
-    const live = new HttpAaoLiveAdapter({ getToken: () => 'test-token' });
-
-    // Generate 15 projects
-    const mockProjects = Array.from({ length: 15 }, (_, i) => ({
-      id: `proj-${i}`,
-      name: `Project ${i}`,
-    }));
-
-    vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
-      const u = String(url);
-      if (u.includes('/v1/organization') || u.includes('/v1/principals/me')) {
-        return { status: 404, ok: false, json: async () => ({}) } as Response;
-      }
-      if (u.endsWith('/v1/projects')) {
-        return { status: 200, ok: true, json: async () => mockProjects } as Response;
-      }
-      if (u.includes('/proj-14/board')) {
-        // Project 14 board fails with 500 error
-        return { status: 500, ok: false, json: async () => ({}) } as Response;
-      }
-      if (u.includes('/board')) {
-        return { status: 200, ok: true, json: async () => [] } as Response;
-      }
-      return { status: 404, ok: false, json: async () => ({}) } as Response;
-    });
-
-    const org = await live.getOrganizationStructure();
-    expect(org.kind).toBe('ready');
-    if (org.kind === 'ready') {
-      expect(org.data.coverage).toBeDefined();
-      expect(org.data.coverage?.totalProjects).toBe(15);
-      expect(org.data.coverage?.inspectedProjects).toBe(14);
-      expect(org.data.coverage?.failedProjects).toBe(1);
-      expect(org.data.coverage?.isPartial).toBe(true);
-      expect(org.data.coverage?.notes).toContain('Cobertura parcial: 1 de 15 proyectos no pudieron ser consultados');
-    }
-  });
-
-  it('retrieves agent details from live aggregated roster or returns unavailable if not found', async () => {
-    const live = new HttpAaoLiveAdapter({ getToken: () => 'test-token' });
-
-    vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
-      const u = String(url);
-      if (u.includes('/v1/organization') || u.includes('/v1/agents/')) {
-        return { status: 404, ok: false, json: async () => ({}) } as Response;
-      }
-      if (u.includes('/v1/principals/me')) {
-        return {
-          status: 200,
-          ok: true,
-          json: async () => ({
-            principal_id: 'ceo-user',
-            kind: 'CEO',
-            auth_method: 'token',
-            enabled: true,
-            grants: [],
-          }),
-        } as Response;
-      }
-      if (u.endsWith('/v1/projects')) {
-        return { status: 200, ok: true, json: async () => [] } as Response;
-      }
-      return { status: 404, ok: false, json: async () => ({}) } as Response;
-    });
-
-    // Found agent
-    const details = await live.getAgentDetails('ceo-user');
-    expect(details.kind).toBe('ready');
-    if (details.kind === 'ready') {
-      expect(details.data.id).toBe('ceo-user');
-      // CEO Point 3: Must NOT deduce unit-exec or STANDING
-      expect(details.data.unitId).toBe('unit-unassigned');
-      expect(details.data.type).toBe('UNKNOWN');
-    }
-
-    // Missing agent
-    const missing = await live.getAgentDetails('non-existent-agent');
-    expect(missing.kind).toBe('unavailable');
-    if (missing.kind === 'unavailable') {
-      expect(missing.reason).toContain('no fue localizado');
-      expect(missing.retryable).toBe(false);
-    }
+  it('requires authentication and never issues a LIVE organization request without a token', async () => {
+    const live = new HttpAaoLiveAdapter({ getToken: () => null, requireAuth: true });
+    const fetch = vi.spyOn(global, 'fetch');
+    expect((await live.getOrganizationStructure()).kind).toBe('unavailable');
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

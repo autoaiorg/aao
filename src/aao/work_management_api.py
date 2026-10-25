@@ -571,6 +571,9 @@ def projects(principal: str = Depends(read_principal)):
 def put_organization_unit(payload: OrganizationUnitRequest, _: str = Depends(require_ceo)):
     """Declare organizational placement; it does not create or change grants."""
     with tx() as db:
+        # Serialize hierarchy edits: concurrent reparenting could otherwise each
+        # validate against the old tree and jointly commit a cycle.
+        db.execute("SELECT pg_advisory_xact_lock(%s)", (0x41414F4F5247554E,))
         if payload.parent_id and not db.execute(
             "SELECT 1 FROM organization_units WHERE id=%s AND enabled", (payload.parent_id,)
         ).fetchone():
@@ -583,7 +586,7 @@ def put_organization_unit(payload: OrganizationUnitRequest, _: str = Depends(req
             raise HTTPException(409, "Organization unit cannot parent itself")
         if payload.parent_id and db.execute(
             "WITH RECURSIVE descendants(id) AS ("
-            "SELECT id FROM organization_units WHERE parent_id=%s UNION ALL "
+            "SELECT id FROM organization_units WHERE parent_id=%s UNION "
             "SELECT child.id FROM organization_units child JOIN descendants d "
             "ON child.parent_id=d.id) SELECT 1 FROM descendants WHERE id=%s LIMIT 1",
             (payload.id, payload.parent_id),

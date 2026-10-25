@@ -104,7 +104,7 @@ export const CapabilityEvaluationSchema = z.object({
 });
 
 // Phase F3: Organization and Agent Structure Schemas
-export const AgentTypeSchema = z.enum(['STANDING', 'EPHEMERAL']);
+export const AgentTypeSchema = z.enum(['STANDING', 'EPHEMERAL', 'UNKNOWN']);
 
 export const AgentHeartbeatStatusSchema = z.enum([
   'HEALTHY',
@@ -181,10 +181,20 @@ export const OrgUnitSchema = z.object({
   activeProjectsCount: z.number().default(0),
 });
 
+export const OrganizationCoverageSchema = z.object({
+  totalProjects: z.number(),
+  inspectedProjects: z.number(),
+  failedProjects: z.number(),
+  isPartial: z.boolean(),
+  notes: z.string().optional(),
+});
+
 export const OrganizationStructureSchema = z.object({
   units: z.array(OrgUnitSchema),
   agents: z.array(AgentIdentitySchema),
   totalStandingAgents: z.number().default(0),
   totalEphemeralAgents: z.number().default(0),
+  totalUnknownAgents: z.number().default(0).optional(),
   activeAssignmentsCount: z.number().default(0),
+  coverage: OrganizationCoverageSchema.optional(),
 });

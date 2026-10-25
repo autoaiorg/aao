@@ -258,11 +258,10 @@ describe('MockAaoDemoAdapter Fixtures Isolation', () => {
   });
 });
 
-describe('HttpAaoLiveAdapter F3 & F4.8 Live Aggregation Handling', () => {
-  it('progressively aggregates live organization from projects and boards when /v1/organization is absent', async () => {
+describe('HttpAaoLiveAdapter F3 & F4.8 Live Aggregation Handling (Negative Regressions & Verifiable Evidence)', () => {
+  it('strictly rejects heuristics: does NOT infer departments or types from worker_id strings and maps to unknown unit', async () => {
     const live = new HttpAaoLiveAdapter({ getToken: () => 'test-token' });
 
-    // Mock fetch for /v1/organization (404), /v1/projects (200), /v1/principals/me (200), /v1/projects/proj-1/board (200)
     vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
       const u = String(url);
       if (u.includes('/v1/organization')) {
@@ -277,7 +276,7 @@ describe('HttpAaoLiveAdapter F3 & F4.8 Live Aggregation Handling', () => {
             kind: 'CEO',
             auth_method: 'token',
             enabled: true,
-            grants: [{ project_id: 'proj-1', capability: 'MANDATE_APPROVE', expires_at: null, active: true }],
+            grants: [],
           }),
         } as Response;
       }
@@ -285,9 +284,7 @@ describe('HttpAaoLiveAdapter F3 & F4.8 Live Aggregation Handling', () => {
         return {
           status: 200,
           ok: true,
-          json: async () => [
-            { id: 'proj-1', name: 'Project Orion', state: 'ACTIVE' },
-          ],
+          json: async () => [{ id: 'proj-1', name: 'Project Orion', state: 'ACTIVE' }],
         } as Response;
       }
       if (u.includes('/board')) {
@@ -297,13 +294,20 @@ describe('HttpAaoLiveAdapter F3 & F4.8 Live Aggregation Handling', () => {
           json: async () => [
             {
               id: 'task-101',
-              title: 'Implement Core Security',
-              status: 'IN_PROGRESS',
+              title: 'Task with workers',
+              status: 'READY',
               executions: [
                 {
-                  id: 'exec-1',
-                  status: 'RUNNING',
-                  worker_id: 'worker-eng-codex',
+                  id: 'exec-hist-1',
+                  status: 'ASSIGNED',
+                  worker_id: 'worker-eng-codex', // Has 'eng' in name, but MUST NOT be assigned to unit-eng!
+                  attempts: 1,
+                  created_at: '2026-10-25T12:00:00Z',
+                },
+                {
+                  id: 'exec-hist-2',
+                  status: 'ASSIGNED',
+                  worker_id: 'subagent-ops-sentinel', // Has 'ops' and 'subagent', but MUST NOT be unit-ops or EPHEMERAL!
                   attempts: 1,
                   created_at: '2026-10-25T12:00:00Z',
                 },
@@ -316,26 +320,199 @@ describe('HttpAaoLiveAdapter F3 & F4.8 Live Aggregation Handling', () => {
     });
 
     const org = await live.getOrganizationStructure();
-
     expect(org.kind).toBe('ready');
     if (org.kind === 'ready') {
-      expect(org.origin).toBe('live');
-      expect(org.data.units).toHaveLength(6);
-      expect(org.data.agents.length).toBeGreaterThanOrEqual(2);
+      // 1. Point 1 Negative Check: workers with 'eng' and 'ops' MUST NOT be mapped to unit-eng or unit-ops
+      const codex = org.data.agents.find((a) => a.id === 'worker-eng-codex');
+      expect(codex).toBeDefined();
+      expect(codex?.unitId).toBe('unit-unassigned');
+      expect(codex?.unitName).toBe('Departamento desconocido');
 
-      // Verify CEO agent mapped to EXEC
-      const ceoAgent = org.data.agents.find((a) => a.id === 'ceo-user');
-      expect(ceoAgent).toBeDefined();
-      expect(ceoAgent?.unitId).toBe('unit-exec');
-      expect(ceoAgent?.heartbeatStatus).toBe('UNKNOWN'); // Fail-closed: no fake heartbeat
+      const sentinel = org.data.agents.find((a) => a.id === 'subagent-ops-sentinel');
+      expect(sentinel).toBeDefined();
+      expect(sentinel?.unitId).toBe('unit-unassigned');
+      expect(sentinel?.unitName).toBe('Departamento desconocido');
 
-      // Verify Codex worker mapped to ENG with EJECUTANDO operational state
-      const codexAgent = org.data.agents.find((a) => a.id === 'worker-eng-codex');
-      expect(codexAgent).toBeDefined();
-      expect(codexAgent?.unitId).toBe('unit-eng');
-      expect(codexAgent?.operationalState).toBe('EJECUTANDO');
-      expect(codexAgent?.heartbeatStatus).toBe('UNKNOWN');
-      expect(codexAgent?.currentAssignments).toHaveLength(1);
+      // 2. Point 3 Negative Check: type must be UNKNOWN, not inferred from 'worker' or 'subagent'
+      expect(codex?.type).toBe('UNKNOWN');
+      expect(sentinel?.type).toBe('UNKNOWN');
+
+      // 3. Point 4 Negative Check: leadAgentId must be null for all units
+      for (const unit of org.data.units) {
+        expect(unit.leadAgentId).toBeNull();
+      }
+
+      // 4. Point 6 Negative Check: principal lastEvidenceAt must be null (no synthetic new Date())
+      const ceo = org.data.agents.find((a) => a.id === 'ceo-user');
+      expect(ceo?.lastEvidenceAt).toBeNull();
+    }
+  });
+
+  it('strictly validates execution vigency: historical RUNNING or task IN_PROGRESS does NOT produce EJECUTANDO', async () => {
+    const live = new HttpAaoLiveAdapter({ getToken: () => 'test-token' });
+
+    vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.includes('/v1/organization')) {
+        return { status: 404, ok: false, json: async () => ({}) } as Response;
+      }
+      if (u.includes('/v1/principals/me')) {
+        return { status: 404, ok: false, json: async () => ({}) } as Response;
+      }
+      if (u.endsWith('/v1/projects')) {
+        return {
+          status: 200,
+          ok: true,
+          json: async () => [{ id: 'proj-1', name: 'Project Orion', state: 'ACTIVE' }],
+        } as Response;
+      }
+      if (u.includes('/board')) {
+        return {
+          status: 200,
+          ok: true,
+          json: async () => [
+            {
+              id: 'task-in-progress',
+              title: 'Task marked IN_PROGRESS on board',
+              status: 'IN_PROGRESS', // Board status is IN_PROGRESS, but execution is historical!
+              executions: [
+                {
+                  id: 'exec-old-1',
+                  status: 'RUNNING', // Historical RUNNING status from 2 hours ago
+                  worker_id: 'worker-historical-running',
+                  attempts: 1,
+                  created_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+                },
+              ],
+            },
+            {
+              id: 'task-active-vigente',
+              title: 'Task currently executing with fresh timestamp',
+              status: 'IN_PROGRESS',
+              executions: [
+                {
+                  id: 'exec-fresh-2',
+                  status: 'RUNNING', // Fresh execution created 30 seconds ago
+                  worker_id: 'worker-fresh-active',
+                  attempts: 1,
+                  created_at: new Date(Date.now() - 30 * 1000).toISOString(),
+                },
+              ],
+            },
+          ],
+        } as Response;
+      }
+      return { status: 404, ok: false, json: async () => ({}) } as Response;
+    });
+
+    const org = await live.getOrganizationStructure();
+    expect(org.kind).toBe('ready');
+    if (org.kind === 'ready') {
+      // Historical worker MUST NOT be EJECUTANDO; assignment status MUST NOT be ACTIVE
+      const historicalWorker = org.data.agents.find((a) => a.id === 'worker-historical-running');
+      expect(historicalWorker).toBeDefined();
+      expect(historicalWorker?.operationalState).toBe('ASIGNADO'); // Assigned to open task, but NOT currently executing
+      expect(historicalWorker?.status).toBe('IDLE');
+      expect(historicalWorker?.currentAssignments[0].status).toBe('COMPLETED');
+
+      // Fresh worker with verifiable vigency IS EJECUTANDO; assignment IS ACTIVE
+      const freshWorker = org.data.agents.find((a) => a.id === 'worker-fresh-active');
+      expect(freshWorker).toBeDefined();
+      expect(freshWorker?.operationalState).toBe('EJECUTANDO');
+      expect(freshWorker?.status).toBe('BUSY');
+      expect(freshWorker?.currentAssignments[0].status).toBe('ACTIVE');
+
+      // Only fresh active assignments count in activeAssignmentsCount
+      expect(org.data.activeAssignmentsCount).toBe(1);
+    }
+  });
+
+  it('strictly separates reviews from certifications: task reviews do NOT grant certified capabilities', async () => {
+    const live = new HttpAaoLiveAdapter({ getToken: () => 'test-token' });
+
+    vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.includes('/v1/organization') || u.includes('/v1/principals/me')) {
+        return { status: 404, ok: false, json: async () => ({}) } as Response;
+      }
+      if (u.endsWith('/v1/projects')) {
+        return { status: 200, ok: true, json: async () => [{ id: 'p1', name: 'P1' }] } as Response;
+      }
+      if (u.includes('/board')) {
+        return {
+          status: 200,
+          ok: true,
+          json: async () => [
+            {
+              id: 'task-reviewed',
+              title: 'Security audit candidate',
+              status: 'VERIFIED',
+              reviews: [
+                {
+                  id: 'rev-1',
+                  work_id: 'task-reviewed',
+                  reviewer_id: 'auditor-independent-ronin',
+                  decision: 'APPROVED',
+                  created_at: '2026-10-25T14:30:00Z',
+                },
+              ],
+            },
+          ],
+        } as Response;
+      }
+      return { status: 404, ok: false, json: async () => ({}) } as Response;
+    });
+
+    const org = await live.getOrganizationStructure();
+    expect(org.kind).toBe('ready');
+    if (org.kind === 'ready') {
+      const reviewer = org.data.agents.find((a) => a.id === 'auditor-independent-ronin');
+      expect(reviewer).toBeDefined();
+      // CEO Point 5: MUST NOT have synthetic CERTIFIED capabilities
+      expect(reviewer?.capabilities).toEqual([]);
+      expect(reviewer?.unitId).toBe('unit-unassigned');
+      expect(reviewer?.type).toBe('UNKNOWN');
+      expect(reviewer?.lastEvidenceAt).toBe('2026-10-25T14:30:00Z');
+      expect(reviewer?.evidenceDescription).toContain('No constituye certificación formal');
+    }
+  });
+
+  it('inspects all projects without a silent 10-project limit and records coverage completeness', async () => {
+    const live = new HttpAaoLiveAdapter({ getToken: () => 'test-token' });
+
+    // Generate 15 projects
+    const mockProjects = Array.from({ length: 15 }, (_, i) => ({
+      id: `proj-${i}`,
+      name: `Project ${i}`,
+    }));
+
+    vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.includes('/v1/organization') || u.includes('/v1/principals/me')) {
+        return { status: 404, ok: false, json: async () => ({}) } as Response;
+      }
+      if (u.endsWith('/v1/projects')) {
+        return { status: 200, ok: true, json: async () => mockProjects } as Response;
+      }
+      if (u.includes('/proj-14/board')) {
+        // Project 14 board fails with 500 error
+        return { status: 500, ok: false, json: async () => ({}) } as Response;
+      }
+      if (u.includes('/board')) {
+        return { status: 200, ok: true, json: async () => [] } as Response;
+      }
+      return { status: 404, ok: false, json: async () => ({}) } as Response;
+    });
+
+    const org = await live.getOrganizationStructure();
+    expect(org.kind).toBe('ready');
+    if (org.kind === 'ready') {
+      expect(org.data.coverage).toBeDefined();
+      expect(org.data.coverage?.totalProjects).toBe(15);
+      expect(org.data.coverage?.inspectedProjects).toBe(14);
+      expect(org.data.coverage?.failedProjects).toBe(1);
+      expect(org.data.coverage?.isPartial).toBe(true);
+      expect(org.data.coverage?.notes).toContain('Cobertura parcial: 1 de 15 proyectos no pudieron ser consultados');
     }
   });
 
@@ -372,6 +549,7 @@ describe('HttpAaoLiveAdapter F3 & F4.8 Live Aggregation Handling', () => {
     if (details.kind === 'ready') {
       expect(details.data.id).toBe('ceo-user');
       expect(details.data.unitId).toBe('unit-exec');
+      expect(details.data.type).toBe('STANDING');
     }
 
     // Missing agent

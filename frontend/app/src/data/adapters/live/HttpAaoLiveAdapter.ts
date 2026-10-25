@@ -22,6 +22,7 @@ import type {
   CeoOverview,
   OrganizationStructure,
   AgentIdentity,
+  AgentType,
   OrgUnit,
   DataState,
   BoardStage,
@@ -781,7 +782,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
       return projectsResult;
     }
 
-    // Constitutional Units Definition
+    // Constitutional Units Definition (without synthetic department leads)
     const units: OrgUnit[] = [
       {
         id: 'unit-exec',
@@ -855,32 +856,52 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
         ephemeralCount: 0,
         activeProjectsCount: 0,
       },
+      {
+        id: 'unit-unassigned',
+        name: 'Departamento no asignado / Desconocido',
+        code: 'DESC',
+        parentId: null,
+        leadRole: 'Sin asignar',
+        leadAgentId: null,
+        description: 'Agentes o trabajadores sin adscripción departamental canónica confirmada en el núcleo.',
+        standingCount: 0,
+        ephemeralCount: 0,
+        activeProjectsCount: 0,
+      },
     ];
 
     const agentMap = new Map<string, AgentIdentity>();
 
-    // 3. Register current verified principal if available
+    // 3. Register current verified principal if available (CANONICAL ASSIGNMENT)
     try {
       const principalResult = await this.getCurrentPrincipal();
       if (principalResult.kind === 'ready') {
         const p = principalResult.data;
-        let unitId = 'unit-eng';
-        let roleTitle = 'Agente Operativo Verificado';
+        let unitId = 'unit-unassigned';
+        let roleTitle = 'Principal Registrado';
+        let agentType: AgentType = 'UNKNOWN';
+        let unitName = 'Departamento desconocido';
+
+        // Canonical mapping based exclusively on verified principal kind
         if (p.kind === 'CEO') {
           unitId = 'unit-exec';
           roleTitle = 'Presidencia Ejecutiva / CEO';
+          agentType = 'STANDING';
+          unitName = units.find((u) => u.id === 'unit-exec')?.name || 'Dirección Ejecutiva';
         } else if (p.kind === 'AUDITOR') {
           unitId = 'unit-audit';
           roleTitle = 'Auditor Independiente';
+          agentType = 'STANDING';
+          unitName = units.find((u) => u.id === 'unit-audit')?.name || 'Auditoría Independiente';
         }
 
         agentMap.set(p.principal_id, {
           id: p.principal_id,
           name: p.kind === 'CEO' ? 'CEO (Identidad Canónica)' : p.principal_id,
-          type: 'STANDING',
+          type: agentType,
           roleTitle,
           unitId,
-          unitName: units.find((u) => u.id === unitId)?.name,
+          unitName,
           capabilities: (p.grants || []).map((g, idx) => ({
             id: `cap-${idx}`,
             name: g.capability,
@@ -898,83 +919,100 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
               : 'Permisos delimitados por concesiones activas verificadas en el núcleo.',
           isSyntheticDemo: false,
           evidenceDescription: 'Credencial activa verificada mediante endpoint /v1/principals/me.',
-          lastEvidenceAt: new Date().toISOString(),
+          lastEvidenceAt: null, // No fabricar marcas temporales sintéticas
         });
       }
     } catch {
       // Ignore principal fetch failures if optional
     }
 
-    // 4. Inspect projects and boards to extract active workers and real executions
+    // 4. Inspect ALL projects and boards to extract active workers and real executions
+    let inspectedProjectsCount = 0;
+    let failedProjectsCount = 0;
+    const totalProjectsCount = projectsResult.kind === 'ready' ? projectsResult.data.length : 0;
+    const VIGENCY_WINDOW_MS = 5 * 60 * 1000; // 5 min freshness window for current execution claim
+    const nowMs = Date.now();
+
     if (projectsResult.kind === 'ready') {
-      const projectsToInspect = projectsResult.data.slice(0, 10);
-      for (const project of projectsToInspect) {
+      for (const project of projectsResult.data) {
         try {
           const boardResult = await this.getProjectBoard(project.id);
           if (boardResult.kind === 'ready') {
+            inspectedProjectsCount++;
             for (const task of boardResult.data.items) {
               if (task.executions && task.executions.length > 0) {
                 for (const exec of task.executions) {
                   if (!exec.worker_id) continue;
                   const workerId = exec.worker_id;
-                  const lower = workerId.toLowerCase();
 
-                  let targetUnitId = 'unit-eng';
-                  if (lower.includes('ceo') || lower.includes('exec')) targetUnitId = 'unit-exec';
-                  else if (lower.includes('gov') || lower.includes('policy')) targetUnitId = 'unit-gov';
-                  else if (lower.includes('audit') || lower.includes('sec')) targetUnitId = 'unit-audit';
-                  else if (lower.includes('arch')) targetUnitId = 'unit-arch';
-                  else if (lower.includes('ops') || lower.includes('infra')) targetUnitId = 'unit-ops';
+                  // CEO Requirement 1 & 3:
+                  // No deducir departamentos de worker_id. Utilizar «Departamento desconocido».
+                  // No deducir STANDING o EPHEMERAL de cadenas. Representar como 'UNKNOWN'.
+                  const targetUnitId = 'unit-unassigned';
+                  const targetUnitName = 'Departamento desconocido';
+                  const targetAgentType: AgentType = 'UNKNOWN';
 
-                  const isRunning = exec.status === 'RUNNING' || task.status === 'IN_PROGRESS';
-                  const isAssigned = isRunning || exec.status === 'ASSIGNED' || task.status === 'READY';
+                  // CEO Requirement 2:
+                  // No declarar EJECUTANDO por IN_PROGRESS. Exigir evidencia vigente: status === 'RUNNING', id válido y comprobación temporal.
+                  const execTimestamp = exec.created_at ? new Date(exec.created_at).getTime() : NaN;
+                  const isFresh =
+                    !isNaN(execTimestamp) && nowMs - execTimestamp >= 0 && nowMs - execTimestamp <= VIGENCY_WINDOW_MS;
+                  const isCurrentlyExecuting = exec.status === 'RUNNING' && Boolean(exec.id) && isFresh;
+
+                  // CEO Requirement 8:
+                  // No marcar asignaciones como activas sin evidencia vigente.
+                  const isTaskOpen = task.status !== 'DONE' && task.status !== 'VERIFIED';
+                  const assignmentStatus: 'ACTIVE' | 'COMPLETED' = isCurrentlyExecuting ? 'ACTIVE' : 'COMPLETED';
 
                   let agent = agentMap.get(workerId);
                   if (!agent) {
-                    const isEphemeral =
-                      lower.includes('ephemeral') || lower.includes('worker') || lower.includes('subagent');
                     agent = {
                       id: workerId,
                       name: workerId,
-                      type: isEphemeral ? 'EPHEMERAL' : 'STANDING',
-                      roleTitle: isEphemeral ? 'Agente Efímero de Ejecución' : 'Especialista Operativo',
+                      type: targetAgentType,
+                      roleTitle: 'Agente Operativo Registrado',
                       unitId: targetUnitId,
-                      unitName: units.find((u) => u.id === targetUnitId)?.name,
+                      unitName: targetUnitName,
                       capabilities: [],
                       heartbeatStatus: 'UNKNOWN',
                       lastHeartbeatAt: null,
-                      status: isRunning ? 'BUSY' : 'IDLE',
-                      operationalState: isRunning ? 'EJECUTANDO' : isAssigned ? 'ASIGNADO' : 'REGISTRADO',
+                      status: isCurrentlyExecuting ? 'BUSY' : 'IDLE',
+                      operationalState: isCurrentlyExecuting ? 'EJECUTANDO' : isTaskOpen ? 'ASIGNADO' : 'REGISTRADO',
                       currentAssignments: [],
                       authorityBoundary: `Delimitado por el mandato del proyecto ${project.name || project.id}.`,
                       isSyntheticDemo: false,
-                      evidenceDescription: `Registro de ejecución en tarea ${task.id} (${task.title}).`,
-                      lastEvidenceAt: exec.created_at || task.createdAt || null,
+                      evidenceDescription: `Registro de ejecución en tarea ${task.id} (${task.title}). Estado de ejecución: ${exec.status}.`,
+                      lastEvidenceAt: exec.created_at || null, // lastEvidenceAt preserva marca del núcleo, nunca new Date()
                     };
                     agentMap.set(workerId, agent);
                   } else {
-                    if (isRunning) {
+                    if (isCurrentlyExecuting) {
                       agent.status = 'BUSY';
                       agent.operationalState = 'EJECUTANDO';
-                    } else if (agent.operationalState !== 'EJECUTANDO' && isAssigned) {
+                    } else if (agent.operationalState !== 'EJECUTANDO' && isTaskOpen) {
                       agent.operationalState = 'ASIGNADO';
+                    }
+                    if (exec.created_at && (!agent.lastEvidenceAt || exec.created_at > agent.lastEvidenceAt)) {
+                      agent.lastEvidenceAt = exec.created_at;
                     }
                   }
 
-                  if (isAssigned && !agent.currentAssignments.some((a) => a.taskId === task.id)) {
+                  if (!agent.currentAssignments.some((a) => a.taskId === task.id)) {
                     agent.currentAssignments.push({
                       id: `asg-${task.id}-${workerId}`,
                       projectId: project.id,
                       projectName: project.name || project.id,
                       taskId: task.id,
                       taskTitle: task.title,
-                      assignedAt: exec.created_at || new Date().toISOString(),
-                      status: isRunning ? 'ACTIVE' : 'COMPLETED',
+                      assignedAt: exec.created_at || task.createdAt || '',
+                      status: assignmentStatus,
                     });
                   }
                 }
               }
 
+              // CEO Requirement 5:
+              // No marcar capacidades como certificadas por haber encontrado una revisión.
               if (task.reviews && task.reviews.length > 0) {
                 for (const rev of task.reviews) {
                   if (!rev.reviewer_id) continue;
@@ -984,31 +1022,31 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
                     revAgent = {
                       id: revId,
                       name: revId,
-                      type: 'STANDING',
-                      roleTitle: 'Auditor Independiente de Seguridad',
-                      unitId: 'unit-audit',
-                      unitName: units.find((u) => u.id === 'unit-audit')?.name,
-                      capabilities: [
-                        { id: 'cap-review', name: 'Revisión y Certificación', level: 'CERTIFIED', verified: true },
-                      ],
+                      type: 'UNKNOWN',
+                      roleTitle: 'Revisor de Tarea Registrado',
+                      unitId: 'unit-unassigned',
+                      unitName: 'Departamento desconocido',
+                      capabilities: [], // NO capacidades certificadas sintéticas
                       heartbeatStatus: 'UNKNOWN',
                       lastHeartbeatAt: null,
                       status: 'IDLE',
                       operationalState: 'REGISTRADO',
                       currentAssignments: [],
-                      authorityBoundary: 'Revisión de candidatos y dictamen de seguridad.',
+                      authorityBoundary: 'Revisión técnica de candidatos en el tablero de trabajo.',
                       isSyntheticDemo: false,
-                      evidenceDescription: `Revisión registrada en tarea ${task.id} (${rev.decision}).`,
-                      lastEvidenceAt: rev.created_at,
+                      evidenceDescription: `Revisión registrada en tarea ${task.id} (${rev.decision}). No constituye certificación formal de capacidades.`,
+                      lastEvidenceAt: rev.created_at || null,
                     };
                     agentMap.set(revId, revAgent);
                   }
                 }
               }
             }
+          } else {
+            failedProjectsCount++;
           }
         } catch {
-          // Board query failure on individual project does not abort overall roster
+          failedProjectsCount++;
         }
       }
     }
@@ -1023,9 +1061,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
       const projectIds = new Set<string>();
       unitAgents.forEach((a) => a.currentAssignments.forEach((asg) => projectIds.add(asg.projectId)));
       unit.activeProjectsCount = projectIds.size;
-      if (!unit.leadAgentId && unitAgents.length > 0) {
-        unit.leadAgentId = unitAgents[0].id;
-      }
+      // CEO Requirement 4: Mantén leadAgentId: null hasta obtener evidencia
     }
 
     return {
@@ -1036,7 +1072,21 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
         agents,
         totalStandingAgents: agents.filter((a) => a.type === 'STANDING').length,
         totalEphemeralAgents: agents.filter((a) => a.type === 'EPHEMERAL').length,
-        activeAssignmentsCount: agents.reduce((acc, a) => acc + a.currentAssignments.length, 0),
+        totalUnknownAgents: agents.filter((a) => a.type === 'UNKNOWN').length,
+        activeAssignmentsCount: agents.reduce(
+          (acc, a) => acc + a.currentAssignments.filter((asg) => asg.status === 'ACTIVE').length,
+          0
+        ),
+        coverage: {
+          totalProjects: totalProjectsCount,
+          inspectedProjects: inspectedProjectsCount,
+          failedProjects: failedProjectsCount,
+          isPartial: failedProjectsCount > 0,
+          notes:
+            failedProjectsCount > 0
+              ? `Cobertura parcial: ${failedProjectsCount} de ${totalProjectsCount} proyectos no pudieron ser consultados.`
+              : `Cobertura completa: ${inspectedProjectsCount} de ${totalProjectsCount} proyectos consultados en vivo.`,
+        },
       },
       fetchedAt: new Date().toISOString(),
     };

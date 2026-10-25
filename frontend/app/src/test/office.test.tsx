@@ -444,4 +444,68 @@ describe('Phase F4.7: UI Contrast, Design Tokens & Operational Indicators', () =
     expect(screen.getByText(/⚡ Ejecutando Tarea/i)).toBeInTheDocument();
     expect(screen.getByText(/Build Security Core/i)).toBeInTheDocument();
   });
+
+  it('renders unknown department and unknown agent type truthfully without fabricating affiliations', () => {
+    const stateWithUnassignedAgent: DataState<OrganizationStructure> = {
+      kind: 'ready',
+      origin: 'live',
+      data: {
+        units: DEMO_ORG_UNITS,
+        agents: [
+          {
+            id: 'worker-unknown-dept',
+            name: 'Anonymous Worker',
+            type: 'UNKNOWN',
+            roleTitle: 'Agente Operativo Registrado',
+            unitId: 'unit-unassigned',
+            capabilities: [],
+            heartbeatStatus: 'UNKNOWN',
+            lastHeartbeatAt: null,
+            status: 'IDLE',
+            operationalState: 'REGISTRADO',
+            currentAssignments: [
+              {
+                id: 'asg-old-1',
+                projectId: 'p1',
+                projectName: 'Legacy Project',
+                taskId: 't9',
+                taskTitle: 'Historical Task',
+                assignedAt: '2026-10-20T10:00:00Z',
+                status: 'COMPLETED', // Historical assignment
+              },
+            ],
+            authorityBoundary: 'Sin concesión activa.',
+            lastEvidenceAt: '2026-10-20T10:00:00Z',
+            evidenceDescription: 'Tarea histórica completada en registro.',
+          },
+        ],
+        totalStandingAgents: 0,
+        totalEphemeralAgents: 0,
+        totalUnknownAgents: 1,
+        activeAssignmentsCount: 0,
+      },
+      fetchedAt: new Date().toISOString(),
+    };
+
+    render(<VirtualOfficeView organization={stateWithUnassignedAgent} />);
+
+    // Switch to 2D Plan
+    const toolbar = screen.getByRole('toolbar', { name: /Barra de herramientas de la Oficina Virtual/i });
+    const plan2dBtn = within(toolbar).getByRole('button', { name: /Plano 2D Accesible/i });
+    fireEvent.click(plan2dBtn);
+
+    // Verify "Departamento desconocido" card appears
+    expect(screen.getByRole('heading', { level: 4, name: /«Departamento desconocido»/i })).toBeInTheDocument();
+
+    // Select the unknown agent button
+    const agentBtn = screen.getByRole('button', { name: /Anonymous Worker/i });
+    fireEvent.click(agentBtn);
+
+    // Verify Inspector displays truth: "Tipo Desconocido", "«Departamento desconocido»", and historical assignment
+    expect(screen.getByText('Tipo Desconocido')).toBeInTheDocument();
+    expect(screen.getAllByText('«Departamento desconocido»').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('Sin adscripción departamental canónica confirmada en el núcleo.')).toBeInTheDocument();
+    expect(screen.getByText(/HISTÓRICO REGISTRADO/i)).toBeInTheDocument();
+    expect(screen.getByText(/Sin capacidades certificadas registradas formalmente/i)).toBeInTheDocument();
+  });
 });

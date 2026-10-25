@@ -166,6 +166,39 @@ def test_organization_profiles_are_persisted_and_do_not_create_grants(monkeypatc
     not os.getenv("AAO_TEST_POSTGRES_URL") or os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
     reason="Explicit disposable PostgreSQL test database required",
 )
+def test_organization_unit_concurrent_reparenting_cannot_create_cycle(monkeypatch):
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "org-cycle-ceo")
+    ceo = {"X-CEO-Token": "org-cycle-ceo"}
+    with TestClient(app) as client:
+        suffix = str(uuid4())
+        first = {
+            "id": "unit-cycle-a-" + suffix, "name": "A", "code": "A-" + suffix,
+            "parent_id": None, "lead_principal_id": None, "enabled": True,
+        }
+        second = {
+            "id": "unit-cycle-b-" + suffix, "name": "B", "code": "B-" + suffix,
+            "parent_id": None, "lead_principal_id": None, "enabled": True,
+        }
+        assert client.put("/v1/organization/units", headers=ceo, json=first).status_code == 200
+        assert client.put("/v1/organization/units", headers=ceo, json=second).status_code == 200
+
+        first["parent_id"] = second["id"]
+        second["parent_id"] = first["id"]
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(
+                lambda unit: client.put("/v1/organization/units", headers=ceo, json=unit),
+                (first, second),
+            ))
+        assert sorted(result.status_code for result in results) == [200, 409]
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="Explicit disposable PostgreSQL test database required",
+)
 def test_capability_catalog_is_project_scoped_and_does_not_grant_execution(monkeypatch):
     from aao.work_management_api import app
 

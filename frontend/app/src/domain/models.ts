@@ -201,7 +201,7 @@ export interface CapabilitySummary {
   risks?: string[];
   dependencies?: string[];
   tests?: string[];
-  compatibility?: string[];
+  compatibility?: Record<string, unknown>;
   evidence?: unknown;
   created_by?: string;
   created_at: string;

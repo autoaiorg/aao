@@ -89,7 +89,7 @@ export const CapabilitySchema = z.object({
   risks: z.array(z.string()).optional(),
   dependencies: z.array(z.string()).optional(),
   tests: z.array(z.string()).optional(),
-  compatibility: z.array(z.string()).optional(),
+  compatibility: z.record(z.string(), z.unknown()).optional(),
   evidence: z.unknown().optional(),
   created_by: z.string().optional(),
   created_at: z.string(),

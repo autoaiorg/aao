@@ -69,6 +69,10 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
   private requireAuth: boolean;
   private activeControllers: Set<AbortController> = new Set();
 
+  private hasAuthenticatedSession(): boolean {
+    return Boolean(this.getToken() || (this.getAuthRole() === 'CEO' && this.getCeoCookieSession()));
+  }
+
   constructor(config: HttpLiveAdapterConfig = {}) {
     this.baseUrl = config.baseUrl ?? '';
     this.timeoutMs = config.timeoutMs ?? 10000;
@@ -289,11 +293,11 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
           kind: 'ready',
           origin: 'live',
           data: {
-            principal_id: 'ceo (bearer de desarrollo verificado)',
+            principal_id: cookieSession ? 'ceo (sesión de navegador verificada)' : 'ceo (bearer de desarrollo verificado)',
             kind: 'CEO',
             enabled: true,
             verificationStatus: 'verified',
-            authMethod: 'X-CEO-Token comprobado vía GET /v1/mandates',
+            authMethod: cookieSession ? 'Cookie de sesión comprobada vía GET /v1/mandates' : 'X-CEO-Token comprobado vía GET /v1/mandates',
           },
           fetchedAt: new Date().toISOString(),
         };
@@ -676,7 +680,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
   async getCeoOverview(projectId?: string): Promise<CeoOverview> {
     const now = new Date().toISOString();
 
-    if (this.requireAuth && !this.getToken()) {
+    if (this.requireAuth && !this.hasAuthenticatedSession()) {
       return {
         projects: { kind: 'forbidden', reason: 'Credencial no suministrada en memoria. Se requiere autenticación.' },
         work: { kind: 'forbidden', reason: 'Credencial no suministrada en memoria. Se requiere autenticación.' },
@@ -808,7 +812,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
   // The organization projection is a backend-owned contract. In LIVE mode, do not
   // substitute a client-built roster or static departments when that contract fails.
   async getOrganizationStructure(): Promise<DataState<OrganizationStructure>> {
-    if (!this.getToken() && this.requireAuth) {
+    if (!this.hasAuthenticatedSession() && this.requireAuth) {
       return {
         kind: 'unavailable',
         reason: 'Se requiere una credencial autenticada para consultar la organización real.',

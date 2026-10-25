@@ -84,6 +84,20 @@ describe('Defensive Schema Validation', () => {
     }
   });
 
+  it('accepts the persisted object shape for capability compatibility metadata', () => {
+    const raw = {
+      capability_id: 'capability-with-runtime',
+      version: '1.0.0',
+      capability_type: 'agent_skill',
+      status: 'ACTIVE',
+      compatibility: { runtime: 'python>=3.12', platforms: ['linux'] },
+      created_at: '2026-10-25T00:00:00Z',
+    };
+    const parsed = CapabilitySchema.safeParse(raw);
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.compatibility).toEqual(raw.compatibility);
+  });
+
   it('validates capability evaluations record', () => {
     const raw = {
       task_id: 'task-100',

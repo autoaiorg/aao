@@ -9,7 +9,10 @@ class ReviewDecision:
 
 
 def evaluate_review(*, author_id: str, reviewer_id: str, evidence: list[str],
-                    decision: str, project_active: bool) -> ReviewDecision:
+                    decision: str, project_active: bool,
+                    identity_and_evidence_verified: bool = False) -> ReviewDecision:
+    """APPROVE is allowed only for callers that verified the reviewer's separate
+    credential and the content-addressed evidence before calling (PostgreSQL API)."""
     if not project_active:
         return ReviewDecision(False, "Project is not active")
     if not author_id or not reviewer_id or author_id == reviewer_id:
@@ -20,7 +23,7 @@ def evaluate_review(*, author_id: str, reviewer_id: str, evidence: list[str],
         return ReviewDecision(False, "Unknown review decision")
     if decision == "VETO":
         return ReviewDecision(True, "Veto recorded; approval remains blocked")
-    if decision == "APPROVE":
+    if decision == "APPROVE" and not identity_and_evidence_verified:
         return ReviewDecision(
             False,
             "Approval disabled until independent identity and evidence verification exist",

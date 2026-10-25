@@ -31,6 +31,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes bubblewrap
+          # Ubuntu 24.04 runners restrict unprivileged user namespaces through AppArmor; the
+          # bwrap sandbox (repository checks, agent candidates) needs them on the disposable runner.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: python -m pip install -e '.[dev,postgres]'
       - name: Apply PostgreSQL schema to the disposable CI database
         env:
@@ -52,6 +55,7 @@ jobs:
           psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/011_sha_bound_reviews_and_veto.sql
           psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/012_patch_proposals.sql
           psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/013_work_description.sql
+          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/014_execution_retry.sql
       - run: python -m compileall -q src tests
       - run: python -m ruff check src tests
       - name: Run unit and PostgreSQL integration tests with warnings as errors

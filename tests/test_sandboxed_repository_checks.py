@@ -142,3 +142,13 @@ def test_run_result_binds_conclusion_to_head_and_bounds_output(tmp_path: Path, m
     assert result["conclusion"] == "success"
     assert result["stdout"] == "ok\n"
     assert result["limits"]["network"] == "unshared"
+
+
+def test_extra_tests_must_be_top_level_test_files(tmp_path):
+    import pytest
+
+    from aao.sandboxed_repository_checks import RepositoryCheckError, _build_command
+
+    for bad in ("../x.py", "tests/sub/test_x.py", "tests/conftest.py", "src/test_x.py"):
+        with pytest.raises(RepositoryCheckError, match="extra tests"):
+            _build_command(tmp_path, "core-unit", tmp_path, (bad,))

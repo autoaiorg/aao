@@ -18,7 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 AGENT_TOKEN_NAME = "aao-self-development-agent.token"
-MAX_LEASE_SECONDS = 180
+MAX_LEASE_SECONDS = 1800  # agent run plus candidate checks
 
 
 class WorkerError(RuntimeError):
@@ -67,6 +67,8 @@ def run(project_id: str, principal_id: str) -> dict:
     os.environ["AAO_ENV_FILE"] = ".env.local"
     os.environ["AAO_SANDBOX_QUEUE_ENABLED"] = "true"
     os.environ["AAO_SELF_DEV_REPOSITORY"] = str(ROOT)
+    data_home = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    os.environ.setdefault("AAO_CANDIDATE_REPOSITORY", str(data_home / "aao" / "candidates.git"))
     from aao.inert_execution_worker import run_one
 
     try:

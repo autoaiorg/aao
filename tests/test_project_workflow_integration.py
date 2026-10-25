@@ -358,11 +358,7 @@ def test_postgres_review_is_separate_from_author_and_required_for_done(monkeypat
         assert client.post(f"/v1/work/{w}/progress", headers=worker).status_code == 409
         assert client.post(f"/v1/work/{w}/reviews", headers=worker, json={"decision": "APPROVE", "candidate_sha": candidate_sha, "evidence": [evidence_ref]}).status_code == 403
         assert client.post(f"/v1/work/{w}/reviews", headers=auditor, json={"decision": "APPROVE", "candidate_sha": candidate_sha, "evidence": [""]}).status_code == 409
-        approval = client.post(f"/v1/work/{w}/reviews", headers=auditor, json={
-            "decision": "APPROVE", "candidate_sha": candidate_sha,
-            "evidence": [evidence_ref],
-        })
-        assert approval.status_code == 409, approval.text
+        # A verified approval is covered by the W2a test; here: REJECT, then a veto blocks approval.
         from aao.postgresql_connection import connect_postgres
         with connect_postgres() as db:
             approval_rows = db.execute(
@@ -381,11 +377,6 @@ def test_postgres_review_is_separate_from_author_and_required_for_done(monkeypat
         assert rejected.status_code == 201, rejected.text
         assert rejected.json()["status"] == "IN_PROGRESS"
         assert client.post(f"/v1/work/{w}/progress", headers=worker).json()["status"] == "IN_REVIEW"
-        retry_approval = client.post(f"/v1/work/{w}/reviews", headers=auditor, json={
-            "decision": "APPROVE", "candidate_sha": candidate_sha,
-            "evidence": [evidence_ref],
-        })
-        assert retry_approval.status_code == 409, retry_approval.text
         veto = client.post(f"/v1/work/{w}/reviews", headers=auditor, json={
             "decision": "VETO", "candidate_sha": candidate_sha,
             "evidence": [evidence_ref],
@@ -825,51 +816,62 @@ def test_registered_repository_check_requires_task_selection_before_queue_claim(
     not os.getenv("AAO_TEST_POSTGRES_URL") or os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
     reason="Explicit disposable PostgreSQL database required",
 )
-def test_w1_agent_run_turns_an_admitted_task_into_a_patch_proposal(monkeypatch, tmp_path):
-    """W1 end to end: stage an agent run, the worker claims it, runs the (fixture) agent in a disposable clone
-    at base_sha, and the patch lands as a proposal of the assigned agent, with the execution SUCCEEDED."""
+def test_w2a_agent_run_produces_a_tested_candidate_retries_after_failure_and_is_reviewable(monkeypatch, tmp_path):
+    """W1+W2a end to end: an agent run turns an admitted task into a patch proposal and a candidate commit,
+    tests it in the sandbox, a failed attempt can be re-run, and the auditor approves the tested candidate SHA."""
     import subprocess
 
     from aao.inert_execution_worker import run_one
     from aao.work_management_api import app
 
+    # The fixture repository is this checkout's HEAD, so the sandboxed core-unit check has real tests to run.
+    root = Path(__file__).resolve().parents[1]
     repo = tmp_path / "self-dev"
-    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "core.hooksPath=/dev/null"]
-    subprocess.run([*git, "init", "-q", "-b", "main", str(repo)], check=True)
-    (repo / "README.md").write_text("AAO\n")
-    subprocess.run([*git, "-C", str(repo), "add", "."], check=True)
-    subprocess.run([*git, "-C", str(repo), "commit", "-qm", "base"], check=True)
+    subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{root}", str(repo)], check=True)  # shallow, like CI
     base_sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
-    patch = tmp_path / "fixture.patch"
-    patch.write_text("diff --git a/tests/test_notes.py b/tests/test_notes.py\nnew file mode 100644\n--- /dev/null\n"
-                     "+++ b/tests/test_notes.py\n@@ -0,0 +1 @@\n+NOTE = 'hello from the agent'\n")
+    store = tmp_path / "candidates.git"
+
+    def fixture(name: str, body: str) -> Path:
+        lines = body.splitlines()
+        path = tmp_path / f"{name}.patch"
+        path.write_text("diff --git a/tests/test_notes.py b/tests/test_notes.py\nnew file mode 100644\n--- /dev/null\n"
+                        f"+++ b/tests/test_notes.py\n@@ -0,0 +1,{len(lines)} @@\n" + "".join(f"+{line}\n" for line in lines))
+        return path
+
+    failing = fixture("failing", "def test_note():\n    assert 'hello' == 'bye'")
+    passing = fixture("passing", "def test_note():\n    assert 'hello from the agent'")
 
     monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
     monkeypatch.setenv("AAO_CEO_TOKEN", "agent-run-ceo")
     monkeypatch.setenv("AAO_AGENT_QUEUE_ENABLED", "true")
     monkeypatch.setenv("AAO_SELF_DEV_REPOSITORY", str(repo))
+    monkeypatch.setenv("AAO_CANDIDATE_REPOSITORY", str(store))
     monkeypatch.setenv("AAO_AGENT_BACKEND", "fixture")
-    monkeypatch.setenv("AAO_AGENT_FIXTURE_PATCH", str(patch))
+    monkeypatch.setenv("AAO_AGENT_FIXTURE_PATCH", str(failing))
     ceo = {"X-CEO-Token": "agent-run-ceo"}
     with TestClient(app) as client:
         identity = "w1-agent-" + str(uuid4())
-        issued = client.post("/v1/principals/credentials", headers=ceo, json={"principal_id": identity, "kind": "AGENT"})
-        assert issued.status_code == 201, issued.text
-        token = issued.json()["token"]
+        auditor_id = "w2-auditor-" + str(uuid4())
+        token = client.post("/v1/principals/credentials", headers=ceo, json={"principal_id": identity, "kind": "AGENT"}).json()["token"]
         agent = {"X-Agent-Token": token}
-        mandate = client.post("/v1/mandates", headers=ceo, json={"title": "W1 " + str(uuid4()), "objective": "Agent patch"}).json()["id"]
+        auditor = {"X-Auditor-Token": client.post("/v1/principals/credentials", headers=ceo,
+                                                  json={"principal_id": auditor_id, "kind": "AUDITOR"}).json()["token"]}
+        mandate = client.post("/v1/mandates", headers=ceo, json={"title": "W2 " + str(uuid4()), "objective": "Agent patch"}).json()["id"]
         assert client.post(f"/v1/mandates/{mandate}/confirm", headers=ceo).status_code == 200
-        project = client.post("/v1/projects", headers=ceo, json={"name": "W1", "mandate_id": mandate}).json()["id"]
+        project = client.post("/v1/projects", headers=ceo, json={"name": "W2", "mandate_id": mandate}).json()["id"]
         from datetime import UTC, datetime, timedelta
         expiry = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
-        for capability in ("work.create", "work.admit", "work.progress", "execution.claim", "project.read", "code.propose"):
+        for capability in ("work.create", "work.admit", "work.progress", "execution.claim", "project.read",
+                           "code.propose", "evidence.submit"):
             grant = {"principal_id": identity, "capability": capability}
             if capability == "code.propose":
                 grant["expires_at"] = expiry  # code.propose grants must expire within 24h
             assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json=grant).status_code == 201
+        assert client.post(f"/v1/projects/{project}/grants", headers=ceo,
+                           json={"principal_id": auditor_id, "capability": "work.review"}).status_code == 201
         work = client.post(f"/v1/projects/{project}/work", headers=agent, json={
-            "title": "Add a notes module", "author_id": identity, "description": "Create tests/test_notes.py",
-            "acceptance_criteria": ["tests/test_notes.py exists"],
+            "title": "Add a notes test", "author_id": identity, "description": "Create tests/test_notes.py",
+            "acceptance_criteria": ["tests/test_notes.py exists and passes"],
         })
         assert work.status_code == 201, work.text
         work = work.json()["id"]
@@ -893,15 +895,66 @@ def test_w1_agent_run_turns_an_admitted_task_into_a_patch_proposal(monkeypatch, 
         })
         assert evaluation.status_code == 201, evaluation.text
         assert client.post(f"/v1/work/{work}/admit", headers=agent).status_code == 200
-        staged = client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json={
-            "capability_id": "aao.agent-runner", "version": "1.0.0", "base_sha": base_sha})
+        run = {"capability_id": "aao.agent-runner", "version": "1.0.0", "base_sha": base_sha}
+        staged = client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run)
         assert staged.status_code == 202, staged.text
+        assert client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run).json()["execution_id"] == staged.json()["execution_id"]
         assert client.post(f"/v1/work/{work}/progress", headers=agent).status_code == 200
 
-        outcome = run_one(identity, token, project_id=project, seconds=60)
-        assert outcome["status"] == "SUCCEEDED", outcome
+        # Attempt 1: the candidate is committed and stored, but its own test fails, so the execution FAILED.
+        assert run_one(identity, token, project_id=project, seconds=400)["status"] == "FAILED"
+        # Recovery: the task can be re-run after a failed attempt.
+        monkeypatch.setenv("AAO_AGENT_FIXTURE_PATCH", str(passing))
+        restaged = client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run)
+        assert restaged.status_code == 202, restaged.text
+        assert restaged.json()["execution_id"] != staged.json()["execution_id"]
+        # Attempt 2: an infrastructure failure of the checks fails the run after its proposal is stored...
+        import aao.sandboxed_repository_checks as checks
+        real_check = checks.run_repository_check
+
+        def broken(*_args, **_kwargs):
+            raise checks.RepositoryCheckError("sandbox unavailable")
+        monkeypatch.setattr(checks, "run_repository_check", broken)
+        assert run_one(identity, token, project_id=project, seconds=400)["status"] == "FAILED"
+        monkeypatch.setattr(checks, "run_repository_check", real_check)
+        # ...and attempt 3 reproduces the same patch: it reuses that proposal instead of failing on it.
+        assert client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run).status_code == 202
+        outcome = run_one(identity, token, project_id=project, seconds=400)
         board = client.get(f"/v1/projects/{project}/board", headers=agent).json()
-    assert isinstance(board, list), board
-    proposals = [p for item in board if item["id"] == work for p in item["patch_proposals"]]
-    assert any(p.get("changed_paths") == ["tests/test_notes.py"] and p.get("base_sha") == base_sha for p in proposals), board
+        last = next(i for i in board if i["id"] == work)["executions"][-1]["result"]
+        print(last.get("check", {}).get("stderr"))  # shown by pytest only on failure
+        assert outcome["status"] == "SUCCEEDED", (last.get("error"), last.get("check", {}).get("stderr"),
+                                                  last.get("check", {}).get("stdout"))
+        board = client.get(f"/v1/projects/{project}/board", headers=agent).json()
+        item = next(item for item in board if item["id"] == work)
+        failed, infra_failed, succeeded = item["executions"]
+        assert failed["status"] == "FAILED" and failed["result"]["check"]["conclusion"] == "failure"
+        assert infra_failed["status"] == "FAILED" and infra_failed["result"]["check"]["error"] == "sandbox unavailable"
+        result = succeeded["result"]
+        assert result["proposal_id"] == infra_failed["result"]["proposal_id"]
+        assert succeeded["status"] == "SUCCEEDED" and result["check"]["conclusion"] == "success", result
+        assert result["check"]["extra_tests"] == ["tests/test_notes.py"]
+        candidate_sha = result["candidate_sha"]
+        assert len(item["patch_proposals"]) == 2
+        assert {p["changed_paths"][0] for p in item["patch_proposals"]} == {"tests/test_notes.py"}
+
+        # The tested candidate is kept under a durable ref, authored by the fixed agent identity, on top of base.
+        git = ["git", "--git-dir", str(store)]
+        assert subprocess.run([*git, "rev-parse", result["candidate_ref"]], capture_output=True, text=True, check=True).stdout.strip() == candidate_sha
+        meta = subprocess.run([*git, "log", "-1", "--format=%P|%an|%ae|%ce|%B", candidate_sha], capture_output=True, text=True, check=True).stdout
+        assert meta.startswith(f"{base_sha}|AAO agent|{identity}@agents.aao.invalid|{identity}@agents.aao.invalid|Add a notes test")
+        assert f"AAO-Work: {work}" in meta
+
+        # Review: the auditor approves exactly the tested candidate; the earlier failed attempt does not block it.
+        assert client.post(f"/v1/work/{work}/progress", headers=agent).status_code == 200
+        from aao.evidence_registry import register_evidence
+        evidence_ref = register_evidence(project, b"candidate check output", agent_id=identity,
+                                         agent_credential=token, media_type="text/plain")
+        failed_sha = failed["result"]["candidate_sha"]
+        assert client.post(f"/v1/work/{work}/reviews", headers=auditor, json={
+            "decision": "APPROVE", "candidate_sha": failed_sha, "evidence": [evidence_ref]}).status_code == 409
+        approval = client.post(f"/v1/work/{work}/reviews", headers=auditor, json={
+            "decision": "APPROVE", "candidate_sha": candidate_sha, "evidence": [evidence_ref]})
+        assert approval.status_code == 201, approval.text
+        assert approval.json()["status"] == "VERIFIED"
     assert subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True, check=True).stdout == ""

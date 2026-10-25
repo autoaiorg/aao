@@ -192,6 +192,7 @@ export const AgentIdentitySchema = z.object({
   name: z.string(),
   type: AgentTypeSchema,
   roleTitle: z.string(),
+  managerId: z.string().nullable().optional(),
   unitId: z.string(),
   unitName: z.string().optional(),
   capabilities: z.array(AgentCapabilitySchema).default([]),

@@ -190,6 +190,24 @@ class RepositoryCheckRequest(BaseModel):
     check_id: str = Field(pattern=r"^core-unit$")
 
 
+class OrganizationUnitRequest(BaseModel):
+    id: str = Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$")
+    name: str = Field(min_length=1, max_length=200)
+    code: str = Field(min_length=1, max_length=64)
+    parent_id: str | None = Field(default=None, max_length=128)
+    lead_principal_id: str | None = Field(default=None, max_length=128)
+    enabled: bool = True
+
+
+class OrganizationProfileRequest(BaseModel):
+    principal_id: str = Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$")
+    display_name: str = Field(min_length=1, max_length=200)
+    role_title: str = Field(min_length=1, max_length=200)
+    unit_id: str | None = Field(default=None, max_length=128)
+    manager_principal_id: str | None = Field(default=None, max_length=128)
+    enabled: bool = True
+
+
 app = FastAPI(title="AAO PostgreSQL development core", version="0.2.0")
 _CEO_PRINCIPAL = object()
 
@@ -549,6 +567,73 @@ def projects(principal: str = Depends(read_principal)):
         return [{"id": r[0], "name": r[1], "state": r[2]} for r in rows]
 
 
+@app.put("/v1/organization/units")
+def put_organization_unit(payload: OrganizationUnitRequest, _: str = Depends(require_ceo)):
+    """Declare organizational placement; it does not create or change grants."""
+    with tx() as db:
+        if payload.parent_id and not db.execute(
+            "SELECT 1 FROM organization_units WHERE id=%s AND enabled", (payload.parent_id,)
+        ).fetchone():
+            raise HTTPException(404, "Parent organization unit not found")
+        if payload.lead_principal_id and not db.execute(
+            "SELECT 1 FROM principal_credentials WHERE principal_id=%s", (payload.lead_principal_id,)
+        ).fetchone():
+            raise HTTPException(404, "Unit lead principal not found")
+        if payload.parent_id == payload.id:
+            raise HTTPException(409, "Organization unit cannot parent itself")
+        if payload.parent_id and db.execute(
+            "WITH RECURSIVE descendants(id) AS ("
+            "SELECT id FROM organization_units WHERE parent_id=%s UNION ALL "
+            "SELECT child.id FROM organization_units child JOIN descendants d "
+            "ON child.parent_id=d.id) SELECT 1 FROM descendants WHERE id=%s LIMIT 1",
+            (payload.id, payload.parent_id),
+        ).fetchone():
+            raise HTTPException(409, "Organization unit hierarchy cannot contain a cycle")
+        db.execute(
+            "INSERT INTO organization_units(id,name,code,parent_id,lead_principal_id,enabled) "
+            "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT(id) DO UPDATE SET "
+            "name=EXCLUDED.name,code=EXCLUDED.code,parent_id=EXCLUDED.parent_id,"
+            "lead_principal_id=EXCLUDED.lead_principal_id,enabled=EXCLUDED.enabled,"
+            "updated_at=clock_timestamp()",
+            (payload.id, payload.name, payload.code, payload.parent_id,
+             payload.lead_principal_id, payload.enabled),
+        )
+        audit(db, str(uuid4()), "organization.unit_declared", payload.model_dump())
+    return payload.model_dump()
+
+
+@app.put("/v1/organization/profiles")
+def put_organization_profile(payload: OrganizationProfileRequest, _: str = Depends(require_ceo)):
+    """Declare a principal's organizational profile, independent of its permissions."""
+    with tx() as db:
+        if not db.execute(
+            "SELECT 1 FROM principal_credentials WHERE principal_id=%s", (payload.principal_id,)
+        ).fetchone():
+            raise HTTPException(404, "Profile principal not found")
+        if payload.manager_principal_id and not db.execute(
+            "SELECT 1 FROM principal_credentials WHERE principal_id=%s", (payload.manager_principal_id,)
+        ).fetchone():
+            raise HTTPException(404, "Manager principal not found")
+        if payload.unit_id and not db.execute(
+            "SELECT 1 FROM organization_units WHERE id=%s AND enabled", (payload.unit_id,)
+        ).fetchone():
+            raise HTTPException(404, "Organization unit not found")
+        if payload.manager_principal_id == payload.principal_id:
+            raise HTTPException(409, "Profile cannot manage itself")
+        db.execute(
+            "INSERT INTO organization_profiles(principal_id,display_name,role_title,unit_id,"
+            "manager_principal_id,enabled) VALUES (%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT(principal_id) DO UPDATE SET display_name=EXCLUDED.display_name,"
+            "role_title=EXCLUDED.role_title,unit_id=EXCLUDED.unit_id,"
+            "manager_principal_id=EXCLUDED.manager_principal_id,enabled=EXCLUDED.enabled,"
+            "updated_at=clock_timestamp()",
+            (payload.principal_id, payload.display_name, payload.role_title,
+             payload.unit_id, payload.manager_principal_id, payload.enabled),
+        )
+        audit(db, str(uuid4()), "organization.profile_declared", payload.model_dump())
+    return payload.model_dump()
+
+
 @app.get("/v1/organization")
 def organization(principal: str = Depends(read_principal)):
     """Read-only office projection from persisted principals, work, and executions.
@@ -582,6 +667,31 @@ def organization(principal: str = Depends(read_principal)):
 
         projects_by_id = {str(row[0]): row[1] for row in projects_rows}
         project_ids = list(projects_by_id)
+        profile_query = (
+            "SELECT p.principal_id,p.display_name,p.role_title,p.unit_id,p.manager_principal_id "
+            "FROM organization_profiles p WHERE p.enabled ORDER BY p.principal_id"
+            if principal is _CEO_PRINCIPAL else
+            "SELECT p.principal_id,p.display_name,p.role_title,p.unit_id,p.manager_principal_id "
+            "FROM organization_profiles p WHERE p.enabled AND p.principal_id=%s"
+        )
+        profile_rows = db.execute(
+            profile_query, () if principal is _CEO_PRINCIPAL else (str(principal),),
+        ).fetchall()
+        profile_by_id = {str(row[0]): row[1:] for row in profile_rows}
+        visible_unit_ids = {str(row[3]) for row in profile_rows if row[3] is not None}
+        if principal is _CEO_PRINCIPAL:
+            unit_rows = db.execute(
+                "SELECT id,name,code,parent_id,lead_principal_id FROM organization_units "
+                "WHERE enabled ORDER BY id"
+            ).fetchall()
+        elif visible_unit_ids:
+            unit_rows = db.execute(
+                "SELECT id,name,code,parent_id,lead_principal_id FROM organization_units "
+                "WHERE enabled AND id=ANY(%s) ORDER BY id", (list(visible_unit_ids),)
+            ).fetchall()
+        else:
+            unit_rows = []
+        unit_by_id = {str(row[0]): row for row in unit_rows}
         units = [{
             "id": "unit-unassigned", "name": "Adscripción desconocida",
             "code": "UNKNOWN", "parentId": None, "leadRole": "Desconocido",
@@ -589,9 +699,27 @@ def organization(principal: str = Depends(read_principal)):
             "description": "Agrupación visual; no representa un departamento persistido.",
             "standingCount": 0, "ephemeralCount": 0, "activeProjectsCount": 0,
         }]
+        units.extend({
+            "id": str(row[0]), "name": row[1], "code": row[2],
+            "parentId": row[3], "leadAgentId": row[4],
+            "leadRole": "Responsable declarado" if row[4] else "Sin responsable declarado",
+            "description": "Unidad organizativa declarada por CEO.",
+            "standingCount": 0, "ephemeralCount": 0, "activeProjectsCount": 0,
+        } for row in unit_rows)
         if not project_ids:
-            return {"units": units, "agents": [], "totalStandingAgents": 0,
-                    "totalEphemeralAgents": 0, "totalUnknownAgents": 0,
+            agents = [{
+                "id": principal_id, "name": profile[0], "type": "UNKNOWN",
+                "roleTitle": profile[1], "unitId": str(profile[2]) if profile[2] else "unit-unassigned",
+                "unitName": unit_by_id[str(profile[2])][1] if profile[2] and str(profile[2]) in unit_by_id else "Adscripción desconocida",
+                "managerId": profile[3], "capabilities": [], "heartbeatStatus": "UNKNOWN",
+                "lastHeartbeatAt": None, "status": "UNKNOWN", "operationalState": "REGISTRADO",
+                "currentAssignments": [], "executionHistory": [],
+                "authorityBoundary": "El perfil organizativo no concede permisos.",
+                "isSyntheticDemo": False, "evidenceDescription": "Perfil organizativo persistido.",
+                "lastEvidenceAt": None,
+            } for principal_id, profile in profile_by_id.items()]
+            return {"units": units, "agents": agents, "totalStandingAgents": 0,
+                    "totalEphemeralAgents": 0, "totalUnknownAgents": len(agents),
                     "activeAssignmentsCount": 0,
                     "coverage": {"totalProjects": 0, "inspectedProjects": 0,
                                  "failedProjects": 0, "isPartial": False}}
@@ -687,6 +815,26 @@ def organization(principal: str = Depends(read_principal)):
             "isSyntheticDemo": False,
             "evidenceDescription": "Principal autenticado por credencial individual activa.",
             "lastEvidenceAt": None,
+        })
+    for profile_id, profile in profile_by_id.items():
+        agent = agents.setdefault(profile_id, {
+            "id": profile_id, "name": profile_id, "type": "UNKNOWN",
+            "roleTitle": "Principal registrado", "unitId": "unit-unassigned",
+            "unitName": "Adscripción desconocida", "capabilities": [],
+            "heartbeatStatus": "UNKNOWN", "lastHeartbeatAt": None,
+            "status": "UNKNOWN", "operationalState": "REGISTRADO",
+            "currentAssignments": [], "executionHistory": [],
+            "authorityBoundary": "El perfil organizativo no concede permisos.",
+            "isSyntheticDemo": False,
+            "evidenceDescription": "Perfil organizativo persistido.", "lastEvidenceAt": None,
+        })
+        unit_id = str(profile[2]) if profile[2] else None
+        agent.update({
+            "name": profile[0], "roleTitle": profile[1],
+            "unitId": unit_id if unit_id else "unit-unassigned",
+            "unitName": unit_by_id[unit_id][1] if unit_id and unit_id in unit_by_id else "Adscripción desconocida",
+            "managerId": profile[3],
+            "evidenceDescription": "Perfil organizativo persistido; actividad derivada de ejecuciones y revisiones.",
         })
     return {"units": units, "agents": list(agents.values()),
             "totalStandingAgents": 0, "totalEphemeralAgents": 0,

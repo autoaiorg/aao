@@ -25,6 +25,8 @@ Estado inicial de esta matriz: revisión base `95d8427cea3d5748ca7041ee054cfc99a
 | `cf8b3975c6ee52595d18ca45f5317f49eefce110` | PR #130 fusionada; F1 navegación desde asignación al Kanban del proyecto por su `projectId` | TypeScript y 139 tests frontend; CI de PR verde y CI de `main` verde en `cf8b397`; test `office.test.tsx` verifica el ID de proyecto; [PR #130](https://github.com/autoaiorg/aao/pull/130), [CI main](https://github.com/autoaiorg/aao/actions/runs/40231180714) | No independiente; no crea/edita trabajo, solo navega a datos ya existentes |
 | `06129d23f2b89ee3ba18fc95dc4cda621014055e` | PR #132 fusionada; F0 LIVE ahora falla cerrado ante fallo del contrato de organización en lugar de construir roster/unidades frontend | TypeScript, 136 tests frontend y build local; CI de PR verde y CI de `main` verde en [run 40232114992](https://github.com/autoaiorg/aao/actions/runs/40232114992); [PR #132](https://github.com/autoaiorg/aao/pull/132) | Sin perfiles persistidos de unidad/rol/responsable ni heartbeat; sin independiente |
 
+**En construcción (no fusionado):** rama `feat/persisted-org-profiles`. Incremento `015_organization_profiles.sql` y endpoints CEO-protegidos para declarar unidades/perfiles, proyectados por `/v1/organization` sin alterar grants. Evidencia local actual: dos pruebas PostgreSQL focalizadas, TypeScript y 136 tests frontend; CI pendiente. SHA se añadirá al fusionar; esta fila no implica certificación.
+
 ## Reglas de mantenimiento
 
 - Anotar SHA exacto y URL/artefacto de evidencia; actualizar solo criterios afectados por un cambio.

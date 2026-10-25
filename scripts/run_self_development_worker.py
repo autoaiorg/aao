@@ -25,7 +25,7 @@ class WorkerError(RuntimeError):
     pass
 
 
-def _read_agent_token() -> str:
+def _read_agent_token(name: str = AGENT_TOKEN_NAME) -> str:
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     if not runtime:
         raise WorkerError("XDG_RUNTIME_DIR is required")
@@ -34,7 +34,7 @@ def _read_agent_token() -> str:
         directory_info = directory.stat()
         if directory_info.st_uid != os.getuid() or stat.S_IMODE(directory_info.st_mode) & 0o077:
             raise WorkerError("XDG_RUNTIME_DIR must be owned by this user and private")
-        path = directory / AGENT_TOKEN_NAME
+        path = directory / name
         if path.is_symlink():
             raise WorkerError("agent token file must not be a symbolic link")
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))

@@ -957,4 +957,42 @@ def test_w2a_agent_run_produces_a_tested_candidate_retries_after_failure_and_is_
             "decision": "APPROVE", "candidate_sha": candidate_sha, "evidence": [evidence_ref]})
         assert approval.status_code == 201, approval.text
         assert approval.json()["status"] == "VERIFIED"
+
+        # W2b: a separate publisher (PM) principal pushes exactly the approved SHA and opens the PR.
+        from aao.pr_publisher import PublishError, publish
+        publisher_id = "w2b-pm-" + str(uuid4())
+        publisher = client.post("/v1/principals/credentials", headers=ceo,
+                                json={"principal_id": publisher_id, "kind": "AGENT"}).json()["token"]
+        remote = tmp_path / "github.git"  # stands in for GitHub; it already has the base, like the real fork
+        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+        subprocess.run(["git", "--git-dir", str(remote), "config", "receive.shallowUpdate", "true"], check=True)
+        subprocess.run(["git", "-C", str(repo), "push", "-q", str(remote), "HEAD:refs/heads/main"], check=True)
+        opened = []
+
+        def push(sha, branch):
+            subprocess.run(["git", "--git-dir", str(store), "push", "-q", str(remote), f"{sha}:refs/heads/{branch}"], check=True)
+
+        def open_pr(branch, title, body):
+            opened.append((branch, title, body))
+            return {"number": 7, "url": "https://github.invalid/autoaiorg/aao/pull/7"}
+
+        with pytest.raises(PublishError, match="Project grant required"):
+            publish(work, publisher, store=store, push=push, open_pr=open_pr)
+        assert client.post(f"/v1/projects/{project}/grants", headers=ceo,
+                           json={"principal_id": identity, "capability": "code.publish"}).status_code == 201
+        with pytest.raises(PublishError, match="cannot publish its own work"):
+            publish(work, token, store=store, push=push, open_pr=open_pr)
+        assert client.post(f"/v1/projects/{project}/grants", headers=ceo,
+                           json={"principal_id": publisher_id, "capability": "code.publish"}).status_code == 201
+        published = publish(work, publisher, store=store, push=push, open_pr=open_pr)
+        assert published["status"] == "PUBLISHED" and published["candidate_sha"] == candidate_sha
+        branch = published["branch"]
+        assert subprocess.run(["git", "--git-dir", str(remote), "rev-parse", f"refs/heads/{branch}"],
+                              capture_output=True, text=True, check=True).stdout.strip() == candidate_sha
+        assert opened == [(branch, "aao: Add a notes test", opened[0][2])] and candidate_sha in opened[0][2]
+        assert publish(work, publisher, store=store, push=push, open_pr=open_pr)["status"] == "ALREADY_PUBLISHED"
+        assert len(opened) == 1
+        board = client.get(f"/v1/projects/{project}/board", headers=agent).json()
+        prs = next(item for item in board if item["id"] == work)["pull_requests"]
+        assert [(pr["pr_number"], pr["candidate_sha"], pr["publisher"]) for pr in prs] == [(7, candidate_sha, publisher_id)]
     assert subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True, check=True).stdout == ""

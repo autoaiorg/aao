@@ -116,7 +116,7 @@ class PrincipalCredentialRequest(BaseModel):
 
 class GrantRequest(BaseModel):
     principal_id: str = Field(min_length=1)
-    capability: str = Field(pattern=r"^(?:work\.(?:create|admit|review|progress)|project\.read|execution\.claim|execution\.reconcile|effect\.(?:propose|reconcile)|evidence\.submit|code\.propose)$")
+    capability: str = Field(pattern=r"^(?:work\.(?:create|admit|review|progress)|project\.read|execution\.claim|execution\.reconcile|effect\.(?:propose|reconcile)|evidence\.submit|code\.(?:propose|publish))$")
     expires_at: datetime | None = None
 
     @field_validator("expires_at")
@@ -724,6 +724,13 @@ def board(project_id: str, principal: str = Depends(read_principal)):
                 "candidate_tree": validation_row[3],
                 "created_at": validation_row[4].isoformat(),
             })
+        prs_by_work: dict[str, list[dict]] = {}
+        for subject, details, created in db.execute(
+            "SELECT subject_id,details,created_at FROM events WHERE kind='work.pr_opened' "
+            "AND subject_id IN (SELECT id FROM work_items WHERE project_id=%s) ORDER BY created_at",
+            (project_id,),
+        ).fetchall():
+            prs_by_work.setdefault(str(subject), []).append({**details, "created_at": created.isoformat()})
         patches_by_work: dict[str, list[dict]] = {}
         for patch_row in patch_rows:
             proposal_id = str(patch_row[0])
@@ -739,7 +746,8 @@ def board(project_id: str, principal: str = Depends(read_principal)):
             {"id": r[0], "title": r[1], "status": r[2],
              "acceptance_criteria": r[3], "evidence": r[4],
              "executions": r[5], "reviews": reviews_by_work.get(str(r[0]), []),
-             "patch_proposals": patches_by_work.get(str(r[0]), [])}
+             "patch_proposals": patches_by_work.get(str(r[0]), []),
+             "pull_requests": prs_by_work.get(str(r[0]), [])}
             for r in rows
         ]
 

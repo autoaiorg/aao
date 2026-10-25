@@ -94,6 +94,13 @@ python scripts/self_development_cycle.py --project-id $P verify --work-id <id>  
 - el staging (`stage-agent-run`), que rechaza con 409 una capacidad cuyo backend no esté activado, aunque el router la haya recomendado;
 - el runner.
 
+**Presupuesto (I5):**
+- Cada capacidad puede declarar en su `model_profile` un coste estimado por intento: `cost_per_attempt_usd`.
+- Si el CEO fija `AAO_AGENT_DAILY_BUDGET_USD` en el proceso de la API, el router descarta los candidatos cuya estimación supere lo que queda del día. Ese saldo se calcula sumando los `execution.staged` del proyecto.
+- El staging rechaza con 409 (`budget.exceed`, acción reservada al CEO) el intento que no quepa. Nunca baja de modelo en silencio.
+- Si la variable no está fijada, no hay límite, pero la estimación se registra igualmente en el staging y en el resultado.
+- El coste real (tokens) **no se mide**: `codex exec --json` podría darlo, pero su formato no está verificado sin una ejecución autorizada.
+
 Para encolar una tarea con `--agent codex`, la variable tiene que estar también en el proceso de la API, no solo en el del worker. Sin ella, la API rechaza la tarea, y ese es el estado por defecto fuera de un piloto autorizado.
 
 Si el intento falla o se rechaza, se puede volver a encolar hasta llegar al límite. Al alcanzarlo, la API lo rechaza y decide el CEO. También rechaza con 409 («No progress») un intento nuevo cuando los dos últimos acabaron igual: mismo parche y mismo resultado o fallo. En ese caso decide el PM, que puede reformular la tarea como una nueva o pedir una resolución del CEO.

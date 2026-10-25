@@ -887,7 +887,7 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
                          "authority_boundary": "edits only a disposable clone; proposes, never applies or merges",
                          "compatible_roles": ["implementer"],
                          "model_profile": {"backend": "fixture", "provider": "fixture", "model": None,
-                                           "seats": ["patch.tests"]}},
+                                           "seats": ["patch.tests"], "cost_per_attempt_usd": 0.5}},
             "required_permissions": ["execution.claim", "code.propose"], "risks": ["agent edits a disposable clone"],
             "dependencies": [], "tests": ["tests/test_agent_runner.py"], "compatibility": {}, "evidence": ["repo source"],
         }
@@ -931,6 +931,15 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         assert run_one(identity, token, project_id=project, seconds=400)["status"] == "FAILED"
         # Recovery: the task can be re-run after a failed attempt.
         monkeypatch.setenv("AAO_AGENT_FIXTURE_PATCH", str(passing))
+        # I5: attempt 1 spent an estimated 0.5 today; with a daily budget of 0.9 another 0.5 does not fit. The
+        # router reports what is left and filters the candidate; staging refuses, leaving the excess to the CEO.
+        monkeypatch.setenv("AAO_AGENT_DAILY_BUDGET_USD", "0.9")
+        routed = client.post(f"/v1/work/{work}/route-model", headers=agent, json={"seat": "patch.tests"}).json()
+        assert routed["budget_left_usd"] == 0.4 and routed["capability_id"] is None
+        assert ["aao.agent-runner@1.0.0", "estimated cost 0.5 over budget left 0.4"] in routed["rejected"]
+        over = client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run)
+        assert over.status_code == 409 and "budget.exceed" in over.text
+        monkeypatch.setenv("AAO_AGENT_DAILY_BUDGET_USD", "100")
         restaged = client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run)
         assert restaged.status_code == 202, restaged.text
         assert restaged.json()["execution_id"] != staged.json()["execution_id"]

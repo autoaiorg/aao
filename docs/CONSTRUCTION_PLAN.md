@@ -6,7 +6,7 @@
 
 **Régimen:**
 - Claude, Codex y Antigravity trabajan como equipo constructor externo.
-- La integración es la ordinaria: el CEO fusiona.
+- Integración: desde el 2026-10-25, por instrucción del CEO, el equipo constructor fusiona sin revisión cualquier PR con la CI en verde mientras dure el desarrollo. Antes fusionaba el CEO.
 - Los controles de calidad son proporcionados: CI completo (compileall, ruff, pytest `-W error`) y una revisión de segunda línea en los cambios delicados.
 - No hay gates de gobierno por PR.
 - La certificación se hace sobre el candidato de traspaso: [criterios del §4](decisions/CEO-DEC-AAO-CONSTRUCTION-2026-10-25.md).

@@ -45,7 +45,8 @@ def run_one(worker_id: str, agent_credential: str, *, project_id: str, seconds: 
         backend = profile["backend"] if profile else os.getenv("AAO_AGENT_BACKEND", "codex")
         model = profile.get("model") if profile else None
         source = {"capability_id": selected["capability_id"], "capability_version": selected["version"],
-                  "backend_source": "capability" if profile else "environment"}
+                  "backend_source": "capability" if profile else "environment",
+                  "cost_estimate_usd": (profile or {}).get("cost_per_attempt_usd", 0)}
         if not row or str(row[3]) != worker_id:
             result = {"kind": selected["type"], "conclusion": "failure", "error": "assigned agent mismatch"}
         else:

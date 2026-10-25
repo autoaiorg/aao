@@ -1404,6 +1404,23 @@ def stage_repository_check(
 
 
 
+def _agent_budget_left(db, project_id) -> float | None:
+    """Daily agent budget the CEO set for this API (AAO_AGENT_DAILY_BUDGET_USD) minus today's estimated spend of
+    the project's staged agent attempts. None when no budget is set. An unreadable value fails closed (0)."""
+    raw = os.getenv("AAO_AGENT_DAILY_BUDGET_USD")
+    if raw is None:
+        return None
+    try:
+        budget = float(raw)
+    except ValueError:
+        budget = 0.0
+    spent = db.execute("SELECT coalesce(sum((e.details->>'cost_estimate_usd')::numeric),0) FROM events e "
+                       "JOIN execution_queue q ON q.id=e.subject_id WHERE e.kind='execution.staged' "
+                       "AND q.project_id=%s AND e.created_at >= date_trunc('day', now() AT TIME ZONE 'UTC') "
+                       "AT TIME ZONE 'UTC'", (project_id,)).fetchone()[0]
+    return round(budget - float(spent), 6)
+
+
 class RouteModelRequest(BaseModel):
     seat: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
     role: str = Field(default="implementer", pattern=r"^[a-z_]{1,32}$")
@@ -1429,13 +1446,15 @@ def route_model(work_id: str, payload: RouteModelRequest, principal: str = Depen
         candidates = [{"capability_id": r[0], "version": r[1], "compatible_roles": r[2] or [], "model_profile": r[3]}
                       for r in rows]
         activated = activated_backends()
+        budget_left = _agent_budget_left(db, project_id)
         decision = route(Requirements(seat=payload.seat, role=payload.role,
                                       exclude_providers=frozenset(payload.exclude_providers)),
-                         candidates, activated=activated)
+                         candidates, activated=activated, budget_left=budget_left)
         details = {"capability_id": decision.capability_id, "version": decision.version,
                    "reasons": list(decision.reasons), "rejected": [list(r) for r in decision.rejected],
                    "seat": payload.seat, "role": payload.role, "exclude_providers": payload.exclude_providers,
-                   "activated_backends": sorted(activated), "principal_id": principal, "execution_authorized": False}
+                   "activated_backends": sorted(activated), "budget_left_usd": budget_left,
+                   "principal_id": principal, "execution_authorized": False}
         audit(db, work_id, "model.routed", details)
     return details
 
@@ -1464,7 +1483,7 @@ def stage_agent_run(work_id: str, payload: AgentRunRequest, principal: str = Dep
             raise HTTPException(409, "Work not ready in active project")
         require_grant(db, principal, project_id, "work.admit")
         require_grant(db, principal, project_id, "execution.claim")
-        cap = db.execute("SELECT capability_type,status,contract->>'entrypoint',contract->'model_profile'->>'backend' FROM capability_versions WHERE project_id=%s AND capability_id=%s AND version=%s FOR SHARE", (project_id, payload.capability_id, payload.version)).fetchone()
+        cap = db.execute("SELECT capability_type,status,contract->>'entrypoint',contract->'model_profile'->>'backend',coalesce((contract->'model_profile'->>'cost_per_attempt_usd')::numeric,0) FROM capability_versions WHERE project_id=%s AND capability_id=%s AND version=%s FOR SHARE", (project_id, payload.capability_id, payload.version)).fetchone()
         if not cap or cap[0] != "agent" or cap[1] != "registered_local" or cap[2] != "aao.agent_runner:patch":
             raise HTTPException(409, "Selected agent-runner capability is unavailable")
         # Authorization is checked here on its own, whatever any routing recommendation said.
@@ -1493,7 +1512,14 @@ def stage_agent_run(work_id: str, payload: AgentRunRequest, principal: str = Dep
                           (work_id,)).fetchall()
         if len(last) == 2 and _attempt_outcome(last[0][0]) == _attempt_outcome(last[1][0]):
             raise HTTPException(409, "No progress: the last two agent attempts had the same outcome; PM decision required")
+        # Budget: going over it is reserved to the CEO (policy budget.exceed), never silently downgraded.
+        # ponytail: concurrent stagings in one project may both pass the check; per-project lock if that matters.
+        estimate = float(cap[4])
+        budget_left = _agent_budget_left(db, project_id)
+        if budget_left is not None and estimate > budget_left:
+            raise HTTPException(409, f"Daily agent budget exceeded (estimate {estimate}, left {budget_left}); "
+                                     "CEO decision required (budget.exceed)")
         execution_id = str(uuid4())
         db.execute("INSERT INTO execution_queue(id,work_id,project_id,status,input_json) VALUES (%s,%s,%s,'QUEUED',%s::jsonb)", (execution_id, work_id, project_id, json.dumps(job)))
-        audit(db, execution_id, "execution.staged", {"work_id": work_id, "capability_id": payload.capability_id, "version": payload.version, "base_sha": payload.base_sha})
+        audit(db, execution_id, "execution.staged", {"work_id": work_id, "capability_id": payload.capability_id, "version": payload.version, "base_sha": payload.base_sha, "cost_estimate_usd": estimate})
     return {"execution_id": execution_id, "status": "QUEUED", "capability_id": payload.capability_id, "version": payload.version}

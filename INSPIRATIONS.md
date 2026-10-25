@@ -32,13 +32,13 @@ Este fichero agradece a los proyectos de terceros que han influido en AAO y deja
 | Detectar bucles de un agente | `middleware/loopDetection.mjs` (llamadas repetidas a herramientas) | `stage_agent_run`: rechaza un intento nuevo si los dos últimos acabaron igual (mismo parche y mismo resultado). Se compara entre intentos, no entre llamadas a herramientas | #116 |
 | Roles de modelo (*seats*) y catálogo de modelos | `config/modelConfig.mjs` (`seat`, `getModelsBySeat`) | Bloque `model_profile` (backend, proveedor, modelo, seats) en el contrato de la capacidad `agent`, validado al registrarla. El worker ejecuta lo que dice la capacidad del job, no el entorno. El modelo es un dato del catálogo; registrar una capacidad no activa el proveedor | I3 |
 | Selección de modelo según la tarea | `router/intelligence-router.mjs` (puntuación por palabras clave) | `model_router.route()`: función pura sobre el catálogo que filtra por rol, seat, activación, proveedor excluido y disponibilidad, y elige la mayor calidad para el seat. Si hay empate, no recomienda. `POST /v1/work/{id}/route-model` registra `model.routed` sin autorizar nada, y el staging vuelve a comprobar la activación por su cuenta | I4 |
+| Presupuesto diario y comprobación previa a la llamada | `observability/costTracker.mjs` (`canAfford`), `intelligence/costGuardrail.mjs` | `cost_per_attempt_usd` en `model_profile`; presupuesto diario del CEO (`AAO_AGENT_DAILY_BUDGET_USD`); gasto estimado sumado desde los eventos `execution.staged` en PostgreSQL. El router filtra y el staging rechaza (`budget.exceed`). A diferencia de RONIN, no hay niveles con rebaja silenciosa: se para y decide el CEO | I5 |
 
-**Inspiraciones planificadas, sin implementar** (incrementos I5–I6 del análisis):
+**Inspiraciones planificadas, sin implementar** (incremento I6 del análisis):
 
 | Idea de RONIN | Origen en RONIN | Plan en AAO |
 |---|---|---|
-| Coste, límites y calidad por modelo en el catálogo | `config/modelConfig.mjs` (`cost`, `maxTokens`) | Ampliar `model_profile` con `quality`, `cost`, `limits` y `data_classes` para el router (I4/I5) |
-| Presupuesto por niveles y comprobación previa a la llamada | `observability/costTracker.mjs`, `intelligence/costGuardrail.mjs` | Filtro de presupuesto en el router y bloqueo en el staging, persistidos en PostgreSQL y sin rebajas silenciosas |
+| Límites y clases de datos por modelo | `config/modelConfig.mjs` (`maxTokens`) | Ampliar `model_profile` con `limits` y `data_classes` cuando haga falta (`quality` y `cost_per_attempt_usd` ya existen) |
 | Árbol de tareas y cronología del ciclo | `forge/forgeTaskTree.mjs`, `api/cycleManager.mjs`, `dashboard/index.html` | Presentación de los intentos en el Control Center sobre los datos que AAO ya persiste |
 
 Cuando alguna de estas ideas se implemente, la fila pasará a la tabla de inspiraciones implementadas con su PR.

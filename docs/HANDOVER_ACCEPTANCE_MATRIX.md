@@ -27,6 +27,7 @@ Estado inicial de esta matriz: revisión base `95d8427cea3d5748ca7041ee054cfc99a
 
 | `fecb34ea3e60c93eee6816e5af9840f8ebb84564` | PR #134 fusionada; perfiles/unidades organizativos persistidos, endpoints CEO-protegidos, proyección con visibilidad AGENT limitada a perfil propio | PostgreSQL suite: 650 passed localmente; CI de PR SUCCESS; CI de `main` SUCCESS en [run 40233270842](https://github.com/autoaiorg/aao/actions/runs/40233270842); [PR #134](https://github.com/autoaiorg/aao/pull/134) | Sin UI de edición del organigrama; jerarquía/rangos persisten pero la interfaz no permite gestionarlos aún; no independiente |
 | `a79b258a4795be99ef8fe39b93164af472be5f69` | Rama `feat/live-office-dynamic-org`: plano/sidebar/chips consumen unidades reales de `/v1/organization`; 3D fijo queda restringido a DEMO; preserva selección derivada de «sin adscripción» | PostgreSQL suite local: 650 passed; frontend TypeScript + 137 tests, build, `compileall`, Ruff, `pip check`, `git diff --check` pasan | PR/CI remotos aún no ejecutados; alcance parcial de la evolución de oficina; no auditoría independiente |
+| `16b9f0957268fd7012f4b0613bdf891aaa34b11f` | Rama `feat/office-org-profile-management`: formularios CEO LIVE para persistir unidades y perfiles mediante endpoints existentes; no altera grants ni trabajo | TypeScript, 139 pruebas frontend y build pasan; `OrganizationView` verifica controles solo al habilitarlos y adapter prueba rol CEO / `X-CEO-Token` | PR/CI remotos pendientes; no auditoría independiente |
 
 ## Reglas de mantenimiento
 

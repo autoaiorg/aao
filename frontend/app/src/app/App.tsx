@@ -352,6 +352,9 @@ export const App: React.FC = () => {
               }
             }
             onRefresh={handleRefresh}
+            canManageOrganization={origin === 'live' && role === 'CEO' && port instanceof HttpAaoLiveAdapter}
+            onSaveUnit={port instanceof HttpAaoLiveAdapter ? (input) => port.putOrganizationUnit(input) : undefined}
+            onSaveProfile={port instanceof HttpAaoLiveAdapter ? (input) => port.putOrganizationProfile(input) : undefined}
           />
         )}
 

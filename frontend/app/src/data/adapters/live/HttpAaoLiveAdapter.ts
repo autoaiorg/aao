@@ -13,6 +13,7 @@
  */
 
 import type { AaoReadPort } from '../../ports/AaoReadPort';
+import type { AaoOrganizationCommandPort, OrganizationProfileCommand, OrganizationUnitCommand } from '../../ports/AaoOrganizationCommandPort';
 import type {
   PrincipalSummary,
   ProjectSummary,
@@ -53,7 +54,7 @@ export interface HttpLiveAdapterConfig {
   requireAuth?: boolean;
 }
 
-export class HttpAaoLiveAdapter implements AaoReadPort {
+export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPort {
   private baseUrl: string;
   private timeoutMs: number;
   private getToken: () => string | null;
@@ -759,6 +760,28 @@ export class HttpAaoLiveAdapter implements AaoReadPort {
       };
     }
     return this.request('/v1/organization', OrganizationStructureSchema);
+  }
+
+  async putOrganizationUnit(input: OrganizationUnitCommand): Promise<DataState<unknown>> {
+    if (this.getAuthRole() !== 'CEO') {
+      return { kind: 'forbidden', reason: 'Solo la sesión CEO puede declarar unidades organizativas.' };
+    }
+    return this.request('/v1/organization/units', undefined, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+  }
+
+  async putOrganizationProfile(input: OrganizationProfileCommand): Promise<DataState<unknown>> {
+    if (this.getAuthRole() !== 'CEO') {
+      return { kind: 'forbidden', reason: 'Solo la sesión CEO puede declarar perfiles organizativos.' };
+    }
+    return this.request('/v1/organization/profiles', undefined, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
   }
 
   async getAgentDetails(agentId: string): Promise<DataState<AgentIdentity>> {

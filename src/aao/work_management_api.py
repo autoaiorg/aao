@@ -95,6 +95,7 @@ class WorkRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     author_id: str = Field(min_length=1)
     acceptance_criteria: list[str] = Field(min_length=1)
+    description: str = Field(default="", max_length=5000)
 
 
 class ReviewRequest(BaseModel):
@@ -169,6 +170,12 @@ class CapabilityEvaluationRequest(BaseModel):
     evidence: list[str] = Field(min_length=1, max_length=32)
     capability_id: str | None = Field(default=None, max_length=128)
     version: str | None = Field(default=None, max_length=64)
+
+
+class AgentRunRequest(BaseModel):
+    capability_id: str = Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9._-]+$")
+    version: str = Field(min_length=1, max_length=64)
+    base_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
 
 
 class RepositoryCheckRequest(BaseModel):
@@ -661,9 +668,9 @@ def create_work(project_id: str, payload: WorkRequest,
             raise HTTPException(409, "Project not active")
         require_grant(db, principal, project_id, "work.create")
         db.execute(
-            "INSERT INTO work_items(id,project_id,title,author_id,status,acceptance_criteria) "
-            "VALUES (%s,%s,%s,%s,'INBOX',%s::jsonb)",
-            (wid, project_id, payload.title, principal,
+            "INSERT INTO work_items(id,project_id,title,description,author_id,status,acceptance_criteria) "
+            "VALUES (%s,%s,%s,%s,%s,'INBOX',%s::jsonb)",
+            (wid, project_id, payload.title, payload.description, principal,
              json.dumps(payload.acceptance_criteria)),
         )
         audit(db, wid, "work.created", {"project_id": project_id})
@@ -951,76 +958,39 @@ def progress(work_id: str, principal: str = Depends(require_worker)):
     return {"id": work_id, "status": next_state}
 
 
-@app.post("/v1/work/{work_id}/patch-proposals", status_code=201)
-def propose_patch(
-    work_id: str, payload: PatchProposalRequest,
-    principal: str = Depends(require_worker),
-):
-    """Persist a bounded proposal; validation and application are separate operations."""
+def persist_patch_proposal(work_id: str, principal: str, base_sha: str, patch: str) -> dict:
+    """Shared authorization and bounded persistence path for API and worker proposals."""
     from aao.patch_proposals import PatchProposalError, inspect_patch
-
+    try:
+        proposal = inspect_patch(patch)
+    except PatchProposalError as exc:
+        raise HTTPException(422, str(exc)) from exc
     with tx() as db:
-        work = db.execute(
-            "SELECT project_id,status,author_id FROM work_items WHERE id=%s",
-            (work_id,),
-        ).fetchone()
+        work = db.execute("SELECT project_id,status,author_id FROM work_items WHERE id=%s FOR UPDATE", (work_id,)).fetchone()
         if not work:
             raise HTTPException(404, "Work not found")
         project_id, status, author_id = work
         require_grant(db, principal, project_id, "code.propose")
-        if status != "IN_PROGRESS" or author_id != principal:
-            raise HTTPException(409, "Only the assigned agent may propose a patch for in-progress work")
-        active = db.execute(
-            "SELECT state FROM projects WHERE id=%s", (project_id,),
-        ).fetchone()
-        if not active or active[0] != "ACTIVE":
-            raise HTTPException(409, "Project is not active")
-
-    try:
-        proposal = inspect_patch(payload.patch)
-    except PatchProposalError as exc:
-        raise HTTPException(422, str(exc)) from exc
-
-    proposal_id = str(uuid4())
-    with tx() as db:
-        locked = db.execute(
-            "SELECT project_id,status,author_id FROM work_items WHERE id=%s FOR UPDATE",
-            (work_id,),
-        ).fetchone()
-        if not locked:
-            raise HTTPException(404, "Work not found")
-        current_project, current_status, current_author = locked
-        require_grant(db, principal, current_project, "code.propose")
-        current_active = db.execute(
-            "SELECT state FROM projects WHERE id=%s FOR SHARE", (current_project,),
-        ).fetchone()
-        if (current_project != project_id or current_status != "IN_PROGRESS"
-                or current_author != principal or not current_active
-                or current_active[0] != "ACTIVE"):
-            raise HTTPException(409, "Work authorization or state changed during patch validation")
+        active = db.execute("SELECT state FROM projects WHERE id=%s FOR SHARE", (project_id,)).fetchone()
+        if status != "IN_PROGRESS" or author_id != principal or not active or active[0] != "ACTIVE":
+            raise HTTPException(409, "Only the assigned agent may propose a patch for in-progress work in an active project")
+        proposal_id = str(uuid4())
         inserted = db.execute(
-            "INSERT INTO patch_proposals(id,work_id,project_id,proposer_id,base_sha,"
-            "patch_sha256,patch_bytes,changed_paths) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb) "
-            "ON CONFLICT (work_id,base_sha,patch_sha256) DO NOTHING RETURNING id",
-            (proposal_id, work_id, project_id, principal, payload.base_sha,
-             proposal["patch_sha256"], payload.patch.encode("utf-8"),
-             json.dumps(proposal["changed_paths"])),
+            "INSERT INTO patch_proposals(id,work_id,project_id,proposer_id,base_sha,patch_sha256,patch_bytes,changed_paths) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb) ON CONFLICT (work_id,base_sha,patch_sha256) DO NOTHING RETURNING id",
+            (proposal_id, work_id, project_id, principal, base_sha, proposal["patch_sha256"], patch.encode("utf-8"), json.dumps(proposal["changed_paths"])),
         ).fetchone()
         if not inserted:
             raise HTTPException(409, "Identical patch proposal already exists")
-        audit(db, work_id, "work.patch_proposed", {
-            "proposal_id": proposal_id, "proposer": principal,
-            "base_sha": payload.base_sha,
-            "patch_sha256": proposal["patch_sha256"],
-            "changed_paths": proposal["changed_paths"],
-        })
-    return {
-        "proposal_id": proposal_id, "work_id": work_id,
-        "status": "PROPOSED", "base_sha": payload.base_sha, **proposal,
-        "validated_in_disposable_clone": False,
-        "applied_to_canonical_checkout": False,
-    }
+        audit(db, work_id, "work.patch_proposed", {"proposal_id": proposal_id, "proposer": principal,
+            "base_sha": base_sha, "patch_sha256": proposal["patch_sha256"], "changed_paths": proposal["changed_paths"]})
+    return {"proposal_id": proposal_id, "work_id": work_id, "status": "PROPOSED", "base_sha": base_sha, **proposal,
+            "validated_in_disposable_clone": False, "applied_to_canonical_checkout": False}
+
+@app.post("/v1/work/{work_id}/patch-proposals", status_code=201)
+def propose_patch(work_id: str, payload: PatchProposalRequest, principal: str = Depends(require_worker)):
+    """Persist a bounded proposal; validation and application are separate operations."""
+    return persist_patch_proposal(work_id, principal, payload.base_sha, payload.patch)
 
 
 @app.post("/v1/work/{work_id}/patch-proposals/{proposal_id}/validate", status_code=201)
@@ -1348,3 +1318,36 @@ def stage_repository_check(
         })
     return {"execution_id": execution_id, "status": "QUEUED",
             "capability_id": payload.capability_id, "version": payload.version}
+
+
+@app.post("/v1/work/{work_id}/stage-agent-run", status_code=202)
+def stage_agent_run(work_id: str, payload: AgentRunRequest, principal: str = Depends(require_worker)):
+    if os.getenv("AAO_AGENT_QUEUE_ENABLED") != "true":
+        raise HTTPException(503, "Agent queue disabled")
+    job = {"type": "aao.agent-patch.v1", "capability_id": payload.capability_id,
+           "version": payload.version, "base_sha": payload.base_sha}
+    with tx() as db:
+        work = db.execute("SELECT project_id,status FROM work_items WHERE id=%s FOR UPDATE", (work_id,)).fetchone()
+        if not work:
+            raise HTTPException(404, "Work not found")
+        project_id, status = work
+        project = db.execute("SELECT state FROM projects WHERE id=%s FOR SHARE", (project_id,)).fetchone()
+        if not project or project[0] != "ACTIVE" or status != "READY":
+            raise HTTPException(409, "Work not ready in active project")
+        require_grant(db, principal, project_id, "work.admit")
+        require_grant(db, principal, project_id, "execution.claim")
+        cap = db.execute("SELECT capability_type,status,contract->>'entrypoint' FROM capability_versions WHERE project_id=%s AND capability_id=%s AND version=%s FOR SHARE", (project_id, payload.capability_id, payload.version)).fetchone()
+        if not cap or cap[0] != "agent" or cap[1] != "registered_local" or cap[2] != "aao.agent_runner:patch":
+            raise HTTPException(409, "Selected agent-runner capability is unavailable")
+        ev = db.execute("SELECT 1 FROM events WHERE subject_id=%s AND kind='capability.evaluated' AND details->>'capability_id'=%s AND details->>'version'=%s AND details->>'recommendation' IN ('reuse','adapt') LIMIT 1", (work_id, payload.capability_id, payload.version)).fetchone()
+        if not ev:
+            raise HTTPException(409, "Capability must be selected for this task before staging")
+        existing = db.execute("SELECT id,status,input_json FROM execution_queue WHERE work_id=%s", (work_id,)).fetchone()
+        if existing:
+            if existing[2] != job:
+                raise HTTPException(409, "A different execution is already recorded")
+            return {"execution_id": str(existing[0]), "status": existing[1]}
+        execution_id = str(uuid4())
+        db.execute("INSERT INTO execution_queue(id,work_id,project_id,status,input_json) VALUES (%s,%s,%s,'QUEUED',%s::jsonb)", (execution_id, work_id, project_id, json.dumps(job)))
+        audit(db, execution_id, "execution.staged", {"work_id": work_id, "capability_id": payload.capability_id, "version": payload.version, "base_sha": payload.base_sha})
+    return {"execution_id": execution_id, "status": "QUEUED", "capability_id": payload.capability_id, "version": payload.version}

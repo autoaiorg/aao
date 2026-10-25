@@ -23,7 +23,9 @@ El intento `040cdade` terminó en **FAILED**: «patch path is outside the allowe
 Cronología de la tarea 2 en la actividad (UTC):
 `work.created` 10:33:26 → `execution.claimed/completed` → `work.patch_proposed` → `work.reviewed` APPROVE 10:33:45 → `work.candidate_pushed` → `work.pr_opened` #104 10:34:00 → `work.pr_closed` 10:38:46 → (intentos 2 y 3) → `work.reviewed` APPROVE 16:22:30 → `work.candidate_pushed` → `work.pr_opened` #106 16:22:36.
 
-**Pendiente para cerrar el ciclo:** que el CEO fusione #106 con la CI en verde, y después ejecutar `publish_candidate.py --step reconcile`, que dejará la tarea en DONE con `work.completed` y el `merge_commit_sha`.
+**Cierre:** el CEO fusionó #106 (merge commit `e3ac7b07d9b73fa489aa75dbaa58f75204670576`, 2026-10-25 16:30:45 UTC). `publish_candidate.py --step reconcile` comprobó que la cabeza de la PR era el SHA aprobado `4256ebc`, dejó la tarea en **DONE** y registró `work.completed` (16:31:35 UTC). El Control Center lo muestra desde el mismo estado: la tarea en «Completado», los 3 intentos, las 2 aprobaciones y las PR #104 y #106 en el panel, y la cronología en *Actividad*.
+
+Antes de recomendar la fusión se comprobó también que `core-unit`, con la lista nueva de #106, pasa dentro de bwrap: 15 tests sobre `4256ebc` y 16 tests sobre #107 + #106. Así los futuros candidatos no fallan por la propia lista.
 
 ## Defectos encontrados por la operación real y corregidos
 

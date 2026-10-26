@@ -141,10 +141,10 @@ fi
 if [[ -n "$REV" && -f "$REPO_DIR/scripts/bootstrap/host_bootstrap.sh" ]]; then
   if [[ -n "${KEYS_DIR:-}" ]]; then
     say "Executing full verified host governance bootstrap (host_bootstrap.sh --keys-dir $KEYS_DIR)..."
-    bash "$REPO_DIR/scripts/bootstrap/host_bootstrap.sh" --rev "$REV" --ceo-user "$CEO_USER" --keys-dir "$KEYS_DIR" --apply
+    bash -p "$REPO_DIR/scripts/bootstrap/host_bootstrap.sh" --rev "$REV" --ceo-user "$CEO_USER" --keys-dir "$KEYS_DIR" --apply
   else
     say "Verifying host governance configuration (dry-run preflight without production keys)..."
-    bash "$REPO_DIR/scripts/bootstrap/host_bootstrap.sh" --rev "$REV" --ceo-user "$CEO_USER"
+    bash -p "$REPO_DIR/scripts/bootstrap/host_bootstrap.sh" --rev "$REV" --ceo-user "$CEO_USER"
   fi
 fi
 

@@ -3,19 +3,24 @@
 
 The agent bearer is read only from its private runtime file, never from argv,
 environment, or interactive output. Queue authorization remains enforced by
-the PostgreSQL execution queue; only its fixed inert/repository-check adapters
-are available. One-shot behavior is the default; --watch polls the same
-agent-scoped queue without admitting or staging work.
+the PostgreSQL execution queue; only its fixed registered adapters are
+available. One-shot behavior is the default; --watch polls the same
+agent-scoped queue. Optional --dispatch requests one assigned, pre-evaluated
+task through the API's existing admission and staging controls.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import signal
 import stat
 import sys
 import threading
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +29,13 @@ AGENT_TOKEN_NAME = "aao-self-development-agent.token"
 MAX_LEASE_SECONDS = 1800  # agent run plus candidate checks
 DEFAULT_POLL_INTERVAL_SECONDS = 5.0
 MAX_POLL_INTERVAL_SECONDS = 300.0
+
+
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    """Do not forward an agent credential to a redirect target."""
+
+    def redirect_request(self, _request, _response, _code, _message, _headers, _new_url):
+        return None
 
 
 class WorkerError(RuntimeError):
@@ -84,6 +96,40 @@ def run(project_id: str, principal_id: str) -> dict:
         del token
 
 
+def dispatch_next(project_id: str, principal_id: str, base_sha: str) -> dict:
+    """Ask AAO to dispatch one assigned, already-evaluated item for this identity."""
+    if not project_id or not principal_id:
+        raise WorkerError("project and principal identifiers are required")
+    if len(base_sha) != 40 or any(char not in "0123456789abcdef" for char in base_sha):
+        raise WorkerError("base SHA must be a lowercase 40-character commit hash")
+    api_base = os.environ.get("AAO_API_BASE_URL", "http://127.0.0.1:8001").rstrip("/")
+    parsed = urllib.parse.urlparse(api_base)
+    local_hosts = {"localhost", "127.0.0.1", "::1"}
+    if parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in local_hosts):
+        raise WorkerError("AAO_API_BASE_URL must use HTTPS unless it targets localhost")
+    if parsed.username or parsed.password or not parsed.hostname:
+        raise WorkerError("AAO_API_BASE_URL must not contain credentials")
+    token = _read_agent_token()
+    request = urllib.request.Request(
+        f"{api_base}/v1/agent/dispatch-next",
+        data=json.dumps({"project_id": project_id, "principal_id": principal_id,
+                         "base_sha": base_sha}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "X-Agent-Token": token},
+        method="POST",
+    )
+    try:
+        opener = urllib.request.build_opener(_RejectRedirects)
+        with opener.open(request, timeout=10) as response:
+            payload = json.loads(response.read(65536))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        raise WorkerError(f"AAO dispatch request failed ({type(exc).__name__})") from None
+    finally:
+        del token
+    if not isinstance(payload, dict) or payload.get("status") not in {"IDLE", "BLOCKED", "QUEUED"}:
+        raise WorkerError("AAO dispatch response did not match the expected contract")
+    return payload
+
+
 def run_watch(
     project_id: str,
     principal_id: str,
@@ -91,11 +137,14 @@ def run_watch(
     poll_interval_seconds: float,
     stop_event: threading.Event,
     wait=None,
+    dispatch: bool = False,
+    base_sha: str | None = None,
 ) -> int:
     """Poll only this agent's already staged execution queue until stopped.
 
-    Work admission and staging remain explicit operations performed under the
-    assigned agent identity. This loop only invokes the existing one-shot worker.
+    Optional dispatch stays bound to the assigned agent credential and the
+    API rechecks the existing admission/staging controls. The loop then invokes
+    the existing one-shot queue worker.
     """
     if not project_id or not principal_id:
         raise WorkerError("project and principal identifiers are required")
@@ -105,6 +154,14 @@ def run_watch(
         )
     wait = wait or stop_event.wait
     while not stop_event.is_set():
+        if dispatch:
+            if not base_sha:
+                raise WorkerError("--base-sha is required with --dispatch")
+            dispatched = dispatch_next(project_id, principal_id, base_sha)
+            if dispatched.get("status") == "QUEUED":
+                print(f"Dispatched work {dispatched.get('work_id')}: {dispatched.get('execution_id')}")
+            elif dispatched.get("status") == "BLOCKED":
+                print(f"Dispatch blocked for {dispatched.get('work_id')}: {dispatched.get('reason')}", file=sys.stderr)
         result = run(project_id, principal_id)
         status = result.get("status", "UNKNOWN")
         if status not in {"IDLE", "SUCCEEDED"}:
@@ -129,10 +186,18 @@ def main() -> int:
     parser.add_argument("--principal-id", required=True)
     parser.add_argument("--watch", action="store_true",
                         help="poll the assigned agent's already staged execution queue")
+    parser.add_argument("--dispatch", action="store_true",
+                        help="also dispatch one of this agent's assigned, already-evaluated tasks")
+    parser.add_argument("--base-sha",
+                        help="explicit repository base SHA required with --dispatch")
     parser.add_argument("--poll-interval-seconds", type=float,
                         default=DEFAULT_POLL_INTERVAL_SECONDS,
                         help="watch-mode idle polling interval (default: 5; maximum: 300)")
     args = parser.parse_args()
+    if args.dispatch and not args.base_sha:
+        parser.error("--dispatch requires --base-sha")
+    if args.base_sha and not args.dispatch:
+        parser.error("--base-sha requires --dispatch")
     try:
         import psycopg
     except ImportError:
@@ -155,10 +220,18 @@ def main() -> int:
                     args.principal_id,
                     poll_interval_seconds=args.poll_interval_seconds,
                     stop_event=stop_event,
+                    dispatch=args.dispatch,
+                    base_sha=args.base_sha,
                 )
             finally:
                 for signum, handler in previous_handlers.items():
                     signal.signal(signum, handler)
+        if args.dispatch:
+            dispatched = dispatch_next(args.project_id, args.principal_id, args.base_sha)
+            if dispatched["status"] == "BLOCKED":
+                print(f"Dispatch blocked for {dispatched.get('work_id')}: {dispatched.get('reason')}", file=sys.stderr)
+            elif dispatched["status"] == "QUEUED":
+                print(f"Dispatched work {dispatched.get('work_id')}: {dispatched.get('execution_id')}")
         result = run(args.project_id, args.principal_id)
     except (OSError, RuntimeError, ValueError, psycopg.Error) as exc:
         # Do not print exception text: a driver or configuration exception can

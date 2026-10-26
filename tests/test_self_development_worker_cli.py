@@ -1,3 +1,5 @@
+import io
+import json
 import os
 import stat
 import threading
@@ -136,6 +138,32 @@ def test_watch_mode_stops_on_non_success_result(monkeypatch):
     assert waits == []
 
 
+def test_watch_dispatches_before_consuming_the_persistent_queue(monkeypatch):
+    stop = threading.Event()
+    calls = []
+
+    def dispatch(project_id, principal_id, base_sha):
+        calls.append(("dispatch", project_id, principal_id, base_sha))
+        return {"status": "QUEUED", "work_id": "work-1", "execution_id": "exec-1"}
+
+    def run_once(project_id, principal_id):
+        calls.append(("run", project_id, principal_id))
+        stop.set()
+        return {"status": "SUCCEEDED", "execution_id": "exec-1"}
+
+    monkeypatch.setattr(worker, "dispatch_next", dispatch)
+    monkeypatch.setattr(worker, "run", run_once)
+
+    assert worker.run_watch(
+        "project-1", "agent-1", poll_interval_seconds=5, stop_event=stop,
+        dispatch=True, base_sha="b" * 40,
+    ) == 0
+    assert calls == [
+        ("dispatch", "project-1", "agent-1", "b" * 40),
+        ("run", "project-1", "agent-1"),
+    ]
+
+
 def test_watch_poll_interval_is_bounded():
     stop = threading.Event()
     with pytest.raises(worker.WorkerError, match="poll interval"):
@@ -169,12 +197,15 @@ def test_cli_watch_mode_installs_signal_stop_and_restores_handlers(monkeypatch):
     )
     observed = {}
 
-    def fake_watch(project_id, principal_id, *, poll_interval_seconds, stop_event):
+    def fake_watch(project_id, principal_id, *, poll_interval_seconds, stop_event,
+                   dispatch, base_sha):
         observed.update(
             project_id=project_id,
             principal_id=principal_id,
             interval=poll_interval_seconds,
             event=stop_event,
+            dispatch=dispatch,
+            base_sha=base_sha,
         )
         installed[signal.SIGTERM](signal.SIGTERM, None)
         assert stop_event.is_set()
@@ -185,4 +216,59 @@ def test_cli_watch_mode_installs_signal_stop_and_restores_handlers(monkeypatch):
     assert observed["project_id"] == "p"
     assert observed["principal_id"] == "a"
     assert observed["interval"] == 2.5
+    assert observed["dispatch"] is False
+    assert observed["base_sha"] is None
     assert installed == old_handlers
+
+
+def test_dispatch_sends_agent_token_only_to_local_api(tmp_path, monkeypatch):
+    runtime, _ = make_runtime(tmp_path)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setattr(worker.os, "getuid", lambda: os.stat(runtime).st_uid)
+    captured = {}
+
+    class Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    class Opener:
+        def open(self, request, timeout):
+            captured.update(url=request.full_url, headers=request.headers, body=request.data,
+                            timeout=timeout)
+            return Response(json.dumps({"status": "QUEUED", "execution_id": "e1",
+                                        "work_id": "w1"}).encode())
+
+    def fake_build_opener(handler):
+        captured["redirect_handler"] = handler
+        return Opener()
+
+    def unused_urlopen(*_args, **_kwargs):
+        pytest.fail("dispatch must use the no-redirect opener")
+
+    monkeypatch.setattr(worker.urllib.request, "urlopen", unused_urlopen)
+    monkeypatch.setattr(worker.urllib.request, "build_opener", fake_build_opener)
+
+    result = worker.dispatch_next("p1", "a1", "a" * 40)
+
+    assert result["status"] == "QUEUED"
+    assert captured["url"] == "http://127.0.0.1:8001/v1/agent/dispatch-next"
+    assert captured["headers"]["X-agent-token"] == "agent-token-fixture"
+    assert json.loads(captured["body"]) == {
+        "project_id": "p1", "principal_id": "a1", "base_sha": "a" * 40,
+    }
+    assert captured["timeout"] == 10
+    assert captured["redirect_handler"] is worker._RejectRedirects
+    assert worker._RejectRedirects().redirect_request(None, None, 302, "Found", {},
+                                                      "https://elsewhere.test/") is None
+
+
+def test_dispatch_rejects_plain_http_remote_and_bad_base_sha(monkeypatch):
+    monkeypatch.setenv("AAO_API_BASE_URL", "http://api.example.test")
+    with pytest.raises(worker.WorkerError, match="HTTPS"):
+        worker.dispatch_next("p", "a", "a" * 40)
+    monkeypatch.setenv("AAO_API_BASE_URL", "http://127.0.0.1:8001")
+    with pytest.raises(worker.WorkerError, match="base SHA"):
+        worker.dispatch_next("p", "a", "not-a-sha")

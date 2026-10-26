@@ -241,15 +241,10 @@ RELEASE_DIR="/opt/aao/releases/$RELEASE_ID"
 say "Step 3: Staging immutable versioned release to $RELEASE_DIR..."
 mkdir -p "$RELEASE_DIR" "/opt/aao/releases"
 
-# Copy cleanly into isolated release directory using tar stream
-tar -C "$REPO_DIR" \
-  --exclude=".git" \
-  --exclude=".worktrees" \
-  --exclude="node_modules" \
-  --exclude=".pytest_cache" \
-  --exclude="__pycache__" \
-  --exclude="*.pyc" \
-  -cf - . | tar -C "$RELEASE_DIR" -xf -
+# Export the exact, clean commit named by REV. This prevents dirty tracked code,
+# ignored secrets, and generated developer state from being mislabeled as a
+# reproducible release.
+bash "$SCRIPT_DIR/stage_release_source.sh" "$REPO_DIR" "$REV" "$RELEASE_DIR"
 
 say "Creating release-isolated Python virtual environment in $RELEASE_DIR/venv..."
 if [[ -d /opt/aao/base_venv ]]; then

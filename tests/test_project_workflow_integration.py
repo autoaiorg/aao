@@ -5,6 +5,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 from pathlib import Path
+from threading import Event
 from uuid import uuid4
 
 import pytest
@@ -661,11 +662,36 @@ def test_dependency_blocked_dispatch_is_persisted_and_resumes_after_prerequisite
         assert child["dependencies"] == [{"work_id": tasks["prerequisite"], "status": "INBOX"}]
         assert child["dispatch_block"]["reason"] == blocked.json()["reason"]
 
-        # Change only disposable fixture state. This is not evidence that the
-        # prerequisite was completed through its operational protocol.
+        # Force the dispatch query to overlap an uncommitted prerequisite
+        # completion. Its snapshot may safely see the old state and block; it
+        # must never stage while the completion is still uncommitted. This is
+        # database-fixture concurrency coverage, not an operational completion.
+        prerequisite_updated = Event()
+        dispatch_finished = Event()
+
+        def complete_prerequisite_fixture():
+            with connect_postgres() as db:
+                db.execute("UPDATE work_items SET status='DONE' WHERE id=%s",
+                           (tasks["prerequisite"],))
+                prerequisite_updated.set()
+                assert dispatch_finished.wait(timeout=5)
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            completion = executor.submit(complete_prerequisite_fixture)
+            assert prerequisite_updated.wait(timeout=5)
+            raced = client.post("/v1/agent/dispatch-next", headers=worker, json={
+                "project_id": project, "principal_id": worker_id, "base_sha": "a" * 40,
+            })
+            dispatch_finished.set()
+            completion.result(timeout=5)
+        assert raced.status_code == 202, raced.text
+        assert raced.json()["status"] == "BLOCKED"
+        assert raced.json()["reason"] == "Dependencies must be DONE before dispatch"
         with connect_postgres() as db:
-            db.execute("UPDATE work_items SET status='DONE' WHERE id=%s",
-                       (tasks["prerequisite"],))
+            assert db.execute(
+                "SELECT count(*) FROM execution_queue WHERE work_id=%s", (dependent_id,),
+            ).fetchone()[0] == 0
+
         unblocked = client.post("/v1/agent/dispatch-next", headers=worker, json={
             "project_id": project, "principal_id": worker_id, "base_sha": "a" * 40,
         })

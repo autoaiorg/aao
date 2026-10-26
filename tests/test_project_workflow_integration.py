@@ -1,6 +1,7 @@
 """PostgreSQL integration tests, opt-in for explicitly disposable databases."""
 import json
 import os
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
@@ -2988,10 +2989,21 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         remote_prs = {}
         push_calls = 0
         lost_pr_response = False
+        remote_state_path = tmp_path / "fake-github-state.json"
+        remote_state_path.write_text(json.dumps({"pull_requests": {}}))
+
+        def load_remote_state():
+            return json.loads(remote_state_path.read_text())
+
+        def save_remote_state(state):
+            remote_state_path.write_text(json.dumps(state, sort_keys=True))
 
         def push(sha, branch):
             nonlocal push_calls
             push_calls += 1
+            remote_state = load_remote_state()
+            remote_state["push_attempts"] = remote_state.get("push_attempts", 0) + 1
+            save_remote_state(remote_state)
             subprocess.run(["git", "--git-dir", str(store), "push", "-q", str(remote), f"{sha}:refs/heads/{branch}"], check=True)
             if push_calls == 1:
                 # Simulate GitHub accepting the ref update, then the client losing its response.
@@ -2999,17 +3011,23 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
 
         def open_pr(branch, title, body):
             nonlocal lost_pr_response
-            if branch in remote_prs:
+            remote_state = load_remote_state()
+            persisted_prs = remote_state.setdefault("pull_requests", {})
+            if branch in persisted_prs:
                 current_head = subprocess.run(["git", "--git-dir", str(remote), "rev-parse",
                                                f"refs/heads/{branch}"], capture_output=True,
                                               text=True, check=True).stdout.strip()
-                return {**remote_prs[branch], "head_sha": current_head}
+                return {**persisted_prs[branch], "head_sha": current_head}
             head = subprocess.run(["git", "--git-dir", str(remote), "rev-parse", f"refs/heads/{branch}"],
                                   capture_output=True, text=True, check=True).stdout.strip()
             if head != candidate_sha:
                 return {"number": 6, "url": "https://github.invalid/autoaiorg/aao/pull/6", "head_sha": head}
-            number = 7 + len(remote_prs)
-            result = {"number": number, "url": f"https://github.invalid/autoaiorg/aao/pull/{number}", "head_sha": head}
+            number = 7 + len(persisted_prs)
+            result = {"number": number, "url": f"https://github.invalid/autoaiorg/aao/pull/{number}",
+                      "head_sha": head, "title": title, "body": body}
+            persisted_prs[branch] = result
+            remote_state["pr_attempts"] = remote_state.get("pr_attempts", 0) + 1
+            save_remote_state(remote_state)
             remote_prs[branch] = result
             opened.append((branch, title, body))
             if not lost_pr_response:
@@ -3017,6 +3035,21 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
                 # Simulate PR creation succeeding remotely before the API response is lost.
                 raise TimeoutError("pull request response lost after remote acceptance")
             return result
+
+        def retry_in_fresh_process(step, credential):
+            child_env = os.environ.copy()
+            child_env["AAO_POSTGRES_URL"] = os.environ["AAO_TEST_POSTGRES_URL"]
+            child_env["AAO_ENV"] = "test"
+            child_env["AAO_TEST_RETRY_PUBLISHER_CREDENTIAL"] = credential
+            helper = Path(__file__).parent / "helpers" / "retry_publish_process.py"
+            completed = subprocess.run(
+                [sys.executable, str(helper), "--step", step, "--work-id", work,
+                 "--store", str(store), "--remote", str(remote), "--state", str(remote_state_path)],
+                check=False, capture_output=True, text=True, env=child_env,
+                cwd=Path(__file__).resolve().parents[1],
+            )
+            assert completed.returncode == 0, completed.stderr or completed.stdout
+            return json.loads(completed.stdout.strip().splitlines()[-1])
 
         with pytest.raises(PublishError, match="Project grant required"):
             push_candidate(work, pusher, store=store, push=push)
@@ -3074,10 +3107,12 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
                               (work,)).fetchone() == (0,)
             assert db.execute("SELECT count(*) FROM events WHERE subject_id=%s AND kind='work.candidate_push_uncertain'",
                               (work,)).fetchone() == (1,)
-        pushed = push_candidate(work, pusher, store=store, push=push)
+        pushed = retry_in_fresh_process("push", pusher)
         assert pushed["status"] == "PUSHED" and pushed["candidate_sha"] == candidate_sha
         assert pushed["operation_id"]
-        assert push_calls == 2
+        assert pushed["pid"] != os.getpid()
+        assert push_calls == 1
+        assert load_remote_state()["push_attempts"] == 2
         with connect_postgres() as db:
             uncertain_push = db.execute(
                 "SELECT details->>'operation_id' FROM events WHERE subject_id=%s "
@@ -3105,9 +3140,12 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
                               (work,)).fetchone() == (0,)
             assert db.execute("SELECT count(*) FROM events WHERE subject_id=%s AND kind='work.pr_open_uncertain'",
                               (work,)).fetchone() == (1,)
-        published = open_pull_request(work, publisher, open_pr=open_pr)
+        published = retry_in_fresh_process("open", publisher)
         assert published["status"] == "PUBLISHED" and published["pusher"] == pusher_id
         assert published["operation_id"]
+        assert published["pid"] != os.getpid()
+        assert len(load_remote_state()["pull_requests"]) == 1
+        assert load_remote_state()["pr_attempts"] == 1
         with connect_postgres() as db:
             uncertain_pr = db.execute(
                 "SELECT details->>'operation_id' FROM events WHERE subject_id=%s "

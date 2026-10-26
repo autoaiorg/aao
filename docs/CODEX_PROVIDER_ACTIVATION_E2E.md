@@ -87,6 +87,14 @@ AAO_PUBLISH_BASE_REPO=autoaiorg/aao python scripts/publish_candidate.py --work-i
 python scripts/self_development_cycle.py --project-id $P verify --work-id <id>   # cadena completa desde PostgreSQL
 ```
 
+El worker conserva ese comportamiento de una sola ejecución por defecto. `--watch`
+es un modo opt-in que consulta la misma cola cada 5 s (configurable hasta 300 s)
+y solo consume ejecuciones ya encoladas para esa identidad; no admite tareas ni
+las prepara. `SIGTERM`/`SIGINT` detienen nuevas consultas, pero no cancelan una
+ejecución que ya esté corriendo (su lease puede durar hasta 1800 s). El modo
+continuo no activa ni autoriza proveedores: no debe desplegarse con un proveedor
+habilitado fuera de un ensayo expresamente autorizado por el CEO.
+
 **Agente y modelo:** desde I3 los decide la capacidad elegida con `--agent`, no el entorno. `aao.agent-runner.codex` lleva en su `model_profile` el backend `codex`, el proveedor `openai` y el modelo `gpt-6-luna`; codex lo recibe como `-m`. La evidencia registra `capability_id`, `backend_source: capability`, proveedor, modelo y la versión real del CLI. Registrar la capacidad no activa nada: sin `AAO_AGENT_PROVIDER=codex` en el worker, el runner rechaza el backend. Las capacidades sin `model_profile` conservan el comportamiento anterior (`AAO_AGENT_BACKEND` y `AAO_AGENT_CODEX_MODEL`) y la evidencia lo indica como `backend_source: environment`.
 
 **Activación y router (I4):** `AAO_AGENT_PROVIDER` admite una lista separada por comas (`codex`, …) y lo comprueban tres puntos por separado:

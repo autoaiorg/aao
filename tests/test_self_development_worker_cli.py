@@ -1,5 +1,6 @@
 import os
 import stat
+import threading
 
 import pytest
 
@@ -85,3 +86,103 @@ def test_worker_error_output_does_not_include_exception_details(tmp_path, monkey
     output = capsys.readouterr().err
     assert "RuntimeError" in output
     assert "sensitive detail" not in output
+
+
+def test_watch_mode_repeats_until_stop_and_suppresses_idle_output(monkeypatch, capsys):
+    stop = threading.Event()
+    calls = []
+    waits = []
+
+    def run_once(project_id, principal_id):
+        calls.append((project_id, principal_id))
+        if len(calls) == 1:
+            return {"status": "IDLE"}
+        stop.set()
+        return {"status": "SUCCEEDED", "execution_id": "exec-2"}
+
+    monkeypatch.setattr(worker, "run", run_once)
+    assert (
+        worker.run_watch(
+            "project-1",
+            "agent-1",
+            poll_interval_seconds=3,
+            stop_event=stop,
+            wait=waits.append,
+        )
+        == 0
+    )
+
+    assert calls == [("project-1", "agent-1"), ("project-1", "agent-1")]
+    assert waits == [3]
+    assert capsys.readouterr().out == "Execution exec-2: SUCCEEDED\n"
+
+
+def test_watch_mode_stops_on_non_success_result(monkeypatch):
+    calls = []
+    waits = []
+    monkeypatch.setattr(worker, "run", lambda *_: calls.append(1) or {"status": "FAILED"})
+
+    assert (
+        worker.run_watch(
+            "p",
+            "a",
+            poll_interval_seconds=1,
+            stop_event=threading.Event(),
+            wait=waits.append,
+        )
+        == 1
+    )
+    assert calls == [1]
+    assert waits == []
+
+
+def test_watch_poll_interval_is_bounded():
+    stop = threading.Event()
+    with pytest.raises(worker.WorkerError, match="poll interval"):
+        worker.run_watch("p", "a", poll_interval_seconds=0, stop_event=stop)
+    with pytest.raises(worker.WorkerError, match="poll interval"):
+        worker.run_watch("p", "a", poll_interval_seconds=301, stop_event=stop)
+
+
+def test_cli_watch_mode_installs_signal_stop_and_restores_handlers(monkeypatch):
+    import signal
+
+    old_handlers = {signal.SIGTERM: object(), signal.SIGINT: object()}
+    installed = {}
+    monkeypatch.setattr(worker.signal, "getsignal", lambda signum: old_handlers[signum])
+    monkeypatch.setattr(
+        worker.signal, "signal", lambda signum, handler: installed.__setitem__(signum, handler)
+    )
+    monkeypatch.setattr(
+        worker.sys,
+        "argv",
+        [
+            "worker",
+            "--project-id",
+            "p",
+            "--principal-id",
+            "a",
+            "--watch",
+            "--poll-interval-seconds",
+            "2.5",
+        ],
+    )
+    observed = {}
+
+    def fake_watch(project_id, principal_id, *, poll_interval_seconds, stop_event):
+        observed.update(
+            project_id=project_id,
+            principal_id=principal_id,
+            interval=poll_interval_seconds,
+            event=stop_event,
+        )
+        installed[signal.SIGTERM](signal.SIGTERM, None)
+        assert stop_event.is_set()
+        return 0
+
+    monkeypatch.setattr(worker, "run_watch", fake_watch)
+    assert worker.main() == 0
+    assert observed["project_id"] == "p"
+    assert observed["principal_id"] == "a"
+    assert observed["interval"] == 2.5
+    assert installed == old_handlers

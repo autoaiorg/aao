@@ -34,6 +34,7 @@ export const OrganizationManagementPanel: React.FC<Props> = ({
   const [roleTitle, setRoleTitle] = useState('');
   const [profileUnitId, setProfileUnitId] = useState('');
   const [managerId, setManagerId] = useState('');
+  const [competencies, setCompetencies] = useState('');
   const [message, setMessage] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -105,7 +106,8 @@ export const OrganizationManagementPanel: React.FC<Props> = ({
           event.preventDefault();
           void runSave(() => onSaveProfile({
             principal_id: principalId.trim(), display_name: displayName.trim(), role_title: roleTitle.trim(),
-            unit_id: profileUnitId || null, manager_principal_id: managerId || null, enabled: true,
+            unit_id: profileUnitId || null, manager_principal_id: managerId || null,
+            competencies: competencies.split(',').map((value) => value.trim()).filter(Boolean), enabled: true,
           }));
         }}>
           <h4>Perfil de agente</h4>
@@ -113,7 +115,7 @@ export const OrganizationManagementPanel: React.FC<Props> = ({
             <input className="organization-management__control" required value={principalId} list="org-principal-ids" onChange={(event) => {
             setPrincipalId(event.target.value);
             const agent = agents.find((item) => item.id === event.target.value);
-            if (agent) { setDisplayName(agent.name); setRoleTitle(agent.roleTitle); setProfileUnitId(agent.unitId === 'unit-unassigned' ? '' : agent.unitId); setManagerId(agent.managerId || ''); }
+            if (agent) { setDisplayName(agent.name); setRoleTitle(agent.roleTitle); setProfileUnitId(agent.unitId === 'unit-unassigned' ? '' : agent.unitId); setManagerId(agent.managerId || ''); setCompetencies(agent.competencies?.join(', ') || ''); }
           }} />
             <datalist id="org-principal-ids">{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</datalist>
           </label>
@@ -130,6 +132,10 @@ export const OrganizationManagementPanel: React.FC<Props> = ({
               <option value="">Sin responsable declarado</option>
               {agents.filter((agent) => agent.id !== principalId).map((agent) => <option key={agent.id} value={agent.id}>{agent.name} ({agent.id})</option>)}
             </select>
+          </label>
+          <label className="organization-management__field organization-management__field--wide">Competencias declaradas (separadas por comas)
+            <input className="organization-management__control" maxLength={7000} value={competencies} onChange={(event) => setCompetencies(event.target.value)} aria-describedby="org-competencies-help" />
+            <small id="org-competencies-help">Metadatos declarados por CEO; informan sugerencias de asignación y no acreditan competencia ni conceden permisos.</small>
           </label>
           <div className="organization-management__submit"><Button type="submit" disabled={saving || !principalId.trim()}>Guardar perfil</Button></div>
         </form>

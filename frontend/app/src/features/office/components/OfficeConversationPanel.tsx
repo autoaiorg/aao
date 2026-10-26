@@ -19,6 +19,7 @@ interface WorkTaskDraft {
   acceptanceCriteria: string;
   dependsOn: string[];
   assignedPrincipalId: string;
+  suggestedPrincipalId?: string;
   dueDate: string;
 }
 
@@ -231,7 +232,8 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
         description: task.description,
         acceptanceCriteria: task.acceptance_criteria.join('\n'),
         dependsOn: task.depends_on,
-        assignedPrincipalId: '',
+        assignedPrincipalId: task.assigned_principal_id || '',
+        suggestedPrincipalId: task.assigned_principal_id || undefined,
         dueDate: task.due_date || '',
       })));
       setNextTaskNumber(proposal.tasks.length + 1);
@@ -423,14 +425,17 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
                       <label className="office-form-field">Fecha objetivo (opcional)
                         <input className="office-form-control" aria-label={`Fecha objetivo ${task.key}`} type="date" value={task.dueDate} onChange={(event) => updateWorkTask(task.key, { dueDate: event.target.value })} />
                       </label>
-                      <label className="office-form-field">Asignar a identidad autorizada (opcional)
+                      <label className="office-form-field">Asignación a identidad autorizada (opcional)
                         <select className="office-form-control" aria-label={`Asignar ${task.key}`} value={task.assignedPrincipalId}
                           onChange={(event) => updateWorkTask(task.key, { assignedPrincipalId: event.target.value })}>
                           <option value="">Sin asignar</option>
                           {assignableAgents.map((agent) => <option key={agent.principal_id} value={agent.principal_id}>
-                            {agent.display_name} ({agent.principal_id})
+                            {agent.display_name} ({agent.principal_id}){agent.competencies.length ? ` — ${agent.competencies.join(', ')}` : ''}
                           </option>)}
                         </select>
+                        {task.suggestedPrincipalId && task.assignedPrincipalId === task.suggestedPrincipalId && (
+                          <small>AAO lo sugiere según competencias declaradas; revisa y confirma la asignación.</small>
+                        )}
                       </label>
                       {index > 0 && (
                         <fieldset className="office-conversation-dependencies">

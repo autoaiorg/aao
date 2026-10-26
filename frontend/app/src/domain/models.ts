@@ -359,6 +359,7 @@ export interface AgentIdentity {
   type: AgentType;
   roleTitle: string;
   managerId?: string | null;
+  competencies?: string[];
   unitId: string;
   unitName?: string;
   capabilities: AgentCapability[];

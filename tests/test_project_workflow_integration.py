@@ -697,6 +697,26 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         assert recovered_row[2] is None and recovered_row[3] is None
         assert recovery_events == 1
 
+        eligible_worker = "conversation-worker-" + str(uuid4())
+        assert client.post("/v1/principals/credentials", headers=ceo, json={
+            "principal_id": eligible_worker, "kind": "AGENT",
+        }).status_code == 201
+        for capability in ("work.admit", "execution.claim"):
+            assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
+                "principal_id": eligible_worker, "capability": capability,
+            }).status_code == 201
+        profile = client.put("/v1/organization/profiles", headers=ceo, json={
+            "principal_id": eligible_worker, "display_name": "Declared backend agent",
+            "role_title": "Backend engineer", "competencies": ["PostgreSQL", "backend engineering"],
+        })
+        assert profile.status_code == 200, profile.text
+        eligible = client.get(f"/v1/projects/{project}/assignable-agents", headers=ceo)
+        assert eligible.status_code == 200
+        assert eligible.json() == [{
+            "principal_id": eligible_worker, "display_name": "Declared backend agent",
+            "competencies": ["PostgreSQL", "backend engineering"],
+        }]
+
         proposal_url = f"/v1/projects/{project}/conversations/{conversation_id}/work-group-proposals"
         proposal_calls = []
         proposal_json = json.dumps({
@@ -704,9 +724,11 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
             "acceptance_criteria": ["Results linked to evidence"],
             "tasks": [
                 {"key": "inspect", "title": "Inspect evidence", "description": "Review inputs",
-                 "acceptance_criteria": ["Evidence recorded"], "depends_on": []},
+                 "acceptance_criteria": ["Evidence recorded"], "depends_on": [],
+                 "assigned_principal_id": eligible_worker},
                 {"key": "summarize", "title": "Summarize", "description": "Consolidate results",
-                 "acceptance_criteria": ["Summary reviewed"], "depends_on": ["inspect"]},
+                 "acceptance_criteria": ["Summary reviewed"], "depends_on": ["inspect"],
+                 "assigned_principal_id": None},
             ],
         })
         def proposal_provider(messages):
@@ -725,6 +747,8 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         proposal_body = proposed.json()
         assert proposal_body["proposal"]["title"] == "Reviewed outcome"
         assert len(proposal_body["proposal"]["tasks"]) == 2
+        assert proposal_body["proposal"]["tasks"][0]["assigned_principal_id"] == eligible_worker
+        assert proposal_body["proposal"]["tasks"][1]["assigned_principal_id"] is None
         assert proposal_body["provider"] == "openai-compatible"
         assert proposal_body["model"] == "proposal-test-model"
         assert proposal_body["persisted_as_work"] is False
@@ -735,6 +759,19 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         assert any(item["content"] == turn["body"] for item in proposal_calls[0])
         assert any(item["content"] == "Conversación persistida." for item in proposal_calls[0])
         assert any(item["content"] == crashed_body for item in proposal_calls[0])
+        assert eligible_worker in proposal_calls[0][0]["content"]
+        assert "PostgreSQL" in proposal_calls[0][0]["content"]
+        monkeypatch.setattr(conversation_provider, "stream_reply", lambda _messages: iter([
+            json.dumps({
+                "title": "Invalid assignment", "description": "test",
+                "acceptance_criteria": ["No invalid identities"],
+                "tasks": [{"key": "task", "title": "Test", "description": "",
+                           "acceptance_criteria": ["Recorded"], "depends_on": [],
+                           "assigned_principal_id": "not-an-eligible-worker"}],
+            }),
+        ]))
+        invalid_assignment = client.post(proposal_url, headers=ceo)
+        assert invalid_assignment.status_code == 502
         assert any(item["content"] == "Recovered once." for item in proposal_calls[0])
         with connect_postgres() as db:
             work_count_after_proposal = db.execute(

@@ -1,0 +1,22 @@
+[Unit]
+Description=AAO supervisor authenticated GitHub push receipt receiver
+After=network-online.target local-fs.target systemd-tmpfiles-setup.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aao-supervisor
+Group=aao-supervisor
+UMask=0027
+ExecStart=/srv/aao/frozen/aao-supervisor/venv/bin/python -I -c "import sys; sys.path.insert(0, '/srv/aao/frozen/aao-supervisor/tree/src'); from aao.supervisor_service import main; sys.argv[0] = 'aao-supervisor'; sys.argv[1:] = ['webhook']; raise SystemExit(main())"
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/aao-supervisor/push-receipts
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

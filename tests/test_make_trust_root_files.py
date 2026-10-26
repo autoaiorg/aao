@@ -51,6 +51,10 @@ def test_generated_supervisor_config_loads(tmp_path):
     loaded = load_config(config, (os.getuid(),), (os.getuid(),))
     assert loaded["integrator_key_id"] == "k"
     assert loaded["push_principals"] == {"aao-impl-codex[bot]": "codex"}
+    assert loaded["push_receipts_dir"] == "/var/lib/aao-supervisor/push-receipts"
+    assert loaded["webhook_secret_path"] == "/etc/aao-supervisor/github-webhook.secret"
+    assert loaded["webhook_repositories"] == ["owner/project"]
+    assert loaded["webhook_bind"] == "127.0.0.1" and loaded["webhook_port"] == 8765
 
 
 def test_auditor_cannot_be_developer():

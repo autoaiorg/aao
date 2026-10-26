@@ -1,4 +1,4 @@
-# Plan de construcción de AAO (régimen CEO-DEC-AAO-CONSTRUCTION-2026-10-25)
+# Plan de construcción de AAO (CEO-DEC-AAO-CONSTRUCTION-2026-10-25 + Adenda 1)
 
 **Objetivo:** cumplir el criterio de éxito de [`CEO_MANDATE_AAO_SELF_DEVELOPMENT_20261019.md`](CEO_MANDATE_AAO_SELF_DEVELOPMENT_20261019.md). Un cambio pequeño, real y útil a AAO tiene que recorrer este camino, y el Control Center tiene que mostrarlo con el estado real del backend:
 
@@ -6,10 +6,10 @@
 
 **Régimen:**
 - Claude, Codex y Antigravity trabajan como equipo constructor externo.
-- Integración: desde el 2026-10-25, por instrucción del CEO, el equipo constructor fusiona sin revisión cualquier PR con la CI en verde mientras dure el desarrollo. Antes fusionaba el CEO.
+- Las PR ordinarias pueden fusionarse bajo el régimen de construcción vigente cuando la CI completa esté verde. Una PR que contenga decisiones reservadas al CEO no se fusiona solo por tener CI verde.
 - Los controles de calidad son proporcionados: CI completo (compileall, ruff, pytest `-W error`) y una revisión de segunda línea en los cambios delicados.
-- No hay gates de gobierno por PR.
-- La certificación se hace sobre el candidato de traspaso: [criterios del §4](decisions/CEO-DEC-AAO-CONSTRUCTION-2026-10-25.md).
+- Cada PR declara la fase y gate del modelo operativo al que contribuye.
+- No se ejecuta ahora el paquete de certificación ni se congela candidato. La evaluación de traspaso se hace una sola vez al final sobre el candidato.
 
 ## Estado de cada tramo (inventario del 2026-10-25, actualizado con W1 #100 y W2a)
 
@@ -38,18 +38,24 @@
 
 **Única decisión estratégica prevista:** para que W1 y W5 ejecuten un modelo real dentro de AAO hay que activar un proveedor de modelos, con su coste y sus credenciales. El mandato lo reserva al CEO («model/provider activation»). Se le planteará cuando W1 esté listo, sin bloquear su construcción.
 
-## Fuera de la construcción (se hará en el traspaso)
+## Alcance vigente tras la Adenda 1 (2026-10-26)
 
-Todo esto se hará sobre el candidato de aceptación:
-- separación de identidades de los agentes;
-- reglas del repositorio canónico;
-- actualización de la raíz de confianza;
-- ensayo P2/P3 completo y dictamen de equivalencia;
-- RA en PASS;
-- auditoría independiente;
-- activación del integrador.
+La tabla de tramos anterior es un inventario histórico del camino técnico; no amplía el alcance autorizado ni sustituye los estados actuales de [`HANDOVER_ACCEPTANCE_MATRIX.md`](HANDOVER_ACCEPTANCE_MATRIX.md).
 
-Los planes anteriores (M2-A en `CLOSURE_PLAN.md`, F4 en `F4_PENDING_WORK.md`) quedan como referencia de requisitos, no como orden de trabajo.
+- **Construcción externa:** completar la Fase 0; de las fases 1–4 construir solo lo mínimo para ejecutar el piloto §14 del [modelo operativo adoptado](architecture/AAO_ENTERPRISE_OPERATING_MODEL.md): organización piloto (Producto/Planificación, Ingeniería y Calidad, manteniendo Seguridad y Auditoría independientes), cinco protocolos mínimos, colaboración entre unidades y trazabilidad de extremo a extremo.
+- **Fase 0 incluye:** protección/autorización efectivas, evidencias reproducibles, identidades separadas, fail-closed y ciclo R1 demostrado o bloqueo explícitamente mantenido. Los pendientes operativos de host se resuelven con las identidades competentes; el constructor no suplanta esas cuentas.
+- **Fases 1–4:** no extender a toda la empresa ni construir un motor genérico de workflows. Los protocolos reutilizan trabajo, cola, eventos y journal; fijan versión por instancia y nunca conceden autoridad. Preservar organización, grants y núcleo de confianza ya existentes.
+- **Después del traspaso:** AAO completa el resto de fases bajo su propio gobierno.
+- **Independencia:** Codex no audita independientemente el candidato que construya. La revisión independiente final queda a cargo de Antigravity u otra persona no constructora.
+- **Ensayo R1:** solo dentro del ensayo de aceptación del piloto y con la autorización requerida; el integrador permanece OFF antes de ello.
+
+La certificación y los gates E-1/E-2 se evalúan al cierre sobre una única revisión candidata. No son una razón para detener cambios de construcción ordinarios ni para congelar un candidato antes de tiempo.
+
+### Incrementos en curso bajo este alcance
+
+- **Fase 0 / evidencias de identidad y protección:** B-2 tiene código de recibos durables fusionado en PR #253, pero falta despliegue operativo y recepción firmada real. W2 permanece pendiente del ejercicio CEO con las GitHub Apps bajo sus cuentas. La comprobación de rulesets sigue devolviendo cero; la protección corresponde al owner.
+- **Fases 1–4 / especificación previa a construcción:** `docs/proposals/MINIMUM_PROTOCOLS_PILOT_SPEC.md` documenta los cinco contratos del piloto, límites de autoridad, pinning propuesto por instancia y brechas verificadas contra `main` `818e8cf50baad8f9b2e5af8b69b75aaadba509ca`. Incluye la aceptación CEO de producto añadida en #259; sigue siendo borrador técnico: no es protocolo aprobado, no autoriza migración, ni cambia quién confirma o ejecuta operaciones.
+- **Siguiente secuencia:** cerrar la revisión de los contratos y de la identidad durable de instancia; luego implementar un protocolo concreto por incremento pequeño y reversible, con evidencia PostgreSQL/CI y su fase/gate en la PR. Las pruebas §14 se fijarán tras mapear sus inyecciones a los servicios reales; el caso de prioridad espera definición de dato y autoridad. No habilitar proveedor, R1 ni nuevas facultades por este trabajo.
 
 ## Operación real (2026-10-25)
 

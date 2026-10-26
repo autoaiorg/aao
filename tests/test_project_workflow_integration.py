@@ -964,6 +964,65 @@ def test_group_assignment_routes_execution_without_creating_grants(monkeypatch):
         complete(lease["execution_id"], lease["token"], worker_ids[0],
                  {"ok": True}, agent_credential=worker_tokens[0])
 
+        # A CEO-authored group child is implemented by its assigned principal.
+        from datetime import UTC, datetime, timedelta
+        expiry = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+        for worker_id in worker_ids:
+            assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
+                "principal_id": worker_id, "capability": "code.propose", "expires_at": expiry,
+            }).status_code == 201
+        assert client.post(f"/v1/work/{work_id}/progress", headers=workers[0]).status_code == 200
+        patch = ("diff --git a/tests/assigned.py b/tests/assigned.py\n"
+                 "new file mode 100644\n--- /dev/null\n+++ b/tests/assigned.py\n"
+                 "@@ -0,0 +1 @@\n+assert True\n")
+        path = f"/v1/work/{work_id}/patch-proposals"
+        payload = {"base_sha": "a" * 40, "patch": patch}
+        assert client.post(path, headers=workers[1], json=payload).status_code == 403
+        proposal = client.post(path, headers=workers[0], json=payload)
+        assert proposal.status_code == 201, proposal.text
+
+        from aao.inert_execution_worker import run_one
+        from aao.patch_proposals import inspect_patch
+
+        monkeypatch.setenv("AAO_AGENT_BACKEND", "fixture")
+        monkeypatch.setenv("AAO_SELF_DEV_REPOSITORY", "/unused/mock-repository")
+        monkeypatch.setenv("AAO_CANDIDATE_REPOSITORY", "/unused/mock-candidates")
+        calls = []
+
+        def run_patch(*args, **kwargs):
+            calls.append(kwargs)
+            return {"patch": patch, **inspect_patch(patch), "candidate_sha": "b" * 40,
+                    "candidate_ref": "refs/candidates/test", "check": {"conclusion": "success"},
+                    "backend": "fixture", "provider": None, "model": None,
+                    "backend_version": "test", "elapsed_seconds": 0, "exit_status": 0}
+
+        monkeypatch.setattr("aao.agent_runner.run_agent_patch", run_patch)
+        execution_id = str(uuid4())
+        with connect_postgres() as db:
+            db.execute(
+                "INSERT INTO execution_queue(id,work_id,project_id,status,input_json) "
+                "VALUES (%s,%s,%s,'QUEUED',%s::jsonb)",
+                (execution_id, work_id, project, json.dumps({
+                    "type": "aao.agent-patch.v1", "capability_id": "test-assignment",
+                    "version": "1.0.0", "base_sha": "a" * 40,
+                })),
+            )
+        assert run_one(worker_ids[1], worker_tokens[1], project_id=project, seconds=300) == {"status": "IDLE"}
+        outcome = run_one(worker_ids[0], worker_tokens[0], project_id=project, seconds=300)
+        assert outcome == {"status": "SUCCEEDED", "execution_id": execution_id}
+        assert len(calls) == 1
+        with connect_postgres() as db:
+            assert db.execute("SELECT author_id FROM work_items WHERE id=%s", (work_id,)).fetchone()[0] == "ceo"
+            assert db.execute(
+                "SELECT proposer_id FROM patch_proposals WHERE id=%s",
+                (proposal.json()["proposal_id"],),
+            ).fetchone()[0] == worker_ids[0]
+            stored = db.execute(
+                "SELECT worker_id,result_json FROM execution_queue WHERE id=%s", (execution_id,),
+            ).fetchone()
+            assert stored[0] == worker_ids[0]
+            assert stored[1]["proposal_id"] == proposal.json()["proposal_id"]
+
 
 @pytest.mark.skipif(
     not os.getenv("AAO_TEST_POSTGRES_URL") or

@@ -35,7 +35,13 @@ def run_one(worker_id: str, agent_credential: str, *, project_id: str, seconds: 
             tx,
         )
         with tx() as db:
-            row = db.execute("SELECT w.title,w.description,w.acceptance_criteria,w.author_id FROM work_items w JOIN execution_queue q ON q.work_id=w.id WHERE q.id=%s", (execution_id,)).fetchone()
+            row = db.execute(
+                "SELECT w.title,w.description,w.acceptance_criteria,"
+                "CASE WHEN w.parent_work_id IS NULL THEN w.author_id ELSE a.principal_id END "
+                "FROM work_items w JOIN execution_queue q ON q.work_id=w.id "
+                "LEFT JOIN work_item_assignments a ON a.project_id=w.project_id AND a.work_id=w.id "
+                "WHERE q.id=%s", (execution_id,),
+            ).fetchone()
             # The staged capability decides what runs; the environment is only the fallback for capabilities
             # registered without a model_profile.
             cap = db.execute("SELECT c.contract->'model_profile' FROM capability_versions c JOIN execution_queue q "

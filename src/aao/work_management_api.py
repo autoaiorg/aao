@@ -3828,13 +3828,18 @@ def persist_patch_proposal(work_id: str, principal: str, base_sha: str, patch: s
     except PatchProposalError as exc:
         raise HTTPException(422, str(exc)) from exc
     with tx() as db:
-        work = db.execute("SELECT project_id,status,author_id FROM work_items WHERE id=%s FOR UPDATE", (work_id,)).fetchone()
+        work = db.execute(
+            "SELECT project_id,status,author_id,parent_work_id FROM work_items WHERE id=%s FOR UPDATE",
+            (work_id,),
+        ).fetchone()
         if not work:
             raise HTTPException(404, "Work not found")
-        project_id, status, author_id = work
+        project_id, status, author_id, parent_work_id = work
         require_grant(db, principal, project_id, "code.propose")
         active = db.execute("SELECT state FROM projects WHERE id=%s FOR SHARE", (project_id,)).fetchone()
-        if status != "IN_PROGRESS" or author_id != principal or not active or active[0] != "ACTIVE":
+        require_group_work_assignee(db, work_id, principal)
+        if (status != "IN_PROGRESS" or (parent_work_id is None and author_id != principal)
+                or not active or active[0] != "ACTIVE"):
             raise HTTPException(409, "Only the assigned agent may propose a patch for in-progress work in an active project")
         proposal_id = str(uuid4())
         inserted = db.execute(

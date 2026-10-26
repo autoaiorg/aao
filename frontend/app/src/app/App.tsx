@@ -449,6 +449,7 @@ export const App: React.FC = () => {
               }}
               canCreateWorkRequest={origin === 'live' && role === 'CEO' && port instanceof HttpAaoLiveAdapter}
               capabilityReadPort={origin === 'live' ? port : undefined}
+              capabilityFeedbackPort={origin === 'live' && role === 'CEO' && port instanceof HttpAaoLiveAdapter ? port : undefined}
               activityReadPort={origin === 'live' ? port : undefined}
               knowledgeReadPort={origin === 'live' ? port : undefined}
               calendarReadPort={origin === 'live' ? port : undefined}

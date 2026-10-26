@@ -2,6 +2,7 @@ import type { DataState, OrganizationStructure, ProjectSummary } from '../../dom
 import type { CEOWorkRequest, CreatedWorkRequest } from '../../data/ports/AaoWorkCommandPort';
 import type { AaoConversationPort } from '../../data/ports/AaoConversationPort';
 import type { AaoReadPort } from '../../data/ports/AaoReadPort';
+import type { AaoCapabilityFeedbackPort } from '../../data/ports/AaoCapabilityFeedbackPort';
 
 export type OfficeViewMode = '3d' | '2d';
 
@@ -92,6 +93,7 @@ export interface VirtualOfficeViewProps {
   canCreateWorkRequest?: boolean;
   conversationPort?: AaoConversationPort;
   capabilityReadPort?: Pick<AaoReadPort, 'getProjectCapabilities'>;
+  capabilityFeedbackPort?: AaoCapabilityFeedbackPort;
   activityReadPort?: Pick<AaoReadPort, 'getProjectActivity'>;
   knowledgeReadPort?: Pick<AaoReadPort, 'getKnowledgeSourceIndex'>;
   calendarReadPort?: Pick<AaoReadPort, 'getProjectBoard'>;

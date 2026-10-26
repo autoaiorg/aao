@@ -15,6 +15,7 @@
 import type { AaoReadPort } from '../../ports/AaoReadPort';
 import type { AaoOrganizationCommandPort, OrganizationProfileCommand, OrganizationUnitCommand } from '../../ports/AaoOrganizationCommandPort';
 import type { AaoWorkCommandPort, CEOWorkRequest, CreatedWorkRequest } from '../../ports/AaoWorkCommandPort';
+import type { CapabilityFeedbackInput, CapabilityFeedbackProposal } from '../../ports/AaoCapabilityFeedbackPort';
 import type { AaoConversationPort, AssignableAgent, ConversationWorkGroupInput, ConversationWorkGroupProposal, ConversationWorkGroupResult, ConversationWorkRequestInput, ConversationWorkRequestResult, ProjectConversation, ProjectConversationMessage, ProjectWorkGroup, WorkGroupConsolidationResult } from '../../ports/AaoConversationPort';
 import type {
   PrincipalSummary,
@@ -656,6 +657,23 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
       })),
       fetchedAt: new Date().toISOString(),
     };
+  }
+
+  async listCapabilityFeedback(projectId: string): Promise<DataState<CapabilityFeedbackProposal[]>> {
+    if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede consultar propuestas de corrección.' };
+    return this.request(`/v1/projects/${encodeURIComponent(projectId)}/capability-feedback`, z.array(z.object({
+      id: z.string().uuid(), capability_id: z.string(), version: z.string(), work_id: z.string().uuid().nullable(),
+      correction: z.string(), evidence: z.array(z.string()), status: z.enum(['proposed', 'accepted', 'rejected']),
+      created_by: z.string(), created_at: z.string(), applied: z.literal(false),
+    })));
+  }
+
+  async proposeCapabilityFeedback(projectId: string, input: CapabilityFeedbackInput): Promise<DataState<Pick<CapabilityFeedbackProposal, 'id' | 'capability_id' | 'version' | 'work_id' | 'status' | 'applied'>>> {
+    if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede proponer correcciones.' };
+    return this.request(`/v1/projects/${encodeURIComponent(projectId)}/capability-feedback`, z.object({
+      id: z.string().uuid(), project_id: z.string().uuid(), capability_id: z.string(), version: z.string(),
+      work_id: z.string().uuid().nullable(), status: z.literal('proposed'), applied: z.literal(false),
+    }), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
   }
 
   async getProjectEvaluations(projectId: string): Promise<DataState<EvaluationSummary[]>> {

@@ -102,9 +102,10 @@ def test_context_endpoint_requires_owned_unexpired_lease_and_grant(monkeypatch):
 
 
 def test_proposal_lookup_is_limited_to_assigned_agent_with_grant(monkeypatch):
-    from aao.work_management_api import app
+    from aao.work_management_api import AuthenticatedPrincipal, app
 
-    monkeypatch.setattr("aao.work_management_api._authenticate_request_principal", lambda *_: "agent-1")
+    principal = AuthenticatedPrincipal("agent-1", "token-digest", "AGENT")
+    monkeypatch.setattr("aao.work_management_api._authenticate_request_principal", lambda *_: principal)
 
     class Result:
         def __init__(self, value):
@@ -129,8 +130,12 @@ def test_proposal_lookup_is_limited_to_assigned_agent_with_grant(monkeypatch):
 
     grants = []
     monkeypatch.setattr("aao.work_management_api.tx", fake_tx)
-    monkeypatch.setattr("aao.work_management_api.require_grant",
-                        lambda db, principal, project, grant: grants.append((principal, project, grant)))
+    monkeypatch.setattr(
+        "aao.work_management_api.require_grant",
+        lambda db, actual_principal, project, grant: grants.append(
+            (actual_principal, project, grant),
+        ),
+    )
     with TestClient(app) as client:
         headers = {"X-Agent-Token": "agent-token"}
         response = client.post("/v1/agent/work/work-1/patch-proposals/lookup", headers=headers,
@@ -141,5 +146,5 @@ def test_proposal_lookup_is_limited_to_assigned_agent_with_grant(monkeypatch):
         denied = client.post("/v1/agent/work/work-1/patch-proposals/lookup", headers=headers,
                              json={"base_sha": "a" * 40, "patch_sha256": "b" * 64})
         assert denied.status_code == 403
-    assert grants == [("agent-1", "project-1", "code.propose"),
-                      ("agent-1", "project-1", "code.propose")]
+    assert grants == [(principal, "project-1", "code.propose"),
+                      (principal, "project-1", "code.propose")]

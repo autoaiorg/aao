@@ -3844,7 +3844,7 @@ def lookup_agent_patch_proposal(
         if not work:
             raise HTTPException(404, "Work not found")
         project_id, author_id = work
-        require_grant(db, str(principal), str(project_id), "code.propose")
+        require_grant(db, principal, str(project_id), "code.propose")
         if str(author_id) != str(principal):
             raise HTTPException(403, "Only the assigned agent may inspect its proposal")
         row = db.execute(

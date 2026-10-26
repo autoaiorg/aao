@@ -144,7 +144,9 @@ def run_watch(
 
     Optional dispatch stays bound to the assigned agent credential and the
     API rechecks the existing admission/staging controls. The loop then invokes
-    the existing one-shot queue worker.
+    the existing one-shot queue worker. A terminal FAILED result in dispatch
+    mode returns to the API after the poll delay; retry limits, no-progress
+    detection and budgets remain enforced there. Uncertain outcomes stop.
     """
     if not project_id or not principal_id:
         raise WorkerError("project and principal identifiers are required")
@@ -169,8 +171,9 @@ def run_watch(
             if execution_id:
                 print(f"Execution {execution_id}: {status}", file=sys.stderr)
             else:
-                print(f"Worker stopped after status: {status}", file=sys.stderr)
-            return 1
+                print(f"Worker result: {status}", file=sys.stderr)
+            if not (dispatch and status == "FAILED"):
+                return 1
         if status == "SUCCEEDED" and result.get("execution_id"):
             print(f"Execution {result['execution_id']}: {status}")
         if stop_event.is_set():

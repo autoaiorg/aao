@@ -272,3 +272,69 @@ def test_dispatch_rejects_plain_http_remote_and_bad_base_sha(monkeypatch):
     monkeypatch.setenv("AAO_API_BASE_URL", "http://127.0.0.1:8001")
     with pytest.raises(worker.WorkerError, match="base SHA"):
         worker.dispatch_next("p", "a", "not-a-sha")
+
+
+def test_dispatch_watch_retries_failed_work_through_api_after_poll_delay(monkeypatch):
+    stop = threading.Event()
+    calls = []
+    attempts = iter(["FAILED", "SUCCEEDED"])
+
+    def dispatch(*_args):
+        calls.append("dispatch")
+        return {"status": "QUEUED"}
+
+    def run_once(*_args):
+        status = next(attempts)
+        calls.append(status)
+        if status == "SUCCEEDED":
+            stop.set()
+        return {"status": status, "execution_id": "e"}
+
+    monkeypatch.setattr(worker, "dispatch_next", dispatch)
+    monkeypatch.setattr(worker, "run", run_once)
+    assert worker.run_watch(
+        "p", "a", poll_interval_seconds=5, stop_event=stop,
+        wait=lambda seconds: calls.append(("wait", seconds)),
+        dispatch=True, base_sha="b" * 40,
+    ) == 0
+    assert calls == ["dispatch", "FAILED", ("wait", 5), "dispatch", "SUCCEEDED"]
+
+
+@pytest.mark.parametrize("status", ["UNCERTAIN", "UNKNOWN", "RUNNING"])
+def test_dispatch_watch_stops_on_nonterminal_or_uncertain_result(monkeypatch, status):
+    calls = []
+    monkeypatch.setattr(worker, "dispatch_next", lambda *_: {"status": "QUEUED"})
+    monkeypatch.setattr(worker, "run", lambda *_: calls.append("run") or {"status": status})
+    assert worker.run_watch(
+        "p", "a", poll_interval_seconds=5, stop_event=threading.Event(),
+        wait=lambda _: pytest.fail("must stop without polling"),
+        dispatch=True, base_sha="b" * 40,
+    ) == 1
+    assert calls == ["run"]
+
+
+def test_dispatch_watch_honors_backend_retry_block_and_can_stop(monkeypatch):
+    stop = threading.Event()
+    dispatches = iter(["QUEUED", "BLOCKED"])
+    runs = iter(["FAILED", "IDLE"])
+    calls = []
+
+    def dispatch(*_args):
+        status = next(dispatches)
+        calls.append(status)
+        return {"status": status, "reason": "retry limit"}
+
+    def run_once(*_args):
+        status = next(runs)
+        calls.append(status)
+        if status == "IDLE":
+            stop.set()
+        return {"status": status}
+
+    monkeypatch.setattr(worker, "dispatch_next", dispatch)
+    monkeypatch.setattr(worker, "run", run_once)
+    assert worker.run_watch(
+        "p", "a", poll_interval_seconds=5, stop_event=stop,
+        wait=lambda _: None, dispatch=True, base_sha="b" * 40,
+    ) == 0
+    assert calls == ["QUEUED", "FAILED", "BLOCKED", "IDLE"]

@@ -148,11 +148,15 @@ if [[ -n "$REV" && -f "$REPO_DIR/scripts/bootstrap/host_bootstrap.sh" ]]; then
 fi
 
 say "Verifying governance identity separation across core roles..."
+VERIFY_SCRIPT="/tmp/verify_identity_separation.sh"
+cp "$REPO_DIR/scripts/verify_identity_separation.sh" "$VERIFY_SCRIPT"
+chmod 0755 "$VERIFY_SCRIPT"
 for u in aao-pm aao-impl-ag aao-auditor aao-supervisor aao-integrator; do
   if id "$u" >/dev/null 2>&1; then
-    runuser -u "$u" -- env CEO_USER="$CEO_USER" bash "$REPO_DIR/scripts/verify_identity_separation.sh" || die "Governance isolation verification failed for role '$u'!"
+    runuser -u "$u" -- env CEO_USER="$CEO_USER" bash "$VERIFY_SCRIPT" || die "Governance isolation verification failed for role '$u'!"
   fi
 done
+rm -f "$VERIFY_SCRIPT"
 say "Governance identity separation verified compliant."
 
 # ------------------------------------------------------------------------------

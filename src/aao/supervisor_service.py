@@ -129,7 +129,19 @@ def attribution(config: dict[str, Any], client: Any | None = None) -> dict[str, 
     for head_repo, repo_prs in repos.items():
         repo_owner, repo_name = head_repo.split("/", 1) if head_repo.count("/") == 1 else (None, None)
         try:
-            events = get(f"/repos/{quote(repo_owner or '', safe='')}/{quote(repo_name or '', safe='')}/events?per_page=100")
+            # GitHub's repository events endpoint exposes at most 300 events (3 pages of 100).
+            # Read every currently available page: a single page can omit a branch's creation push
+            # during ordinary activity, leaving attribution unnecessarily provisional. Older pushes
+            # remain unavailable from this endpoint and must still fail closed.
+            events: list[Any] = []
+            event_path = (f"/repos/{quote(repo_owner or '', safe='')}/"
+                          f"{quote(repo_name or '', safe='')}/events?per_page=100")
+            for page in range(1, 4):
+                page_path = event_path if page == 1 else f"{event_path}&page={page}"
+                batch = get(page_path)
+                events.extend(batch)
+                if len(batch) < 100:
+                    break
         except (RuntimeError, OSError, ValueError):
             skipped.update(pr["number"] for pr in repo_prs)
             continue

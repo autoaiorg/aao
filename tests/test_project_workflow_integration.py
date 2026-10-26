@@ -189,6 +189,151 @@ def test_project_coordinator_consolidates_without_ceo_impersonation(monkeypatch)
 @pytest.mark.skipif(
     not os.getenv("AAO_TEST_POSTGRES_URL") or
     os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="PostgreSQL integration requires an explicitly disposable test database",
+)
+def test_project_coordinator_cannot_self_assign_or_consolidate_own_work(monkeypatch):
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "coordinator-separation-ceo")
+    ceo = {"X-CEO-Token": "coordinator-separation-ceo"}
+    with TestClient(app) as client:
+        mandate = client.post("/v1/mandates", headers=ceo, json={
+            "title": "PM separation " + str(uuid4()), "objective": "Prevent self assignment and review"})
+        mandate_id = mandate.json()["id"]
+        assert client.post(f"/v1/mandates/{mandate_id}/confirm", headers=ceo).status_code == 200
+        project = client.post("/v1/projects", headers=ceo, json={
+            "name": "PM separation", "mandate_id": mandate_id,
+        }).json()["id"]
+        conversation = client.post(f"/v1/projects/{project}/conversations", headers=ceo,
+                                   json={"title": "Separation"}).json()["id"]
+        coordinator_id = "aao-pm-separation-" + uuid4().hex[:8]
+        issued = client.post("/v1/principals/credentials", headers=ceo, json={
+            "principal_id": coordinator_id, "kind": "AGENT",
+        })
+        assert issued.status_code == 201, issued.text
+        pm_headers = {"X-Agent-Token": issued.json()["token"]}
+        for capability in ("work.coordinate", "work.assign", "work.admit", "execution.claim"):
+            assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
+                "principal_id": coordinator_id, "capability": capability,
+            }).status_code == 201
+        with connect_postgres() as db:
+            db.execute(
+                "INSERT INTO organization_profiles(principal_id,display_name,role_title,competencies) "
+                "VALUES (%s,'Test PM','Coordinator',ARRAY['technical-writing'])",
+                (coordinator_id,),
+            )
+
+        def create_group(title):
+            response = client.post(
+                f"/v1/projects/{project}/conversations/{conversation}/work-groups",
+                headers=ceo, json={
+                    "idempotency_key": str(uuid4()), "title": title,
+                    "description": "CEO-confirmed separation test", "acceptance_criteria": ["done"],
+                    "tasks": [{"key": "one", "title": title, "acceptance_criteria": ["evidence"],
+                               "required_competencies": ["technical-writing"]}],
+                },
+            )
+            assert response.status_code == 201, response.text
+            return response.json()
+
+        assigned_group = create_group("Self-assignment")
+        child_id = assigned_group["tasks"][0]["id"]
+        target_id = "aao-other-assignee-" + uuid4().hex[:8]
+        target = client.post("/v1/principals/credentials", headers=ceo, json={
+            "principal_id": target_id, "kind": "AGENT",
+        })
+        assert target.status_code == 201, target.text
+        self_assignment = client.put(
+            f"/v1/agent/work/{child_id}/assignment", headers=pm_headers,
+            json={"principal_id": coordinator_id},
+        )
+        assert self_assignment.status_code == 409, self_assignment.text
+        with connect_postgres() as db:
+            assert db.execute(
+                "SELECT 1 FROM work_item_assignments WHERE work_id=%s", (child_id,),
+            ).fetchone() is None
+
+            # Model an already-persisted historical self-assignment. New calls must
+            # still fail closed even if the old row predates the current API guard.
+            db.execute(
+                "INSERT INTO work_item_assignments(project_id,work_id,principal_id,assigned_by) "
+                "VALUES (%s,%s,%s,%s)", (project, child_id, coordinator_id, coordinator_id),
+            )
+            db.execute(
+                "INSERT INTO events(id,subject_id,kind,details) VALUES (%s,%s,'work.assigned',%s::jsonb)",
+                (str(uuid4()), child_id, json.dumps({
+                    "principal_id": coordinator_id, "assigned_by": coordinator_id,
+                })),
+            )
+            # Reassignment must not erase the attribution history that the gate uses.
+            db.execute(
+                "UPDATE work_item_assignments SET principal_id=%s,assigned_by='ceo' WHERE work_id=%s",
+                (target_id, child_id),
+            )
+            db.execute(
+                "UPDATE work_items SET status='DONE',evidence=%s::jsonb WHERE id=%s",
+                (json.dumps(["artifact://self-assigned/result"]), child_id),
+            )
+        current = client.get(f"/v1/projects/{project}/work-groups", headers=ceo).json()[0]
+        payload = {
+            "idempotency_key": str(uuid4()), "expected_source_sha256": current["source_sha256"],
+            "summary": "Must not consolidate work assigned to the coordinator.",
+        }
+        rejected_assignment_consolidation = client.post(
+            f"/v1/agent/projects/{project}/work-groups/{assigned_group['id']}/consolidation",
+            headers=pm_headers, json=payload,
+        )
+        assert rejected_assignment_consolidation.status_code == 409
+
+        executed_group = create_group("Self-execution")
+        executed_child = executed_group["tasks"][0]["id"]
+        with connect_postgres() as db:
+            db.execute(
+                "UPDATE work_items SET status='DONE',evidence=%s::jsonb WHERE id=%s",
+                (json.dumps(["artifact://self-executed/result"]), executed_child),
+            )
+            db.execute(
+                "INSERT INTO execution_queue(id,work_id,project_id,status,worker_id,input_json,result_json) "
+                "VALUES (%s,%s,%s,'SUCCEEDED',%s,'{}'::jsonb,'{}'::jsonb)",
+                (str(uuid4()), executed_child, project, coordinator_id),
+            )
+        executed_current = client.get(f"/v1/projects/{project}/work-groups", headers=ceo).json()
+        executed_snapshot = next(item for item in executed_current if item["id"] == executed_group["id"])
+        rejected_execution_consolidation = client.post(
+            f"/v1/agent/projects/{project}/work-groups/{executed_group['id']}/consolidation",
+            headers=pm_headers, json={
+                "idempotency_key": str(uuid4()),
+                "expected_source_sha256": executed_snapshot["source_sha256"],
+                "summary": "Must not consolidate work executed by the coordinator.",
+            },
+        )
+        assert rejected_execution_consolidation.status_code == 409
+
+        authored_group = create_group("Self-authored work")
+        authored_child = authored_group["tasks"][0]["id"]
+        with connect_postgres() as db:
+            db.execute(
+                "UPDATE work_items SET status='DONE',author_id=%s,evidence=%s::jsonb WHERE id=%s",
+                (coordinator_id, json.dumps(["artifact://self-authored/result"]), authored_child),
+            )
+        authored_current = client.get(f"/v1/projects/{project}/work-groups", headers=ceo).json()
+        authored_snapshot = next(item for item in authored_current if item["id"] == authored_group["id"])
+        rejected_authorship_consolidation = client.post(
+            f"/v1/agent/projects/{project}/work-groups/{authored_group['id']}/consolidation",
+            headers=pm_headers, json={
+                "idempotency_key": str(uuid4()),
+                "expected_source_sha256": authored_snapshot["source_sha256"],
+                "summary": "Must not consolidate work authored by the coordinator.",
+            },
+        )
+        assert rejected_authorship_consolidation.status_code == 409
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or
+    os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
     reason="Explicit disposable PostgreSQL database required",
 )
 def test_postgres_mandate_project_grant_work_admission(monkeypatch):

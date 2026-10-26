@@ -25,6 +25,15 @@ def test_work_coordinate_is_an_explicit_project_capability():
         GrantRequest(principal_id="aao-pm", capability="work.execute")
 
 
+def _register_test_worker(worker_id):
+    """Give integration workers an explicit host binding before exercising claims."""
+    from aao.backup import register_host_worker
+    from aao.postgresql_connection import connect_postgres
+
+    with connect_postgres() as db:
+        register_host_worker(db, "integration-test-host", worker_id)
+
+
 def test_agent_dispatch_rejects_a_declared_identity_that_disagrees_with_credential():
     from aao.work_management_api import (
         AgentDispatchRequest,
@@ -994,6 +1003,8 @@ def test_group_assignment_routes_execution_without_creating_grants(monkeypatch):
                 "principal_id": worker_id, "kind": "AGENT",
             }).json()["token"] for worker_id in worker_ids
         ]
+        for worker_id in worker_ids:
+            _register_test_worker(worker_id)
         workers = [
             {"X-Agent-Token": token} for token in worker_tokens
         ]
@@ -2344,6 +2355,7 @@ def test_organization_projection_respects_execution_lease_expiry(monkeypatch):
         token = client.post("/v1/principals/credentials", headers=ceo, json={
             "principal_id": worker_id, "kind": "AGENT",
         }).json()["token"]
+        _register_test_worker(worker_id)
         worker = {"X-Agent-Token": token}
         mandate = client.post("/v1/mandates", headers=ceo, json={
             "title": "Org lease " + str(uuid4()), "objective": "Check projection lease state",
@@ -2780,6 +2792,7 @@ def test_postgres_review_is_separate_from_author_and_required_for_done(monkeypat
         agent_id = "agent-" + str(uuid4())
         auditor_id = "auditor-" + str(uuid4())
         worker = {"X-Agent-Token": client.post("/v1/principals/credentials", headers=ceo, json={"principal_id": agent_id, "kind": "AGENT"}).json()["token"]}
+        _register_test_worker(agent_id)
         auditor = {"X-Auditor-Token": client.post("/v1/principals/credentials", headers=ceo, json={"principal_id": auditor_id, "kind": "AUDITOR"}).json()["token"]}
         m = client.post("/v1/mandates", headers=ceo, json={"title": str(uuid4()), "objective": "Review gate test"}).json()["id"]
         client.post(f"/v1/mandates/{m}/confirm", headers=ceo)
@@ -3257,6 +3270,7 @@ def test_registered_repository_check_requires_task_selection_before_queue_claim(
             "principal_id": identity, "kind": "AGENT",
         })
         assert issued.status_code == 201, issued.text
+        _register_test_worker(identity)
         agent = {"X-Agent-Token": issued.json()["token"]}
         mandate = client.post("/v1/mandates", headers=ceo, json={
             "title": "Repository check " + str(uuid4()), "objective": "Test bounded repo check",
@@ -3372,6 +3386,7 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         identity = "w1-agent-" + str(uuid4())
         auditor_id = "w2-auditor-" + str(uuid4())
         token = client.post("/v1/principals/credentials", headers=ceo, json={"principal_id": identity, "kind": "AGENT"}).json()["token"]
+        _register_test_worker(identity)
         agent = {"X-Agent-Token": token}
         auditor = {"X-Auditor-Token": client.post("/v1/principals/credentials", headers=ceo,
                                                   json={"principal_id": auditor_id, "kind": "AUDITOR"}).json()["token"]}

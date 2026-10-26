@@ -119,23 +119,22 @@ say "Step 1: Setting up role and product identities..."
 CEO_USER="$CEO_USER" bash "$SCRIPT_DIR/init_identities.sh"
 
 say "Step 1.1: Ensuring governance infrastructure (trust root, ledgers, events)..."
-mkdir -p /srv/aao/trust /srv/aao/trust/keys /srv/aao/frozen
-chmod 0755 /srv/aao/trust /srv/aao/trust/keys /srv/aao/frozen
-chown -R root:root /srv/aao
-
 for aud in aao-auditor aao-auditor-alt; do
   if id "$aud" >/dev/null 2>&1; then
-    mkdir -p "/var/lib/$aud/ledger" "/var/lib/$aud/keys"
-    chown -R "$aud:$aud" "/var/lib/$aud"
-    chmod 0750 "/var/lib/$aud" "/var/lib/$aud/ledger"
-    chmod 0700 "/var/lib/$aud/keys"
+    install -d -o "$aud" -g aao-ledger-read -m 0750 "/var/lib/$aud" "/var/lib/$aud/ledger"
+    install -d -o "$aud" -g "$aud" -m 0700 "/var/lib/$aud/keys"
   fi
 done
 
 if id aao-supervisor >/dev/null 2>&1; then
-  mkdir -p /var/lib/aao-supervisor/events
-  chown -R aao-supervisor:aao-events /var/lib/aao-supervisor 2>/dev/null || chown -R aao-supervisor:aao-supervisor /var/lib/aao-supervisor
-  chmod 0750 /var/lib/aao-supervisor /var/lib/aao-supervisor/events
+  install -d -o aao-supervisor -g aao-events -m 0750 /var/lib/aao-supervisor /var/lib/aao-supervisor/events
+fi
+
+if id aao-trust >/dev/null 2>&1; then
+  install -d -o aao-trust -g aao-trust -m 0755 /srv/aao /srv/aao/trust /srv/aao/trust/keys /srv/aao/frozen
+  for c in aao-auditor aao-auditor-alt aao-integrator aao-supervisor; do
+    install -d -o aao-trust -g aao-trust -m 0755 "/srv/aao/frozen/$c"
+  done
 fi
 
 if [[ -n "$REV" && -f "$REPO_DIR/scripts/bootstrap/host_bootstrap.sh" ]]; then

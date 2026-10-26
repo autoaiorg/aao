@@ -522,6 +522,32 @@ describe('HttpAaoLiveAdapter organization projection', () => {
     }));
   });
 
+  it('records product acceptance only from the CEO session with the expected snapshot and criteria', async () => {
+    const fetch = vi.spyOn(global, 'fetch');
+    const input = {
+      idempotency_key: '00000000-0000-4000-8000-000000000061',
+      expected_source_sha256: 'b'.repeat(64), accepted_criteria: ['Verified result'],
+      acceptance_statement: 'The product result is accepted.',
+    };
+    const agent = new HttpAaoLiveAdapter({ getToken: () => 'agent-token', getAuthRole: () => 'AGENT' });
+    expect((await agent.confirmWorkGroupAcceptance('p', 'g', input)).kind).toBe('forbidden');
+    expect(fetch).not.toHaveBeenCalled();
+
+    fetch.mockResolvedValueOnce({ status: 201, ok: true, json: async () => ({
+      work_group_id: '00000000-0000-4000-8000-000000000062',
+      parent_work_id: '00000000-0000-4000-8000-000000000063',
+      source_sha256: input.expected_source_sha256, accepted_criteria: input.accepted_criteria,
+      acceptance_statement: input.acceptance_statement, created_by: 'ceo',
+      created_at: '2026-10-26T00:00:00Z', created: true,
+    }) } as Response);
+    const ceo = new HttpAaoLiveAdapter({ getToken: () => 'ceo-token', getAuthRole: () => 'CEO', requireAuth: true });
+    expect((await ceo.confirmWorkGroupAcceptance('project/1', 'group/1', input)).kind).toBe('ready');
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('/v1/projects/project%2F1/work-groups/group%2F1/acceptance'), expect.objectContaining({
+      method: 'POST', headers: expect.objectContaining({ 'X-CEO-Token': 'ceo-token', 'Content-Type': 'application/json' }),
+      body: JSON.stringify(input),
+    }));
+  });
+
   it('records CEO partial reports through the canonical endpoint', async () => {
     const fetch = vi.spyOn(global, 'fetch');
     fetch.mockResolvedValueOnce({ status: 201, ok: true, json: async () => ({

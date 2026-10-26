@@ -13,7 +13,7 @@ const group: ProjectWorkGroup = {
   id: '11111111-1111-4111-8111-111111111111',
   conversation_id: '22222222-2222-4222-8222-222222222222',
   parent_work_id: '33333333-3333-4333-8333-333333333333',
-  title: 'Resultados del proyecto', parent_status: 'INBOX', source_sha256: 'a'.repeat(64),
+  title: 'Resultados del proyecto', parent_status: 'INBOX', acceptance_criteria: ['completado'], acceptance: null, source_sha256: 'a'.repeat(64),
   consolidation_ready: false,
   children: [{
     work_id: '44444444-4444-4444-8444-444444444444', status: 'IN_PROGRESS', assigned_principal_id: null, evidence: [], dependencies: [],
@@ -32,6 +32,11 @@ function setup(groups: ProjectWorkGroup[]) {
     listProjectWorkGroups: vi.fn().mockResolvedValue(ready(groups)),
     assignWorkGroupChild: vi.fn().mockResolvedValue(ready({ work_id: group.children[0].work_id, principal_id: 'agent-a', assigned_by: 'ceo', grants_created: false as const })),
     confirmWorkGroupConsolidation: vi.fn().mockResolvedValue(ready({ ...group, project_id: 'project-active', work_group_id: group.id, source_snapshot: { children: group.children }, summary: 'Resultado consolidado', idempotency_key: '66666666-6666-4666-8666-666666666666', created_by: 'ceo', created_at: '2026-10-26T00:00:00Z', created: true })),
+    confirmWorkGroupAcceptance: vi.fn().mockResolvedValue(ready({
+      work_group_id: group.id, parent_work_id: group.parent_work_id, source_sha256: 'a'.repeat(64),
+      accepted_criteria: group.acceptance_criteria, acceptance_statement: 'Aceptado', created_by: 'ceo',
+      created_at: '2026-10-26T00:00:00Z', created: true,
+    })),
     createWorkGroupPartialReport: vi.fn().mockResolvedValue(ready({ id: '77777777-7777-4777-8777-777777777777', report_kind: 'PARTIAL', summary: 'Informe CEO', source_sha256: 'a'.repeat(64), idempotency_key: '88888888-8888-4888-8888-888888888888', created_by: 'ceo', created_at: '2026-10-26T00:00:00Z', created: true, final: false as const })),
   } as unknown as AaoConversationPort;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -114,6 +119,26 @@ describe('office work group consolidation', () => {
       idempotency_key: expect.any(String), expected_source_sha256: 'a'.repeat(64), summary: 'He revisado el resultado y la evidencia.',
     }));
     expect(await screen.findByText(/Consolidación CEO guardada/)).toBeInTheDocument();
+  });
+
+  it('records product acceptance only after a current consolidation and exact criteria', async () => {
+    const readyGroup: ProjectWorkGroup = {
+      ...group, consolidation_ready: true, children: [{ ...group.children[0], status: 'DONE', executions: [] }],
+      consolidation: {
+        id: '66666666-6666-4666-8666-666666666666', summary: 'Consolidado', source_sha256: 'a'.repeat(64),
+        idempotency_key: '77777777-7777-4777-8777-777777777777', created_by: 'ceo', created_at: '2026-10-26T00:00:00Z',
+      },
+    };
+    const port = setup([readyGroup]);
+    await screen.findByText('DONE');
+    expect(screen.getByText(/Criterios confirmados: completado/)).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText('Registra la decisión explícita de aceptación del resultado…'), { target: { value: 'Cumple el criterio acordado.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Aceptar resultado de producto' }));
+    await waitFor(() => expect(port.confirmWorkGroupAcceptance).toHaveBeenCalledWith('project-active', group.id, {
+      idempotency_key: expect.any(String), expected_source_sha256: 'a'.repeat(64),
+      accepted_criteria: ['completado'], acceptance_statement: 'Cumple el criterio acordado.',
+    }));
+    expect(await screen.findByText(/Aceptación de producto registrada por el CEO/)).toBeInTheDocument();
   });
 
   it('assigns a child only to an agent returned by the backend and refreshes the projection', async () => {

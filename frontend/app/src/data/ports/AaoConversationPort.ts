@@ -92,6 +92,14 @@ export interface WorkGroupConsolidation {
   created_at: string;
 }
 
+export interface WorkGroupAcceptance {
+  source_sha256: string;
+  accepted_criteria: string[];
+  acceptance_statement: string;
+  created_by: string;
+  created_at: string;
+}
+
 export interface WorkGroupPartialReport {
   id: string;
   report_kind: 'PARTIAL' | 'CONFLICT_REVIEW';
@@ -108,6 +116,7 @@ export interface ProjectWorkGroup {
   parent_work_id: string;
   title: string;
   parent_status: string;
+  acceptance_criteria: string[];
   source_sha256: string;
   consolidation_ready: boolean;
   children: Array<{
@@ -122,6 +131,7 @@ export interface ProjectWorkGroup {
     reviews: Array<{ id: string; decision: string; candidate_sha: string | null; evidence: unknown }>;
   }>;
   consolidation: WorkGroupConsolidation | null;
+  acceptance: WorkGroupAcceptance | null;
   partial_reports: WorkGroupPartialReport[];
 }
 
@@ -173,6 +183,11 @@ export interface AaoConversationPort {
     groupId: string,
     input: { idempotency_key: string; expected_source_sha256: string; summary: string },
   ): Promise<DataState<WorkGroupConsolidationResult>>;
+  confirmWorkGroupAcceptance(
+    projectId: string,
+    groupId: string,
+    input: { idempotency_key: string; expected_source_sha256: string; accepted_criteria: string[]; acceptance_statement: string },
+  ): Promise<DataState<WorkGroupAcceptance & { work_group_id: string; parent_work_id: string; created: boolean }>>;
   createWorkGroupPartialReport(
     projectId: string,
     groupId: string,

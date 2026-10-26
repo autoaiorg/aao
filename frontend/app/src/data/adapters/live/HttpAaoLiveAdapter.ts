@@ -1144,11 +1144,17 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
       `/v1/projects/${encodeURIComponent(projectId)}/work-groups`,
       z.array(z.object({
         id: z.string().uuid(), conversation_id: z.string().uuid(), parent_work_id: z.string().uuid(),
-        title: z.string(), parent_status: z.string(), source_sha256: z.string().regex(/^[0-9a-f]{64}$/),
+        title: z.string(), parent_status: z.string(), acceptance_criteria: z.array(z.string()),
+        source_sha256: z.string().regex(/^[0-9a-f]{64}$/),
         consolidation_ready: z.boolean(), children: z.array(child),
         consolidation: z.object({
           id: z.string().uuid(), summary: z.string(), source_sha256: z.string(),
           source_snapshot: z.object({ children: z.array(child) }), idempotency_key: z.string().uuid(),
+          created_by: z.string(), created_at: z.string(),
+        }).nullable(),
+        acceptance: z.object({
+          source_sha256: z.string().regex(/^[0-9a-f]{64}$/),
+          accepted_criteria: z.array(z.string()), acceptance_statement: z.string(),
           created_by: z.string(), created_at: z.string(),
         }).nullable(),
         partial_reports: z.array(z.object({
@@ -1200,6 +1206,23 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
         parent_work_id: z.string().uuid(), summary: z.string(), source_sha256: z.string(),
         source_snapshot: z.object({ children: z.array(child) }), idempotency_key: z.string().uuid(),
         created_by: z.string(), created_at: z.string(), created: z.boolean(),
+      }),
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) },
+    );
+  }
+
+  async confirmWorkGroupAcceptance(
+    projectId: string,
+    groupId: string,
+    input: { idempotency_key: string; expected_source_sha256: string; accepted_criteria: string[]; acceptance_statement: string },
+  ) {
+    if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden' as const, reason: 'Solo la sesión CEO puede aceptar el resultado del producto.' };
+    return this.request(
+      `/v1/projects/${encodeURIComponent(projectId)}/work-groups/${encodeURIComponent(groupId)}/acceptance`,
+      z.object({
+        work_group_id: z.string().uuid(), parent_work_id: z.string().uuid(),
+        source_sha256: z.string().regex(/^[0-9a-f]{64}$/), accepted_criteria: z.array(z.string()),
+        acceptance_statement: z.string(), created_by: z.string(), created_at: z.string(), created: z.boolean(),
       }),
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) },
     );

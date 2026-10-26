@@ -19,6 +19,7 @@ export const OfficeWorkGroupPanel: React.FC<OfficeWorkGroupPanelProps> = ({ proj
     : [], [projects]);
   const [projectId, setProjectId] = useState('');
   const [summaries, setSummaries] = useState<Record<string, string>>({});
+  const [acceptanceStatements, setAcceptanceStatements] = useState<Record<string, string>>({});
   const [reportSummaries, setReportSummaries] = useState<Record<string, string>>({});
   const [reportKinds, setReportKinds] = useState<Record<string, 'PARTIAL' | 'CONFLICT_REVIEW'>>({});
   const [pendingGroup, setPendingGroup] = useState<string | null>(null);
@@ -78,6 +79,29 @@ export const OfficeWorkGroupPanel: React.FC<OfficeWorkGroupPanelProps> = ({ proj
       }
     } else if (result.kind === 'forbidden') setNotice(result.reason);
     else setNotice('No se pudo confirmar la consolidación.');
+  };
+
+  const accept = async (group: (typeof groups)[number]) => {
+    const statement = acceptanceStatements[group.id]?.trim();
+    if (!selectedProjectId || !statement || !group.consolidation_ready
+      || !group.consolidation || group.consolidation.source_sha256 !== group.source_sha256
+      || group.parent_status !== 'INBOX' || pendingGroup) return;
+    setPendingGroup(group.id);
+    setNotice(null);
+    const result = await port.confirmWorkGroupAcceptance(selectedProjectId, group.id, {
+      idempotency_key: crypto.randomUUID(), expected_source_sha256: group.source_sha256,
+      accepted_criteria: group.acceptance_criteria, acceptance_statement: statement,
+    });
+    setPendingGroup(null);
+    if (result.kind === 'ready') {
+      setNotice('Aceptación de producto registrada por el CEO. No declara auditoría independiente ni integración.');
+      await queryClient.invalidateQueries({ queryKey: ['office-work-groups', sessionId, selectedProjectId] });
+      await queryClient.invalidateQueries({ queryKey: ['office-conversation-messages', sessionId, selectedProjectId] });
+    } else if (result.kind === 'error') {
+      setNotice(`${result.code}: ${result.message}`);
+      if (result.code === 'HTTP_409') await queryClient.invalidateQueries({ queryKey: ['office-work-groups', sessionId, selectedProjectId] });
+    } else if (result.kind === 'forbidden') setNotice(result.reason);
+    else setNotice('No se pudo registrar la aceptación de producto.');
   };
 
   const reportPartial = async (groupId: string, sourceHash: string) => {
@@ -198,6 +222,20 @@ export const OfficeWorkGroupPanel: React.FC<OfficeWorkGroupPanelProps> = ({ proj
         </label>
         <Button type="submit" disabled={!group.consolidation_ready || !summaries[group.id]?.trim() || pendingGroup === group.id}>
           {pendingGroup === group.id ? 'Guardando…' : 'Confirmar consolidación'}
+        </Button>
+      </form>}
+      {group.acceptance ? <div className="office-work-group__saved">
+        <strong>Aceptación de producto · {group.acceptance.created_by}</strong>
+        <p>{group.acceptance.acceptance_statement}</p>
+        <small>Snapshot {group.acceptance.source_sha256.slice(0, 16)} · criterios: {group.acceptance.accepted_criteria.join(' · ')} · {new Date(group.acceptance.created_at).toLocaleString()}</small>
+      </div> : group.consolidation && <form onSubmit={(event) => { event.preventDefault(); void accept(group); }}>
+        <label className="office-form-field">
+          <span>Aceptación de producto CEO</span>
+          <small>Criterios confirmados: {group.acceptance_criteria.join(' · ')}</small>
+          <textarea className="office-form-control office-form-control--textarea" rows={2} maxLength={20000} required value={acceptanceStatements[group.id] || ''} onChange={(event) => setAcceptanceStatements((current) => ({ ...current, [group.id]: event.target.value }))} disabled={!group.consolidation_ready || group.consolidation.source_sha256 !== group.source_sha256 || group.parent_status !== 'INBOX' || pendingGroup === group.id} placeholder="Registra la decisión explícita de aceptación del resultado…" />
+        </label>
+        <Button type="submit" disabled={!group.consolidation_ready || group.consolidation.source_sha256 !== group.source_sha256 || group.parent_status !== 'INBOX' || !acceptanceStatements[group.id]?.trim() || pendingGroup === group.id}>
+          {pendingGroup === group.id ? 'Registrando…' : 'Aceptar resultado de producto'}
         </Button>
       </form>}
     </article>)}

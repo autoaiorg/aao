@@ -3159,3 +3159,133 @@ def test_capability_feedback_is_persisted_as_non_applied_ceo_proposal(monkeypatc
         assert reviewed["applied"] is True
         assert reviewed["applied_capability_version"] == "1.1.0"
         assert client.post(review_path, headers=ceo, json={"status": "accepted"}).json()["applied"] is True
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="PostgreSQL integration requires an explicitly disposable test database",
+)
+def test_product_acceptance_closes_group_only_after_current_consolidation(monkeypatch):
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "product-acceptance-ceo")
+    ceo = {"X-CEO-Token": "product-acceptance-ceo"}
+    with TestClient(app) as client:
+        mandate = client.post("/v1/mandates", headers=ceo, json={
+            "title": "Product acceptance " + str(uuid4()), "objective": "Accept completed pilot output",
+        }).json()["id"]
+        assert client.post(f"/v1/mandates/{mandate}/confirm", headers=ceo).status_code == 200
+        project = client.post("/v1/projects", headers=ceo, json={
+            "name": "Product acceptance", "mandate_id": mandate,
+        }).json()["id"]
+        conversation = client.post(f"/v1/projects/{project}/conversations", headers=ceo, json={
+            "title": "Pilot acceptance",
+        }).json()["id"]
+        created_group = client.post(
+            f"/v1/projects/{project}/conversations/{conversation}/work-groups",
+            headers=ceo, json={
+                "idempotency_key": str(uuid4()), "title": "Pilot objective",
+                "description": "Complete and accept pilot output",
+                "acceptance_criteria": ["Child result is complete"],
+                "tasks": [{"key": "result", "title": "Result", "acceptance_criteria": ["Evidence"]}],
+            },
+        )
+        assert created_group.status_code == 201, created_group.text
+        group = created_group.json()
+        endpoint = f"/v1/projects/{project}/work-groups/{group['id']}/acceptance"
+        assert client.post(endpoint, json={}).status_code == 403
+
+        child_id = group["tasks"][0]["id"]
+        before_completion = client.get(
+            f"/v1/projects/{project}/work-groups", headers=ceo,
+        ).json()[0]
+        premature_payload = {
+            "idempotency_key": str(uuid4()),
+            "expected_source_sha256": before_completion["source_sha256"],
+            "accepted_criteria": ["Child result is complete"],
+            "acceptance_statement": "The delivered result meets the product acceptance criteria.",
+        }
+        premature = client.post(endpoint, headers=ceo, json=premature_payload)
+        assert premature.status_code == 409
+        assert client.get(
+            f"/v1/projects/{project}/work-groups", headers=ceo,
+        ).json()[0]["parent_status"] == "INBOX"
+        candidate_sha = "a" * 40
+        with connect_postgres() as db:
+            db.execute("UPDATE work_items SET status='DONE',evidence=%s::jsonb WHERE id=%s",
+                       (json.dumps(["artifact://pilot/result"]), child_id))
+            db.execute(
+                "INSERT INTO execution_queue(id,work_id,project_id,status,worker_id,input_json,result_json) "
+                "VALUES (%s,%s,%s,'SUCCEEDED','pilot-agent',%s::jsonb,%s::jsonb)",
+                (str(uuid4()), child_id, project, json.dumps({"type": "aao.inert.v1"}),
+                 json.dumps({"completed": True, "candidate_sha": candidate_sha})),
+            )
+        listed = client.get(f"/v1/projects/{project}/work-groups", headers=ceo).json()[0]
+        endpoint = f"/v1/projects/{project}/work-groups/{group['id']}/acceptance"
+        acceptance_payload = {
+            "idempotency_key": str(uuid4()),
+            "expected_source_sha256": listed["source_sha256"],
+            "accepted_criteria": ["Child result is complete"],
+            "acceptance_statement": "The delivered result meets the product acceptance criteria.",
+        }
+        unreviewed = client.post(endpoint, headers=ceo, json=acceptance_payload)
+        assert unreviewed.status_code == 409
+        assert "APPROVE review" in unreviewed.json()["detail"]
+        with connect_postgres() as db:
+            auditor_id = str(uuid4())
+            db.execute(
+                "INSERT INTO principals(id,name,kind) VALUES (%s,%s,'AUDITOR')",
+                (auditor_id, "quality-pilot"),
+            )
+            db.execute(
+                "INSERT INTO reviews(id,work_id,reviewer_id,decision,evidence,candidate_sha) "
+                "VALUES (%s,%s,%s,'APPROVE',%s::jsonb,%s)",
+                (str(uuid4()), child_id, auditor_id, json.dumps(["artifact://pilot/review"]), candidate_sha),
+            )
+        listed = client.get(f"/v1/projects/{project}/work-groups", headers=ceo).json()[0]
+        acceptance_payload["expected_source_sha256"] = listed["source_sha256"]
+        # DONE children are not enough: product acceptance requires an
+        # evidence-bound consolidation of the current reviewed source snapshot.
+        without_consolidation = client.post(
+            endpoint, headers=ceo, json=acceptance_payload,
+        )
+        assert without_consolidation.status_code == 409
+        assert client.get(f"/v1/projects/{project}/work-groups", headers=ceo).json()[0]["parent_status"] == "INBOX"
+        consolidation = client.post(
+            f"/v1/projects/{project}/work-groups/{group['id']}/consolidation",
+            headers=ceo, json={
+                "idempotency_key": str(uuid4()), "expected_source_sha256": listed["source_sha256"],
+                "summary": "The CEO-reviewed product result is ready for acceptance.",
+            },
+        )
+        assert consolidation.status_code == 201, consolidation.text
+        payload = acceptance_payload
+        rejected_criteria = {**payload, "accepted_criteria": ["Different criteria"]}
+        assert client.post(endpoint, headers=ceo, json=rejected_criteria).status_code == 409
+        stale_snapshot = {**payload, "expected_source_sha256": "0" * 64}
+        assert client.post(endpoint, headers=ceo, json=stale_snapshot).status_code == 409
+        accepted = client.post(endpoint, headers=ceo, json=payload)
+        assert accepted.status_code == 201, accepted.text
+        assert accepted.json()["created"] is True
+        replay = client.post(endpoint, headers=ceo, json=payload)
+        assert replay.status_code == 201 and replay.json()["created"] is False
+        changed = {**payload, "acceptance_statement": "Different acceptance statement"}
+        assert client.post(endpoint, headers=ceo, json=changed).status_code == 409
+        projection = client.get(f"/v1/projects/{project}/work-groups", headers=ceo).json()[0]
+        assert projection["parent_status"] == "DONE"
+        assert projection["acceptance"]["accepted_criteria"] == payload["accepted_criteria"]
+        assert projection["acceptance"]["source_sha256"] == payload["expected_source_sha256"]
+        with connect_postgres() as db:
+            event = db.execute(
+                "SELECT details FROM events WHERE subject_id=%s AND kind='work.group_accepted'",
+                (group["parent_work_id"],),
+            ).fetchone()
+            parent_status = db.execute(
+                "SELECT status FROM work_items WHERE id=%s", (group["parent_work_id"],),
+            ).fetchone()[0]
+        assert parent_status == "DONE"
+        assert event[0]["actor"] == "ceo"
+        assert event[0]["independent_review"] is False
+        assert event[0]["integration_performed"] is False

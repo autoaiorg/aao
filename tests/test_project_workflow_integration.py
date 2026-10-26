@@ -1929,6 +1929,114 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
 @pytest.mark.skipif(
     not os.getenv("AAO_TEST_POSTGRES_URL") or
     os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="Explicit disposable PostgreSQL database required",
+)
+def test_work_group_consolidation_is_ceo_confirmed_idempotent_and_evidence_bound(monkeypatch):
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "consolidation-ceo")
+    ceo = {"X-CEO-Token": "consolidation-ceo"}
+    with TestClient(app) as client:
+        mandate = client.post("/v1/mandates", headers=ceo, json={
+            "title": "Consolidation " + str(uuid4()), "objective": "Test evidenced synthesis",
+        }).json()["id"]
+        assert client.post(f"/v1/mandates/{mandate}/confirm", headers=ceo).status_code == 200
+        project = client.post("/v1/projects", headers=ceo, json={
+            "name": "Work group consolidation", "mandate_id": mandate,
+        }).json()["id"]
+        conversation = client.post(f"/v1/projects/{project}/conversations", headers=ceo, json={
+            "title": "Consolidation discussion",
+        }).json()["id"]
+        group_response = client.post(
+            f"/v1/projects/{project}/conversations/{conversation}/work-groups",
+            headers=ceo, json={
+                "idempotency_key": str(uuid4()), "title": "Deliver outcomes",
+                "description": "Parent remains a non-executable container",
+                "acceptance_criteria": ["All child outcomes are reviewed"],
+                "tasks": [
+                    {"key": "one", "title": "Outcome one", "acceptance_criteria": ["Evidence one"]},
+                    {"key": "two", "title": "Outcome two", "acceptance_criteria": ["Evidence two"]},
+                ],
+            },
+        )
+        assert group_response.status_code == 201, group_response.text
+        group = group_response.json()
+        group_list_url = f"/v1/projects/{project}/work-groups"
+        assert client.get(group_list_url).status_code == 403
+        assert client.get(group_list_url, headers=ceo).json()[0]["consolidation_ready"] is False
+
+        with connect_postgres() as db:
+            for index, child in enumerate(group["tasks"]):
+                db.execute(
+                    "UPDATE work_items SET status='DONE',evidence=%s::jsonb WHERE id=%s",
+                    (json.dumps([f"artifact://{child['id']}/result"]), child["id"]),
+                )
+                db.execute(
+                    "INSERT INTO execution_queue(id,work_id,project_id,status,worker_id,input_json,result_json) "
+                    "VALUES (%s,%s,%s,'SUCCEEDED',%s,%s::jsonb,%s::jsonb)",
+                    (str(uuid4()), child["id"], project, f"agent-{index}",
+                     json.dumps({"type": "aao.inert.v1"}),
+                     json.dumps({"patch": "must-not-leak", "completed": True})),
+                )
+                db.execute(
+                    "INSERT INTO reviews(id,work_id,reviewer_id,decision,candidate_sha,evidence) "
+                    "VALUES (%s,%s,'auditor-test','APPROVE',%s,%s::jsonb)",
+                    (str(uuid4()), child["id"], "a" * 40,
+                     json.dumps([f"review://{child['id']}"])),
+                )
+
+        listed = client.get(group_list_url, headers=ceo).json()[0]
+        assert listed["consolidation_ready"] is True
+        endpoint = f"/v1/projects/{project}/work-groups/{group['id']}/consolidation"
+        payload = {
+            "idempotency_key": str(uuid4()),
+            "expected_source_sha256": listed["source_sha256"],
+            "summary": "CEO reviewed both completed outcomes and their evidence.",
+        }
+        assert client.post(endpoint, json=payload).status_code == 403
+        stale = dict(payload)
+        stale["expected_source_sha256"] = "0" * 64
+        assert client.post(endpoint, headers=ceo, json=stale).status_code == 409
+        with connect_postgres() as db:
+            records = db.execute(
+                "SELECT count(*) FROM work_group_consolidations WHERE work_group_id=%s",
+                (group["id"],),
+            ).fetchone()[0]
+        assert records == 0
+
+        saved = client.post(endpoint, headers=ceo, json=payload)
+        assert saved.status_code == 201, saved.text
+        consolidation = saved.json()
+        assert consolidation["created"] is True
+        assert consolidation["source_sha256"] == payload["expected_source_sha256"]
+        assert len(consolidation["source_snapshot"]["children"]) == 2
+        first_source = consolidation["source_snapshot"]["children"][0]
+        assert first_source["status"] == "DONE"
+        assert first_source["executions"][0]["worker_id"].startswith("agent-")
+        assert first_source["executions"][0]["result_sha256"]
+        assert first_source["reviews"][0]["evidence"]
+        assert "must-not-leak" not in saved.text
+        replay = client.post(endpoint, headers=ceo, json=payload)
+        assert replay.status_code == 201 and replay.json()["created"] is False
+
+        with connect_postgres() as db:
+            parent_status = db.execute(
+                "SELECT status FROM work_items WHERE id=%s", (group["parent_work_id"],),
+            ).fetchone()[0]
+            events = db.execute(
+                "SELECT details FROM events WHERE subject_id=%s AND kind='work.group_consolidated'",
+                (group["parent_work_id"],),
+            ).fetchall()
+        assert parent_status == "INBOX"
+        assert len(events) == 1 and events[0][0]["work_status_changed"] is False
+        assert client.post(endpoint, headers=ceo, json={**payload, "summary": "different"}).status_code == 409
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or
+    os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
     reason="PostgreSQL integration requires an explicitly disposable test database",
 )
 def test_ceo_browser_session_cookie_csrf_and_logout(monkeypatch):

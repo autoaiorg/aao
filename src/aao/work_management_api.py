@@ -265,6 +265,20 @@ class ConversationWorkGroupProposal(BaseModel):
         return self
 
 
+class WorkGroupConsolidationRequest(BaseModel):
+    idempotency_key: UUID
+    expected_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    summary: str = Field(min_length=1, max_length=20000)
+
+    @field_validator("summary")
+    @classmethod
+    def summary_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Summary must not be blank")
+        return value
+
+
 class CEOWorkRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     acceptance_criteria: list[str] = Field(min_length=1)
@@ -1610,6 +1624,160 @@ def create_conversation_work_group(
                        "assigned_principal_id": child[3],
                        "depends_on": dependencies.get(str(child[0]), [])} for child in children],
         }
+
+
+def _work_group_source_snapshot(db, project_id: str, parent_work_id: str, *, lock: bool = False):
+    lock_clause = " FOR UPDATE" if lock else ""
+    children = db.execute(
+        "SELECT id,status,evidence FROM work_items "
+        "WHERE project_id=%s AND parent_work_id=%s ORDER BY id" + lock_clause,
+        (project_id, parent_work_id),
+    ).fetchall()
+    if not children:
+        return {"children": []}, hashlib.sha256(b'{"children":[]}').hexdigest()
+    child_ids = [row[0] for row in children]
+    execution_rows = db.execute(
+        "SELECT id,work_id,status,worker_id,result_json FROM execution_queue "
+        "WHERE project_id=%s AND work_id=ANY(%s) ORDER BY work_id,id FOR SHARE",
+        (project_id, child_ids),
+    ).fetchall()
+    reviews = db.execute(
+        "SELECT id,work_id,decision,candidate_sha,evidence FROM reviews "
+        "WHERE work_id=ANY(%s) ORDER BY work_id,id FOR SHARE", (child_ids,),
+    ).fetchall()
+    executions_by_work: dict[str, list[dict]] = {}
+    for execution_id, work_id, status, worker_id, result in execution_rows:
+        result_hash = None
+        if result is not None:
+            canonical_result = json.dumps(result, sort_keys=True, separators=(",", ":"), default=str)
+            result_hash = hashlib.sha256(canonical_result.encode()).hexdigest()
+        executions_by_work.setdefault(str(work_id), []).append({
+            "id": str(execution_id), "status": status,
+            "worker_id": worker_id, "result_sha256": result_hash,
+        })
+    reviews_by_work: dict[str, list[dict]] = {}
+    for review_id, work_id, decision, candidate_sha, evidence in reviews:
+        reviews_by_work.setdefault(str(work_id), []).append({
+            "id": str(review_id), "decision": decision,
+            "candidate_sha": candidate_sha, "evidence": evidence,
+        })
+    snapshot = {"children": [
+        {"work_id": str(work_id), "status": status, "evidence": evidence,
+         "executions": executions_by_work.get(str(work_id), []),
+         "reviews": reviews_by_work.get(str(work_id), [])}
+        for work_id, status, evidence in children
+    ]}
+    canonical = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str)
+    return snapshot, hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _consolidation_response(row, *, created: bool):
+    return {
+        "id": str(row[0]), "project_id": str(row[1]),
+        "work_group_id": str(row[2]), "parent_work_id": str(row[3]),
+        "summary": row[4], "source_sha256": row[5],
+        "source_snapshot": row[6], "idempotency_key": str(row[7]),
+        "created_by": row[8], "created_at": row[9].isoformat(),
+        "created": created,
+    }
+
+
+@app.get("/v1/projects/{project_id}/work-groups")
+def list_project_work_groups(project_id: str, _: str = Depends(require_ceo)):
+    """CEO view of durable work groups and evidence-backed consolidation readiness."""
+    with tx() as db:
+        if not db.execute("SELECT 1 FROM projects WHERE id=%s", (project_id,)).fetchone():
+            raise HTTPException(404, "Project not found")
+        groups = db.execute(
+            "SELECT g.id,g.conversation_id,g.parent_work_id,w.title,w.status,"
+            "c.id,c.summary,c.source_sha256,c.source_snapshot,c.idempotency_key,"
+            "c.created_by,c.created_at FROM work_groups g "
+            "JOIN work_items w ON w.id=g.parent_work_id "
+            "LEFT JOIN work_group_consolidations c ON c.work_group_id=g.id "
+            "WHERE g.project_id=%s ORDER BY g.created_at,g.id", (project_id,),
+        ).fetchall()
+        result = []
+        for row in groups:
+            snapshot, source_sha256 = _work_group_source_snapshot(db, project_id, str(row[2]))
+            children = snapshot["children"]
+            stored = None
+            if row[5] is not None:
+                stored = {
+                    "id": str(row[5]), "summary": row[6],
+                    "source_sha256": row[7], "source_snapshot": row[8],
+                    "idempotency_key": str(row[9]), "created_by": row[10],
+                    "created_at": row[11].isoformat(),
+                }
+            result.append({
+                "id": str(row[0]), "conversation_id": str(row[1]),
+                "parent_work_id": str(row[2]), "title": row[3],
+                "parent_status": row[4], "children": children,
+                "source_sha256": source_sha256,
+                "consolidation_ready": bool(children) and all(child["status"] == "DONE" for child in children),
+                "consolidation": stored,
+            })
+    return result
+
+
+@app.post("/v1/projects/{project_id}/work-groups/{group_id}/consolidation", status_code=201)
+def create_work_group_consolidation(
+    project_id: str,
+    group_id: str,
+    payload: WorkGroupConsolidationRequest,
+    _: str = Depends(require_ceo),
+):
+    """Persist one CEO-confirmed summary without changing parent, child or execution states."""
+    request_sha256 = hashlib.sha256(json.dumps({
+        "expected_source_sha256": payload.expected_source_sha256,
+        "summary": payload.summary,
+    }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    with tx() as db:
+        group = db.execute(
+            "SELECT parent_work_id FROM work_groups WHERE id=%s AND project_id=%s FOR UPDATE",
+            (group_id, project_id),
+        ).fetchone()
+        if not group:
+            raise HTTPException(404, "Work group not found")
+        parent_work_id = str(group[0])
+        existing = db.execute(
+            "SELECT id,project_id,work_group_id,parent_work_id,summary,source_sha256,"
+            "source_snapshot,idempotency_key,created_by,created_at,request_sha256 "
+            "FROM work_group_consolidations WHERE work_group_id=%s", (group_id,),
+        ).fetchone()
+        if existing:
+            if str(existing[7]) == str(payload.idempotency_key) and existing[10] == request_sha256:
+                return _consolidation_response(existing, created=False)
+            raise HTTPException(409, "Work group already has a confirmed consolidation")
+        reused_key = db.execute(
+            "SELECT 1 FROM work_group_consolidations WHERE project_id=%s AND idempotency_key=%s",
+            (project_id, payload.idempotency_key),
+        ).fetchone()
+        if reused_key:
+            raise HTTPException(409, "Idempotency key was used for another consolidation")
+        snapshot, source_sha256 = _work_group_source_snapshot(
+            db, project_id, parent_work_id, lock=True,
+        )
+        children = snapshot["children"]
+        if not children or any(child["status"] != "DONE" for child in children):
+            raise HTTPException(409, "All child work must be DONE before consolidation")
+        if source_sha256 != payload.expected_source_sha256:
+            raise HTTPException(409, "Work group results changed; reload before confirming consolidation")
+        row = db.execute(
+            "INSERT INTO work_group_consolidations(id,project_id,work_group_id,parent_work_id,"
+            "summary,source_sha256,source_snapshot,idempotency_key,request_sha256,created_by) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,'ceo') "
+            "RETURNING id,project_id,work_group_id,parent_work_id,summary,source_sha256,"
+            "source_snapshot,idempotency_key,created_by,created_at,request_sha256",
+            (str(uuid4()), project_id, group_id, parent_work_id, payload.summary,
+             source_sha256, json.dumps(snapshot), payload.idempotency_key, request_sha256),
+        ).fetchone()
+        audit(db, parent_work_id, "work.group_consolidated", {
+            "project_id": project_id, "work_group_id": group_id,
+            "consolidation_id": str(row[0]), "source_sha256": source_sha256,
+            "child_count": len(children), "actor": "ceo",
+            "work_status_changed": False, "execution_created": False,
+        })
+    return _consolidation_response(row, created=True)
 
 
 @app.get("/v1/projects/{project_id}/assignable-agents")

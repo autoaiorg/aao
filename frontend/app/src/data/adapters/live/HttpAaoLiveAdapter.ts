@@ -958,6 +958,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
       turn_status: z.enum(['PENDING', 'COMPLETED', 'FAILED']).nullable().optional(),
       turn_error_code: z.string().nullable().optional(), created_at: z.string(),
       turn_idempotency_key: z.string().uuid().nullable().optional(),
+      turn_lease_expires_at: z.string().datetime({ offset: true }).nullable().optional(),
     })), { method: 'GET' });
   }
 

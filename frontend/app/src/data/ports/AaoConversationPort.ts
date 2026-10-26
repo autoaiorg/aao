@@ -26,6 +26,7 @@ export interface ProjectConversationMessage {
   turn_status?: 'PENDING' | 'COMPLETED' | 'FAILED' | null;
   turn_error_code?: string | null;
   turn_idempotency_key?: string | null;
+  turn_lease_expires_at?: string | null;
   created_at: string;
 }
 

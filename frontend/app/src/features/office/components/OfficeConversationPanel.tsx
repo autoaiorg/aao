@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { DataState, ProjectSummary } from '../../../domain/models';
 import type { AaoConversationPort, ProjectConversationMessage, ProjectWorkGroup } from '../../../data/ports/AaoConversationPort';
@@ -48,6 +48,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
   const [nextTaskNumber, setNextTaskNumber] = useState(2);
   const [workGroupIdempotencyKey, setWorkGroupIdempotencyKey] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
+  const autoRecoveryAttempts = useRef(new Set<string>());
 
   useEffect(() => {
     if (!activeProjects.some((project) => project.id === projectId)) {
@@ -165,6 +166,23 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
         : result.kind === 'forbidden' ? result.reason : 'No se pudo recuperar la respuesta.');
     await queryClient.invalidateQueries({ queryKey: ['office-conversation-messages', sessionId, projectId, conversationId] });
   };
+
+  // A browser reopening after the server lease expired can safely replay the same
+  // idempotent request. Never auto-retry an unexpired or FAILED turn.
+  useEffect(() => {
+    if (sendingTurn) return;
+    const now = Date.now();
+    const expiredTurn = messages.find((message) => {
+      const key = message.turn_idempotency_key;
+      const expiry = message.turn_lease_expires_at ? Date.parse(message.turn_lease_expires_at) : NaN;
+      return message.sender === 'CEO' && message.turn_status === 'PENDING' && !!key
+        && Number.isFinite(expiry) && expiry < now - 5_000
+        && !autoRecoveryAttempts.current.has(key);
+    });
+    if (!expiredTurn?.turn_idempotency_key) return;
+    autoRecoveryAttempts.current.add(expiredTurn.turn_idempotency_key);
+    void retryPendingTurn(expiredTurn);
+  }, [messages, sendingTurn, projectId, conversationId]);
 
   const stateMessage = (state: DataState<unknown> | undefined) => {
     if (!state) return 'Cargando…';

@@ -801,6 +801,12 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         assert client.post(turn_url, headers=ceo, json={
             "body": crashed_body, "idempotency_key": crashed_key,
         }).status_code == 409
+        pending_projection = client.get(
+            f"/v1/projects/{project}/conversations/{conversation_id}/messages", headers=ceo,
+        ).json()
+        interrupted = next(item for item in pending_projection if item["id"] == crashed_message_id)
+        assert interrupted["turn_status"] == "PENDING"
+        assert interrupted["turn_lease_expires_at"] is not None
         with connect_postgres() as db:
             db.execute(
                 "UPDATE project_conversation_turns SET lease_expires_at=clock_timestamp()-interval '1 second' "
@@ -825,6 +831,12 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         assert str(recovered_row[1]) == crashed_message_id
         assert recovered_row[2] is None and recovered_row[3] is None
         assert recovery_events == 1
+        recovered_projection = client.get(
+            f"/v1/projects/{project}/conversations/{conversation_id}/messages", headers=ceo,
+        ).json()
+        recovered_message = next(item for item in recovered_projection if item["id"] == crashed_message_id)
+        assert recovered_message["turn_status"] == "COMPLETED"
+        assert recovered_message["turn_lease_expires_at"] is None
 
         eligible_worker = "conversation-worker-" + str(uuid4())
         assert client.post("/v1/principals/credentials", headers=ceo, json={

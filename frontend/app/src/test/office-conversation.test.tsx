@@ -213,6 +213,47 @@ describe('office persistent project conversation', () => {
     ));
   });
 
+  it('automatically resumes an expired pending turn with its original idempotency key', async () => {
+    const pending = { ...message, turn_status: 'PENDING' as const,
+      turn_idempotency_key: 'b7f4938a-98d3-45a7-a5d7-2bb3e2b4de34',
+      turn_lease_expires_at: new Date(Date.now() - 10_000).toISOString() };
+    const port: AaoConversationPort = {
+      listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
+      listAssignableAgents: vi.fn().mockResolvedValue(ready([])),
+      listConversationMessages: vi.fn().mockResolvedValue(ready([pending])),
+      createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(),
+      streamCEOConversationTurn: vi.fn().mockResolvedValue(ready({ message_id: 'reply-recovered' })),
+      createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(),
+      createWorkGroupFromConversation: vi.fn(), proposeWorkGroupFromConversation: vi.fn(),
+      listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), assignWorkGroupChild: vi.fn(),
+      confirmWorkGroupConsolidation: vi.fn(), createWorkGroupPartialReport: vi.fn(),
+    };
+    setup(port);
+    await waitFor(() => expect(port.streamCEOConversationTurn).toHaveBeenCalledTimes(1));
+    expect(port.streamCEOConversationTurn).toHaveBeenCalledWith(
+      'project-active', 'conversation-1', 'Preparar el plan', pending.turn_idempotency_key, expect.any(Function),
+    );
+  });
+
+  it('does not automatically resume a pending turn before its lease expires', async () => {
+    const pending = { ...message, turn_status: 'PENDING' as const,
+      turn_idempotency_key: 'b7f4938a-98d3-45a7-a5d7-2bb3e2b4de34',
+      turn_lease_expires_at: new Date(Date.now() + 60_000).toISOString() };
+    const port: AaoConversationPort = {
+      listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
+      listAssignableAgents: vi.fn().mockResolvedValue(ready([])),
+      listConversationMessages: vi.fn().mockResolvedValue(ready([pending])),
+      createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(), streamCEOConversationTurn: vi.fn(),
+      createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(),
+      createWorkGroupFromConversation: vi.fn(), proposeWorkGroupFromConversation: vi.fn(),
+      listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), assignWorkGroupChild: vi.fn(),
+      confirmWorkGroupConsolidation: vi.fn(), createWorkGroupPartialReport: vi.fn(),
+    };
+    setup(port);
+    await screen.findByText('Preparar el plan');
+    expect(port.streamCEOConversationTurn).not.toHaveBeenCalled();
+  });
+
   it('reconciles a persisted pending turn until the backend records its completion', async () => {
     const pending = { ...message, turn_status: 'PENDING' as const, turn_idempotency_key: 'turn-key' };
     const completed = { ...message, id: 'reply-1', sender: 'AAO' as const, body: 'Respuesta recuperada', turn_status: 'COMPLETED' as const };

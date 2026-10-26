@@ -9,12 +9,14 @@ import { AgentDetailDrawer } from '../organization/AgentDetailDrawer';
 import { OfficeWorkRequestPanel } from './components/OfficeWorkRequestPanel';
 import { OfficeConversationPanel } from './components/OfficeConversationPanel';
 import { OfficeWorkGroupPanel } from './components/OfficeWorkGroupPanel';
+import { OfficeCapabilityCatalogPanel } from './components/OfficeCapabilityCatalogPanel';
 
 export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
   organization,
   projects = { kind: 'unavailable', reason: 'Lista de proyectos no disponible.', retryable: true },
   canCreateWorkRequest = false,
   conversationPort,
+  capabilityReadPort,
   conversationSessionId,
   onCreateWorkRequest,
   onNavigate,
@@ -285,6 +287,14 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
             onOpenBoard={(projectId) => onNavigate?.('kanban', projectId)}
           />
         </>
+      )}
+
+      {capabilityReadPort && conversationSessionId && !isDemo && (
+        <OfficeCapabilityCatalogPanel
+          projects={projects}
+          port={capabilityReadPort}
+          sessionId={conversationSessionId}
+        />
       )}
 
       {/* Enriched Agent Drawer */}

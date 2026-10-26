@@ -45,6 +45,13 @@ describe('Phase F4: VirtualOfficeView & 3D Office Experience', () => {
     expect(within(toolbar).getByRole('button', { name: /Plano 2D Accesible/i })).toBeInTheDocument();
   });
 
+  it('does not show the live capability catalogue in DEMO even when a read port is supplied', () => {
+    render(<VirtualOfficeView organization={readyDemoState} conversationSessionId="demo-session"
+      capabilityReadPort={{ getProjectCapabilities: vi.fn() }} />);
+
+    expect(screen.queryByRole('heading', { name: 'Capacidades registradas' })).not.toBeInTheDocument();
+  });
+
   it('toggles between 3D viewport and 2D accessible blueprint map', () => {
     render(<VirtualOfficeView organization={readyDemoState} />);
 

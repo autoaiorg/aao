@@ -535,6 +535,158 @@ def test_agent_dispatches_only_its_assigned_and_pre_evaluated_work(monkeypatch):
     os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
     reason="PostgreSQL integration requires an explicitly disposable test database",
 )
+def test_dependency_blocked_dispatch_is_persisted_and_resumes_after_prerequisite_clears(monkeypatch):
+    """RST-5: dependency gates admission/dispatch and remains retryable."""
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "dependency-dispatch-ceo")
+    monkeypatch.setenv("AAO_AGENT_QUEUE_ENABLED", "true")
+    ceo = {"X-CEO-Token": "dependency-dispatch-ceo"}
+    with TestClient(app) as client:
+        worker_id = "dependency-dispatch-agent-" + str(uuid4())
+        credential = client.post("/v1/principals/credentials", headers=ceo, json={
+            "principal_id": worker_id, "kind": "AGENT",
+        })
+        assert credential.status_code == 201, credential.text
+        worker = {"X-Agent-Token": credential.json()["token"]}
+
+        mandate = client.post("/v1/mandates", headers=ceo, json={
+            "title": "Dependency dispatch " + str(uuid4()),
+            "objective": "Verify dependency blocks and later permits dispatch",
+        }).json()["id"]
+        assert client.post(f"/v1/mandates/{mandate}/confirm", headers=ceo).status_code == 200
+        project = client.post("/v1/projects", headers=ceo, json={
+            "name": "Dependency dispatch", "mandate_id": mandate,
+        }).json()["id"]
+        for capability in ("work.admit", "execution.claim", "work.create"):
+            assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
+                "principal_id": worker_id, "capability": capability,
+            }).status_code == 201
+
+        conversation = client.post(f"/v1/projects/{project}/conversations", headers=ceo, json={
+            "title": "Dependency dispatch plan",
+        }).json()["id"]
+        group_response = client.post(
+            f"/v1/projects/{project}/conversations/{conversation}/work-groups",
+            headers=ceo, json={
+                "idempotency_key": str(uuid4()), "title": "Prerequisite plan",
+                "description": "A dependent task must wait for its prerequisite.",
+                "acceptance_criteria": ["The prerequisite is complete before dispatch"],
+                "tasks": [
+                    {"key": "prerequisite", "title": "Prerequisite",
+                     "acceptance_criteria": ["Resolve through an authorized operation"]},
+                    {"key": "dependent", "title": "Dependent",
+                     "acceptance_criteria": ["Dispatch only after prerequisite completion"],
+                     "depends_on": ["prerequisite"]},
+                ],
+            },
+        )
+        assert group_response.status_code == 201, group_response.text
+        tasks = {task["title"].lower(): task["id"]
+                 for task in group_response.json()["tasks"]}
+        dependent_id = tasks["dependent"]
+        assert client.put(f"/v1/work/{dependent_id}/assignment", headers=ceo, json={
+            "principal_id": worker_id,
+        }).status_code == 200
+
+        capability = {
+            "capability_id": "aao.dependency-dispatch-test", "version": "1.0.0",
+            "capability_type": "agent", "provenance": {"kind": "repository"},
+            "contract": {
+                "purpose": "Test dependency-gated dispatch", "entrypoint": "aao.agent_runner:patch",
+                "inputs": ["task", "base_sha"], "outputs": ["patch proposal"],
+                "platform": "Linux", "authority_boundary": "disposable proposal only",
+                "compatible_roles": ["implementer"],
+                "model_profile": {"backend": "fixture", "provider": "fixture", "model": None,
+                                  "seats": ["patch.tests"], "cost_per_attempt_usd": 0.5},
+            },
+            "required_permissions": ["execution.claim", "code.propose"],
+            "risks": ["agent edits a disposable clone"], "dependencies": [],
+            "tests": ["tests/test_agent_runner.py"], "compatibility": {},
+            "evidence": ["repository capability contract"],
+        }
+        registered = client.post(
+            f"/v1/projects/{project}/capabilities", headers=worker, json=capability,
+        )
+        assert registered.status_code == 201, registered.text
+        evaluation = client.post(
+            f"/v1/projects/{project}/capability-evaluations", headers=worker, json={
+                "task_id": dependent_id,
+                "options": [{"choice": choice, "fit": fit, "security": fit, "cost": fit,
+                             "time": fit, "tokens": fit, "maintenance": fit}
+                            for choice, fit in (("reuse", 5), ("adapt", 3), ("build", 1))],
+                "rationale": "Use the registered local runner for this bounded test task.",
+                "evidence": ["repository capability contract"],
+                "capability_id": "aao.dependency-dispatch-test", "version": "1.0.0",
+            },
+        )
+        assert evaluation.status_code == 201, evaluation.text
+
+        rejected_admission = client.post(f"/v1/work/{dependent_id}/admit", headers=worker)
+        assert rejected_admission.status_code == 409
+        assert "Dependencies unresolved" in rejected_admission.text
+        blocked = client.post("/v1/agent/dispatch-next", headers=worker, json={
+            "project_id": project, "principal_id": worker_id, "base_sha": "a" * 40,
+        })
+        assert blocked.status_code == 202, blocked.text
+        assert blocked.json()["status"] == "BLOCKED"
+        assert blocked.json()["work_id"] == dependent_id
+        assert blocked.json()["reason"] == "Dependencies must be DONE before dispatch"
+        with connect_postgres() as db:
+            assert db.execute(
+                "SELECT status FROM work_items WHERE id=%s", (dependent_id,),
+            ).fetchone()[0] == "INBOX"
+            assert db.execute(
+                "SELECT count(*) FROM execution_queue WHERE work_id=%s", (dependent_id,),
+            ).fetchone()[0] == 0
+            block = db.execute(
+                "SELECT details FROM events WHERE subject_id=%s AND kind='work.dispatch_blocked'",
+                (dependent_id,),
+            ).fetchone()[0]
+            assert block["reason"] == blocked.json()["reason"]
+            assert block["protocol_instance_id"]
+            pin = db.execute(
+                "SELECT protocol_id,protocol_version,subject_id FROM protocol_instances WHERE id=%s",
+                (block["protocol_instance_id"],),
+            ).fetchone()
+            assert pin[0:2] == ("blockage-escalation", "1.0.0")
+            assert str(pin[2]) == dependent_id
+
+        projected = client.get(f"/v1/projects/{project}/work-groups", headers=ceo)
+        assert projected.status_code == 200
+        child = next(item for item in projected.json()[0]["children"]
+                    if item["work_id"] == dependent_id)
+        assert child["dependencies"] == [{"work_id": tasks["prerequisite"], "status": "INBOX"}]
+        assert child["dispatch_block"]["reason"] == blocked.json()["reason"]
+
+        # Change only disposable fixture state. This is not evidence that the
+        # prerequisite was completed through its operational protocol.
+        with connect_postgres() as db:
+            db.execute("UPDATE work_items SET status='DONE' WHERE id=%s",
+                       (tasks["prerequisite"],))
+        unblocked = client.post("/v1/agent/dispatch-next", headers=worker, json={
+            "project_id": project, "principal_id": worker_id, "base_sha": "a" * 40,
+        })
+        assert unblocked.status_code == 202, unblocked.text
+        assert unblocked.json()["status"] == "QUEUED"
+        assert unblocked.json()["work_id"] == dependent_id
+        with connect_postgres() as db:
+            assert db.execute(
+                "SELECT status FROM work_items WHERE id=%s", (dependent_id,),
+            ).fetchone()[0] == "READY"
+            assert db.execute(
+                "SELECT count(*) FROM execution_queue WHERE work_id=%s AND status='QUEUED'",
+                (dependent_id,),
+            ).fetchone()[0] == 1
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or
+    os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="PostgreSQL integration requires an explicitly disposable test database",
+)
 def test_group_assignment_routes_execution_without_creating_grants(monkeypatch):
     from aao.execution_queue import ExecutionConflict, claim, complete
     from aao.postgresql_connection import connect_postgres

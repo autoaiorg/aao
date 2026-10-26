@@ -183,6 +183,7 @@ def reconcile(work_id: str, publisher_credential: str, *, get_pr: Callable[[int]
     if not published:
         raise PublishError("work has no published pull request")
     record = published[0]
+    _require_current_published_candidate(work_id, record)
     pr = get_pr(int(record["pr_number"]))
     if pr.get("head_sha") != record["candidate_sha"]:
         raise PublishError("pull request head no longer matches the approved candidate")
@@ -192,6 +193,10 @@ def reconcile(work_id: str, publisher_credential: str, *, get_pr: Callable[[int]
         # Closed without merge: the approved candidate was not accepted; the work goes back to
         # IN_PROGRESS so a new attempt can be run, reviewed and published.
         with tx() as db:
+            current_work = db.execute("SELECT status FROM work_items WHERE id=%s FOR UPDATE", (work_id,)).fetchone()
+            if not current_work or current_work[0] != "VERIFIED":
+                raise PublishError("work is no longer VERIFIED")
+            _require_current_published_candidate_in_transaction(db, work_id, record)
             reopened = db.execute("UPDATE work_items SET status='IN_PROGRESS' WHERE id=%s AND status='VERIFIED' "
                                   "RETURNING id", (work_id,)).fetchone()
             if reopened:
@@ -205,12 +210,43 @@ def reconcile(work_id: str, publisher_credential: str, *, get_pr: Callable[[int]
     result = {"pr_number": record["pr_number"], "pr_url": record["pr_url"],
               "candidate_sha": record["candidate_sha"], "merge_commit_sha": merge_sha, "reconciled_by": publisher}
     with tx() as db:
+        current_work = db.execute("SELECT status FROM work_items WHERE id=%s FOR UPDATE", (work_id,)).fetchone()
+        if not current_work or current_work[0] != "VERIFIED":
+            raise PublishError("work is no longer VERIFIED")
+        _require_current_published_candidate_in_transaction(db, work_id, record)
         updated = db.execute("UPDATE work_items SET status='DONE' WHERE id=%s AND status='VERIFIED' RETURNING id",
                              (work_id,)).fetchone()
         if not updated:
             raise PublishError("work is no longer VERIFIED")
         audit(db, work_id, "work.completed", result)
     return {**result, "status": "DONE"}
+
+
+def _require_current_published_candidate(work_id: str, record: dict) -> None:
+    """Refuse reconciliation if the PR no longer matches the currently approved execution."""
+    from aao.work_management_api import tx
+
+    with tx() as db:
+        _require_current_published_candidate_in_transaction(db, work_id, record)
+
+
+def _require_current_published_candidate_in_transaction(db, work_id: str, record: dict) -> None:
+    current_review = db.execute(
+        "SELECT id,candidate_sha FROM reviews WHERE work_id=%s AND decision='APPROVE' "
+        "ORDER BY created_at DESC LIMIT 1", (work_id,),
+    ).fetchone()
+    if (not current_review or str(current_review[0]) != str(record.get("review_id"))
+            or current_review[1] != record.get("candidate_sha")):
+        raise PublishError("published pull request no longer matches the current approved candidate")
+    current_execution = db.execute(
+        "SELECT 1 FROM execution_queue q JOIN patch_proposals p "
+        "ON p.id::text=q.result_json->>'proposal_id' AND p.work_id=q.work_id "
+        "WHERE q.work_id=%s AND q.status='SUCCEEDED' AND q.result_json->>'candidate_sha'=%s "
+        "AND p.id::text=%s LIMIT 1",
+        (work_id, record.get("candidate_sha"), record.get("proposal_id")),
+    ).fetchone()
+    if not current_execution:
+        raise PublishError("published pull request no longer matches a succeeded candidate execution")
 
 
 def github_publisher(store: str | Path) -> tuple[Callable[[str, str], None], Callable[[str, str, str], dict],

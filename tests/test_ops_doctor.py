@@ -101,3 +101,22 @@ def test_valid_local_pem_is_not_claimed_operational(tmp_path, monkeypatch):
     assert result.status == "WARN"
     assert "INSTALLED_UNVERIFIED" in result.message
     assert "GitHub App identity, revocation, and live authentication were not verified" in result.message
+
+
+def test_valid_key_in_replaceable_parent_directory_remains_unverified(tmp_path, monkeypatch):
+    _allow_required_governance_users(monkeypatch)
+    key_dir = tmp_path / "replaceable"
+    key_dir.mkdir(mode=0o700)
+    key = key_dir / "app.pem"
+    subprocess.run(
+        ["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048",
+         "-out", str(key)], check=True, capture_output=True,
+    )
+    key.chmod(0o600)
+    key_dir.chmod(0o755)
+
+    result = check_governance_identities([key])
+
+    assert result.status == "WARN"
+    assert "INSTALLED_UNVERIFIED" in result.message
+    assert "parent directory is not private" in result.message

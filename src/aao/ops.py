@@ -213,6 +213,34 @@ def check_governance_identities(app_keys_override: list[Path] | None = None) -> 
     unverified_reasons = []
     for expected_owner, key_path in present_keys:
         try:
+            # Check the complete role-owned path, not just the PEM leaf. A secure
+            # key under a replaceable or traversable directory is not protected.
+            if expected_owner:
+                account = pwd.getpwnam(expected_owner)
+                home = Path(account.pw_dir)
+                parents = []
+                parent = key_path.parent
+                while parent != home and parent != parent.parent:
+                    parents.append(parent)
+                    parent = parent.parent
+                if parent != home:
+                    unverified_reasons.append(f"{key_path.name}: path is not under {expected_owner}'s home")
+                else:
+                    parents.append(home)
+                for directory in parents:
+                    directory_info = directory.lstat()
+                    if (not stat.S_ISDIR(directory_info.st_mode)
+                            or directory_info.st_uid != account.pw_uid
+                            or stat.S_IMODE(directory_info.st_mode) & 0o077):
+                        unverified_reasons.append(
+                            f"{key_path.name}: parent directory {directory} is not role-owned and private"
+                        )
+                        break
+            else:
+                parent_info = key_path.parent.lstat()
+                if (not stat.S_ISDIR(parent_info.st_mode)
+                        or stat.S_IMODE(parent_info.st_mode) & 0o077):
+                    unverified_reasons.append(f"{key_path.name}: parent directory is not private")
             st = key_path.lstat()
             if not stat.S_ISREG(st.st_mode):
                 unverified_reasons.append(f"{key_path.name}: not a regular, non-symlink key file")

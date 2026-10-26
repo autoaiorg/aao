@@ -495,6 +495,25 @@ class AgentDispatchRequest(BaseModel):
     base_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
 
 
+class AgentExecutionClaimRequest(BaseModel):
+    project_id: str = Field(min_length=1)
+    seconds: int = Field(default=1800, ge=1, le=1800)
+
+
+class AgentExecutionContextRequest(BaseModel):
+    lease_token: str = Field(min_length=1, max_length=128)
+
+
+class AgentExecutionCompleteRequest(BaseModel):
+    lease_token: str = Field(min_length=1, max_length=128)
+    result: dict
+
+
+class AgentProposalLookupRequest(BaseModel):
+    base_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    patch_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class ExternalResolutionRequest(BaseModel):
     reason: str = Field(min_length=10, max_length=2000)
     pr_number: int = Field(ge=1)
@@ -3735,6 +3754,106 @@ def dispatch_next_agent_work(
                     "work_id": work_id, "reason": str(exc.detail)}
         raise
     return {**staged, "work_id": work_id}
+
+
+@app.post("/v1/agent/executions/claim")
+def claim_agent_execution(
+    payload: AgentExecutionClaimRequest,
+    principal: str = Depends(require_worker),
+    x_agent_token: str | None = Header(None),
+):
+    """Claim staged work through the API's privileged database boundary."""
+    from aao.execution_queue import ExecutionConflict, claim
+
+    try:
+        lease = claim(
+            str(principal), agent_credential=x_agent_token or "",
+            project_id=payload.project_id, seconds=payload.seconds,
+        )
+    except ExecutionConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return lease if lease is not None else {"status": "IDLE"}
+
+
+@app.post("/v1/agent/executions/{execution_id}/context")
+def agent_execution_context(
+    execution_id: str,
+    payload: AgentExecutionContextRequest,
+    principal: str = Depends(require_worker),
+):
+    """Return task context only for this principal's live execution lease."""
+    with tx() as db:
+        row = db.execute(
+            "SELECT q.work_id,q.project_id,q.input_json,w.title,w.description,"
+            "w.acceptance_criteria,w.author_id,c.contract->'model_profile' "
+            "FROM execution_queue q JOIN work_items w ON w.id=q.work_id "
+            "LEFT JOIN capability_versions c ON c.project_id=q.project_id "
+            "AND c.capability_id=q.input_json->>'capability_id' "
+            "AND c.version=q.input_json->>'version' "
+            "WHERE q.id=%s AND q.status='RUNNING' AND q.worker_id=%s "
+            "AND q.lease_token=%s AND q.lease_expires_at>clock_timestamp()",
+            (execution_id, str(principal), payload.lease_token),
+        ).fetchone()
+        if not row:
+            raise HTTPException(409, "Execution lease is stale or not owned by this agent")
+        require_grant(db, str(principal), str(row[1]), "execution.claim")
+        selection = row[2]
+        if isinstance(selection, str):
+            selection = json.loads(selection)
+        if not isinstance(selection, dict) or selection.get("type") != "aao.agent-patch.v1":
+            raise HTTPException(409, "Execution does not contain an agent-patch selection")
+        return {
+            "work_id": str(row[0]), "project_id": str(row[1]), "input": selection,
+            "title": row[3], "description": row[4] or "",
+            "acceptance_criteria": row[5] or [], "author_id": str(row[6]),
+            "model_profile": row[7] if isinstance(row[7], dict) else None,
+        }
+
+
+@app.post("/v1/agent/executions/{execution_id}/complete")
+def complete_agent_execution(
+    execution_id: str,
+    payload: AgentExecutionCompleteRequest,
+    principal: str = Depends(require_worker),
+    x_agent_token: str | None = Header(None),
+):
+    """Complete an execution through the queue's fenced transition."""
+    from aao.execution_queue import ExecutionConflict, complete
+
+    try:
+        complete(
+            execution_id, payload.lease_token, str(principal), payload.result,
+            agent_credential=x_agent_token or "",
+        )
+    except ExecutionConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"execution_id": execution_id, "status": "COMPLETED"}
+
+
+@app.post("/v1/agent/work/{work_id}/patch-proposals/lookup")
+def lookup_agent_patch_proposal(
+    work_id: str,
+    payload: AgentProposalLookupRequest,
+    principal: str = Depends(require_worker),
+):
+    """Recover a proposal after a client lost the create response."""
+    with tx() as db:
+        work = db.execute(
+            "SELECT project_id,author_id FROM work_items WHERE id=%s", (work_id,),
+        ).fetchone()
+        if not work:
+            raise HTTPException(404, "Work not found")
+        project_id, author_id = work
+        require_grant(db, str(principal), str(project_id), "code.propose")
+        if str(author_id) != str(principal):
+            raise HTTPException(403, "Only the assigned agent may inspect its proposal")
+        row = db.execute(
+            "SELECT id FROM patch_proposals WHERE work_id=%s AND base_sha=%s AND patch_sha256=%s",
+            (work_id, payload.base_sha, payload.patch_sha256),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Matching proposal not found")
+    return {"proposal_id": str(row[0]), "work_id": work_id, "status": "PROPOSED"}
 
 
 ALLOWED_SPA_ROUTES = {

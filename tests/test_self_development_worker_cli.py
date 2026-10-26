@@ -61,6 +61,18 @@ def test_worker_runs_one_authorized_queue_item_without_logging_token(tmp_path, m
     assert "agent-token-fixture" not in output
 
 
+def test_worker_cli_does_not_require_postgresql_driver(tmp_path, monkeypatch, capsys):
+    runtime, _ = make_runtime(tmp_path)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setattr(worker.os, "getuid", lambda: os.stat(runtime).st_uid)
+    monkeypatch.setattr(worker, "run", lambda *_args: {"status": "IDLE"})
+    monkeypatch.setattr(worker.sys, "argv", ["worker", "--project-id", "project-1",
+                                             "--principal-id", "agent-1"])
+
+    assert worker.main() == 0
+    assert "No queued execution: IDLE" in capsys.readouterr().out
+
+
 def test_worker_does_not_downgrade_production_environment(tmp_path, monkeypatch):
     runtime, _ = make_runtime(tmp_path)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))

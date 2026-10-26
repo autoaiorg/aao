@@ -50,9 +50,12 @@ def claim(worker_id: str, *, agent_credential: str, project_id: str,
         row = db.execute(
             "SELECT q.id,q.work_id,q.input_json FROM execution_queue q "
             "JOIN projects p ON p.id=q.project_id "
+            "JOIN work_items w ON w.id=q.work_id "
+            "LEFT JOIN work_item_assignments a ON a.project_id=q.project_id AND a.work_id=q.work_id "
             "WHERE q.status='QUEUED' AND p.state='ACTIVE' AND q.project_id=%s "
+            "AND (w.parent_work_id IS NULL OR a.principal_id=%s) "
             "ORDER BY q.created_at,q.id FOR UPDATE OF q SKIP LOCKED LIMIT 1",
-            (project_id,),
+            (project_id, worker_id),
         ).fetchone()
         if not row:
             return None
@@ -108,6 +111,16 @@ def complete(execution_id: str, token: str, worker_id: str, result: dict,
         ).fetchone()
         if not execution:
             raise ExecutionConflict("Execution not found")
+        assignment = db.execute(
+            "SELECT w.parent_work_id,a.principal_id FROM execution_queue q "
+            "JOIN work_items w ON w.id=q.work_id "
+            "LEFT JOIN work_item_assignments a ON a.project_id=q.project_id AND a.work_id=q.work_id "
+            "WHERE q.id=%s FOR SHARE OF w", (execution_id,),
+        ).fetchone()
+        if assignment and assignment[0] is not None and (
+            assignment[1] is None or str(assignment[1]) != worker_id
+        ):
+            raise ExecutionConflict("Execution worker does not own the work assignment")
         project = db.execute(
             "SELECT state,state_generation FROM projects WHERE id=%s FOR UPDATE",
             (execution[0],),

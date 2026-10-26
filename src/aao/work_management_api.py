@@ -148,6 +148,10 @@ class WorkRequest(BaseModel):
     description: str = Field(default="", max_length=5000)
 
 
+class WorkAssignmentRequest(BaseModel):
+    principal_id: str = Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$")
+
+
 class WorkGroupTaskRequest(BaseModel):
     key: str = Field(min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
     title: str = Field(min_length=1, max_length=200)
@@ -1294,6 +1298,21 @@ def require_grant(db, principal: str, project_id: str, capability: str):
         raise HTTPException(403, "Project grant required")
 
 
+def require_group_work_assignee(db, work_id: str, principal: str) -> None:
+    """Group child work is routed only to its CEO-assigned, already-authorized agent."""
+    row = db.execute(
+        "SELECT w.parent_work_id,a.principal_id FROM work_items w "
+        "LEFT JOIN work_item_assignments a ON a.project_id=w.project_id AND a.work_id=w.id "
+        "WHERE w.id=%s FOR UPDATE OF w", (work_id,),
+    ).fetchone()
+    if not row or row[0] is None:
+        return
+    if row[1] is None:
+        raise HTTPException(409, "Group child must be assigned before admission or execution")
+    if str(row[1]) != str(principal):
+        raise HTTPException(403, "Only the assigned agent may admit or stage this group child")
+
+
 @app.post("/v1/projects/{project_id}/work", status_code=201)
 def create_work(project_id: str, payload: WorkRequest,
                 principal: str = Depends(require_worker)):
@@ -1557,6 +1576,69 @@ def create_conversation_work_group(
             "tasks": [{"id": str(child[0]), "title": child[1], "status": child[2],
                        "depends_on": dependencies.get(str(child[0]), [])} for child in children],
         }
+
+
+@app.put("/v1/work/{work_id}/assignment")
+def assign_group_child_work(
+    work_id: str, payload: WorkAssignmentRequest,
+    _: str = Depends(require_ceo),
+):
+    """Route a persisted group child to an already-authorized agent; never grants access."""
+    with tx() as db:
+        work = db.execute(
+            "SELECT project_id,parent_work_id,status FROM work_items WHERE id=%s FOR UPDATE",
+            (work_id,),
+        ).fetchone()
+        if not work:
+            raise HTTPException(404, "Work not found")
+        project_id, parent_work_id, status = work
+        if parent_work_id is None or not db.execute(
+            "SELECT 1 FROM work_groups WHERE parent_work_id=%s", (parent_work_id,),
+        ).fetchone():
+            raise HTTPException(409, "Only persistent work-group children can be assigned")
+        if status in {"IN_REVIEW", "VERIFIED", "DONE"}:
+            raise HTTPException(409, "Reviewed or completed work cannot be reassigned")
+        if db.execute(
+            "SELECT 1 FROM execution_queue WHERE work_id=%s "
+            "AND status IN ('QUEUED','RUNNING','UNCERTAIN') FOR SHARE", (work_id,),
+        ).fetchone():
+            raise HTTPException(409, "Active or uncertain execution prevents reassignment")
+        identity = db.execute(
+            "SELECT enabled FROM principal_credentials WHERE principal_id=%s "
+            "AND kind='AGENT' FOR SHARE", (payload.principal_id,),
+        ).fetchone()
+        if not identity or not identity[0]:
+            raise HTTPException(409, "Assignment target must be an active agent identity")
+        grants = {
+            row[0] for row in db.execute(
+                "SELECT capability FROM project_grants WHERE principal_id=%s "
+                "AND project_id=%s AND capability IN ('work.admit','execution.claim') "
+                "AND (expires_at IS NULL OR expires_at>clock_timestamp()) FOR SHARE",
+                (payload.principal_id, project_id),
+            ).fetchall()
+        }
+        if grants != {"work.admit", "execution.claim"}:
+            raise HTTPException(
+                409, "Assignment target needs existing work.admit and execution.claim grants",
+            )
+        previous = db.execute(
+            "SELECT principal_id FROM work_item_assignments WHERE work_id=%s FOR UPDATE",
+            (work_id,),
+        ).fetchone()
+        db.execute(
+            "INSERT INTO work_item_assignments(project_id,work_id,principal_id,assigned_by) "
+            "VALUES (%s,%s,%s,'ceo') ON CONFLICT(work_id) DO UPDATE SET "
+            "principal_id=EXCLUDED.principal_id,assigned_by=EXCLUDED.assigned_by,"
+            "assigned_at=clock_timestamp()",
+            (project_id, work_id, payload.principal_id),
+        )
+        audit(db, work_id, "work.assigned", {
+            "project_id": str(project_id), "principal_id": payload.principal_id,
+            "previous_principal_id": previous[0] if previous else None,
+            "assigned_by": "ceo", "grants_created": False,
+        })
+    return {"work_id": work_id, "principal_id": payload.principal_id,
+            "assigned_by": "ceo", "grants_created": False}
 
 
 @app.post("/v1/projects/{project_id}/conversations", status_code=201)
@@ -2027,6 +2109,7 @@ def board(project_id: str, principal: str = Depends(read_principal)):
             "COALESCE((SELECT json_agg(d.depends_on_work_id ORDER BY d.depends_on_work_id) "
             "FROM work_item_dependencies d WHERE d.work_id=w.id),'[]'::json),"
             "(SELECT g.id FROM work_groups g WHERE g.parent_work_id=w.id) "
+            ",(SELECT a.principal_id FROM work_item_assignments a WHERE a.work_id=w.id) "
             "FROM work_items w "
             "WHERE w.project_id=%s ORDER BY w.id", (project_id,),
         ).fetchall()
@@ -2098,6 +2181,7 @@ def board(project_id: str, principal: str = Depends(read_principal)):
              "parent_work_id": str(r[6]) if r[6] else None,
              "depends_on": [str(item) for item in (r[7] or [])],
              "work_group_id": str(r[8]) if r[8] else None,
+             "assigned_principal_id": r[9],
              "patch_proposals": patches_by_work.get(str(r[0]), []),
              "pull_requests": prs_by_work.get(str(r[0]), []),
              "resolution": resolutions.get(str(r[0]))}
@@ -2330,6 +2414,7 @@ def admit(work_id: str, principal: str = Depends(require_worker)):
             "p.mandate_id=m.id WHERE p.id=%s", (project_id,),
         ).fetchone()
         require_grant(db, principal, project_id, "work.admit")
+        require_group_work_assignee(db, work_id, str(principal))
         if db.execute("SELECT 1 FROM work_groups WHERE parent_work_id=%s", (work_id,)).fetchone():
             raise HTTPException(409, "A work-group parent is a container and cannot be admitted")
         prerequisites = db.execute(
@@ -2363,6 +2448,7 @@ def progress(work_id: str, principal: str = Depends(require_worker)):
             raise HTTPException(404, "Work not found")
         project_id, status = row
         require_grant(db, principal, project_id, "work.progress")
+        require_group_work_assignee(db, work_id, str(principal))
         active = db.execute("SELECT state FROM projects WHERE id=%s", (project_id,)).fetchone()
         if not active or active[0] != "ACTIVE":
             raise HTTPException(409, "Project not active")
@@ -2666,6 +2752,7 @@ def stage_inert(work_id: str, principal: str = Depends(require_worker)):
             raise HTTPException(409, "Work not ready in active project")
         require_grant(db, principal, project_id, "work.admit")
         require_grant(db, principal, project_id, "execution.claim")
+        require_group_work_assignee(db, work_id, str(principal))
         existing = db.execute(
             "SELECT id,status FROM execution_queue WHERE work_id=%s", (work_id,)
         ).fetchone()
@@ -2708,6 +2795,7 @@ def stage_repository_check(
             raise HTTPException(409, "Work not ready in active project")
         require_grant(db, principal, project_id, "work.admit")
         require_grant(db, principal, project_id, "execution.claim")
+        require_group_work_assignee(db, work_id, str(principal))
         capability = db.execute(
             "SELECT capability_type,status,contract->>'entrypoint' "
             "FROM capability_versions WHERE project_id=%s AND capability_id=%s "
@@ -2828,6 +2916,7 @@ def stage_agent_run(work_id: str, payload: AgentRunRequest, principal: str = Dep
             raise HTTPException(409, "Work not ready in active project")
         require_grant(db, principal, project_id, "work.admit")
         require_grant(db, principal, project_id, "execution.claim")
+        require_group_work_assignee(db, work_id, str(principal))
         cap = db.execute("SELECT capability_type,status,contract->>'entrypoint',contract->'model_profile'->>'backend',coalesce((contract->'model_profile'->>'cost_per_attempt_usd')::numeric,0) FROM capability_versions WHERE project_id=%s AND capability_id=%s AND version=%s FOR SHARE", (project_id, payload.capability_id, payload.version)).fetchone()
         if not cap or cap[0] != "agent" or cap[1] != "registered_local" or cap[2] != "aao.agent_runner:patch":
             raise HTTPException(409, "Selected agent-runner capability is unavailable")

@@ -101,9 +101,10 @@ def test_work_group_admission_waits_for_prerequisites_and_rejects_parent(monkeyp
         project = client.post("/v1/projects", headers=ceo, json={
             "name": "Dependency admission", "mandate_id": mandate,
         }).json()["id"]
-        assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
-            "principal_id": principal, "capability": "work.admit",
-        }).status_code == 201
+        for capability in ("work.admit", "execution.claim"):
+            assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
+                "principal_id": principal, "capability": capability,
+            }).status_code == 201
         conversation = client.post(f"/v1/projects/{project}/conversations", headers=ceo, json={
             "title": "Dependency plan",
         }).json()["id"]
@@ -124,6 +125,11 @@ def test_work_group_admission_waits_for_prerequisites_and_rejects_parent(monkeyp
         assert group_response.status_code == 201, group_response.text
         group = group_response.json()
         ids = {task["title"]: task["id"] for task in group["tasks"]}
+        for task_id in ids.values():
+            assigned = client.put(f"/v1/work/{task_id}/assignment", headers=ceo, json={
+                "principal_id": principal,
+            })
+            assert assigned.status_code == 200, assigned.text
 
         # An unresolved prerequisite blocks the dependent child without changing
         # its canonical INBOX state; an independent sibling remains admissible.
@@ -146,6 +152,98 @@ def test_work_group_admission_waits_for_prerequisites_and_rejects_parent(monkeyp
         admitted = client.post(f"/v1/work/{ids['Dependent']}/admit", headers=worker)
         assert admitted.status_code == 200, admitted.text
         assert admitted.json()["status"] == "READY"
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or
+    os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="PostgreSQL integration requires an explicitly disposable test database",
+)
+def test_group_assignment_routes_execution_without_creating_grants(monkeypatch):
+    from aao.execution_queue import ExecutionConflict, claim, complete
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "assignment-ceo")
+    ceo = {"X-CEO-Token": "assignment-ceo"}
+    with TestClient(app) as client:
+        worker_ids = ["assigned-" + str(uuid4()), "other-" + str(uuid4())]
+        worker_tokens = [
+            client.post("/v1/principals/credentials", headers=ceo, json={
+                "principal_id": worker_id, "kind": "AGENT",
+            }).json()["token"] for worker_id in worker_ids
+        ]
+        workers = [
+            {"X-Agent-Token": token} for token in worker_tokens
+        ]
+        mandate = client.post("/v1/mandates", headers=ceo, json={
+            "title": "Assignment " + str(uuid4()), "objective": "Route child work to real identities",
+        }).json()["id"]
+        assert client.post(f"/v1/mandates/{mandate}/confirm", headers=ceo).status_code == 200
+        project = client.post("/v1/projects", headers=ceo, json={
+            "name": "Assignment test", "mandate_id": mandate,
+        }).json()["id"]
+        for worker_id in worker_ids:
+            for capability in ("work.admit", "work.progress", "execution.claim"):
+                assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
+                    "principal_id": worker_id, "capability": capability,
+                }).status_code == 201
+        conversation = client.post(f"/v1/projects/{project}/conversations", headers=ceo, json={
+            "title": "Assignment discussion",
+        }).json()["id"]
+        group = client.post(
+            f"/v1/projects/{project}/conversations/{conversation}/work-groups",
+            headers=ceo, json={
+                "idempotency_key": str(uuid4()), "title": "Deliver result",
+                "description": "Consolidate children after completion",
+                "acceptance_criteria": ["Child evidence is preserved"],
+                "tasks": [{"key": "child", "title": "Assigned child",
+                           "acceptance_criteria": ["Evidence recorded"]}],
+            },
+        )
+        assert group.status_code == 201, group.text
+        work_id = group.json()["tasks"][0]["id"]
+        assignment_path = f"/v1/work/{work_id}/assignment"
+        assert client.put(assignment_path, headers=workers[0], json={
+            "principal_id": worker_ids[0],
+        }).status_code == 403
+        assignment = client.put(assignment_path, headers=ceo, json={
+            "principal_id": worker_ids[0],
+        })
+        assert assignment.status_code == 200, assignment.text
+        assert assignment.json() == {
+            "work_id": work_id, "principal_id": worker_ids[0],
+            "assigned_by": "ceo", "grants_created": False,
+        }
+        board = client.get(f"/v1/projects/{project}/board", headers=ceo).json()
+        child = next(item for item in board if item["id"] == work_id)
+        assert child["assigned_principal_id"] == worker_ids[0]
+        with connect_postgres() as db:
+            grant_count = db.execute(
+                "SELECT count(*) FROM project_grants WHERE project_id=%s AND principal_id=%s",
+                (project, worker_ids[0]),
+            ).fetchone()[0]
+            db.execute(
+                "INSERT INTO execution_queue(id,work_id,project_id,status,input_json) "
+                "VALUES (%s,%s,%s,'QUEUED',%s::jsonb)",
+                (str(uuid4()), work_id, project, json.dumps({"type": "aao.inert.v1"})),
+            )
+        assert grant_count == 3
+        assert client.post(f"/v1/work/{work_id}/admit", headers=workers[1]).status_code == 403
+        assert client.post(f"/v1/work/{work_id}/admit", headers=workers[0]).status_code == 200
+        assert claim(worker_ids[1], agent_credential=worker_tokens[1], project_id=project) is None
+        lease = claim(worker_ids[0], agent_credential=worker_tokens[0], project_id=project)
+        assert lease and lease["work_id"] == work_id
+        reassignment = client.put(assignment_path, headers=ceo, json={
+            "principal_id": worker_ids[1],
+        })
+        assert reassignment.status_code == 409
+        with pytest.raises(ExecutionConflict, match="does not own the work assignment"):
+            complete(lease["execution_id"], lease["token"], worker_ids[1],
+                     {"ok": True}, agent_credential=worker_tokens[1])
+        complete(lease["execution_id"], lease["token"], worker_ids[0],
+                 {"ok": True}, agent_credential=worker_tokens[0])
 
 
 @pytest.mark.skipif(

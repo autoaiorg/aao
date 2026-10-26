@@ -176,7 +176,7 @@ Los perfiles/unidades persistidos y la edición CEO ya están construidos (#134/
 
 ### F3/F4 — alcance a continuación
 
-- **F3 (estado actualizado):** PR #161 persiste padre/hijos y DAG; #162 bloquea admisión hasta que prerrequisitos estén en `DONE`; #167 persiste la asignación CEO sin crear grants. El incremento de construcción actual conecta el formulario de desglose con identidades habilitadas y grants ya existentes y hace atómica la asignación inicial junto al grupo. Sigue pendiente la consolidación durable que enlace resultados y evidencia reales; no dibujar equipo ejecutor ni síntesis ficticia.
+- **F3 (estado actualizado):** PR #161 persiste padre/hijos y DAG; #162 bloquea admisión hasta que prerrequisitos estén en `DONE`; #167 persiste la asignación CEO sin crear grants; #171 persiste una única consolidación CEO por grupo ligada a un hash de snapshot de resultados, ejecuciones, revisiones y evidencia. El contrato exige hijos `DONE`, rechaza hashes obsoletos y replay distinto, y mantiene el padre como contenedor en `INBOX`. Siguiente: conectar el recurso a Oficina Virtual y representar progreso/confirmación desde datos reales; no dibujar equipo ejecutor ni síntesis ficticia.
 - **F4:** no se ha identificado contrato durable para rutinas/calendario, base de conocimiento corporativa, skills/briefs versionados ni aprendizaje revisado. Primero inventariar datos/capacidades persistentes existentes y sus propietarios; implementar solo el mínimo backend útil, luego lectura UI. No ejecutar temporizadores ni mantener conocimiento operativo solo en navegador.
 
 ### Seguimiento de construcción (rama `feat/agents-office-aa-integration`)
@@ -210,10 +210,10 @@ Los perfiles/unidades persistidos y la edición CEO ya están construidos (#134/
 - **Hallazgo vigente del motor:** `work_items` y `execution_queue` son canónicos y durables, pero cada ejecución se vincula a un único trabajo y no existe relación padre/hijo ni dependencia. La identidad temporal de equipo del frontend no es un recurso persistido y no debe usarse para asignar autoridad. Fuente: migraciones `001_foundation.sql`, `003_execution.sql`, `014_execution_retry.sql`, endpoint `board()` y modelo de oficina.
 - **Primer incremento integrado:** PR #161, merge `3eb0a0996ea8e5d5dbae9ad380a73cc1559a341a`; parent/child, DAG same-project, idempotencia, persistencia atómica como `INBOX`, confirmación CEO desde la conversación y proyección board. PR CI pasó en runs 40244773676 y 40244778422; CI post-merge `main` pasó en run 40244937121 (`test`, `frontend`).
 - **Siguiente incremento de construcción:** la persistencia por sí sola no coordinaba admisión. El endpoint `/admit` forzaba `dependencies_satisfied=True`; se corrige para comprobar y bloquear con seguridad hasta que cada prerequisito esté en `DONE`, sin impedir admitir hijos independientes. También se rechaza admitir el padre contenedor. No se añaden grants.
-- **No forma parte aún:** planificación automática, identidad de agente ficticia/efímera, coordinación paralela automática ni síntesis pretendida como resultado consolidado. Falta definir la asignación autorizada por hijo y la consolidación durable enlazada a ejecuciones/evidencia; la UI solo refleja estado canónico.
+- **No forma parte aún:** planificación automática, identidad de agente ficticia/efímera ni coordinación paralela automática. La asignación autorizada por hijo y la consolidación durable enlazada a ejecuciones/evidencia están construidas; la proyección de asignaciones/consolidación en Oficina Virtual sigue pendiente y no debe simularse en frontend.
 - **Aceptación del primer incremento:** CEO puede confirmar un desglose de conversación en una transacción; padre e hijos tienen IDs persistidos en `INBOX`; dependencias intra-grupo sin ciclos; reintentos no duplican; board aplica scope; sin grants ni ejecuciones al crear; reinicio y relectura conservan el grafo. CI PR y post-merge verdes.
 
-### F3 — admisión consciente de dependencias (integrada; asignación integrada; consolidación pendiente)
+### F3 — admisión consciente de dependencias (integrada; asignación y consolidación integradas)
 
 - **Problema verificado:** aunque el DAG se persistía, `/v1/work/{id}/admit` enviaba `dependencies_satisfied=True` incondicionalmente; un hijo podía pasar a `READY` antes de completar sus prerrequisitos.
 - **Cambio en `fix/f3-dependency-aware-admission`:** la admisión lee los estados de prerrequisitos del mismo proyecto y toma bloqueos `FOR SHARE`; solo `DONE` satisface la dependencia. Un hijo bloqueado se conserva en `INBOX`; un hermano sin dependencias puede admitirse independientemente. El padre del grupo se rechaza como contenedor, no es trabajo ejecutable. No hay grants heredados ni nueva ruta de ejecución.
@@ -221,7 +221,7 @@ Los perfiles/unidades persistidos y la edición CEO ya están construidos (#134/
 - **Validación local:** Ruff, `compileall`, `git diff --check` pasan; backend completo `610 passed, 48 skipped`. La prueba nueva requiere PostgreSQL desechable y fue ejecutada en CI.
 - **Integrado:** PR #162 mergeada en `513c65989cc56249f72482cf37ecce5f6d1b2bd6`; checks PR runs `40245188564` y `40245192209`; CI post-merge `main` run `40245352064` (test/frontend verde).
 - No se ha inspeccionado ni verificado en ejecución un entorno PostgreSQL local; el diferencial se basa en rutas, código y CI. No se ejercitaron credenciales ni llamadas a modelo de Agents Office.
-- **Siguiente owner:** PM/backend define un recurso de consolidación durable separado del trabajo padre, fijado a resultados y evidencia reales; frontend consume ese contrato y exige confirmación CEO. CEO interviene solo si aparece una decisión estratégica o riesgo reservado.
+- **Siguiente owner:** PM/frontend consume contratos canónicos de asignación y consolidación en Oficina Virtual; exigir confirmación CEO y mostrar solo estado/evidencia persistidos. CEO interviene solo si aparece una decisión estratégica o riesgo reservado.
 
 ### F3 — asignación CEO a identidad autorizada (integrada)
 
@@ -229,7 +229,13 @@ Los perfiles/unidades persistidos y la edición CEO ya están construidos (#134/
 - **Ejecución:** admisión, progreso, staging y claim filtran los hijos por principal asignado; el board incluye `assigned_principal_id`. La asignación no sustituye los checks de grant del motor ni la autenticación de ejecución. Se conserva la restricción de no re-asignar durante una ejecución activa/incierta.
 - **Pruebas añadidas:** integración PostgreSQL cubre escritura CEO, prohibición a AGENT, proyección, grants inalterados, denegación de otro agente, claim del asignado y fencing de finalización/reasignación.
 - **Evidencia:** CI de PR #167 run `40248236640` aplicó la migración y pasó los jobs `test` y `frontend`; suite PostgreSQL `658 passed, 1 skipped`; Ruff, TypeScript y Vitest pasaron. La ejecución local sin base desechable reportó skips y no se cuenta como evidencia de integración.
-- **Límites pendientes:** aún no hay control UI de asignación visible en la oficina/Control Center; tampoco consolidación durable del padre enlazada a resultados/evidencia. No se dibujan equipos ejecutores ni se sintetizan resultados.
+- **Límites pendientes:** aún no hay control UI de asignación ni proyección UI de la consolidación en la oficina/Control Center. La consolidación inicial requiere todos los hijos `DONE`; no contempla resultados parciales/conflictos. No se dibujan equipos ejecutores ni se sintetizan resultados.
+
+### F3 — consolidación CEO durable (integrada; proyección UI pendiente)
+
+- **Cambio integrado en PR #171, squash SHA `827d6e218f11f279235bfb09d9f533ea5f6d5952`:** migración `023_work_group_consolidations.sql` y rutas CEO-only `GET /v1/projects/{project_id}/work-groups` y `POST /v1/projects/{project_id}/work-groups/{group_id}/consolidation`. La confirmación conserva resumen, snapshot fuente y su SHA-256, idempotency key y actor; el snapshot enlaza IDs/estado/evidencia de hijos, ejecuciones, identidad ejecutora, hash del resultado (no expone `result_json`) y revisiones.
+- **Límites del primer incremento:** solo admite hijos `DONE`; hashes desactualizados y grupos incompletos se rechazan con 409; no modifica estados ni crea ejecuciones/grants. La tabla conserva una consolidación por grupo. No resuelve aún síntesis de fallos parciales/conflictos ni presenta el contrato en Oficina Virtual.
+- **Evidencia:** PR #171 head `d97fe74f67d0cc0288f48d6a09553ecf77c17cf5`; runs `40250015522` y `40250019205` con `test` y `frontend` SUCCESS. CI aplicó migración 023 y ejecutó la integración PostgreSQL de idempotencia, autorización, hash obsoleto, evidencia y contenedor padre. CI post-merge de `main` en SHA `827d6e218f11f279235bfb09d9f533ea5f6d5952`, run `40250184537`: `test` y `frontend` SUCCESS. [PR #171](https://github.com/autoaiorg/aao/pull/171), [CI PR](https://github.com/autoaiorg/aao/actions/runs/40250019205), [CI main](https://github.com/autoaiorg/aao/actions/runs/40250184537).
 
 
 ### Incremento posterior: LIVE fail-closed (`fix/office-live-organization-fail-closed`)

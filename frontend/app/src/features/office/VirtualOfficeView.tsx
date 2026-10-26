@@ -20,6 +20,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
   canCreateWorkRequest = false,
   conversationPort,
   capabilityReadPort,
+  capabilityFeedbackPort,
   activityReadPort,
   knowledgeReadPort,
   calendarReadPort,
@@ -299,6 +300,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
         <OfficeCapabilityCatalogPanel
           projects={projects}
           port={capabilityReadPort}
+          feedbackPort={capabilityFeedbackPort}
           sessionId={conversationSessionId}
         />
       )}

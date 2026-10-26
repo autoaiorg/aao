@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { AaoReadPort } from '../../../data/ports/AaoReadPort';
+import type { AaoCapabilityFeedbackPort } from '../../../data/ports/AaoCapabilityFeedbackPort';
 import type { CapabilitySummary, DataState, ProjectSummary } from '../../../domain/models';
 import { DataStatePanel } from '../../../components/ui/DataStatePanel';
 import './office-forms.css';
@@ -8,6 +9,7 @@ import './office-forms.css';
 interface OfficeCapabilityCatalogPanelProps {
   projects: DataState<ProjectSummary[]>;
   port: Pick<AaoReadPort, 'getProjectCapabilities'>;
+  feedbackPort?: AaoCapabilityFeedbackPort;
   sessionId: string;
 }
 
@@ -21,11 +23,17 @@ const typeLabel: Record<string, string> = {
   agent: 'Perfil de agente',
 };
 
-export const OfficeCapabilityCatalogPanel: React.FC<OfficeCapabilityCatalogPanelProps> = ({ projects, port, sessionId }) => {
+export const OfficeCapabilityCatalogPanel: React.FC<OfficeCapabilityCatalogPanelProps> = ({ projects, port, feedbackPort, sessionId }) => {
   const activeProjects = useMemo(() => projects.kind === 'ready'
     ? projects.data.filter((project) => (project.status || 'ACTIVE') === 'ACTIVE')
     : [], [projects]);
   const [requestedProjectId, setRequestedProjectId] = useState('');
+  const [correction, setCorrection] = useState('');
+  const [evidenceText, setEvidenceText] = useState('');
+  const [workId, setWorkId] = useState('');
+  const [selectedCapability, setSelectedCapability] = useState('');
+  const [submitState, setSubmitState] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   const projectId = activeProjects.some((project) => project.id === requestedProjectId)
     ? requestedProjectId : activeProjects[0]?.id || '';
   const capabilitiesQuery = useQuery({
@@ -33,6 +41,39 @@ export const OfficeCapabilityCatalogPanel: React.FC<OfficeCapabilityCatalogPanel
     queryFn: () => port.getProjectCapabilities(projectId),
     enabled: !!projectId,
   });
+  const feedbackQuery = useQuery({
+    queryKey: ['office-capability-feedback', sessionId, projectId],
+    queryFn: () => feedbackPort!.listCapabilityFeedback(projectId),
+    enabled: !!projectId && !!feedbackPort,
+  });
+  const capabilities = capabilitiesQuery.data?.kind === 'ready' ? capabilitiesQuery.data.data : [];
+  const selected = capabilities.find((item) => `${item.capability_id}@${item.version}` === selectedCapability) ?? capabilities[0];
+  const selectedValue = selected ? `${selected.capability_id}@${selected.version}` : '';
+  const submitFeedback = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!feedbackPort || !projectId || !selected || !correction.trim()) return;
+    const evidence = evidenceText.split('\n').map((value) => value.trim()).filter(Boolean);
+    if (evidence.length === 0 && !workId.trim()) {
+      setSubmitState('Añade una referencia de evidencia o el ID de un trabajo canónico.');
+      return;
+    }
+    setSubmitting(true);
+    const result = await feedbackPort.proposeCapabilityFeedback(projectId, {
+      capability_id: selected.capability_id, version: selected.version, correction: correction.trim(),
+      work_id: workId.trim() || null, evidence,
+    });
+    setSubmitting(false);
+    if (result.kind === 'ready') {
+      setCorrection('');
+      setEvidenceText('');
+      setWorkId('');
+      setSubmitState('Propuesta persistida; no se ha aplicado a la skill ni al catálogo.');
+      await feedbackQuery.refetch();
+    } else {
+      setSubmitState(result.kind === 'error' ? `${result.code}: ${result.message}`
+        : result.kind === 'forbidden' ? result.reason : 'No se pudo guardar la propuesta.');
+    }
+  };
 
   return (
     <section className="office-form-panel" aria-labelledby="office-capability-catalog-title">
@@ -66,6 +107,40 @@ export const OfficeCapabilityCatalogPanel: React.FC<OfficeCapabilityCatalogPanel
             ))}
           </ul>
       )} />}
+
+      {feedbackPort && <section className="office-capability-feedback" aria-labelledby="office-capability-feedback-title">
+        <h4 id="office-capability-feedback-title">Correcciones propuestas</h4>
+        <p>Las propuestas quedan vinculadas a una versión y evidencia. No cambian skills ni instrucciones activas automáticamente.</p>
+        {capabilities.length > 0 && <form className="office-form" onSubmit={(event) => void submitFeedback(event)}>
+          <label className="office-form-field">Versión de capacidad
+            <select className="office-form-control" aria-label="Versión para corrección" value={selectedValue}
+              onChange={(event) => setSelectedCapability(event.target.value)}>
+              {capabilities.map((item) => <option key={`${item.capability_id}@${item.version}`} value={`${item.capability_id}@${item.version}`}>{item.capability_id} · {item.version}</option>)}
+            </select>
+          </label>
+          <label className="office-form-field">Corrección observada
+            <textarea className="office-form-control" required maxLength={4000} value={correction}
+              onChange={(event) => setCorrection(event.target.value)} />
+          </label>
+          <label className="office-form-field">ID de trabajo canónico (opcional)
+            <input className="office-form-control" value={workId}
+              onChange={(event) => setWorkId(event.target.value)} />
+          </label>
+          <label className="office-form-field">Referencias de evidencia (una por línea; exige trabajo o evidencia)
+            <textarea className="office-form-control" value={evidenceText}
+              onChange={(event) => setEvidenceText(event.target.value)} />
+          </label>
+          <button type="submit" disabled={submitting || !capabilities.length}>{submitting ? 'Guardando…' : 'Proponer corrección'}</button>
+          {submitState && <p role="status">{submitState}</p>}
+        </form>}
+        {feedbackQuery.isLoading && <p role="status">Consultando propuestas guardadas…</p>}
+        {feedbackQuery.data && <DataStatePanel state={feedbackQuery.data} renderReady={(items) => items.length ? (
+          <ul className="office-capability-catalog__list">{items.map((item) => <li key={item.id} className="office-capability-catalog__item">
+            <strong>{item.capability_id} · {item.version} · {item.status}</strong>
+            <p>{item.correction}</p><small>{item.evidence.length} referencias · guardada por {item.created_by} · aplicada: no</small>
+          </li>)}</ul>
+        ) : <p>No hay correcciones propuestas en este proyecto.</p>} />}
+      </section>}
     </section>
   );
 };

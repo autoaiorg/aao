@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, expect, it, vi } from 'vitest';
 import { OfficeCalendarPanel } from '../features/office/components/OfficeCalendarPanel';
@@ -56,5 +56,32 @@ describe('LIVE office work calendar', () => {
     };
     renderCalendar(vi.fn().mockResolvedValue(ready(board)));
     expect(await screen.findByText(/No hay trabajos con fecha objetivo registrada/)).toBeInTheDocument();
+  });
+
+  it('refreshes persisted due dates while the office calendar remains open', async () => {
+    vi.useFakeTimers();
+    try {
+      const currentMonth = new Date();
+      const dueDate = `${currentMonth.getFullYear()}-${String(currentMonth.getMonth() + 1).padStart(2, '0')}-10`;
+      const board: ProjectBoard = {
+        projectId: 'project-a', totalCount: 0, stages: {} as ProjectBoard['stages'], unrecognizedItems: [], items: [],
+      };
+      const getBoard = vi.fn().mockImplementation(async () => ready(board));
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+      render(<QueryClientProvider client={client}><OfficeCalendarPanel projects={projects}
+        port={{ getProjectBoard: getBoard }} sessionId="ceo-session" onOpenWork={vi.fn()} /></QueryClientProvider>);
+
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+      expect(getBoard).toHaveBeenCalledTimes(1);
+
+      board.items.push({ id: 'new-work', title: 'Trabajo recién programado', status: 'READY', dueDate });
+      board.totalCount = 1;
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+
+      expect(getBoard).toHaveBeenCalledTimes(2);
+      expect(screen.getByRole('button', { name: /Trabajo recién programado/ })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

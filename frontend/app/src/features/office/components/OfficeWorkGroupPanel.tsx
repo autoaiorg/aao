@@ -37,6 +37,7 @@ export const OfficeWorkGroupPanel: React.FC<OfficeWorkGroupPanelProps> = ({ proj
     queryKey: ['office-assignable-agents', sessionId, selectedProjectId],
     queryFn: () => port.listAssignableAgents(selectedProjectId),
     enabled: !!selectedProjectId,
+    refetchInterval: 15_000,
   });
   const groups = groupsQuery.data?.kind === 'ready' ? groupsQuery.data.data : [];
   const agents = agentsQuery.data?.kind === 'ready' ? agentsQuery.data.data : [];

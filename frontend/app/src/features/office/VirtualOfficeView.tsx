@@ -146,7 +146,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
               Oficina Virtual 3D · AAO
             </h2>
             <p style={{ margin: 0, fontSize: '13px', color: 'var(--text-secondary)' }}>
-              Entorno espacial tridimensional para la inspección visual de departamentos, puestos y telemetría de agentes.
+              Entorno espacial tridimensional para inspeccionar departamentos, agentes y su actividad persistida. En LIVE, estructura y proyectos se actualizan cada 15 segundos mientras la oficina está abierta.
             </p>
           </div>
 

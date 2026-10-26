@@ -2229,3 +2229,54 @@ def test_ceo_knowledge_index_is_authenticated_and_payload_limited(monkeypatch):
         assert "private review body" not in response.text and "private execution result" not in response.text
         assert "result_json" not in response.text and "description" not in indexed
         assert set(indexed) == {"work_id", "project_id", "project_name", "title", "status", "evidence_references", "reviews"}
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="Explicit disposable PostgreSQL database required",
+)
+def test_capability_feedback_is_persisted_as_non_applied_ceo_proposal(monkeypatch):
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "feedback-proposal-ceo")
+    ceo = {"X-CEO-Token": "feedback-proposal-ceo"}
+    with TestClient(app) as client:
+        mandate = client.post("/v1/mandates", headers=ceo, json={
+            "title": "Feedback " + str(uuid4()), "objective": "Capture reviewed corrections",
+        }).json()["id"]
+        assert client.post(f"/v1/mandates/{mandate}/confirm", headers=ceo).status_code == 200
+        project = client.post("/v1/projects", headers=ceo, json={
+            "name": "Feedback proposal", "mandate_id": mandate,
+        }).json()["id"]
+        worker_id = "feedback-agent-" + str(uuid4())
+        credential = client.post("/v1/principals/credentials", headers=ceo, json={
+            "principal_id": worker_id, "kind": "AGENT",
+        })
+        assert credential.status_code == 201
+        worker = {"X-Agent-Token": credential.json()["token"]}
+        assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
+            "principal_id": worker_id, "capability": "work.create",
+        }).status_code == 201
+        capability = client.post(f"/v1/projects/{project}/capabilities", headers=worker, json={
+            "capability_id": "reviewed.skill", "version": "1.0.0",
+            "capability_type": "agent_skill", "provenance": {"kind": "test"},
+            "contract": {"purpose": "Test capability", "inputs": ["request"], "outputs": ["response"]},
+            "tests": ["test-reference"], "evidence": ["source-reference"],
+        })
+        assert capability.status_code == 201, capability.text
+
+        payload = {"capability_id": "reviewed.skill", "version": "1.0.0",
+                   "correction": "Preserve the source reference in the response.",
+                   "evidence": ["sha256:observed-correction"]}
+        assert client.post(f"/v1/projects/{project}/capability-feedback", json=payload).status_code == 403
+        proposed = client.post(f"/v1/projects/{project}/capability-feedback", headers=ceo, json=payload)
+        assert proposed.status_code == 201, proposed.text
+        assert proposed.json()["status"] == "proposed"
+        assert proposed.json()["applied"] is False
+        listing = client.get(f"/v1/projects/{project}/capability-feedback", headers=ceo)
+        assert listing.status_code == 200, listing.text
+        assert listing.json()[0]["correction"] == payload["correction"]
+        assert listing.json()[0]["status"] == "proposed"
+        assert listing.json()[0]["applied"] is False
+        assert client.get(f"/v1/projects/{project}/capabilities", headers=ceo).json()[0]["version"] == "1.0.0"

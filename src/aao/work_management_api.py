@@ -442,6 +442,28 @@ class CapabilityEvaluationRequest(BaseModel):
     version: str | None = Field(default=None, max_length=64)
 
 
+class CapabilityFeedbackRequest(BaseModel):
+    capability_id: str = Field(min_length=1, max_length=128)
+    version: str = Field(min_length=1, max_length=64)
+    correction: str = Field(min_length=1, max_length=4000)
+    work_id: UUID | None = None
+    evidence: list[str] = Field(default_factory=list, max_length=32)
+
+    @field_validator("correction")
+    @classmethod
+    def correction_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("correction must not be blank")
+        return value.strip()
+
+    @field_validator("evidence")
+    @classmethod
+    def evidence_is_not_blank(cls, value: list[str]) -> list[str]:
+        if any(not item.strip() for item in value):
+            raise ValueError("evidence references must not be blank")
+        return [item.strip() for item in value]
+
+
 class AgentRunRequest(BaseModel):
     capability_id: str = Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9._-]+$")
     version: str = Field(min_length=1, max_length=64)
@@ -2706,6 +2728,70 @@ def list_capability_evaluations(
         return [{"task_id": str(row[0]), "details": row[1],
                  "created_at": row[2].isoformat(), "task_title": row[3]}
                 for row in rows]
+
+
+@app.get("/v1/projects/{project_id}/capability-feedback")
+def list_capability_feedback(project_id: str, _: str = Depends(require_ceo)):
+    """List CEO-visible correction proposals without changing active capability metadata."""
+    with tx() as db:
+        if not db.execute("SELECT 1 FROM projects WHERE id=%s", (project_id,)).fetchone():
+            raise HTTPException(404, "Project not found")
+        rows = db.execute(
+            "SELECT id,capability_id,version,work_id,correction,evidence,status,created_by,created_at "
+            "FROM capability_feedback_proposals WHERE project_id=%s ORDER BY created_at DESC,id",
+            (project_id,),
+        ).fetchall()
+    return [{
+        "id": str(row[0]), "capability_id": row[1], "version": row[2],
+        "work_id": str(row[3]) if row[3] else None, "correction": row[4],
+        "evidence": row[5], "status": row[6], "created_by": row[7],
+        "created_at": row[8].isoformat(), "applied": False,
+    } for row in rows]
+
+
+@app.post("/v1/projects/{project_id}/capability-feedback", status_code=201)
+def propose_capability_feedback(
+    project_id: str, payload: CapabilityFeedbackRequest,
+    _: str = Depends(require_ceo),
+):
+    """Record a CEO correction proposal; it is not an instruction or capability update."""
+    if payload.work_id is None and not payload.evidence:
+        raise HTTPException(422, "Feedback requires a linked work item or evidence reference")
+    proposal_id = str(uuid4())
+    with tx() as db:
+        project = db.execute(
+            "SELECT state FROM projects WHERE id=%s FOR SHARE", (project_id,),
+        ).fetchone()
+        if not project:
+            raise HTTPException(404, "Project not found")
+        if project[0] != "ACTIVE":
+            raise HTTPException(409, "Capability feedback requires an active project")
+        if not db.execute(
+            "SELECT 1 FROM capability_versions WHERE project_id=%s AND capability_id=%s AND version=%s",
+            (project_id, payload.capability_id, payload.version),
+        ).fetchone():
+            raise HTTPException(404, "Capability version not found in this project")
+        if payload.work_id is not None and not db.execute(
+            "SELECT 1 FROM work_items WHERE project_id=%s AND id=%s",
+            (project_id, str(payload.work_id)),
+        ).fetchone():
+            raise HTTPException(404, "Work item not found in this project")
+        db.execute(
+            "INSERT INTO capability_feedback_proposals(id,project_id,capability_id,version,work_id,"
+            "correction,evidence,created_by) VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,'ceo')",
+            (proposal_id, project_id, payload.capability_id, payload.version,
+             str(payload.work_id) if payload.work_id else None, payload.correction,
+             json.dumps(payload.evidence)),
+        )
+        audit(db, project_id, "capability.feedback.proposed", {
+            "proposal_id": proposal_id, "capability_id": payload.capability_id,
+            "version": payload.version, "work_id": str(payload.work_id) if payload.work_id else None,
+            "actor": "ceo", "applied": False,
+        })
+    return {"id": proposal_id, "project_id": project_id,
+            "capability_id": payload.capability_id, "version": payload.version,
+            "work_id": str(payload.work_id) if payload.work_id else None,
+            "status": "proposed", "applied": False}
 
 
 @app.get("/v1/knowledge/index")

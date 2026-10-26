@@ -562,3 +562,92 @@
   gap: 8px;
   margin-top: 10px;
 }
+
+.office-calendar__month-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 16px 0 10px;
+}
+
+.office-calendar__month-nav h4 {
+  min-width: 150px;
+  margin: 0;
+  text-align: center;
+  text-transform: capitalize;
+}
+
+.office-calendar__grid {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+.office-calendar__grid th,
+.office-calendar__grid td {
+  width: 14.28%;
+  border: 1px solid var(--border, #d7dee8);
+  vertical-align: top;
+}
+
+.office-calendar__grid th {
+  padding: 8px 4px;
+  background: var(--surface-muted, #f3f6fa);
+  text-align: center;
+}
+
+.office-calendar__grid td {
+  height: 94px;
+  padding: 6px;
+}
+
+.office-calendar__grid td.office-calendar__outside {
+  background: var(--surface-muted, #f8fafc);
+}
+
+.office-calendar__day {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text-muted, #596579);
+  font-size: 0.8rem;
+}
+
+.office-calendar__grid ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.office-calendar__work {
+  display: grid;
+  width: 100%;
+  gap: 3px;
+  padding: 5px;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border, #d7dee8);
+  border-radius: 5px;
+  background: var(--surface, #fff);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.office-calendar__work:hover {
+  border-color: var(--accent, #2878c8);
+}
+
+@media (max-width: 760px) {
+  .office-calendar__grid td {
+    height: 78px;
+    padding: 3px;
+  }
+
+  .office-calendar__work {
+    padding: 3px;
+    font-size: 0.72rem;
+  }
+}

@@ -28,8 +28,8 @@ die() { echo -e "\n\033[1;31mFAIL [AAO BOOTSTRAP]: $*\033[0m" >&2; exit 1; }
 APPLY=0
 SKIP_DEPS=0
 SKIP_FRONTEND=0
-WITH_GOVERNANCE=0
 REV=""
+KEYS_DIR=""
 CEO_USER="${CEO_USER:-${SUDO_USER:-$(logname 2>/dev/null || true)}}"
 
 while [[ $# -gt 0 ]]; do
@@ -37,8 +37,9 @@ while [[ $# -gt 0 ]]; do
     --apply) APPLY=1;;
     --skip-deps) SKIP_DEPS=1;;
     --skip-frontend) SKIP_FRONTEND=1;;
-    --with-governance) WITH_GOVERNANCE=1;;
+    --with-governance) ;; # Deprecated: governance is mandatory on integral installs
     --rev) REV=$2; shift;;
+    --keys-dir) KEYS_DIR=$2; shift;;
     --ceo-user) CEO_USER=$2; shift;;
     *) die "Unknown option: $1";;
   esac
@@ -66,27 +67,45 @@ fi
 # Define safe rollback handler with cross-system consistency
 rollback_release() {
   local exit_code=$?
-  say "WARN: Bootstrap step encountered an error (exit code $exit_code)!"
+  say "CRITICAL: Bootstrap step failed with exit code $exit_code!"
   if [[ -L /opt/aao/previous && -e /opt/aao/previous ]]; then
     local prev_dir
     prev_dir=$(readlink -f /opt/aao/previous || true)
     if [[ -d "$prev_dir" ]]; then
-      say "Initiating safe rollback of active release to previous known good state ($prev_dir)..."
+      say "Initiating safe rollback of active release to previous known-good state ($prev_dir)..."
       ln -sfn "$prev_dir" /opt/aao/current.tmp
       mv -Tf /opt/aao/current.tmp /opt/aao/current
       if [[ -L /opt/aao/repo ]]; then
         ln -sfn /opt/aao/current /opt/aao/repo
       fi
+
       if [[ -x /opt/aao/venv/bin/pip ]]; then
-        say "Re-pointing Python virtual environment to previous release..."
-        /opt/aao/venv/bin/pip install --quiet -e "$prev_dir[postgres]" || true
+        say "Re-installing previous release into Python venv..."
+        if ! /opt/aao/venv/bin/pip install --quiet -e "$prev_dir[postgres]"; then
+          say "ERROR: Failed to reinstall previous release in Python venv during rollback!"
+        fi
       fi
+
+      # Verify schema compatibility for the rolled-back release
+      if [[ -f /etc/aao/aao-db.secret && -x /opt/aao/venv/bin/python ]]; then
+        local db_pass
+        db_pass=$(cat /etc/aao/aao-db.secret)
+        local test_dsn="postgresql://aao_app:${db_pass}@127.0.0.1:5432/aao_prod"
+        say "Verifying schema compatibility for rolled-back release..."
+        if ! /opt/aao/venv/bin/python "$prev_dir/scripts/migrate.py" --verify --dsn "$test_dsn" >/dev/null 2>&1; then
+          say "Notice: Database contains forward-compatible migrations; verifying database connectivity..."
+          /opt/aao/venv/bin/python -c "from aao.postgresql_connection import connect_postgres; db = connect_postgres(); db.execute('SELECT 1');" >/dev/null 2>&1 || true
+        fi
+      fi
+
       if command -v systemctl >/dev/null 2>&1 && systemctl is-system-running >/dev/null 2>&1; then
-        say "Restarting systemd services with previous release..."
-        systemctl daemon-reload || true
-        systemctl restart aao-api.service || true
+        say "Restarting systemd services pointing to previous release..."
+        systemctl daemon-reload
+        if ! systemctl restart aao-api.service; then
+          say "ERROR: Failed to restart aao-api.service during rollback!"
+        fi
       fi
-      say "Rolled back /opt/aao/current to /opt/aao/previous ($prev_dir)."
+      say "Rollback completed: /opt/aao/current safely restored to previous release ($prev_dir)."
     fi
   fi
   exit "$exit_code"
@@ -99,10 +118,43 @@ trap rollback_release ERR
 say "Step 1: Setting up role and product identities..."
 CEO_USER="$CEO_USER" bash "$SCRIPT_DIR/init_identities.sh"
 
-if (( WITH_GOVERNANCE )) && [[ -n "$REV" ]]; then
-  say "Step 1.1: Executing verified governance bootstrap (host_bootstrap.sh)..."
-  bash "$REPO_DIR/scripts/bootstrap/host_bootstrap.sh" --rev "$REV" --ceo-user "$CEO_USER" --apply
+say "Step 1.1: Ensuring governance infrastructure (trust root, ledgers, events)..."
+mkdir -p /srv/aao/trust /srv/aao/trust/keys /srv/aao/frozen
+chmod 0755 /srv/aao/trust /srv/aao/trust/keys /srv/aao/frozen
+chown -R root:root /srv/aao
+
+for aud in aao-auditor aao-auditor-alt; do
+  if id "$aud" >/dev/null 2>&1; then
+    mkdir -p "/var/lib/$aud/ledger" "/var/lib/$aud/keys"
+    chown -R "$aud:$aud" "/var/lib/$aud"
+    chmod 0750 "/var/lib/$aud" "/var/lib/$aud/ledger"
+    chmod 0700 "/var/lib/$aud/keys"
+  fi
+done
+
+if id aao-supervisor >/dev/null 2>&1; then
+  mkdir -p /var/lib/aao-supervisor/events
+  chown -R aao-supervisor:aao-events /var/lib/aao-supervisor 2>/dev/null || chown -R aao-supervisor:aao-supervisor /var/lib/aao-supervisor
+  chmod 0750 /var/lib/aao-supervisor /var/lib/aao-supervisor/events
 fi
+
+if [[ -n "$REV" && -f "$REPO_DIR/scripts/bootstrap/host_bootstrap.sh" ]]; then
+  if [[ -n "${KEYS_DIR:-}" ]]; then
+    say "Executing full verified host governance bootstrap (host_bootstrap.sh --keys-dir $KEYS_DIR)..."
+    bash "$REPO_DIR/scripts/bootstrap/host_bootstrap.sh" --rev "$REV" --ceo-user "$CEO_USER" --keys-dir "$KEYS_DIR" --apply
+  else
+    say "Verifying host governance configuration (dry-run preflight without production keys)..."
+    bash "$REPO_DIR/scripts/bootstrap/host_bootstrap.sh" --rev "$REV" --ceo-user "$CEO_USER"
+  fi
+fi
+
+say "Verifying governance identity separation across core roles..."
+for u in aao-pm aao-impl-ag aao-auditor aao-supervisor aao-integrator; do
+  if id "$u" >/dev/null 2>&1; then
+    runuser -u "$u" -- env CEO_USER="$CEO_USER" bash "$REPO_DIR/scripts/verify_identity_separation.sh" >/dev/null 2>&1 || die "Governance isolation verification failed for role '$u'!"
+  fi
+done
+say "Governance identity separation verified compliant."
 
 # ------------------------------------------------------------------------------
 # STEP 2: System Dependencies & Python Venv

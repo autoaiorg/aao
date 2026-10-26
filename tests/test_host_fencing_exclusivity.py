@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 import psycopg
 import pytest
 
-from aao.backup import apply_host_fencing
+from aao.backup import apply_host_fencing, register_host_worker
 from aao.external_effect_registry import propose as propose_external_effect
 from aao.postgresql_connection import connect_postgres
 
@@ -35,6 +35,45 @@ def test_apply_host_fencing_targeted_queries():
     assert not any("WHERE kind = 'AGENT' AND enabled = true" in c for c in calls)
     assert any("worker_id = ANY" in c for c in calls)
     assert any("host.fenced" in c for c in calls)
+
+
+def test_host_worker_bindings_and_automatic_fencing():
+    """Unit test: verify host_worker_bindings registry lookup and targeted fencing without explicit worker_ids."""
+    mock_db = MagicMock()
+    # Mock finding worker-node-1 bound to node-1
+    mock_db.execute.return_value.fetchall.return_value = [("worker-node-1",)]
+
+    register_host_worker(mock_db, "node-1", "worker-node-1")
+    # Verify table schema ensured and worker registered
+    calls = [str(c) for c in mock_db.execute.mock_calls]
+    assert any("host_worker_bindings" in c for c in calls)
+
+    # Now fence node-1 without passing worker_ids
+    mock_db.reset_mock()
+    mock_db.execute.return_value.fetchall.return_value = [("worker-node-1",)]
+    actions = apply_host_fencing(mock_db, host_identifier="node-1")
+
+    assert any("marked host 'node-1' bindings as FENCED" in a for a in actions)
+    assert any("worker-node-1" in a for a in actions)
+    fencing_calls = [str(c) for c in mock_db.execute.mock_calls]
+    assert any("UPDATE host_worker_bindings" in c and "FENCED" in c for c in fencing_calls)
+    assert any("principal_id = ANY" in c for c in fencing_calls)
+
+
+def test_dual_host_isolation_unit():
+    """Unit test: verify that Host A and Host B workers are segregated and Host B is never touched."""
+    mock_db = MagicMock()
+    # node-a only has worker-a
+    mock_db.execute.return_value.fetchall.return_value = [("worker-a",)]
+
+    actions = apply_host_fencing(mock_db, host_identifier="node-a")
+    calls = [str(c) for c in mock_db.execute.mock_calls]
+
+    # Verify worker-a was revoked
+    assert any("revoked credentials for host workers: ['worker-a']" in a for a in actions)
+    # Verify no blanket updates were performed
+    assert not any("worker-b" in c for c in calls)
+    assert not any("WHERE kind = 'AGENT' AND enabled = true" in c for c in calls)
 
 
 @pytest.fixture

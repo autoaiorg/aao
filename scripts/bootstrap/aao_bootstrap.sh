@@ -334,7 +334,7 @@ bash "$SCRIPT_DIR/init_postgres.sh"
 # ------------------------------------------------------------------------------
 # STEP 5: Apply Schema Migrations (Single Source of Truth)
 # ------------------------------------------------------------------------------
-say "Step 5: Applying database migrations (001 to 030)..."
+say "Step 5: Applying database migrations (001 to 031)..."
 DB_PASS=$(cat /etc/aao/aao-db.secret)
 export AAO_POSTGRES_URL="postgresql://aao_app:${DB_PASS}@127.0.0.1:5432/aao_prod"
 

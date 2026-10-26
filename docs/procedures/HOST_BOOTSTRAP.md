@@ -4,7 +4,8 @@ AAO distingue explícitamente entre dos niveles de despliegue en un host Linux:
 
 1. **Bootstrap Integral del Producto (`scripts/bootstrap/aao_bootstrap.sh`):**
    - **Objetivo:** Poner en funcionamiento de manera reproducible, automatizada e idempotente el producto completo de AAO en una máquina Linux limpia (Ubuntu 24.04 LTS).
-   - **Componentes desplegados:** PostgreSQL 16 nativo, aplicador de migraciones unificado (001 a 030), entorno virtual aislado en `/opt/aao/venv`, cuenta de servicio sin privilegios `aao-api`, servicio systemd `aao-api.service`, Control Center React compilado y servido como SPA, worker supervisado `aao-worker-self-dev.service`, configuración protegida en `/etc/aao/`, backup/restore seguro y herramienta operativa `aao-ops`.
+   - **Componentes desplegados:** PostgreSQL 16 nativo, aplicador de migraciones unificado (001 a 031), entorno virtual aislado en `/opt/aao/venv`, cuenta de servicio sin privilegios `aao-api`, servicio systemd `aao-api.service`, Control Center React compilado y servido como SPA, worker supervisado `aao-worker-self-dev.service`, configuración protegida en `/etc/aao/`, backup/restore seguro y herramienta operativa `aao-ops`.
+   - **Fencing de workers:** la migración 031 crea el registro de fencing, pero no asigna identidades automáticamente. Antes de habilitar un worker, registra explícitamente su principal con `aao-ops register-host-worker --worker-id <principal-id> --host-id <host-id>`; en una migración de host, cerca primero la asociación antigua. Sin una asociación única y activa, los claims y propuestas de efecto se rechazan.
    - **Garantías de gobierno:** El integrador permanece en **OFF**, las RA permanecen en **PENDING** y el nivel de riesgo **R2** permanece bloqueado.
 
 2. **Infraestructura de Gobierno y Raíz de Confianza (`scripts/bootstrap/host_bootstrap.sh`):**

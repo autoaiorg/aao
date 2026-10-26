@@ -60,6 +60,15 @@ def test_host_worker_bindings_and_automatic_fencing():
     assert any("principal_id = ANY" in c for c in fencing_calls)
 
 
+def test_registry_registration_refuses_unmigrated_schema():
+    from aao.backup import BackupError
+
+    db = MagicMock()
+    db.execute.return_value.fetchone.return_value = (None,)
+    with pytest.raises(BackupError, match="apply PostgreSQL migration 031"):
+        register_host_worker(db, "node-1", "worker-node-1")
+
+
 def test_dual_host_isolation_unit():
     """Unit test: verify that Host A and Host B workers are segregated and Host B is never touched."""
     mock_db = MagicMock()

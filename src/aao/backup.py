@@ -851,29 +851,14 @@ def restore_backup(
 
 
 def ensure_host_worker_registry(db: Any) -> None:
-    """Ensure explicit host-to-worker mapping table exists in PostgreSQL with epoch tracking."""
-    db.execute(
-        """
-        CREATE TABLE IF NOT EXISTS host_worker_bindings (
-            host_id text NOT NULL,
-            worker_id text NOT NULL,
-            status text NOT NULL CHECK (status IN ('ACTIVE', 'FENCED', 'STANDBY')),
-            fence_epoch bigint NOT NULL DEFAULT 1,
-            fenced_at timestamptz,
-            created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-            PRIMARY KEY (host_id, worker_id)
-        );
-        ALTER TABLE host_worker_bindings ADD COLUMN IF NOT EXISTS fence_epoch bigint NOT NULL DEFAULT 1;
-        CREATE INDEX IF NOT EXISTS ix_host_worker_bindings_host ON host_worker_bindings(host_id, status);
-        CREATE INDEX IF NOT EXISTS ix_host_worker_bindings_worker ON host_worker_bindings(worker_id, status);
-        DO $$
-        BEGIN
-            IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'execution_queue') THEN
-                ALTER TABLE execution_queue ADD COLUMN IF NOT EXISTS claim_fence_epoch bigint;
-            END IF;
-        END $$;
-        """
-    )
+    """Require the versioned host-fencing schema; never create privileged schema ad hoc."""
+    registry = db.execute("SELECT to_regclass('public.host_worker_bindings')").fetchone()
+    epoch = db.execute(
+        "SELECT 1 FROM information_schema.columns WHERE table_schema='public' "
+        "AND table_name='execution_queue' AND column_name='claim_fence_epoch'"
+    ).fetchone()
+    if not registry or registry[0] is None or not epoch:
+        raise BackupError("Host fencing schema is unavailable; apply PostgreSQL migration 031")
 
 
 def register_host_worker(db: Any, host_id: str, worker_id: str) -> None:

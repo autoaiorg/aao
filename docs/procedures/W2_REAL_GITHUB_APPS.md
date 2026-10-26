@@ -2,18 +2,35 @@
 
 **Purpose:** exercise the production identity path for one already-approved AAO candidate, without using the CEO's `gh` session. This is a construction/acceptance exercise, not an R1 integration or permission to merge.
 
-## Current stop condition
+## Construction state
 
-The code path exists in `scripts/publish_candidate.py` and `src/aao/pr_publisher.py`, but this runbook is **not executable yet** on the host. `scripts/self_development_cycle.py setup` issues one time-limited `publisher` principal/token and writes `aao-publisher.token` to the invoking user's private runtime directory. It does not provision separate AAO publisher credentials to the Linux implementer and `aao-pm` accounts. Copying that one token to both accounts would make AAO audit events attribute both steps to one principal, defeating role separation. Do not exercise the Apps route until two distinct, least-privilege publisher identities and their private per-account token delivery are implemented and verified.
+The code path exists in `scripts/publish_candidate.py` and `src/aao/pr_publisher.py`. `scripts/provision_w2_publishers.py` now provides a CEO-invoked provisioning path for two distinct AGENT principals, each with only `project.read` and expiring `code.publish` grants on the active `AAO — Self Development` project. It asks for the CEO token without echo, uses `sudo -u` to preflight and install each token through stdin into that role's private runtime, refuses overwrite, verifies mode `0600`, and revokes/cleans up partial provisioning where possible. It does not print or persist the publisher tokens itself.
 
-This is the next construction task: issue separate, expiring `code.publish` credentials for the implementer pusher and PM, deliver each only to its corresponding Linux account without printing it or passing it in argv/environment, and verify that the two resulting events have distinct principals. Do not create grants outside the CEO-authorized Self Development project.
+Do not use the legacy `scripts/self_development_cycle.py setup` publisher token for W2: it creates one publisher identity in the invoking user's runtime and cannot preserve the required split attribution.
+
+This provisioning script has only local unit-test coverage; it has not been executed against the host API or accounts. W2 remains unexercised until the CEO runs it, then completes the push/open steps below and verifies distinct principals in canonical project activity. Never copy one token to both accounts and do not create grants outside the active Self Development project.
+
+### Provision the two role-scoped credentials
+
+From the AAO checkout, with the API reachable on loopback and both role runtime sessions active:
+
+```bash
+PROJECT_ID='<active AAO Self Development project UUID>'
+AAO_ROOT='<clean deployed AAO checkout>'
+PYTHON='<Python executable accessible to the CEO and both role accounts>'
+
+"$PYTHON" "$AAO_ROOT/scripts/provision_w2_publishers.py" \
+  --project-id "$PROJECT_ID" --api http://127.0.0.1:8001 --python "$PYTHON"
+```
+
+The command prompts for the CEO token without echo and invokes `sudo` for each Linux account. The CEO must verify the project UUID before running it. It stops if the project is not the unique active Self Development project, either role cannot be impersonated for the safe install operation, or a publisher-token file already exists. On partial failure it attempts to remove matching token files and revoke every principal it created; verify that cleanup in the API before retrying. The script reports principal IDs and expiry only, never token values.
 
 ## Preconditions once that seam is implemented
 
 1. Use only a work item in the authorized Self Development project that is `VERIFIED`, has an `APPROVE` review on the exact succeeded candidate SHA, and has no veto. The publisher re-derives this chain from PostgreSQL; do not manually alter its state.
 2. Confirm `aao-impl-codex` has its own App config under `~aao-impl-codex/.config/aao/aao-impl-codex.{pem,json}`, and `aao-pm` has its own config under `~aao-pm/.config/aao/aao-pm.{pem,json}`. Private keys must remain owned by that role at mode `0600`; never copy either key to the other account.
 3. Record the selected fork as `<IMPLEMENTER_OWNER>/aao` (or the actual installed fork). The implementer App must be installed on that fork; the PM App must have PR authority on `autoaiorg/aao`. The implementer App must not be installed on the canonical repository.
-4. Ensure the role-specific publisher token is available as `$XDG_RUNTIME_DIR/aao-publisher.token` for each role, mode `0600`, with its matching AAO principal/grant. Never display, log, or reuse one role's token for the other.
+4. Ensure the role-specific publisher token is available as `$XDG_RUNTIME_DIR/aao-publisher.token` for each role, mode `0600`, with its matching AAO principal/grant. The provisioning command above verifies each file; never display, log, or reuse one role's token for the other.
 5. Confirm PostgreSQL/API configuration and the candidate bare repository are accessible to both accounts through the established host configuration; do not copy `.env.local` or the CEO token.
 
 ## Two-step exercise

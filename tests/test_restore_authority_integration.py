@@ -6,7 +6,7 @@ db/postgres/restore_authority/001_consumed_restore_authorizations.sql.
 
 from __future__ import annotations
 
-import concurrent.futures
+import multiprocessing
 import os
 import uuid
 
@@ -31,16 +31,40 @@ def _metadata(nonce: str) -> dict[str, str]:
     }
 
 
-def test_postgres_nonce_is_atomic_and_persistent(monkeypatch):
+def _configure_authority(monkeypatch, tmp_path):
     assert AUTHORITY_DSN is not None
-    monkeypatch.setenv("AAO_RESTORE_AUTHORITY_DATABASE_URL", AUTHORITY_DSN)
+    config = tmp_path / "restore-authority.database-url"
+    config.write_text(AUTHORITY_DSN, encoding="utf-8")
+    config.chmod(0o600)
+    monkeypatch.setattr("aao.backup.RESTORE_AUTHORITY_DATABASE_URL_FILE", config)
+    monkeypatch.setattr("aao.backup.RESTORE_AUTHORITY_FILE_OWNER_UID", os.geteuid())
+
+
+def _consume_in_process(nonce: str, target_database: str, start_event, results) -> None:
+    start_event.wait(timeout=10)
+    results.put(consume_restore_authorization_nonce(nonce, _metadata(nonce), target_database))
+
+
+def test_postgres_nonce_is_atomic_across_processes_and_persistent(monkeypatch, tmp_path):
+    assert AUTHORITY_DSN is not None
+    _configure_authority(monkeypatch, tmp_path)
     with psycopg.connect(AUTHORITY_DSN) as conn:
         target_database = f"not_{conn.execute('SELECT current_database()').fetchone()[0]}"
         assert conn.execute("SELECT current_setting('fsync'), current_setting('synchronous_commit')").fetchone() == ("on", "on")
 
     nonce = f"integration-{uuid.uuid4().hex}"
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-        outcomes = list(pool.map(lambda _: consume_restore_authorization_nonce(nonce, _metadata(nonce), target_database), range(8)))
+    ctx = multiprocessing.get_context("fork")
+    start_event = ctx.Event()
+    results = ctx.Queue()
+    workers = [ctx.Process(target=_consume_in_process, args=(nonce, target_database, start_event, results)) for _ in range(8)]
+    for worker in workers:
+        worker.start()
+    start_event.set()
+    outcomes = [results.get(timeout=15) for _ in workers]
+    for worker in workers:
+        worker.join(timeout=15)
+        assert worker.exitcode == 0
+    results.close()
 
     assert sum(ok for ok, _ in outcomes) == 1
     assert sum(not ok for ok, _ in outcomes) == 7
@@ -50,14 +74,13 @@ def test_postgres_nonce_is_atomic_and_persistent(monkeypatch):
     assert "already been consumed" in replay_message
 
 
-def test_postgres_nonce_consumer_fails_closed_without_authority_or_for_same_database(monkeypatch):
-    monkeypatch.delenv("AAO_RESTORE_AUTHORITY_DATABASE_URL", raising=False)
+def test_postgres_nonce_consumer_fails_closed_without_authority_or_for_same_database(monkeypatch, tmp_path):
     ok, message = consume_restore_authorization_nonce("missing-config", _metadata("missing-config"), "target")
     assert not ok
-    assert "not configured" in message
+    assert "configuration is unavailable" in message
 
     assert AUTHORITY_DSN is not None
-    monkeypatch.setenv("AAO_RESTORE_AUTHORITY_DATABASE_URL", AUTHORITY_DSN)
+    _configure_authority(monkeypatch, tmp_path)
     with psycopg.connect(AUTHORITY_DSN) as conn:
         current_database = conn.execute("SELECT current_database()").fetchone()[0]
     ok, message = consume_restore_authorization_nonce(

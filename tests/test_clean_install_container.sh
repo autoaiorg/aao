@@ -47,13 +47,15 @@ fi
 REPO_DIR="${1:-/repo}"
 [[ -d "$REPO_DIR" ]] || die "Repository directory $REPO_DIR not found"
 
-say "2. Testing AC-01: Fresh installation from scratch..."
-bash "$REPO_DIR/scripts/bootstrap/aao_bootstrap.sh" --apply --skip-frontend --ceo-user alessbarb
+say "2. Testing AC-01: Fresh installation from scratch (including React build)..."
+bash "$REPO_DIR/scripts/bootstrap/aao_bootstrap.sh" --apply --ceo-user alessbarb
 
 say "3. Testing AC-02: Bootstrap idempotence (second run on configured host)..."
-OUTPUT_SECOND=$(bash "$REPO_DIR/scripts/bootstrap/aao_bootstrap.sh" --apply --skip-frontend --ceo-user alessbarb 2>&1)
+OUTPUT_SECOND=$(bash "$REPO_DIR/scripts/bootstrap/aao_bootstrap.sh" --apply --ceo-user alessbarb 2>&1)
 assert_true "Second run exits 0" test $? -eq 0
-assert_true "Second run does not duplicate schema" grep -q "Schema is up to date" <<<"$OUTPUT_SECOND"
+assert_true "Second run maintains schema" grep -q "Schema is up to date" <<<"$OUTPUT_SECOND"
+assert_true "Active release link exists" test -L /opt/aao/current
+assert_true "Previous release link exists after second run" test -L /opt/aao/previous
 
 say "4. Testing AC-03 & AC-04: PostgreSQL datastore and migrations 001-030..."
 DB_PASS=$(cat /etc/aao/aao-db.secret)
@@ -63,12 +65,17 @@ MIG_COUNT=$(runuser -u postgres -- psql -d aao_prod -tAc "SELECT count(*) FROM s
 assert_eq "All 30 migrations applied in schema_migrations" "30" "$MIG_COUNT"
 
 assert_true "Migrator verification succeeds" \
-  /opt/aao/venv/bin/python /opt/aao/repo/scripts/migrate.py --verify --dsn "$AAO_POSTGRES_URL"
+  /opt/aao/venv/bin/aao-migrate --verify --dsn "$AAO_POSTGRES_URL"
 
 say "5. Testing AC-05: API managed service and health endpoints..."
-# Start API in background if not already started by systemd
 API_PID=""
-if ! curl -sf http://127.0.0.1:8001/health >/dev/null 2>&1; then
+if command -v systemctl >/dev/null 2>&1 && systemctl is-system-running >/dev/null 2>&1; then
+  say "Verifying API under active systemd service manager..."
+  systemctl restart aao-api.service
+  sleep 2
+  assert_true "aao-api.service is active under systemd" test "$(systemctl is-active aao-api.service)" = "active"
+elif ! curl -sf http://127.0.0.1:8001/health >/dev/null 2>&1; then
+  say "Notice: Container without systemd PID 1; testing service entrypoint..."
   export AAO_ENV=development
   export AAO_STATIC_DIR="/opt/aao/frontend/dist"
   export AAO_CEO_TOKEN=$(grep AAO_CEO_TOKEN /etc/aao/aao-api.env | cut -d= -f2)
@@ -119,16 +126,16 @@ assert_eq "Self-Development active project count is 0 (reserved CEO decision)" "
 
 say "9. Testing AC-10: Atomic backup creation, checksum verification, and restore..."
 mkdir -p /tmp/backups
-BACKUP_FILE=$(/opt/aao/venv/bin/python /opt/aao/repo/src/aao/ops.py backup --output-dir /tmp/backups | awk '{print $3}')
+BACKUP_FILE=$(/opt/aao/venv/bin/aao-ops backup --output-dir /tmp/backups | awk '{print $3}')
 assert_true "Backup file exists" test -f "$BACKUP_FILE"
 
 assert_true "Backup verification passes checksum check" \
-  /opt/aao/venv/bin/python /opt/aao/repo/src/aao/ops.py verify-backup "$BACKUP_FILE"
+  /opt/aao/venv/bin/aao-ops verify-backup "$BACKUP_FILE"
 
 # Create clean database to test restore
 runuser -u postgres -- createdb -O aao_app aao_restore_test
 assert_true "Restore into clean database succeeds" \
-  /opt/aao/venv/bin/python /opt/aao/repo/src/aao/ops.py restore "$BACKUP_FILE" --target-dsn "postgresql://aao_app:${DB_PASS}@127.0.0.1:5432/aao_restore_test"
+  /opt/aao/venv/bin/aao-ops restore "$BACKUP_FILE" --target-dsn "postgresql://aao_app:${DB_PASS}@127.0.0.1:5432/aao_restore_test"
 
 RESTORE_MIG_COUNT=$(runuser -u postgres -- psql -d aao_restore_test -tAc "SELECT count(*) FROM schema_migrations")
 assert_eq "Restored database has all 30 migrations" "30" "$RESTORE_MIG_COUNT"
@@ -137,16 +144,22 @@ runuser -u postgres -- dropdb aao_restore_test
 
 say "10. Testing AC-11: Negative tests fail closed..."
 # Scenario A: Tampered migration file fails verify
-echo "-- corrupted" >> /opt/aao/repo/db/postgres/001_foundation.sql
+echo "-- corrupted" >> /opt/aao/current/db/postgres/001_foundation.sql
 assert_true "Tampered migration detected and rejected" \
-  bash -c "! /opt/aao/venv/bin/python /opt/aao/repo/scripts/migrate.py --verify --dsn '$AAO_POSTGRES_URL' >/dev/null 2>&1"
-cp "$REPO_DIR/db/postgres/001_foundation.sql" /opt/aao/repo/db/postgres/001_foundation.sql
+  bash -c "! /opt/aao/venv/bin/aao-migrate --verify --dsn '$AAO_POSTGRES_URL' >/dev/null 2>&1"
+cp "$REPO_DIR/db/postgres/001_foundation.sql" /opt/aao/current/db/postgres/001_foundation.sql
 
-# Scenario B: Destructive restore over live DB without flag is refused
-assert_true "Destructive restore over active DB is refused" \
-  bash -c "! /opt/aao/venv/bin/python /opt/aao/repo/src/aao/ops.py restore '$BACKUP_FILE' --target-dsn '$AAO_POSTGRES_URL' >/dev/null 2>&1"
+# Scenario B: Destructive restore over live DB without CEO authorization is refused
+assert_true "Destructive restore over active DB without allow-non-empty is refused" \
+  bash -c "! /opt/aao/venv/bin/python /opt/aao/current/scripts/aao_ops.py restore '$BACKUP_FILE' --target-dsn '$AAO_POSTGRES_URL' >/dev/null 2>&1"
+assert_true "Destructive restore over active DB without authorized-by-ceo is refused" \
+  bash -c "! /opt/aao/venv/bin/python /opt/aao/current/scripts/aao_ops.py restore '$BACKUP_FILE' --target-dsn '$AAO_POSTGRES_URL' --allow-non-empty >/dev/null 2>&1"
 
-# Scenario C: Invalid CEO token rejected by API
+# Scenario C: Host fencing revokes active agent tokens and records event
+assert_true "Host fencing executes cleanly" \
+  /opt/aao/venv/bin/python /opt/aao/current/scripts/aao_ops.py fence-host --host-id "test-container"
+
+# Scenario D: Invalid CEO token rejected by API
 INVALID_AUTH_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-CEO-Token: invalid-token-12345" http://127.0.0.1:8001/v1/mandates)
 assert_eq "Invalid CEO token rejected with 401 or 403" "403" "$INVALID_AUTH_CODE"
 

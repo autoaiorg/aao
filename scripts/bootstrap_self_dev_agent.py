@@ -59,12 +59,15 @@ def request_json(base_url: str, path: str, *, method: str = "GET",
         with urlopen(request, timeout=5) as response:
             return json.loads(response.read())
     except HTTPError as exc:
-        if exc.code == 405:
-            raise BootstrapError(
-                "the local API does not support the requested HTTP method; "
-                "restart it from the current checkout and retry"
-            ) from None
-        raise BootstrapError(f"AAO API rejected the bootstrap request (HTTP {exc.code})") from None
+        try:
+            if exc.code == 405:
+                raise BootstrapError(
+                    "the local API does not support the requested HTTP method; "
+                    "restart it from the current checkout and retry"
+                ) from None
+            raise BootstrapError(f"AAO API rejected the bootstrap request (HTTP {exc.code})") from None
+        finally:
+            exc.close()
     except (URLError, TimeoutError, OSError, json.JSONDecodeError):
         raise BootstrapError("AAO API is unavailable or returned invalid data") from None
 

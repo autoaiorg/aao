@@ -20,6 +20,7 @@ const group: ProjectWorkGroup = {
     executions: [{ id: '55555555-5555-4555-8555-555555555555', status: 'RUNNING', worker_id: 'agent-a', result_sha256: null }], reviews: [],
   }],
   consolidation: null,
+  partial_reports: [],
 };
 
 function setup(groups: ProjectWorkGroup[]) {
@@ -31,6 +32,7 @@ function setup(groups: ProjectWorkGroup[]) {
     listProjectWorkGroups: vi.fn().mockResolvedValue(ready(groups)),
     assignWorkGroupChild: vi.fn().mockResolvedValue(ready({ work_id: group.children[0].work_id, principal_id: 'agent-a', assigned_by: 'ceo', grants_created: false as const })),
     confirmWorkGroupConsolidation: vi.fn().mockResolvedValue(ready({ ...group, project_id: 'project-active', work_group_id: group.id, source_snapshot: { children: group.children }, summary: 'Resultado consolidado', idempotency_key: '66666666-6666-4666-8666-666666666666', created_by: 'ceo', created_at: '2026-10-26T00:00:00Z', created: true })),
+    createWorkGroupPartialReport: vi.fn().mockResolvedValue(ready({ id: '77777777-7777-4777-8777-777777777777', report_kind: 'PARTIAL', summary: 'Informe CEO', source_sha256: 'a'.repeat(64), idempotency_key: '88888888-8888-4888-8888-888888888888', created_by: 'ceo', created_at: '2026-10-26T00:00:00Z', created: true, final: false as const })),
   } as unknown as AaoConversationPort;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><OfficeWorkGroupPanel projects={projects} port={port} sessionId="session-a" onOpenBoard={vi.fn()} /></QueryClientProvider>);
@@ -82,5 +84,18 @@ describe('office work group consolidation', () => {
     await waitFor(() => expect(port.assignWorkGroupChild).toHaveBeenCalledWith(group.children[0].work_id, 'agent-a'));
     expect(await screen.findByText(/No se han creado grants/)).toBeInTheDocument();
     expect(port.listAssignableAgents).toHaveBeenCalledWith('project-active');
+  });
+
+  it('records an explicitly non-final CEO report against the displayed source hash', async () => {
+    const port = setup([group]);
+    await screen.findByText('IN_PROGRESS');
+    fireEvent.change(screen.getByLabelText('Registrar observación no final'), { target: { value: 'Revisión de conflicto' } });
+    fireEvent.change(screen.getByPlaceholderText(/Registra una observación CEO/), { target: { value: 'Una tarea está pendiente.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar informe no final' }));
+    await waitFor(() => expect(port.createWorkGroupPartialReport).toHaveBeenCalledWith('project-active', group.id, {
+      idempotency_key: expect.any(String), expected_source_sha256: 'a'.repeat(64),
+      report_kind: 'PARTIAL', summary: 'Una tarea está pendiente.',
+    }));
+    expect(await screen.findByText(/Informe no final guardado/)).toBeInTheDocument();
   });
 });

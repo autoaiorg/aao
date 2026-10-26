@@ -1,9 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { AgentIdentity } from '../../../domain/models';
+import type { OfficeRoomConfig } from '../types';
 import { ThreeOfficeScene } from '../engine/ThreeOfficeScene';
 
 export interface Office3DCanvasProps {
   agents: AgentIdentity[];
+  rooms: OfficeRoomConfig[];
+  demoFurniture: boolean;
   selectedRoomId: string;
   selectedAgentId: string | null;
   onSelectRoom: (roomId: string) => void;
@@ -33,6 +36,8 @@ export const Office3DCanvas = React.forwardRef<WebGLCanvasHandle, Office3DCanvas
   (
     {
       agents,
+      rooms,
+      demoFurniture,
       selectedRoomId,
       selectedAgentId,
       onSelectRoom,
@@ -67,6 +72,8 @@ export const Office3DCanvas = React.forwardRef<WebGLCanvasHandle, Office3DCanvas
 
       const scene = new ThreeOfficeScene(container, {
         reducedMotion,
+        rooms,
+        demoFurniture,
         callbacks: {
           onSelectRoom: (roomId) => onSelectRoom(roomId),
           onSelectAgent: (agentId) => onSelectAgent(agentId),
@@ -91,7 +98,7 @@ export const Office3DCanvas = React.forwardRef<WebGLCanvasHandle, Office3DCanvas
         scene.dispose();
         sceneRef.current = null;
       };
-    }, [webglSupported, reducedMotion]);
+    }, [webglSupported, reducedMotion, rooms, demoFurniture]);
 
     // Update agents in existing scene
     useEffect(() => {

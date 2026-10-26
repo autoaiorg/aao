@@ -443,7 +443,7 @@ describe('ThreeOfficeScene Engine Direct Regression Tests (Defects 1 & 2)', () =
 });
 
 describe('Phase F4.7: UI Contrast, Design Tokens & Operational Indicators', () => {
-  it('renders live organizational units from the API and keeps the fixed 3D template demo-only', () => {
+  it('renders live organizational units from the API and enables 3D only for persisted units', () => {
     const liveUnit = {
       ...DEMO_ORG_UNITS[0],
       id: 'unit-live-custom',
@@ -474,7 +474,7 @@ describe('Phase F4.7: UI Contrast, Design Tokens & Operational Indicators', () =
     expect(screen.getByRole('button', { name: '[CUSTOM] Unidad dinámica live' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { level: 4, name: 'Unidad dinámica live' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /\[GOV\]/i })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Vista 3D \(WebGL\)/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /Vista 3D \(WebGL\)/i })).toBeEnabled();
   });
 
   it('renders "Vista General" reset button and triggers camera reset callback', () => {

@@ -18,6 +18,7 @@ export interface OfficeToolbarProps {
   reducedMotion: boolean;
   onToggleReducedMotion: () => void;
   isDemo?: boolean;
+  allow3D?: boolean;
 }
 
 export const OfficeToolbar: React.FC<OfficeToolbarProps> = ({
@@ -36,7 +37,9 @@ export const OfficeToolbar: React.FC<OfficeToolbarProps> = ({
   reducedMotion,
   onToggleReducedMotion,
   isDemo = false,
+  allow3D = false,
 }) => {
+  const canOpen3D = isDemo || allow3D;
   return (
     <div
       role="toolbar"
@@ -68,8 +71,8 @@ export const OfficeToolbar: React.FC<OfficeToolbarProps> = ({
             type="button"
             aria-pressed={viewMode === '3d'}
             onClick={() => onViewModeChange('3d')}
-            disabled={!isDemo}
-            title={!isDemo ? 'La escena 3D representa una plantilla visual de demostración, no el organigrama live.' : undefined}
+            disabled={!canOpen3D}
+            title={!canOpen3D ? 'La vista 3D requiere unidades organizativas recibidas del backend.' : undefined}
             style={{
               padding: '8px 16px',
               borderRadius: 'var(--radius-md, 8px)',
@@ -78,8 +81,8 @@ export const OfficeToolbar: React.FC<OfficeToolbarProps> = ({
               color: viewMode === '3d' ? 'var(--text-inverse)' : 'var(--text-primary)',
               fontWeight: 600,
               fontSize: '13px',
-              cursor: isDemo ? 'pointer' : 'not-allowed',
-              opacity: isDemo ? 1 : 0.55,
+              cursor: canOpen3D ? 'pointer' : 'not-allowed',
+              opacity: canOpen3D ? 1 : 0.55,
               display: 'flex',
               alignItems: 'center',
               gap: '6px',

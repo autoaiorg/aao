@@ -12,6 +12,8 @@ export interface ThreeSceneOptions {
   reducedMotion?: boolean;
   callbacks: ThreeSceneCallbacks;
   renderer?: THREE.WebGLRenderer;
+  rooms?: OfficeRoomConfig[];
+  demoFurniture?: boolean;
 }
 
 export class ThreeOfficeScene {
@@ -20,6 +22,7 @@ export class ThreeOfficeScene {
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
   private renderer: THREE.WebGLRenderer;
+  private rooms: OfficeRoomConfig[];
   private animFrameId: number | null = null;
   private isDisposed = false;
 
@@ -53,10 +56,14 @@ export class ThreeOfficeScene {
 
   // Selected agent selection ring
   private selectionRing: THREE.Mesh | null = null;
+  private groundGroup = new THREE.Group();
 
   constructor(container: HTMLElement, options: ThreeSceneOptions) {
     this.container = container;
-    this.options = options;
+    // Keep direct scene consumers/tests compatible; the LIVE view always passes
+    // its persisted room projection explicitly.
+    this.options = { ...options, demoFurniture: options.demoFurniture ?? true };
+    this.rooms = options.rooms ?? OFFICE_ROOMS;
 
     // 1. Scene
     this.scene = new THREE.Scene();
@@ -94,6 +101,7 @@ export class ThreeOfficeScene {
     this.scene.add(this.roomsGroup);
     this.scene.add(this.agentsGroup);
     this.scene.add(this.lightsGroup);
+    this.scene.add(this.groundGroup);
 
     // 5. Build Environment
     this.setupLighting();
@@ -140,22 +148,7 @@ export class ThreeOfficeScene {
   }
 
   private buildWorld(): void {
-    // 1. Central Plaza & Complex Ground Slab
-    const groundGeo = new THREE.BoxGeometry(28, 0.4, 22);
-    const groundMat = new THREE.MeshStandardMaterial({
-      color: 0x0d1829,
-      roughness: 0.85,
-      metalness: 0.15,
-    });
-    const ground = new THREE.Mesh(groundGeo, groundMat);
-    ground.position.y = -0.2;
-    ground.receiveShadow = true;
-    this.scene.add(ground);
-
-    // Ground Grid overlay
-    const grid = new THREE.GridHelper(28, 28, 0x38bdf8, 0x1e3a5f);
-    grid.position.y = 0.01;
-    this.scene.add(grid);
+    this.rebuildGround();
 
     // Central Connecting Atrium Walkway & Hub
     const atriumGeo = new THREE.CylinderGeometry(3.6, 3.6, 0.1, 32);
@@ -181,7 +174,7 @@ export class ThreeOfficeScene {
     this.buildWalkways();
 
     // 3. Department Pavilions with interior architecture
-    OFFICE_ROOMS.forEach((room) => {
+    this.rooms.forEach((room) => {
       this.buildRoom(room);
     });
 
@@ -200,6 +193,29 @@ export class ThreeOfficeScene {
     this.scene.add(this.selectionRing);
   }
 
+  private rebuildGround(): void {
+    for (const child of [...this.groundGroup.children]) {
+      this.groundGroup.remove(child);
+      this.disposeHierarchy(child);
+    }
+    const halfWidth = Math.max(14, ...this.rooms.map((room) => Math.abs(room.x) + room.width / 2 + 2));
+    const halfDepth = Math.max(11, ...this.rooms.map((room) => Math.abs(room.z) + room.depth / 2 + 2));
+    const width = halfWidth * 2;
+    const depth = halfDepth * 2;
+    const ground = new THREE.Mesh(
+      new THREE.BoxGeometry(width, 0.4, depth),
+      new THREE.MeshStandardMaterial({ color: 0x0d1829, roughness: 0.85, metalness: 0.15 })
+    );
+    ground.position.y = -0.2;
+    ground.receiveShadow = true;
+    this.groundGroup.add(ground);
+
+    const gridSize = Math.max(width, depth);
+    const grid = new THREE.GridHelper(gridSize, Math.ceil(gridSize), 0x38bdf8, 0x1e3a5f);
+    grid.position.y = 0.01;
+    this.groundGroup.add(grid);
+  }
+
   private buildWalkways(): void {
     const walkwayMat = new THREE.MeshStandardMaterial({
       color: 0x142238,
@@ -207,7 +223,7 @@ export class ThreeOfficeScene {
       metalness: 0.3,
     });
 
-    OFFICE_ROOMS.forEach((room) => {
+    this.rooms.forEach((room) => {
       // Vector from (0, 0, 0) to (room.x, 0, room.z)
       const target = new THREE.Vector3(room.x, 0, room.z);
       const distance = target.length();
@@ -288,7 +304,11 @@ export class ThreeOfficeScene {
     this.buildRoomArchitecture(roomGroup, room);
 
     // Department Specific Furniture & Interior Layout
-    this.buildDepartmentFurniture(roomGroup, room);
+    if (this.options.demoFurniture ?? true) {
+      this.buildDepartmentFurniture(roomGroup, room);
+    } else {
+      this.buildGenericFurniture(roomGroup, room);
+    }
 
     // Floating Department Label Sprite
     const labelSprite = this.createDepartmentLabelSprite(room.code, room.name, room.accentColor);
@@ -296,6 +316,22 @@ export class ThreeOfficeScene {
     roomGroup.add(labelSprite);
 
     this.roomsGroup.add(roomGroup);
+  }
+
+  private buildGenericFurniture(group: THREE.Group, room: OfficeRoomConfig): void {
+    const desk = new THREE.Mesh(
+      new THREE.BoxGeometry(Math.min(1.8, room.width * 0.55), 0.45, Math.min(0.6, room.depth * 0.25)),
+      new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.5, metalness: 0.25 })
+    );
+    desk.position.set(0, 0.58, 0);
+    desk.castShadow = true;
+    group.add(desk);
+    const display = new THREE.Mesh(
+      new THREE.BoxGeometry(0.55, 0.34, 0.04),
+      new THREE.MeshBasicMaterial({ color: new THREE.Color(room.accentColor).multiplyScalar(1.1) })
+    );
+    display.position.set(0, 1.02, -0.14);
+    group.add(display);
   }
 
   private buildRoomArchitecture(group: THREE.Group, room: OfficeRoomConfig): void {
@@ -533,7 +569,7 @@ export class ThreeOfficeScene {
     });
 
     // Populate each room
-    OFFICE_ROOMS.forEach((room) => {
+    this.rooms.forEach((room) => {
       const roomAgents = byRoom.get(room.id) || [];
       const count = roomAgents.length;
       if (count === 0) return;
@@ -598,7 +634,7 @@ export class ThreeOfficeScene {
       (a) =>
         a.unitId === 'unit-unassigned' ||
         a.unitId === 'unit-unknown' ||
-        !OFFICE_ROOMS.some((r) => r.id === a.unitId)
+        !this.rooms.some((r) => r.id === a.unitId)
     );
     if (unassignedAgents.length > 0) {
       unassignedAgents.forEach((agent, index) => {
@@ -797,7 +833,7 @@ export class ThreeOfficeScene {
 
   public selectRoom(roomId: string, animate = true): void {
     this.activeRoomId = roomId;
-    const roomConfig = OFFICE_ROOMS.find((r) => r.id === roomId);
+    const roomConfig = this.rooms.find((r) => r.id === roomId);
     if (!roomConfig) return;
 
     // Move spotlight to active room
@@ -810,7 +846,7 @@ export class ThreeOfficeScene {
     // Adjust platform colors
     this.roomPlatforms.forEach((plat, id) => {
       const mat = plat.material as THREE.MeshStandardMaterial;
-      const conf = OFFICE_ROOMS.find((r) => r.id === id);
+      const conf = this.rooms.find((r) => r.id === id);
       if (conf) {
         if (id === roomId) {
           mat.color.set(conf.accentColor).multiplyScalar(0.9);

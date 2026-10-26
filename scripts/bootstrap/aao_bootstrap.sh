@@ -150,7 +150,7 @@ fi
 say "Verifying governance identity separation across core roles..."
 for u in aao-pm aao-impl-ag aao-auditor aao-supervisor aao-integrator; do
   if id "$u" >/dev/null 2>&1; then
-    runuser -u "$u" -- env CEO_USER="$CEO_USER" bash "$REPO_DIR/scripts/verify_identity_separation.sh" >/dev/null 2>&1 || die "Governance isolation verification failed for role '$u'!"
+    runuser -u "$u" -- env CEO_USER="$CEO_USER" bash "$REPO_DIR/scripts/verify_identity_separation.sh" || die "Governance isolation verification failed for role '$u'!"
   fi
 done
 say "Governance identity separation verified compliant."

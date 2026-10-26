@@ -215,7 +215,7 @@ ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "curl -fsSL http://127.0.0.1:8001/ready"
 
 say "11. Running live PostgreSQL tests inside the VM..."
 ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo /opt/aao/venv/bin/pip install --quiet pytest"
-ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo -E AAO_DATABASE_URL=\"postgresql://aao_app:\$(cat /etc/aao/aao-db.secret)@127.0.0.1:5432/aao_prod\" /opt/aao/venv/bin/pytest /opt/aao/current/tests/test_migrator.py /opt/aao/current/tests/test_ops_doctor.py"
+ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo -E env AAO_TEST_POSTGRES_URL=\"postgresql://aao_app:\$(cat /etc/aao/aao-db.secret)@127.0.0.1:5432/aao_prod\" AAO_POSTGRES_URL=\"postgresql://aao_app:\$(cat /etc/aao/aao-db.secret)@127.0.0.1:5432/aao_prod\" /opt/aao/venv/bin/pytest /opt/aao/current/tests/test_migrator.py /opt/aao/current/tests/test_ops_doctor.py"
 
 say "CLEAN VM VALIDATION COMPLETED SUCCESSFULLY (AC-01 through AC-18 verified)."
 say "Tested Git Revision: $CURRENT_SHA"

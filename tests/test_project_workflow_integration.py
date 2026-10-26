@@ -1,6 +1,7 @@
 """PostgreSQL integration tests, opt-in for explicitly disposable databases."""
 import json
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
@@ -2405,8 +2406,35 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
             open_pull_request(work, publisher, open_pr=open_pr)
         subprocess.run(["git", "--git-dir", str(remote), "update-ref", f"refs/heads/{branch}", candidate_sha], check=True)
         opened.clear()
-        published = open_pull_request(work, publisher, open_pr=open_pr)
-        assert published["status"] == "PUBLISHED" and published["pusher"] == pusher_id
+        # Concurrent AAO publishers for the same work item serialize around the remote effect.
+        # The second caller must observe the first committed event rather than create another PR.
+        effect_entered = threading.Event()
+        release_effect = threading.Event()
+
+        def blocking_open_pr(branch, title, body):
+            effect_entered.set()
+            assert release_effect.wait(timeout=10), "test did not release the simulated GitHub effect"
+            return open_pr(branch, title, body)
+
+        def publish_once():
+            return open_pull_request(work, publisher, open_pr=blocking_open_pr)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(publish_once)
+            assert effect_entered.wait(timeout=10)
+            second_started = threading.Event()
+
+            def publish_second():
+                second_started.set()
+                return publish_once()
+
+            second = pool.submit(publish_second)
+            assert second_started.wait(timeout=10)
+            release_effect.set()
+            published_results = [first.result(timeout=15), second.result(timeout=15)]
+        assert sorted(result["status"] for result in published_results) == ["ALREADY_PUBLISHED", "PUBLISHED"]
+        published = next(result for result in published_results if result["status"] == "PUBLISHED")
+        assert published["pusher"] == pusher_id
         assert opened == [(branch, "aao: Add a notes test", opened[0][2])] and candidate_sha in opened[0][2]
         assert open_pull_request(work, publisher, open_pr=open_pr)["status"] == "ALREADY_PUBLISHED"
         assert len(opened) == 1

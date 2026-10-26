@@ -56,53 +56,55 @@ def verify_candidate(store: Path, candidate_sha: str, base_sha: str, patch: byte
         raise PublishError("candidate tree does not match base + proposal patch")
 
 
-def _approved_candidate(work_id: str, credential: str, kind_of_step: str) -> dict:
+def _approved_candidate(db, work_id: str, credential: str, kind_of_step: str) -> dict:
     """Re-derive the approved candidate from the database; never from the agent's result_json."""
     from fastapi import HTTPException
 
     from aao.principal_credentials import PrincipalDenied
-    from aao.work_management_api import _authenticate_request_principal, require_grant, tx
+    from aao.work_management_api import _authenticate_request_principal, require_grant
 
     try:
         principal = _authenticate_request_principal(credential, "AGENT")
     except PrincipalDenied as exc:
         raise PublishError("active publisher credential required") from exc
-    with tx() as db:
-        work = db.execute("SELECT project_id,status,author_id,title FROM work_items WHERE id=%s FOR UPDATE",
-                          (work_id,)).fetchone()
-        if not work:
-            raise PublishError("work not found")
-        project_id, status, author_id, title = work
-        try:
-            require_grant(db, principal, project_id, "code.publish")
-        except HTTPException as exc:
-            raise PublishError(str(exc.detail)) from exc
-        if principal == author_id:
-            raise PublishError("the implementing agent cannot publish its own work")
-        review = db.execute("SELECT id,candidate_sha FROM reviews WHERE work_id=%s AND decision='APPROVE' "
-                            "ORDER BY created_at DESC LIMIT 1", (work_id,)).fetchone()
-        if not review:
-            raise PublishError("no approval recorded")
-        review_id, candidate_sha = str(review[0]), review[1]
-        # Idempotent per approved candidate: a later attempt (after a closed PR) gets its own push and PR.
-        events = {kind: details for kind, details in db.execute(
-            "SELECT kind,details FROM events WHERE subject_id=%s AND kind IN ('work.candidate_pushed','work.pr_opened') "
-            "AND details->>'candidate_sha'=%s AND created_at > COALESCE((SELECT max(created_at) FROM events "
-            "WHERE subject_id=%s AND kind='work.pr_closed'), '-infinity') ORDER BY created_at",
-            (work_id, candidate_sha, work_id)).fetchall()}
-        if kind_of_step in events:
-            return {"done": events[kind_of_step]}
-        if status != "VERIFIED":
-            raise PublishError("only VERIFIED work can be published")
-        if db.execute("SELECT 1 FROM reviews WHERE work_id=%s AND decision='VETO' LIMIT 1", (work_id,)).fetchone():
-            raise PublishError("an active veto blocks publication")
-        proposal = db.execute(
-            "SELECT p.id,p.base_sha,p.patch_bytes FROM execution_queue q JOIN patch_proposals p "
-            "ON p.id::text = q.result_json->>'proposal_id' AND p.work_id=q.work_id "
-            "WHERE q.work_id=%s AND q.status='SUCCEEDED' AND q.result_json->>'candidate_sha'=%s "
-            "ORDER BY q.created_at DESC LIMIT 1", (work_id, candidate_sha)).fetchone()
-        if not proposal:
-            raise PublishError("approved SHA has no succeeded execution with a proposal")
+    # The caller keeps this transaction (and the work-row lock) until the external
+    # effect is reconciled into events. This serializes AAO publishers for a work
+    # item and prevents an approval/veto/status transition racing the effect.
+    work = db.execute("SELECT project_id,status,author_id,title FROM work_items WHERE id=%s FOR UPDATE",
+                      (work_id,)).fetchone()
+    if not work:
+        raise PublishError("work not found")
+    project_id, status, author_id, title = work
+    try:
+        require_grant(db, principal, project_id, "code.publish")
+    except HTTPException as exc:
+        raise PublishError(str(exc.detail)) from exc
+    if principal == author_id:
+        raise PublishError("the implementing agent cannot publish its own work")
+    review = db.execute("SELECT id,candidate_sha FROM reviews WHERE work_id=%s AND decision='APPROVE' "
+                        "ORDER BY created_at DESC LIMIT 1", (work_id,)).fetchone()
+    if not review:
+        raise PublishError("no approval recorded")
+    review_id, candidate_sha = str(review[0]), review[1]
+    # Idempotent per approved candidate: a later attempt (after a closed PR) gets its own push and PR.
+    events = {kind: details for kind, details in db.execute(
+        "SELECT kind,details FROM events WHERE subject_id=%s AND kind IN ('work.candidate_pushed','work.pr_opened') "
+        "AND details->>'candidate_sha'=%s AND created_at > COALESCE((SELECT max(created_at) FROM events "
+        "WHERE subject_id=%s AND kind='work.pr_closed'), '-infinity') ORDER BY created_at",
+        (work_id, candidate_sha, work_id)).fetchall()}
+    if kind_of_step in events:
+        return {"done": events[kind_of_step]}
+    if status != "VERIFIED":
+        raise PublishError("only VERIFIED work can be published")
+    if db.execute("SELECT 1 FROM reviews WHERE work_id=%s AND decision='VETO' LIMIT 1", (work_id,)).fetchone():
+        raise PublishError("an active veto blocks publication")
+    proposal = db.execute(
+        "SELECT p.id,p.base_sha,p.patch_bytes FROM execution_queue q JOIN patch_proposals p "
+        "ON p.id::text = q.result_json->>'proposal_id' AND p.work_id=q.work_id "
+        "WHERE q.work_id=%s AND q.status='SUCCEEDED' AND q.result_json->>'candidate_sha'=%s "
+        "ORDER BY q.created_at DESC LIMIT 1", (work_id, candidate_sha)).fetchone()
+    if not proposal:
+        raise PublishError("approved SHA has no succeeded execution with a proposal")
     return {"principal": str(principal), "title": title, "candidate_sha": candidate_sha, "review_id": review_id,
             "proposal_id": str(proposal[0]), "base_sha": proposal[1], "patch": bytes(proposal[2]),
             "pushed": events.get("work.candidate_pushed")}
@@ -113,17 +115,16 @@ def push_candidate(work_id: str, credential: str, *, store: str | Path,
     """Step 1 (implementer identity): verify the approved commit in the store and push exactly that SHA."""
     from aao.work_management_api import audit, tx
 
-    c = _approved_candidate(work_id, credential, "work.candidate_pushed")
-    if "done" in c:
-        return {**c["done"], "status": "ALREADY_PUSHED"}
-    verify_candidate(Path(store).resolve(), c["candidate_sha"], c["base_sha"], c["patch"])
-    branch = f"aao/work-{work_id}-{c['candidate_sha'][:12]}"
-    # ponytail: pushing the same SHA to the same branch is idempotent, so a crash before the event is
-    # recovered by re-running; move to external_effects if UNCERTAIN tracking becomes necessary.
-    push(c["candidate_sha"], branch)
-    record = {"candidate_sha": c["candidate_sha"], "base_sha": c["base_sha"], "branch": branch,
-              "proposal_id": c["proposal_id"], "review_id": c["review_id"], "pusher": c["principal"]}
     with tx() as db:
+        c = _approved_candidate(db, work_id, credential, "work.candidate_pushed")
+        if "done" in c:
+            return {**c["done"], "status": "ALREADY_PUSHED"}
+        verify_candidate(Path(store).resolve(), c["candidate_sha"], c["base_sha"], c["patch"])
+        branch = f"aao/work-{work_id}-{c['candidate_sha'][:12]}"
+        # The deterministic ref makes a retry after an uncertain push reconcile to the same SHA.
+        push(c["candidate_sha"], branch)
+        record = {"candidate_sha": c["candidate_sha"], "base_sha": c["base_sha"], "branch": branch,
+                  "proposal_id": c["proposal_id"], "review_id": c["review_id"], "pusher": c["principal"]}
         audit(db, work_id, "work.candidate_pushed", record)
     return {**record, "status": "PUSHED"}
 
@@ -132,21 +133,22 @@ def open_pull_request(work_id: str, credential: str, *, open_pr: Callable[[str, 
     """Step 2 (PM identity): open the PR for the branch pushed in step 1, if it still holds the approved SHA."""
     from aao.work_management_api import audit, tx
 
-    c = _approved_candidate(work_id, credential, "work.pr_opened")
-    if "done" in c:
-        return {**c["done"], "status": "ALREADY_PUBLISHED"}
-    pushed = c["pushed"]
-    if not pushed or pushed["candidate_sha"] != c["candidate_sha"]:
-        raise PublishError("the approved candidate has not been pushed")
-    body = (f"AAO work `{work_id}`\n\n- candidate: `{c['candidate_sha']}` on base `{c['base_sha']}`\n"
-            f"- proposal: `{c['proposal_id']}`\n- approval review: `{c['review_id']}`\n"
-            f"- pushed by: `{pushed['pusher']}`; opened by: `{c['principal']}`\n")
-    pr = open_pr(pushed["branch"], f"aao: {c['title']}", body)
-    if pr.get("head_sha") != c["candidate_sha"]:
-        # The fork branch moved after the push: never record an unapproved head as this task's PR.
-        raise PublishError("opened pull request head is not the approved candidate")
-    record = {**pushed, "publisher": c["principal"], "pr_number": int(pr["number"]), "pr_url": str(pr["url"])}
     with tx() as db:
+        c = _approved_candidate(db, work_id, credential, "work.pr_opened")
+        if "done" in c:
+            return {**c["done"], "status": "ALREADY_PUBLISHED"}
+        pushed = c["pushed"]
+        if not pushed or pushed["candidate_sha"] != c["candidate_sha"]:
+            raise PublishError("the approved candidate has not been pushed")
+        body = (f"AAO work `{work_id}`\n\n- candidate: `{c['candidate_sha']}` on base `{c['base_sha']}`\n"
+                f"- proposal: `{c['proposal_id']}`\n- approval review: `{c['review_id']}`\n"
+                f"- pushed by: `{pushed['pusher']}`; opened by: `{c['principal']}`\n")
+        # Keep the locked work row through the GitHub call and event commit. A timeout/crash
+        # can still leave the remote result uncertain; retry must query/reconcile by this branch.
+        pr = open_pr(pushed["branch"], f"aao: {c['title']}", body)
+        if pr.get("head_sha") != c["candidate_sha"]:
+            raise PublishError("opened pull request head is not the approved candidate")
+        record = {**pushed, "publisher": c["principal"], "pr_number": int(pr["number"]), "pr_url": str(pr["url"])}
         audit(db, work_id, "work.pr_opened", record)
     return {**record, "status": "PUBLISHED"}
 

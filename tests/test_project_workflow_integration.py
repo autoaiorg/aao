@@ -2050,7 +2050,30 @@ def test_postgres_review_is_separate_from_author_and_required_for_done(monkeypat
                 "SELECT details FROM events WHERE subject_id=%s AND kind='work.reviewed' "
                 "ORDER BY created_at DESC LIMIT 1", (w,),
             ).fetchone()[0]
+            escalation_protocol = db.execute(
+                "SELECT id,protocol_version,started_by,idempotency_key "
+                "FROM protocol_instances WHERE protocol_id='blockage-escalation' "
+                "AND subject_type='work_item' AND subject_id=%s",
+                (w,),
+            ).fetchone()
+            escalation_start_event = db.execute(
+                "SELECT details FROM events WHERE subject_id=%s AND kind='protocol.started' "
+                "AND details->>'protocol_id'='blockage-escalation'",
+                (w,),
+            ).fetchone()
         assert review_event["protocol_instance_id"] == str(review_protocol[0])
+        assert escalation_protocol is not None
+        assert escalation_protocol[1:] == (
+            "1.0.0", auditor_id,
+            f"blockage-escalation:work_item:{w}:review:{rejected.json()['review_id']}",
+        )
+        assert review_event["escalation_protocol_instance_id"] == str(escalation_protocol[0])
+        assert review_event["next_action"] == (
+            "Implement changes under the existing assignment; submit a new candidate "
+            "and obtain a separate review."
+        )
+        assert escalation_start_event[0]["protocol_instance_id"] == str(escalation_protocol[0])
+        assert escalation_start_event[0]["actor"] == auditor_id
         assert client.post(f"/v1/work/{w}/progress", headers=worker).json()["status"] == "IN_REVIEW"
         with connect_postgres() as db:
             assert db.execute(

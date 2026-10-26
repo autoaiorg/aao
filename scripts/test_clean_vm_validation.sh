@@ -207,8 +207,19 @@ while ! nc -z 127.0.0.1 "$SSH_PORT" 2>/dev/null; do
   sleep 3
 done
 
-say "VM rebooted successfully. Verifying post-reboot health..."
-sleep 5
+say "VM rebooted successfully. Waiting for post-reboot services to become ready..."
+TIMEOUT=60
+ELAPSED=0
+while ! ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "systemctl is-active aao-api.service && curl -fsSL http://127.0.0.1:8001/ready" >/dev/null 2>&1; do
+  sleep 3
+  ELAPSED=$((ELAPSED + 3))
+  if (( ELAPSED >= TIMEOUT )); then
+    ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "systemctl status aao-api.service --no-pager" || true
+    die "Timed out waiting for aao-api.service to become active post-reboot."
+  fi
+done
+
+say "Post-reboot services active. Running diagnostic verification..."
 ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo /opt/aao/venv/bin/aao-ops verify"
 ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo /opt/aao/venv/bin/aao-ops doctor"
 ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "curl -fsSL http://127.0.0.1:8001/ready"

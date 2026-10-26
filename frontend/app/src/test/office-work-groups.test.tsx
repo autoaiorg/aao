@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, expect, it, vi } from 'vitest';
 import { OfficeWorkGroupPanel } from '../features/office/components/OfficeWorkGroupPanel';
@@ -48,6 +48,22 @@ describe('office work group consolidation', () => {
     expect(screen.getByText(/Ejecución 55555555 · RUNNING · actor agent-a · sin resultado persistido/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Confirmar consolidación' })).toBeDisabled();
     expect(port.confirmWorkGroupConsolidation).not.toHaveBeenCalled();
+  });
+
+  it('refreshes the canonical group projection while the office view remains open', async () => {
+    vi.useFakeTimers();
+    try {
+      const port = setup([group]);
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+      expect(port.listProjectWorkGroups).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15_000);
+      });
+      expect(port.listProjectWorkGroups).toHaveBeenCalledTimes(2);
+      expect(screen.getByText(/se actualiza cada 15 segundos/i)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('surfaces failed execution and rejected review without treating the child as completed', async () => {

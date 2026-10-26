@@ -29,6 +29,7 @@ export const OfficeWorkGroupPanel: React.FC<OfficeWorkGroupPanelProps> = ({ proj
     queryKey: ['office-work-groups', sessionId, selectedProjectId],
     queryFn: () => port.listProjectWorkGroups(selectedProjectId),
     enabled: !!selectedProjectId,
+    refetchInterval: 15_000,
   });
   const agentsQuery = useQuery({
     queryKey: ['office-assignable-agents', sessionId, selectedProjectId],
@@ -102,7 +103,7 @@ export const OfficeWorkGroupPanel: React.FC<OfficeWorkGroupPanelProps> = ({ proj
     <div className="office-form-panel__header">
       <div>
         <h3 id="office-work-groups-heading">Equipos de trabajo y resultados</h3>
-        <p>Estado y evidencia desde AAO. La síntesis requiere confirmación explícita del CEO y no admite ni ejecuta tareas.</p>
+        <p>Estado y evidencia desde AAO; se actualiza cada 15 segundos mientras esta vista está abierta. La síntesis requiere confirmación explícita del CEO y no admite ni ejecuta tareas.</p>
       </div>
     </div>
     <label className="office-form-field">

@@ -43,6 +43,8 @@ from aao.external_effect_registry import EffectConflict
 from aao.external_effect_registry import propose as propose_external_effect
 from aao.ops import check_governance_identities
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 # ==============================================================================
 # Scenario 1: Two concurrent restores consuming the same authorization nonce
@@ -264,7 +266,7 @@ def test_scenario_05_rollback_schema_incompatible():
 
     Must fail closed with ROLLBACK_INCOMPLETE instead of falling back to SELECT 1.
     """
-    script = Path("scripts/bootstrap/aao_bootstrap.sh").read_text(encoding="utf-8")
+    script = (REPO_ROOT / "scripts/bootstrap/aao_bootstrap.sh").read_text(encoding="utf-8")
     assert "ROLLBACK_INCOMPLETE" in script
     assert "Forward recovery required; destructive downgrade rejected." in script
     # Assert SELECT 1 connectivity bypass was completely eliminated
@@ -279,7 +281,7 @@ def test_scenario_06_dependency_error_rollback_fails_closed():
 
     Fails closed with ROLLBACK_INCOMPLETE.
     """
-    script = Path("scripts/bootstrap/aao_bootstrap.sh").read_text(encoding="utf-8")
+    script = (REPO_ROOT / "scripts/bootstrap/aao_bootstrap.sh").read_text(encoding="utf-8")
     assert 'rollback_errors+=("Failed to reinstall previous release in Python venv during rollback")' in script
     assert 'rollback_errors+=("Python runtime verification failed in rolled-back environment")' in script
 
@@ -292,7 +294,7 @@ def test_scenario_07_unhealthy_service_rollback_fails_closed():
 
     Fails closed with ROLLBACK_INCOMPLETE.
     """
-    script = Path("scripts/bootstrap/aao_bootstrap.sh").read_text(encoding="utf-8")
+    script = (REPO_ROOT / "scripts/bootstrap/aao_bootstrap.sh").read_text(encoding="utf-8")
     assert 'rollback_errors+=("Service aao-api.service did not become ready (HTTP 200 on /ready) post-rollback")' in script
 
 
@@ -502,7 +504,7 @@ def test_scenario_13_bootstrap_missing_sha_fails_closed(tmp_path):
 
     Fails closed immediately without executing changes.
     """
-    script_path = Path("scripts/bootstrap/aao_bootstrap.sh").resolve()
+    script_path = (REPO_ROOT / "scripts/bootstrap/aao_bootstrap.sh").resolve()
     assert script_path.is_file()
 
     # Run dry-run in empty directory where git rev-parse fails and .git-rev is absent
@@ -560,6 +562,6 @@ def test_scenario_15_second_installation_idempotent():
 
     Preflight and phase handlers recognize existing state idempotently without corruption.
     """
-    preflight_script = Path("scripts/bootstrap/host_preflight.sh").read_text(encoding="utf-8")
+    preflight_script = (REPO_ROOT / "scripts/bootstrap/host_preflight.sh").read_text(encoding="utf-8")
     assert "IDEMPOTENT UPGRADE / RE-RUN" in preflight_script
     assert "Host preflight passed successfully." in preflight_script

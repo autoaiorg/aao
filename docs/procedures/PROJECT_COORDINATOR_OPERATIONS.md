@@ -45,3 +45,65 @@ Tras la salida, comprobar en Control Center/API que las asignaciones y eventos p
 Solo después de revisar satisfactoriamente la primera pasada, y con aprobación operativa explícita del CEO para el proyecto indicado, se puede añadir `--watch` al mismo comando. El intervalo predeterminado es 15 segundos y el máximo permitido es 300; detener con `Ctrl-C`/`SIGTERM`. La opción `--auto-consolidate` puede combinarse con `--watch`, pero cada consolidación queda persistida de forma irreversible para ese grupo: la API no permite sustituir una consolidación existente. Confirmar el modo elegido antes de ejecutarlo.
 
 No se proporciona aún una unidad `systemd`, política de reinicio, rotación de credencial ni despliegue automático. No habilitar el proceso al arranque ni ejecutarlo para varios proyectos sin revisar su identidad, grants y alcance por separado. La consolidación no cierra ni acepta el trabajo padre: el CEO conserva la aceptación. El proceso no supervisa ejecuciones, no reintenta trabajos ni sustituye el ensayo de aceptación §14.
+
+## Rutinas persistentes (incremento F4, continuidad y calendario)
+
+La opción `--materialize-routines` añade al mismo polling una llamada a
+`POST /v1/agent/projects/{project_id}/routines/materialize`. Requiere además
+`work.create` vigente para el principal PM. El modo predeterminado no consulta
+ni materializa rutinas. `--watch --materialize-routines` funciona sin navegador;
+necesita mantener el proceso bajo el supervisor externo ya autorizado. Este
+incremento no instala ni activa ese proceso ni un proveedor.
+
+El CEO registra una plantilla con `POST /v1/projects/{project_id}/routines`:
+
+```json
+{
+  "idempotency_key": "<UUID nuevo para esta autorización>",
+  "title": "Preparar informe del proyecto",
+  "description": "Usar los datos persistidos y citar sus fuentes",
+  "acceptance_criteria": ["Identificar avances y bloqueos con evidencia"],
+  "interval_seconds": 86400,
+  "first_run_at": "2026-10-28T09:00:00+01:00"
+}
+```
+
+- Intervalo fijo de 60 a 31536000 segundos; no cron ni calendario local/DST.
+  El timestamp exige zona horaria y se normaliza a UTC. Los periodos diarios
+  son de 24 horas, no «la misma hora local» tras cambios de horario.
+- La misma clave y el mismo contenido devuelven la misma rutina; otro contenido
+  con esa clave da 409. La plantilla no se edita: deshabilitar y crear otra.
+- `GET /v1/projects/{project_id}/routines` requiere CEO o `project.read`.
+- `PATCH /v1/projects/{project_id}/routines/{routine_id}` con
+  `{"enabled": false}` deshabilita futuras materializaciones; no cancela trabajos
+  existentes. Solo el CEO puede crear y habilitar/deshabilitar.
+- Cada tick toma como máximo 25 rutinas vencidas de un proyecto activo. Tras
+  inactividad se crea **una** solicitud por rutina, agrupando los periodos
+  omitidos; se conserva la fecha original y se registra el número omitido.
+  No se afirma que las ejecuciones omitidas ocurrieran ni se genera una ráfaga.
+- La tarea queda en la tabla canónica `work_items`, en `INBOX`, con autor igual
+  al principal materializador (no una suplantación del CEO), fecha objetivo UTC
+  de la ocurrencia y protocolo de entrada con versión fijada. La autorización
+  original del CEO y la identidad materializadora constan separadas en eventos.
+- No se concede autoridad por la rutina, no se admite, asigna ni ejecuta el
+  trabajo y no se llama al modelo. El tratamiento posterior de estas solicitudes
+  por el PM y la UI de edición/listado son incrementos pendientes; este paso no
+  demuestra todavía la capacidad completa de rutinas ejecutables del objetivo.
+- Trabajo, ocurrencia, protocolo, evento y avance de `next_run_at` son una sola
+  transacción. La PK `(routine_id, scheduled_for)` protege la identidad de la
+  ocurrencia; las filas se bloquean con `FOR UPDATE SKIP LOCKED`. Tras un fallo
+  antes del commit no queda trabajo parcial y otro tick puede recuperarlo.
+
+### Instalación de la migración 035
+
+Aplicar `db/postgres/035_project_routines.sql` con el instalador de PostgreSQL.
+El rol de runtime necesita grants explícitos: `SELECT, INSERT, UPDATE` sobre
+`project_routines`, y `SELECT, INSERT` sobre `routine_occurrences`, además de
+los grants existentes para trabajo, eventos y protocolos (033). No conceder
+propiedad, `DELETE`, `TRUNCATE` ni permisos a PUBLIC. Este cambio solo aplica
+la migración automáticamente a la base desechable de CI/tests; el instalador
+conserva la responsabilidad sobre el entorno operativo.
+
+Reversión operativa: detener el polling de rutinas y deshabilitarlas por la API;
+conservar tablas, ocurrencias y trabajos como evidencia. No borrar ni revertir
+la migración para ocultar solicitudes ya materializadas.

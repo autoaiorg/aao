@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Assign unassigned work in already CEO-confirmed groups for one project.
 
-This coordinator only invokes AAO's existing read, ``work.assign`` and
-``work.coordinate`` routes. It does not create/confirm groups, admit work,
+This coordinator invokes AAO read, ``work.assign``, ``work.coordinate``
+and opt-in routine materialization routes. It does not create/confirm groups, admit work,
 dispatch executions, retry or change grants. Factual consolidation is
-opt-in via ``--auto-consolidate``. One-shot is the default; ``--watch``
+opt-in via ``--auto-consolidate``. ``--materialize-routines`` adds due CEO-authorized
+INBOX requests, never admissions or executions. One-shot is the default; ``--watch``
 repeats the same bounded pass for an externally supervised PM identity.
 """
 
@@ -41,6 +42,7 @@ class _RejectRedirects(urllib.request.HTTPRedirectHandler):
 class CoordinatorPassResult:
     assigned: int = 0
     consolidated: int = 0
+    materialized: int = 0
 
 
 def api_call(path: str, *, method: str = "GET", body: dict | None = None) -> dict | list:
@@ -128,6 +130,7 @@ def _project_records(records: object, allowed_fields: set[str], label: str) -> l
 
 def coordinate_once(
     project_id: str, _principal_id: str, *, auto_consolidate: bool = False,
+    materialize_routines: bool = False,
 ) -> CoordinatorPassResult:
     """Assign work and, only when opted in, factually consolidate completed groups."""
     if not project_id or not _principal_id:
@@ -136,6 +139,12 @@ def coordinate_once(
     if not isinstance(identity, dict) or identity.get("principal_id") != _principal_id:
         raise CoordinatorError("Authenticated PM identity does not match configured principal")
     project_path = urllib.parse.quote(project_id, safe="")
+    materialized = 0
+    if materialize_routines:
+        tick = api_call(f"/v1/agent/projects/{project_path}/routines/materialize", method="POST")
+        if not isinstance(tick, dict) or not isinstance(tick.get("materialized"), list):
+            raise CoordinatorError("AAO routine tick did not match the expected contract")
+        materialized = len(tick["materialized"])
     groups = api_call(f"/v1/agent/projects/{project_path}/work-groups")
     if not isinstance(groups, list) or any(not isinstance(group, dict) for group in groups):
         raise CoordinatorError("AAO work-group response did not match the expected contract")
@@ -199,7 +208,7 @@ def coordinate_once(
         if not isinstance(result, dict) or not isinstance(result.get("created"), bool):
             raise CoordinatorError("AAO consolidation response did not match the expected contract")
         consolidated += int(result["created"])
-    return CoordinatorPassResult(assigned=assigned, consolidated=consolidated)
+    return CoordinatorPassResult(assigned=assigned, consolidated=consolidated, materialized=materialized)
 
 
 def run_watch(
@@ -209,6 +218,7 @@ def run_watch(
     poll_interval_seconds: float,
     stop_event: threading.Event,
     auto_consolidate: bool = False,
+    materialize_routines: bool = False,
     wait=None,
 ) -> int:
     """Repeat bounded coordination passes until stopped by the service supervisor."""
@@ -220,11 +230,12 @@ def run_watch(
         )
     wait = wait or stop_event.wait
     while not stop_event.is_set():
-        result = coordinate_once(project_id, principal_id, auto_consolidate=auto_consolidate)
-        if result.assigned or result.consolidated:
+        result = coordinate_once(project_id, principal_id, auto_consolidate=auto_consolidate,
+                                 materialize_routines=materialize_routines)
+        if result.assigned or result.consolidated or result.materialized:
             print(
                 f"Assigned {result.assigned} work item(s) and recorded {result.consolidated} "
-                f"factual consolidation(s) in project {project_id}"
+                f"factual consolidation(s), materialized {result.materialized} routine request(s) in project {project_id}"
             )
         if stop_event.is_set() or wait(poll_interval_seconds):
             break
@@ -236,6 +247,8 @@ def main() -> int:
     parser.add_argument("--project-id", required=True)
     parser.add_argument("--principal-id", required=True)
     parser.add_argument("--watch", action="store_true")
+    parser.add_argument("--materialize-routines", action="store_true",
+                        help="materialize CEO-authorized due routine requests into INBOX; default is off")
     parser.add_argument(
         "--auto-consolidate", action="store_true",
         help="persist a factual, non-semantic summary when every child is DONE; default is off",
@@ -259,16 +272,18 @@ def main() -> int:
                     poll_interval_seconds=args.poll_interval_seconds,
                     stop_event=stop_event,
                     auto_consolidate=args.auto_consolidate,
+                    materialize_routines=args.materialize_routines,
                 )
             finally:
                 for signum, handler in previous_handlers.items():
                     signal.signal(signum, handler)
         result = coordinate_once(
             args.project_id, args.principal_id, auto_consolidate=args.auto_consolidate,
+            materialize_routines=args.materialize_routines,
         )
         print(
             f"Assigned {result.assigned} work item(s) and recorded {result.consolidated} "
-            f"factual consolidation(s) in project {args.project_id}"
+            f"factual consolidation(s), materialized {result.materialized} routine request(s) in project {args.project_id}"
         )
         return 0
     except (CoordinatorError, OSError, ValueError) as exc:

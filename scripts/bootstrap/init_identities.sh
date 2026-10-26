@@ -31,6 +31,9 @@ else
 fi
 
 say "Setting directory permissions..."
+if [[ -d "/home/$CEO_USER" ]]; then
+  chmod 0750 "/home/$CEO_USER"
+fi
 mkdir -p /var/lib/aao-api /var/log/aao
 chown aao-api:aao-api /var/lib/aao-api
 chmod 0750 /var/lib/aao-api

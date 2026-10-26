@@ -259,7 +259,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
       )}
       {message.related_work_id ? (
         <div className="office-conversation-message__work-link">
-          <Button type="button" size="sm" onClick={() => onOpenBoard(projectId)}>
+          <Button type="button" size="sm" onClick={() => onOpenBoard(projectId, message.related_work_id ?? undefined)}>
             Abrir trabajo {message.related_work_id}
           </Button>
           <small>Estado del trabajo: {message.work_status ?? 'desconocido'}</small>

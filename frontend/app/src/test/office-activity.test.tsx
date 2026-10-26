@@ -26,6 +26,10 @@ const events: ActivityEvent[] = [{
     secret: 'must-not-render',
   },
   created_at: '2026-10-26T00:03:00Z',
+}, {
+  id: 'event-5', subject_id: 'work-456', kind: 'work.execution_reconciled',
+  details: { disposition: 'RETRY_CONFIRMED_SAFE', secret: 'must-not-render' },
+  created_at: '2026-10-26T00:04:00Z',
 }];
 
 function renderPanel(getProjectActivity: AaoReadPort['getProjectActivity'], onOpenBoard = vi.fn()) {
@@ -44,6 +48,8 @@ describe('office persisted activity panel', () => {
     expect(screen.getByText('Ejecución · execution.claimed')).toBeInTheDocument();
     expect(screen.getByText('Bloqueo de despacho · work.dispatch_blocked')).toBeInTheDocument();
     expect(screen.getByText('Lease expirada · ejecución en cuarentena · work.execution_quarantined')).toBeInTheDocument();
+    expect(screen.getByText('Ejecución reconciliada por auditoría · work.execution_reconciled')).toBeInTheDocument();
+    expect(screen.getByText('Un auditor autorizó el reintento y la ejecución volvió a la cola.')).toBeInTheDocument();
     expect(screen.getByText('An independent auditor must review evidence before disposition; do not retry automatically.')).toBeInTheDocument();
     expect(screen.getByText('A capability evaluation selecting a registered version is required')).toBeInTheDocument();
     expect(screen.getByText('work-123')).toBeInTheDocument();

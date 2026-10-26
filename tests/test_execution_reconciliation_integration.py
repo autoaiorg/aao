@@ -274,6 +274,28 @@ def test_reconciliation_requires_distinct_granted_reviewer(monkeypatch):
         eid, auditor_credential=auditor_secret, evidence=[evidence_ref],
         disposition="RETRY_CONFIRMED_SAFE",
     ) == "QUEUED"
+    with connect_postgres() as db:
+        reconciliation_events = db.execute(
+            "SELECT details FROM events WHERE subject_id=%s "
+            "AND kind='work.execution_reconciled' AND details->>'execution_id'=%s",
+            (wid, eid),
+        ).fetchall()
+    assert len(reconciliation_events) == 1
+    reconciliation = reconciliation_events[0][0]
+    assert reconciliation == {
+        "execution_id": eid,
+        "project_id": project,
+        "actor": auditor_id,
+        "disposition": "RETRY_CONFIRMED_SAFE",
+        "resulting_state": "QUEUED",
+        "prior_state": "UNCERTAIN",
+        "evidence": [{
+            "reference": evidence_ref,
+            "media_type": "text/plain",
+            "size_bytes": len(b"AAO inert execution evidence for integration coverage"),
+        }],
+        "protocol_instance_id": str(escalation[0]),
+    }
     lease = claim(worker_id, agent_credential=secret, project_id=project)
     assert lease["execution_id"] == eid
     with pytest.raises(EffectConflict, match="credential required"):

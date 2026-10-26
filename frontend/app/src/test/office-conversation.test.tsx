@@ -80,6 +80,24 @@ describe('office persistent project conversation', () => {
     expect(screen.queryByRole('option', { name: 'Proyecto pausado' })).not.toBeInTheDocument();
   });
 
+  it('opens the exact canonical work item linked from a conversation message', async () => {
+    const linkedMessage = { ...message, related_work_id: 'work-linked', work_status: 'IN_REVIEW' };
+    const port: AaoConversationPort = {
+      listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
+      listAssignableAgents: vi.fn().mockResolvedValue(ready([])),
+      listConversationMessages: vi.fn().mockResolvedValue(ready([linkedMessage])),
+      createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(), streamCEOConversationTurn: vi.fn(),
+      createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(),
+      createWorkGroupFromConversation: vi.fn(), proposeWorkGroupFromConversation: vi.fn(),
+      listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), assignWorkGroupChild: vi.fn(),
+      confirmWorkGroupConsolidation: vi.fn(), createWorkGroupPartialReport: vi.fn(),
+    };
+    const onOpenBoard = setup(port);
+    await screen.findByText('Preparar el plan');
+    fireEvent.click(screen.getByRole('button', { name: 'Abrir trabajo work-linked' }));
+    expect(onOpenBoard).toHaveBeenCalledWith('project-active', 'work-linked');
+  });
+
   it('shows execution status for tasks confirmed from the selected conversation without rendering result payloads', async () => {
     const resultSha = 'a'.repeat(64);
     const port: AaoConversationPort = {

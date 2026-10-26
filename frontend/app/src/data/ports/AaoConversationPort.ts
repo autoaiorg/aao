@@ -59,6 +59,7 @@ export interface ConversationWorkGroupInput extends ConversationWorkRequestInput
 export interface AssignableAgent {
   principal_id: string;
   display_name: string;
+  competencies: string[];
 }
 
 export interface ConversationWorkGroupResult {

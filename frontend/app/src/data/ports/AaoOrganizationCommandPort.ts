@@ -15,6 +15,7 @@ export interface OrganizationProfileCommand {
   role_title: string;
   unit_id: string | null;
   manager_principal_id: string | null;
+  competencies?: string[];
   enabled: boolean;
 }
 

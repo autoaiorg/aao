@@ -943,7 +943,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
   async listAssignableAgents(projectId: string): Promise<DataState<AssignableAgent[]>> {
     if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede asignar trabajo.' };
     return this.request(`/v1/projects/${encodeURIComponent(projectId)}/assignable-agents`, z.array(z.object({
-      principal_id: z.string(), display_name: z.string(),
+      principal_id: z.string(), display_name: z.string(), competencies: z.array(z.string()),
     })), { method: 'GET' });
   }
 
@@ -1107,7 +1107,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
           tasks: z.array(z.object({
             key: z.string(), title: z.string(), description: z.string(),
             acceptance_criteria: z.array(z.string()), due_date: z.string().date().nullable().optional(),
-            depends_on: z.array(z.string()),
+            depends_on: z.array(z.string()), assigned_principal_id: z.string().nullable().optional(),
           })),
         }),
         based_on_message_ids: z.array(z.string().uuid()),

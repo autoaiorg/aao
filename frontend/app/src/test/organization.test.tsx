@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { render, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import { OrganizationView } from '../features/organization/OrganizationView';
 import { AgentDetailDrawer } from '../features/organization/AgentDetailDrawer';
 import type { DataState, OrganizationStructure, AgentIdentity } from '../domain/models';
@@ -83,6 +83,20 @@ describe('Phase F3: OrganizationView and Agent Structure', () => {
     expect(document.querySelector('.organization-management__forms')).toContainElement(
       screen.getByRole('button', { name: 'Guardar unidad' }).closest('form'),
     );
+  });
+
+  it('saves CEO-declared competencies as organization profile metadata', async () => {
+    const saveUnit = vi.fn().mockResolvedValue({ kind: 'ready', origin: 'live', data: {}, fetchedAt: 'now' });
+    const saveProfile = vi.fn().mockResolvedValue({ kind: 'ready', origin: 'live', data: {}, fetchedAt: 'now' });
+    render(<OrganizationView orgState={readyState} canManageOrganization onSaveUnit={saveUnit} onSaveProfile={saveProfile} />);
+    fireEvent.change(screen.getByLabelText(/Principal \(ID registrado\)/i), { target: { value: DEMO_AGENTS[0].id } });
+    fireEvent.change(screen.getByLabelText(/Competencias declaradas/i), { target: { value: 'PostgreSQL, coordinación operativa' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar perfil' }));
+    await waitFor(() => expect(saveProfile).toHaveBeenCalledWith(expect.objectContaining({
+      principal_id: DEMO_AGENTS[0].id,
+      competencies: ['PostgreSQL', 'coordinación operativa'],
+    })));
+    expect(screen.getByText(/no acreditan competencia ni conceden permisos/i)).toBeInTheDocument();
   });
 
   it('navigates to Plantilla y Agentes tab and segregates standing vs ephemeral agents', () => {

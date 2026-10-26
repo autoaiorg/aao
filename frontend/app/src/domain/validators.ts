@@ -203,6 +203,7 @@ export const AgentIdentitySchema = z.object({
   type: AgentTypeSchema,
   roleTitle: z.string(),
   managerId: z.string().nullable().optional(),
+  competencies: z.array(z.string()).optional(),
   unitId: z.string(),
   unitName: z.string().optional(),
   capabilities: z.array(AgentCapabilitySchema).default([]),

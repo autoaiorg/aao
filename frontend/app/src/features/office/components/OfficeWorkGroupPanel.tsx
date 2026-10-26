@@ -139,6 +139,9 @@ export const OfficeWorkGroupPanel: React.FC<OfficeWorkGroupPanelProps> = ({ proj
             {!!child.required_competencies?.length && <span>Competencias requeridas: {child.required_competencies.join(', ')}</span>}
             <div className="office-work-group__outcomes" aria-label={`Resultados observados de ${child.work_id}`}>
               {child.status !== 'DONE' && <p className="office-work-group__outcome-note">Trabajo aún no completado: {child.status}. La consolidación final sigue bloqueada.</p>}
+              {child.dispatch_block && <p className="office-work-group__outcome-note" role="status">
+                Despacho bloqueado por {child.dispatch_block.principal_id || 'identidad desconocida'}: {child.dispatch_block.reason} · {new Date(child.dispatch_block.created_at).toLocaleString()}
+              </p>}
               {child.dependencies.map((dependency) => <p key={dependency.work_id}>
                 Prerequisito {dependency.work_id.slice(0, 8)} · {dependency.status}
                 {dependency.status !== 'DONE' ? ' · dependencia todavía no satisfecha' : ' · dependencia satisfecha'}

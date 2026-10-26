@@ -1128,6 +1128,9 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
     const child = z.object({
       work_id: z.string().uuid(), status: z.string(), assigned_principal_id: z.string().nullable(),
       required_competencies: z.array(z.string()).default([]), evidence,
+      dispatch_block: z.object({
+        principal_id: z.string().nullable(), reason: z.string(), created_at: z.string().datetime(),
+      }).nullable().default(null),
       dependencies: z.array(z.object({ work_id: z.string().uuid(), status: z.string() })).default([]),
       executions: z.array(z.object({
         id: z.string().uuid(), status: z.string(), worker_id: z.string().nullable(),
@@ -1178,6 +1181,9 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
     const child = z.object({
       work_id: z.string().uuid(), status: z.string(), assigned_principal_id: z.string().nullable(),
       required_competencies: z.array(z.string()).default([]), evidence,
+      dispatch_block: z.object({
+        principal_id: z.string().nullable(), reason: z.string(), created_at: z.string().datetime(),
+      }).nullable().default(null),
       dependencies: z.array(z.object({ work_id: z.string().uuid(), status: z.string() })).default([]),
       executions: z.array(z.object({
         id: z.string().uuid(), status: z.string(), worker_id: z.string().nullable(),

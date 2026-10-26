@@ -552,6 +552,15 @@ def test_group_assignment_routes_execution_without_creating_grants(monkeypatch):
         projected_group = client.get(f"/v1/projects/{project}/work-groups", headers=ceo).json()[0]
         assert projected_group["children"][0]["assigned_principal_id"] == worker_ids[0]
         assert projected_group["source_sha256"]
+        blocked_dispatch = client.post("/v1/agent/dispatch-next", headers=workers[0], json={
+            "project_id": project, "principal_id": worker_ids[0], "base_sha": "a" * 40,
+        })
+        assert blocked_dispatch.status_code == 202, blocked_dispatch.text
+        assert blocked_dispatch.json()["status"] == "BLOCKED"
+        projected_group = client.get(f"/v1/projects/{project}/work-groups", headers=ceo).json()[0]
+        dispatch_block = projected_group["children"][0]["dispatch_block"]
+        assert dispatch_block["principal_id"] == worker_ids[0]
+        assert "capability evaluation" in dispatch_block["reason"]
         board = client.get(f"/v1/projects/{project}/board", headers=ceo).json()
         child = next(item for item in board if item["id"] == work_id)
         assert child["assigned_principal_id"] == worker_ids[0]

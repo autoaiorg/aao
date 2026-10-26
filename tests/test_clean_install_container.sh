@@ -47,13 +47,23 @@ fi
 
 REPO_DIR="${1:-/repo}"
 [[ -d "$REPO_DIR" ]] || die "Repository directory $REPO_DIR not found"
+REV="${3:-$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)}"
+[[ "$REV" =~ ^[0-9a-f]{40}$ ]] || die "Pass the exact tested Git revision as argument 3 (or mount a Git checkout)."
 
 say "2. Testing AC-01: Fresh installation from scratch (including React build)..."
-bash "$REPO_DIR/scripts/bootstrap/aao_bootstrap.sh" --apply --ceo-user "$CEO_USER"
+bash "$REPO_DIR/scripts/bootstrap/aao_bootstrap.sh" --apply --ceo-user "$CEO_USER" --rev "$REV"
 
 say "3. Testing AC-02: Bootstrap idempotence (second run on configured host)..."
-OUTPUT_SECOND=$(bash "$REPO_DIR/scripts/bootstrap/aao_bootstrap.sh" --apply --ceo-user "$CEO_USER" 2>&1)
-assert_true "Second run exits 0" test $? -eq 0
+SECOND_RUN_STATUS=0
+if OUTPUT_SECOND=$(bash "$REPO_DIR/scripts/bootstrap/aao_bootstrap.sh" --apply --ceo-user "$CEO_USER" --rev "$REV" 2>&1); then
+  SECOND_RUN_STATUS=0
+else
+  SECOND_RUN_STATUS=$?
+fi
+assert_eq "Second run exits 0" "0" "$SECOND_RUN_STATUS"
+if [[ "$SECOND_RUN_STATUS" != 0 ]]; then
+  printf '%s\n' "$OUTPUT_SECOND" >&2
+fi
 assert_true "Second run maintains schema" grep -q "Schema is up to date" <<<"$OUTPUT_SECOND"
 assert_true "Active release link exists" test -L /opt/aao/current
 assert_true "Previous release link exists after second run" test -L /opt/aao/previous
@@ -114,8 +124,27 @@ assert_true "aao-api.env has restricted permissions (0600 or 0640 root:aao-api)"
 assert_true "aao-worker.env has restricted permissions (0600 or 0640 root:aao-impl-ag)" \
   test "$WORKER_PERMS" = "640 root:aao-impl-ag" -o "$WORKER_PERMS" = "600 root:root" -o "$WORKER_PERMS" = "640 root:root"
 
-assert_true "host identity is root-owned and readable only by the worker group" \
-  test "$HOST_ID_PERMS" = "440 root:aao-impl-ag"
+if command -v systemctl >/dev/null 2>&1 && systemctl is-system-running >/dev/null 2>&1; then
+  assert_true "worker unit is installed but not enabled by clean bootstrap" \
+    bash -c '[[ "$(systemctl is-enabled aao-worker-self-dev.service 2>&1 || true)" != "enabled" ]]'
+  assert_true "worker unit passes systemd unit validation" \
+    systemd-analyze verify /etc/systemd/system/aao-worker-self-dev.service
+  assert_true "worker runtime directory is private and owned by the worker" \
+    bash -c '[[ "$(stat -c "%a %U:%G" /run/aao-worker-self-dev)" == "700 aao-impl-ag:aao-impl-ag" ]]'
+fi
+
+assert_true "host identity is root-owned and readable only by the dedicated publisher/worker group" \
+  test "$HOST_ID_PERMS" = "440 root:aao-host-id-read"
+for role in aao-pm aao-impl-codex aao-impl-ag; do
+  assert_true "$role can read the host identity required for fencing" \
+    runuser -u "$role" -- test -r /etc/aao/host-id
+done
+for role in aao-api aao-integrator aao-supervisor; do
+  assert_true "$role cannot read the host identity" \
+    bash -c "! runuser -u '$role' -- test -r /etc/aao/host-id"
+done
+assert_true "publisher host-id group cannot read API secrets" \
+  bash -c "! runuser -u aao-pm -- test -r /etc/aao/aao-api.env"
 
 assert_true "aao-api cannot access /var/lib/aao-auditor" \
   bash -c "! runuser -u aao-api -- ls /var/lib/aao-auditor >/dev/null 2>&1"
@@ -163,7 +192,7 @@ assert_true "Destructive restore over active DB without valid ceo token or isola
 
 # Scenario C: Host fencing revokes active agent tokens and records event
 assert_true "Host fencing executes cleanly" \
-  /opt/aao/venv/bin/python /opt/aao/current/scripts/aao_ops.py fence-host --host-id "test-container"
+  /opt/aao/venv/bin/python /opt/aao/current/scripts/aao_ops.py fence-host
 
 # Scenario D: Invalid CEO token rejected by API
 INVALID_AUTH_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-CEO-Token: invalid-token-12345" http://127.0.0.1:8001/v1/mandates)

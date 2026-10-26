@@ -34,6 +34,7 @@ RESTORE_AUTHORITY_DATABASE_URL_FILE = Path("/etc/aao/restore-authority.database-
 RESTORE_AUTHORITY_ID = "ceo-restore-authority"
 RESTORE_AUTHORITY_FILE_OWNER_UID = 0
 MAX_RESTORE_AUTHORIZATION_MINUTES = 60
+_ISOLATION_VERIFICATION_TOKEN = object()
 
 
 class BackupError(RuntimeError):
@@ -689,11 +690,11 @@ def verify_restore_isolated(backup_path: Path, isolated_dsn: str) -> BackupManif
                 f"Isolated verification destination must be empty; contains {table_count} tables"
             )
 
-    return restore_backup(
+    return _restore_backup_impl(
         backup_path,
         isolated_dsn,
         allow_non_empty_target=False,
-        pre_verified_isolated=True,
+        _isolation_verified=_ISOLATION_VERIFICATION_TOKEN,
     )
 
 
@@ -705,8 +706,32 @@ def restore_backup(
     allow_non_empty_target: bool = False,
     restore_authorization: dict[str, Any] | str | Path | None = None,
     ceo_token: str | None = None,
-    pre_verified_isolated: bool = False,
     isolated_dsn: str | None = None,
+) -> BackupManifest:
+    """Restore a backup; non-empty targets require a real isolated-dry-run path."""
+    return _restore_backup_impl(
+        backup_path,
+        target_dsn,
+        target_artifacts_dir=target_artifacts_dir,
+        target_candidates_dir=target_candidates_dir,
+        allow_non_empty_target=allow_non_empty_target,
+        restore_authorization=restore_authorization,
+        ceo_token=ceo_token,
+        isolated_dsn=isolated_dsn,
+    )
+
+
+def _restore_backup_impl(
+    backup_path: Path,
+    target_dsn: str,
+    target_artifacts_dir: Path | None = None,
+    target_candidates_dir: Path | None = None,
+    allow_non_empty_target: bool = False,
+    restore_authorization: dict[str, Any] | str | Path | None = None,
+    ceo_token: str | None = None,
+    isolated_dsn: str | None = None,
+    *,
+    _isolation_verified: object | None = None,
 ) -> BackupManifest:
     """Restore a verified backup into the target database and filesystem.
 
@@ -722,9 +747,14 @@ def restore_backup(
     import psycopg
 
     # Step 1: Pre-verification in isolated destination if requested
-    if isolated_dsn and not pre_verified_isolated:
+    if isolated_dsn and extract_database_name(isolated_dsn) == target_database:
+        raise BackupError(
+            "Isolated verification destination must be a different database from the restore target."
+        )
+    isolation_verified = _isolation_verified is _ISOLATION_VERIFICATION_TOKEN
+    if isolated_dsn and not isolation_verified:
         verify_restore_isolated(backup_path, isolated_dsn)
-        pre_verified_isolated = True
+        isolation_verified = True
 
     # Step 2: Verify target database state and enforce authorization
     table_count = 0
@@ -746,7 +776,7 @@ def restore_backup(
                 "and explicit, structured CEO authorization."
             )
 
-        if not pre_verified_isolated:
+        if not isolation_verified:
             raise BackupError(
                 "Destructive restore denied: prior verification in an isolated destination "
                 "is mandatory before modifying an active database. Use --verify-isolated-dsn."
@@ -956,7 +986,6 @@ def register_host_worker(db: Any, host_id: str, worker_id: str) -> None:
 def apply_host_fencing(
     db: Any,
     host_identifier: str = "current-host",
-    worker_ids: list[str] | None = None,
 ) -> list[str]:
     """Apply targeted host fencing: revoke worker leases, tokens and claims for a specific host.
 
@@ -968,7 +997,7 @@ def apply_host_fencing(
     ensure_host_worker_registry(db)
 
     # 1. Identify all workers explicitly bound to this host
-    target_workers = list(worker_ids) if worker_ids else []
+    target_workers: list[str] = []
     rows = db.execute(
         """
         SELECT worker_id FROM host_worker_bindings

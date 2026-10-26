@@ -187,8 +187,8 @@ def run_watch(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--project-id", required=True)
-    parser.add_argument("--principal-id", required=True)
+    parser.add_argument("--project-id", default=os.environ.get("AAO_WORKER_PROJECT_ID"))
+    parser.add_argument("--principal-id", default=os.environ.get("AAO_WORKER_PRINCIPAL_ID"))
     parser.add_argument("--watch", action="store_true",
                         help="poll the assigned agent's already staged execution queue")
     parser.add_argument("--dispatch", action="store_true",
@@ -199,15 +199,15 @@ def main() -> int:
                         default=DEFAULT_POLL_INTERVAL_SECONDS,
                         help="watch-mode idle polling interval (default: 5; maximum: 300)")
     args = parser.parse_args()
+    if not args.project_id or not args.principal_id:
+        parser.error(
+            "--project-id and --principal-id are required (or set "
+            "AAO_WORKER_PROJECT_ID and AAO_WORKER_PRINCIPAL_ID)"
+        )
     if args.dispatch and not args.base_sha:
         parser.error("--dispatch requires --base-sha")
     if args.base_sha and not args.dispatch:
         parser.error("--base-sha requires --dispatch")
-    try:
-        import psycopg
-    except ImportError:
-        print("Worker did not complete (PostgreSQL dependency unavailable).", file=sys.stderr)
-        return 1
     try:
         if args.watch:
             stop_event = threading.Event()
@@ -238,9 +238,10 @@ def main() -> int:
             elif dispatched["status"] == "QUEUED":
                 print(f"Dispatched work {dispatched.get('work_id')}: {dispatched.get('execution_id')}")
         result = run(args.project_id, args.principal_id)
-    except (OSError, RuntimeError, ValueError, psycopg.Error) as exc:
-        # Do not print exception text: a driver or configuration exception can
-        # include connection details. Type is enough to direct local diagnosis.
+    except (OSError, RuntimeError, ValueError) as exc:
+        # The worker communicates through the API and does not need a database
+        # driver. Keep exception details private because network/configuration
+        # errors can contain deployment details.
         print(f"Worker did not complete ({type(exc).__name__}); details withheld.", file=sys.stderr)
         return 1
     status = result.get("status", "UNKNOWN")

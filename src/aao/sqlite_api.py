@@ -17,7 +17,7 @@ from aao.execution import initialize as initialize_queue
 from aao.planner import Admission, decide_admission
 from aao.policy import Verdict, authorize
 from aao.review import evaluate_review
-from aao.sqlite_storage import connect, event, initialize, transaction
+from aao.sqlite_storage import connection, event, initialize, transaction
 
 DB_PATH = os.getenv("AAO_DB_PATH", "./data/aao.sqlite3")
 CEO_TOKEN = os.getenv("AAO_CEO_TOKEN")
@@ -169,7 +169,7 @@ def create_project(payload: ProjectIn, _: bool = Depends(require_ceo)):
 
 @app.get("/v1/projects")
 def list_projects():
-    with connect(DB_PATH) as db:
+    with connection(DB_PATH) as db:
         return [dict(r) for r in db.execute("SELECT * FROM projects ORDER BY rowid")]
 
 
@@ -193,7 +193,7 @@ def create_work(project_id: str, payload: WorkIn, _: bool = Depends(require_work
 
 @app.get("/v1/projects/{project_id}/board")
 def board(project_id: str):
-    with connect(DB_PATH) as db:
+    with connection(DB_PATH) as db:
         if not db.execute("SELECT id FROM projects WHERE id=?", (project_id,)).fetchone():
             raise HTTPException(404, "Project not found")
         rows = db.execute("SELECT * FROM work_items WHERE project_id=? ORDER BY rowid",
@@ -243,7 +243,7 @@ def transition(work_id: str, payload: TransitionIn, _: bool = Depends(require_wo
 
 @app.get("/v1/events")
 def list_events():
-    with connect(DB_PATH) as db:
+    with connection(DB_PATH) as db:
         return [dict(r) for r in db.execute("SELECT * FROM events ORDER BY rowid")]
 
 @app.post("/v1/work/{work_id}/reviews", status_code=201)

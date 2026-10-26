@@ -25,13 +25,25 @@ PYTHON='<Python executable accessible to the CEO and both role accounts>'
 
 The command prompts for the CEO token without echo and invokes `sudo` for each Linux account. The CEO must verify the project UUID before running it. It stops if the project is not the unique active Self Development project, either role cannot be impersonated for the safe install operation, or a publisher-token file already exists. On partial failure it attempts to remove matching token files and revoke every principal it created; verify that cleanup in the API before retrying. The script reports principal IDs and expiry only, never token values.
 
-## Preconditions once that seam is implemented
+Before either role can publish, the exact principal IDs printed by provisioning must each be explicitly registered against this host. The registration does not grant a project capability; it enables host-fenced use of the already-issued credential. From the installed checkout, as the authorized operator, obtain the protected host identifier and register both exact principals:
+
+```bash
+HOST_ID=$(sudo cat /etc/aao/host-id)
+sudo aao-ops register-host-worker --worker-id '<printed implementer principal>' --host-id "$HOST_ID"
+sudo aao-ops register-host-worker --worker-id '<printed PM principal>' --host-id "$HOST_ID"
+unset HOST_ID
+```
+
+Do not reuse stale IDs after reprovisioning. On host migration, fence the old host before registering the new binding. The host ID is readable only by the worker and publisher role group; this read access grants no sudo, credential, database or governance authority.
+
+## Preconditions
 
 1. Use only a work item in the authorized Self Development project that is `VERIFIED`, has an `APPROVE` review on the exact succeeded candidate SHA, and has no veto. The publisher re-derives this chain from PostgreSQL; do not manually alter its state.
 2. Confirm `aao-impl-codex` has its own App config under `~aao-impl-codex/.config/aao/aao-impl-codex.{pem,json}`, and `aao-pm` has its own config under `~aao-pm/.config/aao/aao-pm.{pem,json}`. Private keys must remain owned by that role at mode `0600`; never copy either key to the other account.
 3. Record the selected fork as `<IMPLEMENTER_OWNER>/aao` (or the actual installed fork). The implementer App must be installed on that fork; the PM App must have PR authority on `autoaiorg/aao`. The implementer App must not be installed on the canonical repository.
 4. Ensure the role-specific publisher token is available as `$XDG_RUNTIME_DIR/aao-publisher.token` for each role, mode `0600`, with its matching AAO principal/grant. The provisioning command above verifies each file; never display, log, or reuse one role's token for the other.
-5. Confirm PostgreSQL/API configuration and the candidate bare repository are accessible to both accounts through the established host configuration; do not copy `.env.local` or the CEO token.
+5. Verify each exact principal has exactly one ACTIVE binding to this host and a positive fencing epoch; publication rejects absent, fenced or different-host bindings. The two publisher effect transactions hold the binding row lock through remote-effect recording, so fencing serializes with an in-flight effect. GitHub does not accept AAO fencing epochs; a network partition with uncertain remote outcome is reconciled by retry and deterministic branch/PR lookup, not claimed as absolute remote fencing.
+6. Confirm PostgreSQL/API configuration and the candidate bare repository are accessible to both accounts through the established host configuration; do not copy `.env.local` or the CEO token.
 
 ## Two-step exercise
 

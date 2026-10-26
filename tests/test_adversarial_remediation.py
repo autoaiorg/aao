@@ -164,6 +164,7 @@ def test_scenario_03_failed_restore_compensated_rollback(tmp_path, monkeypatch, 
         return MagicMock(returncode=0)
 
     with patch("aao.backup.verify_backup") as mock_verify, \
+         patch("aao.backup.verify_restore_isolated"), \
          patch("psycopg.connect") as mock_connect, \
          patch("subprocess.run", side_effect=fake_subprocess_run):
 
@@ -184,7 +185,7 @@ def test_scenario_03_failed_restore_compensated_rollback(tmp_path, monkeypatch, 
                 archive,
                 "postgresql://user:pass@localhost/aao_prod",
                 allow_non_empty_target=True,
-                pre_verified_isolated=True,
+                isolated_dsn="postgresql://user:pass@localhost/isolated",
                 restore_authorization=auth,
                 ceo_token=authority_key,
             )
@@ -238,6 +239,7 @@ def test_scenario_04_failure_to_publish_artifacts_coordinated_rollback(tmp_path,
         raise OSError("Disk full while restoring artifacts")
 
     with patch("aao.backup.verify_backup") as mock_verify, \
+         patch("aao.backup.verify_restore_isolated"), \
          patch("psycopg.connect") as mock_connect, \
          patch("subprocess.run", side_effect=fake_subprocess_run), \
          patch("shutil.copy2", side_effect=failing_copy2):
@@ -258,7 +260,7 @@ def test_scenario_04_failure_to_publish_artifacts_coordinated_rollback(tmp_path,
                 archive,
                 "postgresql://user:pass@localhost/aao_prod",
                 allow_non_empty_target=True,
-                pre_verified_isolated=True,
+                isolated_dsn="postgresql://user:pass@localhost/isolated",
                 target_artifacts_dir=target_artifacts,
                 restore_authorization=auth,
                 ceo_token=authority_key,

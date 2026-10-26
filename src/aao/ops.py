@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from aao.host_identity import HostIdentityError, current_host_id
 from aao.migrator import check_status as check_migration_status
 from aao.migrator import default_migrations_dir
 from aao.postgresql_connection import connect_postgres
@@ -213,6 +214,34 @@ def check_governance_identities(app_keys_override: list[Path] | None = None) -> 
     unverified_reasons = []
     for expected_owner, key_path in present_keys:
         try:
+            # Check the complete role-owned path, not just the PEM leaf. A secure
+            # key under a replaceable or traversable directory is not protected.
+            if expected_owner:
+                account = pwd.getpwnam(expected_owner)
+                home = Path(account.pw_dir)
+                parents = []
+                parent = key_path.parent
+                while parent != home and parent != parent.parent:
+                    parents.append(parent)
+                    parent = parent.parent
+                if parent != home:
+                    unverified_reasons.append(f"{key_path.name}: path is not under {expected_owner}'s home")
+                else:
+                    parents.append(home)
+                for directory in parents:
+                    directory_info = directory.lstat()
+                    if (not stat.S_ISDIR(directory_info.st_mode)
+                            or directory_info.st_uid != account.pw_uid
+                            or stat.S_IMODE(directory_info.st_mode) & 0o077):
+                        unverified_reasons.append(
+                            f"{key_path.name}: parent directory {directory} is not role-owned and private"
+                        )
+                        break
+            else:
+                parent_info = key_path.parent.lstat()
+                if (not stat.S_ISDIR(parent_info.st_mode)
+                        or stat.S_IMODE(parent_info.st_mode) & 0o077):
+                    unverified_reasons.append(f"{key_path.name}: parent directory is not private")
             st = key_path.lstat()
             if not stat.S_ISREG(st.st_mode):
                 unverified_reasons.append(f"{key_path.name}: not a regular, non-symlink key file")
@@ -410,12 +439,11 @@ def main(argv: list[str] | None = None) -> int:
     # register-host-worker
     p_reg = subparsers.add_parser("register-host-worker", help="Explicitly bind a worker identity to a host node")
     p_reg.add_argument("--worker-id", required=True)
-    p_reg.add_argument("--host-id", default=os.uname().nodename)
+    p_reg.add_argument("--host-id", help="Must match this host's protected /etc/aao/host-id")
 
     # fence-host
     p_fence = subparsers.add_parser("fence-host", help="Apply targeted host fencing: revoke worker leases and credentials")
-    p_fence.add_argument("--host-id", default=os.uname().nodename, help="Host identifier to record in fencing audit")
-    p_fence.add_argument("--worker-ids", nargs="*", default=None, help="Specific worker IDs to fence on this host")
+    p_fence.add_argument("--host-id", help="Must match this host's protected /etc/aao/host-id")
 
     args = parser.parse_args(argv)
 
@@ -436,7 +464,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"PASS: Backup verified. Revision: {manifest.git_revision}, DB hash: {manifest.database_dump_sha256[:12]}")
         return 0
     elif args.command == "restore":
-        from aao.backup import restore_backup, verify_restore_isolated
+        from aao.backup import restore_backup
         if not args.target_dsn:
             print(
                 "ERROR: Target DSN must be provided via --target-dsn, "
@@ -445,11 +473,6 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
-        if args.verify_isolated_dsn:
-            print(f"Executing pre-restoration dry run in isolated destination: {args.verify_isolated_dsn}...")
-            verify_restore_isolated(args.archive, args.verify_isolated_dsn)
-            print("PASS: Pre-restoration dry run in isolated environment completed successfully.")
-
         try:
             manifest = restore_backup(
                 args.archive,
@@ -457,7 +480,6 @@ def main(argv: list[str] | None = None) -> int:
                 allow_non_empty_target=args.allow_non_empty,
                 restore_authorization=args.auth_file,
                 ceo_token=args.ceo_token,
-                pre_verified_isolated=bool(args.verify_isolated_dsn),
                 isolated_dsn=args.verify_isolated_dsn,
             )
             print(f"PASS: Restored backup from revision {manifest.git_revision}")
@@ -486,9 +508,12 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "register-host-worker":
         from aao.backup import register_host_worker
         try:
+            local_host_id = current_host_id()
+            if args.host_id is not None and args.host_id != local_host_id:
+                raise HostIdentityError("Worker registration is restricted to the protected local host identity")
             with connect_postgres() as db:
-                register_host_worker(db, host_id=args.host_id, worker_id=args.worker_id)
-            print(f"PASS: Worker '{args.worker_id}' bound to host '{args.host_id}'.")
+                register_host_worker(db, host_id=local_host_id, worker_id=args.worker_id)
+            print(f"PASS: Worker '{args.worker_id}' bound to host '{local_host_id}'.")
             return 0
         except (RuntimeError, OSError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
@@ -496,7 +521,14 @@ def main(argv: list[str] | None = None) -> int:
 
     elif args.command == "fence-host":
         from aao.backup import apply_host_fencing
-        print(f"Applying targeted host fencing for '{args.host_id}'...")
+        try:
+            local_host_id = current_host_id()
+            if args.host_id is not None and args.host_id != local_host_id:
+                raise HostIdentityError("Host fencing must run on the host identified by protected /etc/aao/host-id")
+        except HostIdentityError as exc:
+            print(f"FENCING ERROR: {exc}", file=sys.stderr)
+            return 1
+        print(f"Applying targeted host fencing for '{local_host_id}'...")
 
         # If systemd is available, stop and mask background workers
         if shutil.which("systemctl"):
@@ -507,10 +539,10 @@ def main(argv: list[str] | None = None) -> int:
 
         try:
             with connect_postgres() as db:
-                actions = apply_host_fencing(db, host_identifier=args.host_id, worker_ids=args.worker_ids)
+                actions = apply_host_fencing(db, host_identifier=local_host_id)
                 for a in actions:
                     print(f"  [+] {a}")
-            print(f"PASS: Host '{args.host_id}' successfully fenced from cluster.")
+            print(f"PASS: Host '{local_host_id}' successfully fenced from cluster.")
             return 0
         except (RuntimeError, OSError) as exc:
             print(f"FENCING ERROR: {exc}", file=sys.stderr)

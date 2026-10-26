@@ -1,6 +1,7 @@
 """PostgreSQL integration tests, opt-in for explicitly disposable databases."""
 import json
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
@@ -2167,7 +2168,7 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
     exactly that SHA and opens the PR; the merged PR makes the task DONE; the activity feed shows each step."""
     import subprocess
 
-    from aao.inert_execution_worker import run_one
+    import aao.inert_execution_worker as execution_worker
     from aao.work_management_api import app
 
     # The fixture repository is this checkout's HEAD, so the sandboxed core-unit check has real tests to run.
@@ -2197,6 +2198,24 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
     monkeypatch.setenv("AAO_AGENT_BACKEND", "codex")
     monkeypatch.delenv("AAO_AGENT_PROVIDER", raising=False)
     monkeypatch.setenv("AAO_AGENT_FIXTURE_PATCH", str(failing))
+
+    # Exercise the real authenticated API routes while keeping this opt-in
+    # integration test isolated from a separately running host API service.
+    # The VM's production aao-api process correctly rejects development/test
+    # credentials, so pointing the worker at localhost would cross that boundary.
+    def request_through_test_client(path, credential, *, body, method="POST"):
+        response = client.request(
+            method, path,
+            headers={"X-Agent-Token": credential},
+            json=body,
+        )
+        if response.status_code >= 400:
+            raise execution_worker.WorkerAPIError(
+                response.status_code, "AAO worker API rejected the operation",
+            )
+        return response.json()
+
+    monkeypatch.setattr(execution_worker, "_api_request", request_through_test_client)
     ceo = {"X-CEO-Token": "agent-run-ceo"}
     with TestClient(app) as client:
         identity = "w1-agent-" + str(uuid4())
@@ -2274,7 +2293,7 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         assert client.post(f"/v1/work/{work}/progress", headers=agent).status_code == 200
 
         # Attempt 1: the candidate is committed and stored, but its own test fails, so the execution FAILED.
-        assert run_one(identity, token, project_id=project, seconds=400)["status"] == "FAILED"
+        assert execution_worker.run_one(identity, token, project_id=project, seconds=400)["status"] == "FAILED"
         # Recovery: the task can be re-run after a failed attempt.
         monkeypatch.setenv("AAO_AGENT_FIXTURE_PATCH", str(passing))
         # I5: attempt 1 spent an estimated 0.5 today; with a daily budget of 0.9 another 0.5 does not fit. The
@@ -2296,11 +2315,11 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         def broken(*_args, **_kwargs):
             raise checks.RepositoryCheckError("sandbox unavailable")
         monkeypatch.setattr(checks, "run_repository_check", broken)
-        assert run_one(identity, token, project_id=project, seconds=400)["status"] == "FAILED"
+        assert execution_worker.run_one(identity, token, project_id=project, seconds=400)["status"] == "FAILED"
         monkeypatch.setattr(checks, "run_repository_check", real_check)
         # ...and attempt 3 reproduces the same patch: it reuses that proposal instead of failing on it.
         assert client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run).status_code == 202
-        outcome = run_one(identity, token, project_id=project, seconds=400)
+        outcome = execution_worker.run_one(identity, token, project_id=project, seconds=400)
         board = client.get(f"/v1/projects/{project}/board", headers=agent).json()
         last = next(i for i in board if i["id"] == work)["executions"][-1]["result"]
         print(last.get("check", {}).get("stderr"))  # shown by pytest only on failure
@@ -2373,6 +2392,28 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
                                json={"principal_id": pid, "capability": "code.publish"}).status_code == 201
         with pytest.raises(PublishError, match="cannot publish its own work"):
             push_candidate(work, token, store=store, push=push)
+        with pytest.raises(PublishError, match="exactly one active host binding"):
+            push_candidate(work, pusher, store=store, push=push)
+        with pytest.raises(PublishError, match="exactly one active host binding"):
+            open_pull_request(work, publisher, open_pr=open_pr)
+        from aao.backup import register_host_worker
+        from aao.postgresql_connection import connect_postgres
+        with connect_postgres() as db:
+            register_host_worker(db, "integration-test-host", pusher_id)
+            register_host_worker(db, "integration-test-host", publisher_id)
+        with connect_postgres() as db:
+            db.execute("UPDATE host_worker_bindings SET host_id='other-host' WHERE worker_id=%s", (pusher_id,))
+        with pytest.raises(PublishError, match="different host"):
+            push_candidate(work, pusher, store=store, push=push)
+        with connect_postgres() as db:
+            db.execute("UPDATE host_worker_bindings SET host_id='integration-test-host' WHERE worker_id=%s",
+                       (pusher_id,))
+            db.execute("UPDATE host_worker_bindings SET status='FENCED',fence_epoch=fence_epoch+1 "
+                       "WHERE worker_id=%s", (publisher_id,))
+        with pytest.raises(PublishError, match="exactly one active host binding"):
+            open_pull_request(work, publisher, open_pr=open_pr)
+        with connect_postgres() as db:
+            register_host_worker(db, "integration-test-host", publisher_id)
         with pytest.raises(PublishError, match="has not been pushed"):
             open_pull_request(work, publisher, open_pr=open_pr)
         pushed = push_candidate(work, pusher, store=store, push=push)
@@ -2387,8 +2428,53 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
             open_pull_request(work, publisher, open_pr=open_pr)
         subprocess.run(["git", "--git-dir", str(remote), "update-ref", f"refs/heads/{branch}", candidate_sha], check=True)
         opened.clear()
-        published = open_pull_request(work, publisher, open_pr=open_pr)
-        assert published["status"] == "PUBLISHED" and published["pusher"] == pusher_id
+        # Concurrent AAO publishers for the same work item serialize around the remote effect.
+        # The second caller must observe the first committed event rather than create another PR.
+        effect_entered = threading.Event()
+        release_effect = threading.Event()
+
+        def blocking_open_pr(branch, title, body):
+            effect_entered.set()
+            assert release_effect.wait(timeout=10), "test did not release the simulated GitHub effect"
+            return open_pr(branch, title, body)
+
+        def publish_once():
+            return open_pull_request(work, publisher, open_pr=blocking_open_pr)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(publish_once)
+            assert effect_entered.wait(timeout=10)
+            second_started = threading.Event()
+
+            def publish_second():
+                second_started.set()
+                return publish_once()
+
+            second = pool.submit(publish_second)
+            assert second_started.wait(timeout=10)
+            # Prove the second call reached PostgreSQL and is waiting on the work-row
+            # lock held by the first publisher; the Python thread-start signal alone
+            # would not establish that serialization actually occurred.
+            from aao.postgresql_connection import connect_postgres
+
+            deadline = time.monotonic() + 5
+            blocked_on_work = False
+            while time.monotonic() < deadline:
+                with connect_postgres() as observer:
+                    blocked_on_work = observer.execute(
+                        "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                        "WHERE query LIKE 'SELECT project_id,status,author_id,title FROM work_items WHERE id=%' "
+                        "AND wait_event_type='Lock')"
+                    ).fetchone()[0]
+                if blocked_on_work:
+                    break
+                time.sleep(0.01)
+            assert blocked_on_work, "concurrent publisher did not wait on the locked work row"
+            release_effect.set()
+            published_results = [first.result(timeout=15), second.result(timeout=15)]
+        assert sorted(result["status"] for result in published_results) == ["ALREADY_PUBLISHED", "PUBLISHED"]
+        published = next(result for result in published_results if result["status"] == "PUBLISHED")
+        assert published["pusher"] == pusher_id
         assert opened == [(branch, "aao: Add a notes test", opened[0][2])] and candidate_sha in opened[0][2]
         assert open_pull_request(work, publisher, open_pr=open_pr)["status"] == "ALREADY_PUBLISHED"
         assert len(opened) == 1
@@ -2412,7 +2498,7 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         # Attempts 2 and 3 share a patch but end differently (sandbox unavailable, then tested): that is progress.
         monkeypatch.setenv("AAO_AGENT_MAX_ATTEMPTS", "4")
         assert client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run).status_code == 202
-        assert run_one(identity, token, project_id=project, seconds=400)["status"] == "SUCCEEDED"
+        assert execution_worker.run_one(identity, token, project_id=project, seconds=400)["status"] == "SUCCEEDED"
         # Attempt 4 reproduced attempt 3 exactly (same patch, same tested outcome): no progress, so a fifth is
         # refused even below the attempt limit.
         monkeypatch.setenv("AAO_AGENT_MAX_ATTEMPTS", "10")
@@ -2424,7 +2510,19 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         assert client.post(f"/v1/work/{work}/reviews", headers=auditor, json={
             "decision": "APPROVE", "candidate_sha": candidate_sha, "evidence": [evidence_ref]}).status_code == 201
         assert push_candidate(work, pusher, store=store, push=push)["status"] == "PUSHED"
-        reopened = open_pull_request(work, publisher, open_pr=open_pr)
+        # Simulate GitHub creating the PR but the response being lost. The next
+        # attempt must reconcile the deterministic branch to the existing remote PR.
+        uncertain_result = {}
+
+        def open_pr_with_lost_response(branch, title, body):
+            if "pr" not in uncertain_result:
+                uncertain_result["pr"] = open_pr(branch, title, body)
+                raise TimeoutError("simulated lost response after remote PR creation")
+            return uncertain_result["pr"]
+
+        with pytest.raises(TimeoutError, match="lost response"):
+            open_pull_request(work, publisher, open_pr=open_pr_with_lost_response)
+        reopened = open_pull_request(work, publisher, open_pr=open_pr_with_lost_response)
         assert reopened["status"] == "PUBLISHED" and reopened["pr_number"] == 8
         pr_state = {"state": "closed", "merged": True, "merge_commit_sha": None, "head_sha": candidate_sha}
         merge_sha = "e" * 40

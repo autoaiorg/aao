@@ -67,11 +67,17 @@ Para cumplir la directriz de restauración en entorno aislado:
    ```bash
    sudo -u postgres createdb -O aao_app aao_restore_verify
    ```
+   Configure `/etc/aao/restore-target.env` y `/etc/aao/restore-verify.env` como
+   archivos regulares `root:root` modo `0600`, con `AAO_RESTORE_TARGET_DSN` apuntando
+   **a `aao_restore_verify`** y `AAO_RESTORE_VERIFY_ISOLATED_DSN` a otra base
+   desechable aislada. No use el DSN productivo de `/etc/aao/aao-api.env` como destino
+   de esta prueba ni pase DSN en argumentos de línea de comandos.
 
 2. **Ejecutar la restauración de prueba:**
    ```bash
-   aao-ops restore /var/backups/aao/aao-backup-20261026T120000Z.tar.gz \
-     --target-dsn "postgresql://aao_app:SECRETO@127.0.0.1:5432/aao_restore_verify"
+   # Para una base vacía, no usar --allow-non-empty ni una autorización destructiva.
+   sudo /bin/bash -c 'set -a; . /etc/aao/restore-target.env; . /etc/aao/restore-verify.env; set +a; \
+     exec /opt/aao/venv/bin/aao-ops restore /var/backups/aao/aao-backup-20261026T120000Z.tar.gz'
    ```
 
 3. **Verificar el esquema y datos restaurados:**
@@ -120,12 +126,17 @@ Para trasladar AAO de un Host A a un Host B de forma reproducible y segura:
 
 2. **Restaurar el estado de datos con pre-verificación aislada y autorización explícita:**
    ```bash
-   # Pre-verificar en destino aislado y aplicar con autorización explícita del CEO
-   aao-ops restore /var/backups/aao/aao-backup-final.tar.gz \
-     --target-dsn "$AAO_POSTGRES_URL" \
-     --verify-isolated-dsn "postgresql://aao_app:SECRETO@127.0.0.1:5432/aao_isolated_verify" \
-     --allow-non-empty \
-     --authorized-by-ceo
+   # Solo tras decisión de la autoridad competente y emisión del artefacto firmado.
+   # Emitirlo fuera del host ejecutor, con la clave privada custodiada por esa autoridad:
+   aao-ops authorize-restore /var/backups/aao/aao-backup-final.tar.gz \
+     --target-database "$AAO_RESTORE_TARGET_DATABASE" \
+     --signing-key-file /protected/issuer/ceo-restore-authority.key \
+     --output /protected/issuer/restore-authorization.json
+   # Copiar el artefacto al host por un canal controlado y protegido. Ejecutar como root
+   # para leer la configuración fija de la base anti-replay; no pasar DSN en argumentos.
+   sudo /bin/bash -c 'set -a; . /etc/aao/restore-target.env; . /etc/aao/restore-verify.env; set +a; \
+     exec /opt/aao/venv/bin/aao-ops restore /var/backups/aao/aao-backup-final.tar.gz \
+       --allow-non-empty --auth-file /protected/restore/restore-authorization.json'
    ```
 3. **Verificar coherencia:**
    ```bash

@@ -58,12 +58,13 @@ assert_true "Second run maintains schema" grep -q "Schema is up to date" <<<"$OU
 assert_true "Active release link exists" test -L /opt/aao/current
 assert_true "Previous release link exists after second run" test -L /opt/aao/previous
 
-say "4. Testing AC-03 & AC-04: PostgreSQL datastore and migrations 001-030..."
+say "4. Testing AC-03 & AC-04: PostgreSQL datastore and all numbered migrations..."
 DB_PASS=$(cat /etc/aao/aao-db.secret)
 export AAO_POSTGRES_URL="postgresql://aao_app:${DB_PASS}@127.0.0.1:5432/aao_prod"
 
+EXPECTED_MIGRATIONS=$(find /opt/aao/current/db/postgres -maxdepth 1 -type f -name '[0-9][0-9][0-9]_*.sql' | wc -l | awk '{print $1}')
 MIG_COUNT=$(runuser -u postgres -- psql -d aao_prod -tAc "SELECT count(*) FROM schema_migrations")
-assert_eq "All 30 migrations applied in schema_migrations" "30" "$MIG_COUNT"
+assert_eq "All $EXPECTED_MIGRATIONS numbered migrations applied in schema_migrations" "$EXPECTED_MIGRATIONS" "$MIG_COUNT"
 
 assert_true "Migrator verification succeeds" \
   /opt/aao/venv/bin/aao-migrate --verify --dsn "$AAO_POSTGRES_URL"
@@ -139,7 +140,7 @@ assert_true "Restore into clean database succeeds" \
   /opt/aao/venv/bin/aao-ops restore "$BACKUP_FILE" --target-dsn "postgresql://aao_app:${DB_PASS}@127.0.0.1:5432/aao_restore_test"
 
 RESTORE_MIG_COUNT=$(runuser -u postgres -- psql -d aao_restore_test -tAc "SELECT count(*) FROM schema_migrations")
-assert_eq "Restored database has all 30 migrations" "30" "$RESTORE_MIG_COUNT"
+assert_eq "Restored database has all numbered migrations" "$EXPECTED_MIGRATIONS" "$RESTORE_MIG_COUNT"
 
 runuser -u postgres -- dropdb aao_restore_test
 

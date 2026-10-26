@@ -385,14 +385,18 @@ def main(argv: list[str] | None = None) -> int:
     # restore
     p_restore = subparsers.add_parser("restore", help="Restore backup into target database")
     p_restore.add_argument("archive", type=Path)
-    p_restore.add_argument("--target-dsn", default=os.environ.get("AAO_POSTGRES_URL"))
+    p_restore.add_argument(
+        "--target-dsn",
+        default=os.environ.get("AAO_RESTORE_TARGET_DSN", os.environ.get("AAO_POSTGRES_URL")),
+    )
     p_restore.add_argument("--allow-non-empty", action="store_true",
                            help="Allow restoring over non-empty database (requires verifiable CEO authorization)")
     p_restore.add_argument("--auth-file", default=None,
                            help="Path to structured, signed CEO authorization JSON file")
     p_restore.add_argument("--ceo-token", default=None,
                            help="Explicit CEO credential token for verifiable authorization")
-    p_restore.add_argument("--verify-isolated-dsn", default=None,
+    p_restore.add_argument("--verify-isolated-dsn",
+                           default=os.environ.get("AAO_RESTORE_VERIFY_ISOLATED_DSN"),
                            help="Verify restoration into an isolated destination before touching target")
 
     # authorize-restore
@@ -434,7 +438,11 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "restore":
         from aao.backup import restore_backup, verify_restore_isolated
         if not args.target_dsn:
-            print("ERROR: Target DSN must be provided via --target-dsn or AAO_POSTGRES_URL", file=sys.stderr)
+            print(
+                "ERROR: Target DSN must be provided via --target-dsn, "
+                "AAO_RESTORE_TARGET_DSN, or AAO_POSTGRES_URL",
+                file=sys.stderr,
+            )
             return 1
 
         if args.verify_isolated_dsn:

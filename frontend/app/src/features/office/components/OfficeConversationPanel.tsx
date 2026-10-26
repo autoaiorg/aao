@@ -18,6 +18,7 @@ interface WorkTaskDraft {
   description: string;
   acceptanceCriteria: string;
   dependsOn: string[];
+  requiredCompetencies: string[];
   assignedPrincipalId: string;
   suggestedPrincipalId?: string;
   dueDate: string;
@@ -44,7 +45,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
   const [proposingWorkGroup, setProposingWorkGroup] = useState(false);
   const [proposalGenerated, setProposalGenerated] = useState(false);
   const [proposalSourceMessageIds, setProposalSourceMessageIds] = useState<string[] | null>(null);
-  const [workTasks, setWorkTasks] = useState<WorkTaskDraft[]>([{ key: 'task-1', title: '', description: '', acceptanceCriteria: '', dependsOn: [], assignedPrincipalId: '', dueDate: '' }]);
+  const [workTasks, setWorkTasks] = useState<WorkTaskDraft[]>([{ key: 'task-1', title: '', description: '', acceptanceCriteria: '', dependsOn: [], requiredCompetencies: [], assignedPrincipalId: '', dueDate: '' }]);
   const [nextTaskNumber, setNextTaskNumber] = useState(2);
   const [workGroupIdempotencyKey, setWorkGroupIdempotencyKey] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
@@ -122,7 +123,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
     setSendingTurn(true);
     if (proposalGenerated) {
       setRequestTitle(''); setRequestDescription(''); setRequestCriteria(''); setRequestDueDate('');
-      setWorkTasks([{ key: 'task-1', title: '', description: '', acceptanceCriteria: '', dependsOn: [], assignedPrincipalId: '', dueDate: '' }]);
+      setWorkTasks([{ key: 'task-1', title: '', description: '', acceptanceCriteria: '', dependsOn: [], requiredCompetencies: [], assignedPrincipalId: '', dueDate: '' }]);
       setNextTaskNumber(2); setWorkGroupIdempotencyKey(''); setProposalGenerated(false); setProposalSourceMessageIds(null);
     }
     const idempotencyKey = turnIdempotencyKey || crypto.randomUUID();
@@ -207,6 +208,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
       acceptance_criteria: task.acceptanceCriteria.split('\n').map((item) => item.trim()).filter(Boolean),
       due_date: task.dueDate || null,
       depends_on: task.dependsOn,
+      required_competencies: task.requiredCompetencies,
       ...(task.assignedPrincipalId ? { assigned_principal_id: task.assignedPrincipalId } : {}),
     }));
     if (!projectId || !conversationId || !requestTitle.trim() || !requestDescription.trim()
@@ -223,7 +225,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
     setRequestingMessageId(false);
     if (result.kind === 'ready') {
       setRequestTitle(''); setRequestDescription(''); setRequestCriteria(''); setRequestDueDate('');
-      setWorkTasks([{ key: 'task-1', title: '', description: '', acceptanceCriteria: '', dependsOn: [], assignedPrincipalId: '', dueDate: '' }]);
+      setWorkTasks([{ key: 'task-1', title: '', description: '', acceptanceCriteria: '', dependsOn: [], requiredCompetencies: [], assignedPrincipalId: '', dueDate: '' }]);
       setNextTaskNumber(2); setWorkGroupIdempotencyKey(''); setProposalGenerated(false); setProposalSourceMessageIds(null);
       setNotice(`Desglose ${result.data.id} (${result.data.tasks.length} tareas) registrado en Entrada; no se ha admitido ni ejecutado.`);
       await queryClient.invalidateQueries({ queryKey: ['board'] });
@@ -250,6 +252,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
         description: task.description,
         acceptanceCriteria: task.acceptance_criteria.join('\n'),
         dependsOn: task.depends_on,
+        requiredCompetencies: task.required_competencies || [],
         assignedPrincipalId: task.assigned_principal_id || '',
         suggestedPrincipalId: task.assigned_principal_id || undefined,
         dueDate: task.due_date || '',
@@ -444,6 +447,20 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
                       <label className="office-form-field">Fecha objetivo (opcional)
                         <input className="office-form-control" aria-label={`Fecha objetivo ${task.key}`} type="date" value={task.dueDate} onChange={(event) => updateWorkTask(task.key, { dueDate: event.target.value })} />
                       </label>
+                      <fieldset className="office-conversation-dependencies">
+                        <legend>Competencias requeridas (de perfiles CEO persistidos)</legend>
+                        {Array.from(new Set(assignableAgents.flatMap((agent) => agent.competencies))).sort().map((competency) => (
+                          <label key={competency}>
+                            <input type="checkbox" checked={task.requiredCompetencies.includes(competency)} onChange={(event) => updateWorkTask(task.key, {
+                              requiredCompetencies: event.target.checked
+                                ? [...task.requiredCompetencies, competency]
+                                : task.requiredCompetencies.filter((value) => value !== competency),
+                            })} />
+                            {competency}
+                          </label>
+                        ))}
+                        {task.requiredCompetencies.length === 0 && <small>Sin requisito explícito: el PM no podrá cambiar la asignación de esta tarea.</small>}
+                      </fieldset>
                       <label className="office-form-field">Asignación a identidad autorizada (opcional)
                         <select className="office-form-control" aria-label={`Asignar ${task.key}`} value={task.assignedPrincipalId}
                           onChange={(event) => updateWorkTask(task.key, { assignedPrincipalId: event.target.value })}>
@@ -478,7 +495,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
                     const key = `task-${nextTaskNumber}`;
                     setNextTaskNumber((number) => number + 1);
                     setWorkGroupIdempotencyKey('');
-                    setWorkTasks((current) => [...current, { key, title: '', description: '', acceptanceCriteria: '', dependsOn: [], assignedPrincipalId: '', dueDate: '' }]);
+                    setWorkTasks((current) => [...current, { key, title: '', description: '', acceptanceCriteria: '', dependsOn: [], requiredCompetencies: [], assignedPrincipalId: '', dueDate: '' }]);
                   }}>Añadir tarea</Button>
                 </div>
                 <Button type="submit" disabled={requestingMessageId || !requestTitle.trim() || !requestDescription.trim() || !requestCriteria.trim() || workTasks.some((task) => !task.title.trim() || !task.acceptanceCriteria.trim())}>

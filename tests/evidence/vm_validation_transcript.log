@@ -1,11 +1,11 @@
 
 [1;36m=== [VM VALIDATION] Starting Clean Ubuntu 24.04 VM Validation for AAO Bootstrap[0m
 
-[1;36m=== [VM VALIDATION] Target Revision: b04eaac46f254d7ce611e129da0f90d7b3cb544b[0m
+[1;36m=== [VM VALIDATION] Target Revision: 4ece6fcb2d752ff18115ef24f419ec13ec7d6a86[0m
 
 [1;36m=== [VM VALIDATION] CEO User:        alessbarb[0m
 
-[1;36m=== [VM VALIDATION] Timestamp:       2026-10-26T15:38:41Z[0m
+[1;36m=== [VM VALIDATION] Timestamp:       2026-10-26T16:24:25Z[0m
 
 [1;36m=== [VM VALIDATION] 1. Checking QEMU and KVM hardware virtualization...[0m
 
@@ -30,7 +30,7 @@ Formatting '/tmp/aao-vm-validation/vm-disk.qcow2', fmt=qcow2 cluster_size=65536 
 
 [1;36m=== [VM VALIDATION] 5. Launching clean Ubuntu 24.04 VM (PID 1 systemd) on port 22222...[0m
 
-[1;36m=== [VM VALIDATION] VM launched with PID 2158896. Waiting for SSH...[0m
+[1;36m=== [VM VALIDATION] VM launched with PID 2352425. Waiting for SSH...[0m
 
 [1;36m=== [VM VALIDATION] SSH port reachable. Waiting for cloud-init to finish provisioning...[0m
 
@@ -40,10 +40,10 @@ Formatting '/tmp/aao-vm-validation/vm-disk.qcow2', fmt=qcow2 cluster_size=65536 
 sending incremental file list
 repo.bundle
 
-sent 8,625,219 bytes  received 35 bytes  5,750,169.33 bytes/sec
-total size is 8,691,102  speedup is 1.01
+sent 8,605,243 bytes  received 35 bytes  17,210,556.00 bytes/sec
+total size is 8,706,125  speedup is 1.01
 Cloning into '/home/alessbarb/aao-repo'...
-Note: switching to 'b04eaac46f254d7ce611e129da0f90d7b3cb544b'.
+Note: switching to '4ece6fcb2d752ff18115ef24f419ec13ec7d6a86'.
 
 You are in 'detached HEAD' state. You can look around, make experimental
 changes and commit them, and you can discard any commits you make in this
@@ -63,7 +63,7 @@ Turn off this advice by setting config variable advice.detachedHead to false
 
 [1;36m=== [VM VALIDATION] 7. Executing AAO Integral Bootstrap in clean VM (including governance & React build)...[0m
 
-[1;34m== [AAO BOOTSTRAP] Starting AAO Bootstrap (APPLY=1, CEO_USER=alessbarb)...[0m
+[1;34m== [AAO BOOTSTRAP] Starting AAO Bootstrap (APPLY=1, CEO_USER=alessbarb, REV=4ece6fcb2d752ff18115ef24f419ec13ec7d6a86)...[0m
 
 [1;34m== [AAO BOOTSTRAP] Step 0: Executing Host Preflight...[0m
 == [PREFLIGHT] Checking root privileges...
@@ -153,7 +153,7 @@ Next steps (manual, one time):
 
 [1;34m== [AAO BOOTSTRAP] Verifying host governance configuration (dry-run preflight without production keys)...[0m
 == preflight
-rev=b04eaac46f254d7ce611e129da0f90d7b3cb544b ceo=alessbarb src=/home/alessbarb/aao-repo apply=0 log=/tmp/tmp.BIxFJYnzBj
+rev=4ece6fcb2d752ff18115ef24f419ec13ec7d6a86 ceo=alessbarb src=/home/alessbarb/aao-repo apply=0 log=/tmp/tmp.zLJbJel7Cs
 == identities (P1)
 # preflight
 # preflight OK
@@ -246,7 +246,7 @@ DRY: runuser -u aao-auditor-alt -- env -i HOME=/home/aao-auditor-alt PATH=/usr/b
 TODO agy login (interactive, once):
      sudo -u aao-auditor-alt -H env -i HOME=/home/aao-auditor-alt PATH=/usr/bin:/bin:/usr/local/bin /usr/local/bin/agy
      Join the printed URL into ONE line before opening it.
-== done (apply=0). Log: /tmp/tmp.BIxFJYnzBj
+== done (apply=0). Log: /tmp/tmp.zLJbJel7Cs
 
 [1;34m== [AAO BOOTSTRAP] Verifying governance identity separation across core roles...[0m
 # identity: uid=1001(aao-pm) gid=1001(aao-pm) groups=1001(aao-pm)
@@ -426,13 +426,13 @@ Setting up nodejs (22.23.4-1nodesource1) ...
 == [DEPENDENCIES] Setting up base Python virtual environment in /opt/aao/base_venv...
 == [DEPENDENCIES] Dependencies installed successfully.
 
-[1;34m== [AAO BOOTSTRAP] Step 3: Staging immutable versioned release to /opt/aao/releases/release-20261026154113_b04eaac4...[0m
+[1;34m== [AAO BOOTSTRAP] Step 3: Staging immutable versioned release to /opt/aao/releases/release-20261026162748_4ece6fcb...[0m
 
-[1;34m== [AAO BOOTSTRAP] Creating release-isolated Python virtual environment in /opt/aao/releases/release-20261026154113_b04eaac4/venv...[0m
+[1;34m== [AAO BOOTSTRAP] Creating release-isolated Python virtual environment in /opt/aao/releases/release-20261026162748_4ece6fcb/venv...[0m
 
-[1;34m== [AAO BOOTSTRAP] Installing dependencies and AAO package into /opt/aao/releases/release-20261026154113_b04eaac4/venv...[0m
+[1;34m== [AAO BOOTSTRAP] Installing dependencies and AAO package into /opt/aao/releases/release-20261026162748_4ece6fcb/venv...[0m
 
-[1;34m== [AAO BOOTSTRAP] Preserving existing non-symlink /opt/aao/repo to /opt/aao/repo.legacy_20261026154125...[0m
+[1;34m== [AAO BOOTSTRAP] Preserving existing non-symlink /opt/aao/repo to /opt/aao/repo.legacy_20261026162801...[0m
 
 [1;34m== [AAO BOOTSTRAP] Maintaining release history (protecting active and previous releases)...[0m
 
@@ -492,7 +492,7 @@ PASS: All 30 migrations applied (30 verified by recorded SHA-256).
 == [FRONTEND] Installing npm dependencies cleanly...
 npm warn deprecated whatwg-encoding@3.1.1: Use @exodus/bytes instead for a more spec-conformant and faster implementation
 
-added 160 packages in 7s
+added 160 packages in 8s
 
 24 packages are looking for funding
   run `npm fund` for details
@@ -533,8 +533,8 @@ dist/assets/VirtualOfficeView-CSRflad-.js   656.37 kB │ gzip: 164.23 kB
 - Using dynamic import() to code-split the application
 - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
 - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
-✓ built in 4.14s
-== [FRONTEND] Publishing build to /opt/aao/frontend/dist...
+✓ built in 4.71s
+== [FRONTEND] Publishing build to /opt/aao/frontend/dist atomically...
 == [FRONTEND] Control Center compiled and published successfully to /opt/aao/frontend/dist.
 
 [1;34m== [AAO BOOTSTRAP] Step 7: Configuring service environment files in /etc/aao/...[0m
@@ -548,7 +548,7 @@ dist/assets/VirtualOfficeView-CSRflad-.js   656.37 kB │ gzip: 164.23 kB
 
 [1;34m== [AAO BOOTSTRAP] Step 8: Initializing technical state...[0m
 Initialized organizational units: unit:org-engineering
-PROPOSED: Mandate drafted with ID 3afce793-73c1-4152-829c-08f4b0ebdf56. Status: DRAFT (PENDING CEO confirmation).
+PROPOSED: Mandate drafted with ID c0f35c5f-1e91-448a-93d6-5e6e422112c2. Status: DRAFT (PENDING CEO confirmation).
 NOTICE: No active project. Requires CEO confirmation before project activation.
 
 [1;34m== [AAO BOOTSTRAP] Step 9: Deploying systemd services...[0m
@@ -562,7 +562,7 @@ Running AAO Doctor diagnostics...
   [ PASS ] PostgreSQL Connection: PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) on x86_64-pc-linux-gnu
   [ PASS ] Schema Migrations: All 30 migrations applied with verified checksums.
   [ PASS ] API Service: Responsive at http://127.0.0.1:8001 (/health and /ready OK)
-  [ PASS ] Control Center Bundle: Production build verified at /opt/aao/releases/release-20261026154113_b04eaac4/frontend/app/dist
+  [ PASS ] Control Center Bundle: Production build verified at /opt/aao/releases/release-20261026162748_4ece6fcb/frontend/app/dist
   [ PASS ] Governance Guardrails: LOCKED_UNAUTHORIZED: Integrator is OFF (masked). RA remain PENDING. R2 locked.
   [ PASS ] Governance Infrastructure: STAGED_PENDING_KEYS: Identities, filesystem ACLs, ledgers, and events verified. GitHub App keys and trust root pending CEO deployment keys.
 
@@ -576,7 +576,7 @@ Result: HEALTHY — All components operational and compliant.
 
 [1;34m== [AAO BOOTSTRAP] AAO Integral Bootstrap Completed Successfully.[0m
 
-[1;34m== [AAO BOOTSTRAP] Active Release:    release-20261026154113_b04eaac4 (/opt/aao/current)[0m
+[1;34m== [AAO BOOTSTRAP] Active Release:    release-20261026162748_4ece6fcb (/opt/aao/current)[0m
 
 [1;34m== [AAO BOOTSTRAP] Control Center UI: http://127.0.0.1:8001/[0m
 
@@ -588,7 +588,7 @@ Running AAO Doctor diagnostics...
   [ PASS ] PostgreSQL Connection: PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) on x86_64-pc-linux-gnu
   [ PASS ] Schema Migrations: All 30 migrations applied with verified checksums.
   [ PASS ] API Service: Responsive at http://127.0.0.1:8001 (/health and /ready OK)
-  [ PASS ] Control Center Bundle: Production build verified at /opt/aao/releases/release-20261026154113_b04eaac4/frontend/app/dist
+  [ PASS ] Control Center Bundle: Production build verified at /opt/aao/releases/release-20261026162748_4ece6fcb/frontend/app/dist
   [ PASS ] Governance Guardrails: LOCKED_UNAUTHORIZED: Integrator is OFF (masked). RA remain PENDING. R2 locked.
   [ PASS ] Governance Infrastructure: STAGED_PENDING_KEYS: Identities, filesystem ACLs, ledgers, and events verified. GitHub App keys and trust root pending CEO deployment keys.
 
@@ -616,7 +616,7 @@ Running AAO Doctor diagnostics...
   [ PASS ] PostgreSQL Connection: PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) on x86_64-pc-linux-gnu
   [ PASS ] Schema Migrations: All 30 migrations applied with verified checksums.
   [ PASS ] API Service: Responsive at http://127.0.0.1:8001 (/health and /ready OK)
-  [ PASS ] Control Center Bundle: Production build verified at /opt/aao/releases/release-20261026154113_b04eaac4/frontend/app/dist
+  [ PASS ] Control Center Bundle: Production build verified at /opt/aao/releases/release-20261026162748_4ece6fcb/frontend/app/dist
   [ PASS ] Governance Guardrails: LOCKED_UNAUTHORIZED: Integrator is OFF (masked). RA remain PENDING. R2 locked.
   [ PASS ] Governance Infrastructure: STAGED_PENDING_KEYS: Identities, filesystem ACLs, ledgers, and events verified. GitHub App keys and trust root pending CEO deployment keys.
 
@@ -631,20 +631,22 @@ Result: HEALTHY — All components operational and compliant.
 [1;36m=== [VM VALIDATION] 11. Running live PostgreSQL tests inside the VM...[0m
 ============================= test session starts ==============================
 platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.7.0
-rootdir: /opt/aao/current
+rootdir: /opt/aao/releases/release-20261026162748_4ece6fcb
 configfile: pyproject.toml
 plugins: anyio-4.15.1
-collected 20 items
+collected 45 items
 
-../../opt/aao/current/tests/test_migrator.py .......                     [ 35%]
-../../opt/aao/current/tests/test_ops_doctor.py .....                     [ 60%]
-../../opt/aao/current/tests/test_host_fencing_exclusivity.py ........    [100%]
+tests/test_migrator.py .......                                           [ 15%]
+tests/test_ops_doctor.py .....                                           [ 26%]
+tests/test_host_fencing_exclusivity.py ........                          [ 44%]
+tests/test_adversarial_remediation.py ...............                    [ 77%]
+tests/test_backup_restore.py ..........                                  [100%]
 
-============================== 20 passed in 0.73s ==============================
+============================== 45 passed in 1.32s ==============================
 
 [1;36m=== [VM VALIDATION] 12. Running complete self-development cycle from task admission to merged PR and DONE (AC-15)...[0m
-NOTICE:  database "aao_test_cycle" does not exist, skipping
 DROP DATABASE
+NOTICE:  database "aao_test_cycle" does not exist, skipping
 CREATE DATABASE
 Successfully applied 30 migrations:
   [+] 001_foundation
@@ -678,14 +680,14 @@ Successfully applied 30 migrations:
   [+] 029_organization_profile_competencies
   [+] 030_conversation_work_group_results
 ============================= test session starts ==============================
-platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.7.0 -- /opt/aao/releases/release-20261026154113_b04eaac4/venv/bin/python3
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.7.0 -- /opt/aao/releases/release-20261026162748_4ece6fcb/venv/bin/python3
 cachedir: .pytest_cache
 rootdir: /home/alessbarb/aao-repo
 configfile: pyproject.toml
 plugins: anyio-4.15.1
 collecting ... collected 30 items / 29 deselected / 1 selected
 
-aao-repo/tests/test_project_workflow_integration.py::test_self_development_cycle_from_task_to_merged_pr_and_done Note: switching to 'b04eaac46f254d7ce611e129da0f90d7b3cb544b'.
+aao-repo/tests/test_project_workflow_integration.py::test_self_development_cycle_from_task_to_merged_pr_and_done Note: switching to '4ece6fcb2d752ff18115ef24f419ec13ec7d6a86'.
 
 You are in 'detached HEAD' state. You can look around, make experimental
 changes and commit them, and you can discard any commits you make in this
@@ -705,12 +707,18 @@ Turn off this advice by setting config variable advice.detachedHead to false
 
 PASSED
 
-======================= 1 passed, 29 deselected in 9.78s =======================
+=============================== warnings summary ===============================
+../../opt/aao/releases/release-20261026162748_4ece6fcb/venv/lib/python3.12/site-packages/fastapi/testclient.py:1
+  /opt/aao/releases/release-20261026162748_4ece6fcb/venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================= 1 passed, 29 deselected, 1 warning in 11.54s =================
 
 [1;36m=== [VM VALIDATION] CLEAN VM VALIDATION COMPLETED SUCCESSFULLY.[0m
 
-[1;36m=== [VM VALIDATION] Tested Git Revision: b04eaac46f254d7ce611e129da0f90d7b3cb544b[0m
+[1;36m=== [VM VALIDATION] Tested Git Revision: 4ece6fcb2d752ff18115ef24f419ec13ec7d6a86[0m
 
 [1;36m=== [VM VALIDATION] Log transcript stored at: /home/alessbarb/workspace/repos/active/aao/.worktrees/integral-host-bootstrap/tests/evidence/vm_validation_transcript.log[0m
 
-[1;36m=== [VM VALIDATION] Cleaning up VM (PID 2158896)...[0m
+[1;36m=== [VM VALIDATION] Cleaning up VM (PID 2352425)...[0m

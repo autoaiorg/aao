@@ -46,9 +46,10 @@ def test_worker_execution_api_routes_authenticate_and_fence_operations(monkeypat
 
 
 def test_context_endpoint_requires_owned_unexpired_lease_and_grant(monkeypatch):
-    from aao.work_management_api import app
+    from aao.work_management_api import AuthenticatedPrincipal, app
 
-    monkeypatch.setattr("aao.work_management_api._authenticate_request_principal", lambda *_: "agent-1")
+    principal = AuthenticatedPrincipal("agent-1", "token-digest", "AGENT")
+    monkeypatch.setattr("aao.work_management_api._authenticate_request_principal", lambda *_: principal)
     row = ("work-1", "project-1", {
         "type": "aao.agent-patch.v1", "capability_id": "agent", "version": "1",
         "base_sha": "a" * 40,
@@ -75,8 +76,12 @@ def test_context_endpoint_requires_owned_unexpired_lease_and_grant(monkeypatch):
 
     grants = []
     monkeypatch.setattr("aao.work_management_api.tx", fake_tx)
-    monkeypatch.setattr("aao.work_management_api.require_grant",
-                        lambda db, principal, project, grant: grants.append((principal, project, grant)))
+    monkeypatch.setattr(
+        "aao.work_management_api.require_grant",
+        lambda db, actual_principal, project, grant: grants.append(
+            (actual_principal, project, grant),
+        ),
+    )
     with TestClient(app) as client:
         headers = {"X-Agent-Token": "agent-token"}
         for execution_id, token in (("execution-1", "stale-token"), ("other", "lease-1")):
@@ -89,7 +94,7 @@ def test_context_endpoint_requires_owned_unexpired_lease_and_grant(monkeypatch):
         assert response.status_code == 200, response.text
         assert response.json()["author_id"] == "agent-1"
         assert response.json()["model_profile"] == {"backend": "fixture"}
-    assert grants == [("agent-1", "project-1", "execution.claim")]
+    assert grants == [(principal, "project-1", "execution.claim")]
     sql, _ = executed[-1]
     assert "q.status='RUNNING'" in sql
     assert "q.worker_id=%s" in sql and "q.lease_token=%s" in sql

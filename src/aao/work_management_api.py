@@ -3796,7 +3796,7 @@ def agent_execution_context(
         ).fetchone()
         if not row:
             raise HTTPException(409, "Execution lease is stale or not owned by this agent")
-        require_grant(db, str(principal), str(row[1]), "execution.claim")
+        require_grant(db, principal, str(row[1]), "execution.claim")
         selection = row[2]
         if isinstance(selection, str):
             selection = json.loads(selection)

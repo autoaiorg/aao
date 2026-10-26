@@ -54,8 +54,16 @@ say "2. Testing AC-01: Fresh installation from scratch (including React build)..
 bash "$REPO_DIR/scripts/bootstrap/aao_bootstrap.sh" --apply --ceo-user "$CEO_USER" --rev "$REV"
 
 say "3. Testing AC-02: Bootstrap idempotence (second run on configured host)..."
-OUTPUT_SECOND=$(bash "$REPO_DIR/scripts/bootstrap/aao_bootstrap.sh" --apply --ceo-user "$CEO_USER" --rev "$REV" 2>&1)
-assert_true "Second run exits 0" test $? -eq 0
+SECOND_RUN_STATUS=0
+if OUTPUT_SECOND=$(bash "$REPO_DIR/scripts/bootstrap/aao_bootstrap.sh" --apply --ceo-user "$CEO_USER" --rev "$REV" 2>&1); then
+  SECOND_RUN_STATUS=0
+else
+  SECOND_RUN_STATUS=$?
+fi
+assert_eq "Second run exits 0" "0" "$SECOND_RUN_STATUS"
+if [[ "$SECOND_RUN_STATUS" != 0 ]]; then
+  printf '%s\n' "$OUTPUT_SECOND" >&2
+fi
 assert_true "Second run maintains schema" grep -q "Schema is up to date" <<<"$OUTPUT_SECOND"
 assert_true "Active release link exists" test -L /opt/aao/current
 assert_true "Previous release link exists after second run" test -L /opt/aao/previous

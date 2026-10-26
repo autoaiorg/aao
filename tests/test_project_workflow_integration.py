@@ -17,6 +17,8 @@ def test_work_coordinate_is_an_explicit_project_capability():
 
     grant = GrantRequest(principal_id="aao-pm", capability="work.coordinate")
     assert grant.capability == "work.coordinate"
+    assignment_grant = GrantRequest(principal_id="aao-pm", capability="work.assign")
+    assert assignment_grant.capability == "work.assign"
     with pytest.raises(ValueError):
         GrantRequest(principal_id="aao-pm", capability="work.execute")
 
@@ -88,6 +90,47 @@ def test_project_coordinator_consolidates_without_ceo_impersonation(monkeypatch)
         assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
             "principal_id": coordinator_id, "capability": "work.coordinate",
         }).status_code == 201
+        child_id = group["tasks"][0]["id"]
+        target_id = "aao-assignee-test-" + uuid4().hex[:8]
+        target = client.post("/v1/principals/credentials", headers=ceo, json={
+            "principal_id": target_id, "kind": "AGENT",
+        })
+        assert target.status_code == 201, target.text
+        for capability in ("work.admit", "execution.claim"):
+            assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
+                "principal_id": target_id, "capability": capability,
+            }).status_code == 201
+        assignment_url = f"/v1/agent/work/{child_id}/assignment"
+        assignment_body = {"principal_id": target_id}
+        assert client.put(assignment_url, headers=pm_headers, json=assignment_body).status_code == 403
+        assignable_url = f"/v1/agent/projects/{project}/assignable-agents"
+        assert client.get(assignable_url, headers=pm_headers).status_code == 403
+        assert client.post(f"/v1/projects/{project}/grants", headers=pm_headers, json={
+            "principal_id": coordinator_id, "capability": "work.assign",
+        }).status_code == 403
+        assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
+            "principal_id": coordinator_id, "capability": "work.assign",
+        }).status_code == 201
+        assigned = client.put(assignment_url, headers=pm_headers, json=assignment_body)
+        assert assigned.status_code == 200, assigned.text
+        assignable = client.get(assignable_url, headers=pm_headers)
+        assert assignable.status_code == 200, assignable.text
+        assert [agent["principal_id"] for agent in assignable.json()] == [target_id]
+        assert assigned.json() == {
+            "work_id": child_id, "principal_id": target_id,
+            "assigned_by": coordinator_id, "grants_created": False,
+        }
+        with connect_postgres() as db:
+            assignment = db.execute(
+                "SELECT principal_id,assigned_by FROM work_item_assignments WHERE work_id=%s",
+                (child_id,),
+            ).fetchone()
+            event = db.execute(
+                "SELECT details FROM events WHERE subject_id=%s AND kind='work.assigned' "
+                "ORDER BY created_at DESC LIMIT 1", (child_id,),
+            ).fetchone()[0]
+        assert tuple(assignment) == (target_id, coordinator_id)
+        assert event["assigned_by"] == coordinator_id and event["grants_created"] is False
         pm_groups = client.get(groups_url, headers=pm_headers)
         assert pm_groups.status_code == 200, pm_groups.text
         assert len(pm_groups.json()) == 1

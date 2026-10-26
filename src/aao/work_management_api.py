@@ -388,7 +388,7 @@ class PrincipalCredentialRequest(BaseModel):
 
 class GrantRequest(BaseModel):
     principal_id: str = Field(min_length=1)
-    capability: str = Field(pattern=r"^(?:work\.(?:create|admit|review|progress|coordinate)|project\.read|execution\.claim|execution\.reconcile|effect\.(?:propose|reconcile)|evidence\.submit|code\.(?:propose|publish))$")
+    capability: str = Field(pattern=r"^(?:work\.(?:create|admit|review|progress|coordinate|assign)|project\.read|execution\.claim|execution\.reconcile|effect\.(?:propose|reconcile)|evidence\.submit|code\.(?:propose|publish))$")
     expires_at: datetime | None = None
 
     @field_validator("expires_at")
@@ -2017,20 +2017,35 @@ def _partial_report_response(row, *, created: bool):
 def list_assignable_agents(project_id: str, _: str = Depends(require_ceo)):
     """Only expose identities already enabled and authorized to execute work in this project."""
     with tx() as db:
-        if not db.execute("SELECT 1 FROM projects WHERE id=%s", (project_id,)).fetchone():
-            raise HTTPException(404, "Project not found")
-        rows = db.execute(
-            "SELECT c.principal_id,COALESCE(p.display_name,c.principal_id),"
-            "COALESCE(p.competencies,'{}'::text[]) "
-            "FROM principal_credentials c "
-            "JOIN project_grants ga ON ga.principal_id=c.principal_id AND ga.project_id=%s "
-            "AND ga.capability='work.admit' AND (ga.expires_at IS NULL OR ga.expires_at>clock_timestamp()) "
-            "JOIN project_grants gc ON gc.principal_id=c.principal_id AND gc.project_id=%s "
-            "AND gc.capability='execution.claim' AND (gc.expires_at IS NULL OR gc.expires_at>clock_timestamp()) "
-            "LEFT JOIN organization_profiles p ON p.principal_id=c.principal_id AND p.enabled "
-            "WHERE c.kind='AGENT' AND c.enabled ORDER BY c.principal_id",
-            (project_id, project_id),
-        ).fetchall()
+        return _list_assignable_agents(db, project_id)
+
+
+@app.get("/v1/agent/projects/{project_id}/assignable-agents")
+def coordinator_list_assignable_agents(
+    project_id: str,
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_worker)],
+):
+    """Expose only eligible agents to a PM with the distinct work.assign grant."""
+    with tx() as db:
+        require_grant(db, principal, project_id, "work.assign")
+        return _list_assignable_agents(db, project_id)
+
+
+def _list_assignable_agents(db, project_id: str):
+    if not db.execute("SELECT 1 FROM projects WHERE id=%s", (project_id,)).fetchone():
+        raise HTTPException(404, "Project not found")
+    rows = db.execute(
+        "SELECT c.principal_id,COALESCE(p.display_name,c.principal_id),"
+        "COALESCE(p.competencies,'{}'::text[]) "
+        "FROM principal_credentials c "
+        "JOIN project_grants ga ON ga.principal_id=c.principal_id AND ga.project_id=%s "
+        "AND ga.capability='work.admit' AND (ga.expires_at IS NULL OR ga.expires_at>clock_timestamp()) "
+        "JOIN project_grants gc ON gc.principal_id=c.principal_id AND gc.project_id=%s "
+        "AND gc.capability='execution.claim' AND (gc.expires_at IS NULL OR gc.expires_at>clock_timestamp()) "
+        "LEFT JOIN organization_profiles p ON p.principal_id=c.principal_id AND p.enabled "
+        "WHERE c.kind='AGENT' AND c.enabled ORDER BY c.principal_id",
+        (project_id, project_id),
+    ).fetchall()
     return [{"principal_id": row[0], "display_name": row[1], "competencies": row[2]} for row in rows]
 
 
@@ -2040,6 +2055,27 @@ def assign_group_child_work(
     _: str = Depends(require_ceo),
 ):
     """Route a persisted group child to an already-authorized agent; never grants access."""
+    return _assign_group_child_work(work_id, payload, assigned_by="ceo")
+
+
+@app.put("/v1/agent/work/{work_id}/assignment")
+def coordinator_assign_group_child_work(
+    work_id: str, payload: WorkAssignmentRequest,
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_worker)],
+):
+    """Allow a separately CEO-granted PM to route a child without issuing grants."""
+    return _assign_group_child_work(
+        work_id, payload, assigned_by=str(principal), coordinator=principal,
+    )
+
+
+def _assign_group_child_work(
+    work_id: str,
+    payload: WorkAssignmentRequest,
+    *,
+    assigned_by: str,
+    coordinator: AuthenticatedPrincipal | None = None,
+):
     with tx() as db:
         work = db.execute(
             "SELECT project_id,parent_work_id,status FROM work_items WHERE id=%s FOR UPDATE",
@@ -2048,6 +2084,8 @@ def assign_group_child_work(
         if not work:
             raise HTTPException(404, "Work not found")
         project_id, parent_work_id, status = work
+        if coordinator is not None:
+            require_grant(db, coordinator, str(project_id), "work.assign")
         if parent_work_id is None or not db.execute(
             "SELECT 1 FROM work_groups WHERE parent_work_id=%s", (parent_work_id,),
         ).fetchone():
@@ -2083,18 +2121,18 @@ def assign_group_child_work(
         ).fetchone()
         db.execute(
             "INSERT INTO work_item_assignments(project_id,work_id,principal_id,assigned_by) "
-            "VALUES (%s,%s,%s,'ceo') ON CONFLICT(work_id) DO UPDATE SET "
+            "VALUES (%s,%s,%s,%s) ON CONFLICT(work_id) DO UPDATE SET "
             "principal_id=EXCLUDED.principal_id,assigned_by=EXCLUDED.assigned_by,"
             "assigned_at=clock_timestamp()",
-            (project_id, work_id, payload.principal_id),
+            (project_id, work_id, payload.principal_id, assigned_by),
         )
         audit(db, work_id, "work.assigned", {
             "project_id": str(project_id), "principal_id": payload.principal_id,
             "previous_principal_id": previous[0] if previous else None,
-            "assigned_by": "ceo", "grants_created": False,
+            "assigned_by": assigned_by, "grants_created": False,
         })
     return {"work_id": work_id, "principal_id": payload.principal_id,
-            "assigned_by": "ceo", "grants_created": False}
+            "assigned_by": assigned_by, "grants_created": False}
 
 
 @app.post("/v1/projects/{project_id}/conversations", status_code=201)

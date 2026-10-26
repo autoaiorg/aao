@@ -124,6 +124,10 @@ export class MockAaoDemoAdapter implements AaoReadPort {
     };
   }
 
+  async getKnowledgeSourceIndex(): Promise<DataState<import('../../../domain/models').KnowledgeSourceRecord[]>> {
+    return { kind: 'unavailable', reason: 'El índice de fuentes solo está disponible con el backend real (modo LIVE).', retryable: false };
+  }
+
   async getProjectEvaluations(projectId: string): Promise<DataState<EvaluationSummary[]>> {
     await this.delay();
     if (projectId === 'demo-proj-orion') {

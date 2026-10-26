@@ -2158,3 +2158,71 @@ def test_ceo_browser_session_cookie_csrf_and_logout(monkeypatch):
         assert client.post("/v1/auth/ceo/session", headers={**origin, "X-CEO-Token": "cookie-session-test-token"}).status_code == 503
         client.cookies.set(CEO_SESSION_COOKIE, "not-a-real-secret", domain="testserver", path="/")
         assert client.get("/v1/mandates").status_code == 503
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or
+    os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="PostgreSQL integration requires an explicitly disposable test database",
+)
+def test_ceo_knowledge_index_is_authenticated_and_payload_limited(monkeypatch):
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "knowledge-index-ceo")
+    ceo = {"X-CEO-Token": "knowledge-index-ceo"}
+    with TestClient(app) as client:
+        mandate = client.post("/v1/mandates", headers=ceo, json={
+            "title": "Knowledge index " + str(uuid4()), "objective": "Index source references",
+        }).json()["id"]
+        assert client.post(f"/v1/mandates/{mandate}/confirm", headers=ceo).status_code == 200
+        project = client.post("/v1/projects", headers=ceo, json={
+            "name": "Knowledge source project", "mandate_id": mandate,
+        }).json()["id"]
+        created = client.post(f"/v1/projects/{project}/work-requests", headers=ceo, json={
+            "title": "Persisted source record", "description": "not indexed as body",
+            "acceptance_criteria": ["source metadata only"],
+        })
+        assert created.status_code == 201, created.text
+        work_id = created.json()["id"]
+        reviewer_id = "knowledge-index-auditor-" + str(uuid4())
+        reviewer_credential = client.post("/v1/principals/credentials", headers=ceo, json={
+            "principal_id": reviewer_id, "kind": "AUDITOR",
+        })
+        assert reviewer_credential.status_code == 201
+        with connect_postgres() as db:
+            db.execute(
+                "UPDATE work_items SET evidence=%s::jsonb WHERE id=%s",
+                (json.dumps(["sha256:source-reference", {"secret": "private evidence body"}]), work_id),
+            )
+            db.execute(
+                "INSERT INTO reviews(id,work_id,reviewer_id,decision,candidate_sha,evidence) "
+                "VALUES(%s,%s,%s,'APPROVE',%s,%s::jsonb)",
+                (str(uuid4()), work_id, reviewer_id, "a" * 40,
+                 json.dumps(["sha256:review-reference", {"secret": "private review body"}])),
+            )
+            db.execute(
+                "INSERT INTO execution_queue(id,work_id,project_id,status,input_json,result_json) "
+                "VALUES(%s,%s,%s,'SUCCEEDED','{}'::jsonb,%s::jsonb)",
+                (str(uuid4()), work_id, project, json.dumps({"secret": "private execution result"})),
+            )
+        assert client.get("/v1/knowledge/index").status_code == 403
+        agent_id = "knowledge-index-agent-" + str(uuid4())
+        agent_credential = client.post("/v1/principals/credentials", headers=ceo, json={
+            "principal_id": agent_id, "kind": "AGENT",
+        })
+        assert agent_credential.status_code == 201
+        agent_headers = {"X-Agent-Token": agent_credential.json()["token"]}
+        assert client.get("/v1/knowledge/index", headers=agent_headers).status_code == 403
+
+        response = client.get("/v1/knowledge/index", headers=ceo)
+        assert response.status_code == 200, response.text
+        indexed = next(record for record in response.json() if record["work_id"] == work_id)
+        assert indexed["project_id"] == project
+        assert indexed["evidence_references"] == ["sha256:source-reference"]
+        assert indexed["reviews"][0]["evidence_references"] == ["sha256:review-reference"]
+        assert "private evidence body" not in response.text
+        assert "private review body" not in response.text and "private execution result" not in response.text
+        assert "result_json" not in response.text and "description" not in indexed
+        assert set(indexed) == {"work_id", "project_id", "project_name", "title", "status", "evidence_references", "reviews"}

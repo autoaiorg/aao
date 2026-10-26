@@ -129,6 +129,33 @@ describe('HttpAaoLiveAdapter Contract & Error Handling', () => {
     }
   });
 
+  it('loads the CEO-only canonical source index and maps only declared metadata', async () => {
+    const fetch = vi.spyOn(global, 'fetch').mockResolvedValueOnce({
+      status: 200, ok: true,
+      json: async () => [{
+        work_id: 'work-1', project_id: 'project-1', project_name: 'Project One',
+        title: 'Persisted work', status: 'DONE', evidence_references: ['sha256:ref'],
+        reviews: [{ id: 'review-1', reviewer_id: 'auditor', decision: 'APPROVE', created_at: '2026-10-26T00:00:00Z', evidence_references: [] }],
+        result_json: { secret: 'must not be exposed' },
+      }],
+    } as Response);
+    const adapter = new HttpAaoLiveAdapter({ getToken: () => 'ceo-token', getAuthRole: () => 'CEO' });
+    const result = await adapter.getKnowledgeSourceIndex();
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('/v1/knowledge/index'), expect.objectContaining({ credentials: 'include' }));
+    expect(result.kind).toBe('ready');
+    if (result.kind === 'ready') {
+      expect(result.data[0]).toMatchObject({ workId: 'work-1', projectId: 'project-1', evidenceReferences: ['sha256:ref'] });
+      expect(JSON.stringify(result.data)).not.toContain('must not be exposed');
+    }
+  });
+
+  it('does not call the corporate index endpoint for an AGENT session', async () => {
+    const fetch = vi.spyOn(global, 'fetch');
+    const adapter = new HttpAaoLiveAdapter({ getToken: () => 'agent-token', getAuthRole: () => 'AGENT' });
+    expect((await adapter.getKnowledgeSourceIndex()).kind).toBe('forbidden');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('strictly prevents unauthenticated queries: returns forbidden without calling fetch if token is absent', async () => {
     const fetchSpy = vi.spyOn(global, 'fetch');
     const adapter = new HttpAaoLiveAdapter({ requireAuth: true }); // getToken returns null

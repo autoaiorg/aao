@@ -14,6 +14,7 @@ import type {
   AgentIdentity,
   DataState,
   ActivityEvent,
+  KnowledgeSourceRecord,
 } from '../../domain/models';
 
 export interface AaoReadPort {
@@ -23,6 +24,7 @@ export interface AaoReadPort {
   getProjectCapabilities(projectId: string): Promise<DataState<CapabilitySummary[]>>;
   getProjectEvaluations(projectId: string): Promise<DataState<EvaluationSummary[]>>;
   getProjectActivity(projectId: string): Promise<DataState<ActivityEvent[]>>;
+  getKnowledgeSourceIndex(): Promise<DataState<KnowledgeSourceRecord[]>>;
   getCeoOverview(projectId?: string): Promise<CeoOverview>;
   // Phase F3: Organization & Agent Structure
   getOrganizationStructure(): Promise<DataState<OrganizationStructure>>;

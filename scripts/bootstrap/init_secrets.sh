@@ -78,6 +78,9 @@ AAO_API=http://127.0.0.1:8001
 AAO_SELF_DEV_REPOSITORY=/opt/aao/repo
 AAO_AGENT_PROVIDER=fixture
 AAO_AGENT_BACKEND=fixture
+# Set only after the CEO-confirmed mandate and AGENT grant are provisioned.
+AAO_WORKER_PROJECT_ID=
+AAO_WORKER_PRINCIPAL_ID=
 EOF
   say "Generated $WORKER_ENV_FILE"
 fi

@@ -355,11 +355,13 @@ say "Step 8: Initializing technical state..."
 say "Step 9: Deploying systemd services..."
 cp /opt/aao/current/deploy/systemd/aao-api.service /etc/systemd/system/
 cp /opt/aao/current/deploy/systemd/aao-worker-self-dev.service /etc/systemd/system/
+install -o root -g root -m 0644 /opt/aao/current/deploy/systemd/aao-worker-self-dev.conf /etc/tmpfiles.d/aao-worker-self-dev.conf
 cp /opt/aao/current/deploy/systemd/aao-conversation-recovery.service /etc/systemd/system/
 cp /opt/aao/current/deploy/systemd/aao-conversation-recovery.timer /etc/systemd/system/
 
 if command -v systemctl >/dev/null 2>&1 && systemctl is-system-running >/dev/null 2>&1; then
   systemctl daemon-reload
+  systemd-tmpfiles --create /etc/tmpfiles.d/aao-worker-self-dev.conf
   systemctl enable aao-api.service
   systemctl restart aao-api.service
 

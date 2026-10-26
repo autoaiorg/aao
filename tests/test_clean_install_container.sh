@@ -114,6 +114,15 @@ assert_true "aao-api.env has restricted permissions (0600 or 0640 root:aao-api)"
 assert_true "aao-worker.env has restricted permissions (0600 or 0640 root:aao-impl-ag)" \
   test "$WORKER_PERMS" = "640 root:aao-impl-ag" -o "$WORKER_PERMS" = "600 root:root" -o "$WORKER_PERMS" = "640 root:root"
 
+if command -v systemctl >/dev/null 2>&1 && systemctl is-system-running >/dev/null 2>&1; then
+  assert_true "worker unit is installed but not enabled by clean bootstrap" \
+    bash -c '[[ "$(systemctl is-enabled aao-worker-self-dev.service 2>&1 || true)" != "enabled" ]]'
+  assert_true "worker unit passes systemd unit validation" \
+    systemd-analyze verify /etc/systemd/system/aao-worker-self-dev.service
+  assert_true "worker runtime directory is private and owned by the worker" \
+    bash -c '[[ "$(stat -c "%a %U:%G" /run/aao-worker-self-dev)" == "700 aao-impl-ag:aao-impl-ag" ]]'
+fi
+
 assert_true "host identity is root-owned and readable only by the worker group" \
   test "$HOST_ID_PERMS" = "440 root:aao-impl-ag"
 

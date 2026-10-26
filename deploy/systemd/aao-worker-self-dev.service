@@ -11,8 +11,15 @@ UMask=0027
 WorkingDirectory=/opt/aao/current
 EnvironmentFile=-/etc/aao/aao-worker.env
 ExecStart=/opt/aao/venv/bin/python scripts/run_self_development_worker.py --watch
+Environment=XDG_RUNTIME_DIR=/run/aao-worker-self-dev
+Environment=XDG_DATA_HOME=/var/lib/aao-impl-ag
+RuntimeDirectory=aao-worker-self-dev
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=restart
+StateDirectory=aao-impl-ag
+StateDirectoryMode=0750
 Restart=on-failure
-RestartSec=10s
+RestartSec=30s
 KillMode=mixed
 TimeoutStopSec=30s
 

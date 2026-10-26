@@ -476,6 +476,8 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
 
     monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
     monkeypatch.setenv("AAO_CEO_TOKEN", "conversation-ceo")
+    monkeypatch.setenv("AAO_CONVERSATION_PROVIDER", "openai-compatible")
+    monkeypatch.setenv("AAO_CONVERSATION_MODEL", "conversation-test-model")
     ceo = {"X-CEO-Token": "conversation-ceo"}
     with TestClient(app) as client:
         assert client.post(
@@ -794,7 +796,7 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
             db.execute(
                 "INSERT INTO project_conversation_turns(id,conversation_id,idempotency_key,"
                 "request_sha256,user_message_id,state,provider,model,lease_owner,lease_expires_at) "
-                "VALUES (%s,%s,%s,%s,%s,'PENDING','test','model',%s,clock_timestamp()+interval '10 minutes')",
+                "VALUES (%s,%s,%s,%s,%s,'PENDING','openai-compatible','conversation-test-model',%s,clock_timestamp()+interval '10 minutes')",
                 (crashed_turn_id, conversation_id, crashed_key, sha256(crashed_body.encode()).hexdigest(),
                  crashed_message_id, str(uuid4())),
             )
@@ -812,6 +814,13 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
                 "UPDATE project_conversation_turns SET lease_expires_at=clock_timestamp()-interval '1 second' "
                 "WHERE id=%s", (crashed_turn_id,),
             )
+        monkeypatch.setenv("AAO_CONVERSATION_MODEL", "different-model")
+        provider_mismatch = client.post(turn_url, headers=ceo, json={
+            "body": crashed_body, "idempotency_key": crashed_key,
+        })
+        assert provider_mismatch.status_code == 409
+        assert "provider/model differs" in provider_mismatch.text
+        monkeypatch.setenv("AAO_CONVERSATION_MODEL", "conversation-test-model")
         monkeypatch.setattr(conversation_provider, "stream_reply", lambda _messages: iter(["Recovered once."]))
         recovered_crash = client.post(turn_url, headers=ceo, json={
             "body": crashed_body, "idempotency_key": crashed_key,
@@ -837,6 +846,89 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         recovered_message = next(item for item in recovered_projection if item["id"] == crashed_message_id)
         assert recovered_message["turn_status"] == "COMPLETED"
         assert recovered_message["turn_lease_expires_at"] is None
+
+        # The independent opt-in backend worker must also recover an expired
+        # turn without a browser POST, using the same canonical PostgreSQL rows.
+        from aao import conversation_provider, conversation_turn_recovery
+
+        worker_key = str(uuid4())
+        worker_message_id = str(uuid4())
+        worker_turn_id = str(uuid4())
+        worker_body = "Recover while the browser is closed"
+        with connect_postgres() as db:
+            db.execute(
+                "INSERT INTO project_conversation_messages(id,conversation_id,sender,body) "
+                "VALUES (%s,%s,'CEO',%s)", (worker_message_id, conversation_id, worker_body),
+            )
+            db.execute(
+                "INSERT INTO project_conversation_turns(id,conversation_id,idempotency_key,"
+                "request_sha256,user_message_id,state,provider,model,lease_owner,lease_expires_at) "
+                "VALUES (%s,%s,%s,%s,%s,'PENDING','openai-compatible',"
+                "'conversation-test-model',%s,clock_timestamp()-interval '1 second')",
+                (worker_turn_id, conversation_id, worker_key,
+                 sha256(worker_body.encode()).hexdigest(), worker_message_id, str(uuid4())),
+            )
+        monkeypatch.setenv("AAO_CONVERSATION_RECOVERY_ENABLED", "true")
+        monkeypatch.setenv("AAO_CONVERSATION_API_URL", "https://provider.invalid/v1/chat/completions")
+        monkeypatch.setenv("AAO_CONVERSATION_API_KEY", "test-only-not-a-provider-call")
+        monkeypatch.setattr(conversation_provider, "stream_reply", lambda _messages: iter(["Recovered by backend."]))
+        worker_result = conversation_turn_recovery.recover_one_turn()
+        assert worker_result == {"status": "COMPLETED", "turn_id": worker_turn_id}
+        with connect_postgres() as db:
+            worker_row = db.execute(
+                "SELECT t.state,t.assistant_message_id,m.body,t.lease_owner,t.lease_expires_at "
+                "FROM project_conversation_turns t LEFT JOIN project_conversation_messages m "
+                "ON m.id=t.assistant_message_id WHERE t.id=%s", (worker_turn_id,),
+            ).fetchone()
+            worker_events = db.execute(
+                "SELECT count(*) FROM events WHERE subject_id=%s "
+                "AND kind='conversation.turn.recovered' AND details->>'turn_id'=%s",
+                (conversation_id, worker_turn_id),
+            ).fetchone()[0]
+        assert worker_row[0] == "COMPLETED"
+        assert worker_row[2] == "Recovered by backend."
+        assert worker_row[3] is None and worker_row[4] is None
+        assert worker_events == 1
+
+        concurrent_key = str(uuid4())
+        concurrent_message_id = str(uuid4())
+        concurrent_turn_id = str(uuid4())
+        with connect_postgres() as db:
+            db.execute(
+                "INSERT INTO project_conversation_messages(id,conversation_id,sender,body) "
+                "VALUES (%s,%s,'CEO','Concurrent recovery')",
+                (concurrent_message_id, conversation_id),
+            )
+            db.execute(
+                "INSERT INTO project_conversation_turns(id,conversation_id,idempotency_key,"
+                "request_sha256,user_message_id,state,provider,model,lease_owner,lease_expires_at) "
+                "VALUES (%s,%s,%s,%s,%s,'PENDING','openai-compatible',"
+                "'conversation-test-model',%s,clock_timestamp()-interval '1 second')",
+                (concurrent_turn_id, conversation_id, concurrent_key,
+                 sha256(b"Concurrent recovery").hexdigest(), concurrent_message_id, str(uuid4())),
+            )
+        from threading import Event
+
+        provider_entered = Event()
+        release_provider = Event()
+        provider_calls = []
+
+        def slow_provider(_messages):
+            provider_calls.append(True)
+            provider_entered.set()
+            assert release_provider.wait(5)
+            yield "Single concurrent recovery."
+
+        monkeypatch.setattr(conversation_provider, "stream_reply", slow_provider)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first_recovery = executor.submit(conversation_turn_recovery.recover_one_turn)
+            assert provider_entered.wait(5)
+            second_result = executor.submit(conversation_turn_recovery.recover_one_turn).result(timeout=5)
+            release_provider.set()
+            first_result = first_recovery.result(timeout=5)
+        assert second_result == {"status": "IDLE"}
+        assert first_result == {"status": "COMPLETED", "turn_id": concurrent_turn_id}
+        assert provider_calls == [True]
 
         eligible_worker = "conversation-worker-" + str(uuid4())
         assert client.post("/v1/principals/credentials", headers=ceo, json={

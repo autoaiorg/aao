@@ -2154,14 +2154,13 @@ def stream_project_conversation_turn(
             " SELECT child.id,child.title,child.status FROM work_items child "
             " JOIN linked_work parent ON child.parent_work_id=parent.id "
             " WHERE child.project_id=%s) "
-            "SELECT * FROM linked_work ORDER BY id DESC LIMIT 50) "
             "SELECT w.id,w.title,w.status,a.principal_id,q.id,q.status,"
             "q.result_json->>'backend',q.result_json->>'provider',q.result_json->>'model' "
             "FROM linked_work w "
             "LEFT JOIN work_item_assignments a ON a.project_id=%s AND a.work_id=w.id "
             "LEFT JOIN LATERAL (SELECT id,status,result_json FROM execution_queue "
             " WHERE work_id=w.id ORDER BY created_at DESC,id DESC LIMIT 1) q ON TRUE "
-            "ORDER BY w.id",
+            "ORDER BY w.id DESC LIMIT 50",
             (project_id, conversation_id, project_id, conversation_id, project_id, project_id),
         ).fetchall()
         return [{

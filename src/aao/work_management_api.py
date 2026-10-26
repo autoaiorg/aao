@@ -843,6 +843,11 @@ def current_auditor_grants(
 def revoke_principal(principal_id: str, _: str = Depends(require_ceo)):
     """Revocation prevents new authentication and lease completion."""
     with tx() as db:
+        # Serialize first with execution_queue.claim, which holds FOR SHARE on
+        # this credential through its claim transaction. Do not lock work here:
+        # assignments lock work before checking the destination credential, so
+        # taking locks in the opposite order could deadlock. A new assignment
+        # to this principal will observe the disabled credential and fail.
         row = db.execute(
             "UPDATE principal_credentials SET enabled=false "
             "WHERE principal_id=%s AND enabled=true RETURNING kind",
@@ -852,6 +857,65 @@ def revoke_principal(principal_id: str, _: str = Depends(require_ceo)):
             raise HTTPException(404, "Active principal credential not found")
         audit(db, str(uuid4()), "principal.credential.revoked",
               {"principal_id": principal_id, "kind": row[0]})
+        if row[0] == "AGENT":
+            # Read after credential revocation serializes with any claim or
+            # assignment that had already authenticated this principal.
+            assigned_work = db.execute(
+                "SELECT w.id,w.project_id FROM work_items w "
+                "JOIN work_item_assignments a ON a.project_id=w.project_id AND a.work_id=w.id "
+                "WHERE a.principal_id=%s AND w.status IN ('INBOX','READY','IN_PROGRESS') "
+                "AND NOT EXISTS (SELECT 1 FROM execution_queue q WHERE q.work_id=w.id "
+                "AND q.status IN ('RUNNING','UNCERTAIN','SUCCEEDED')) "
+                "ORDER BY w.id",
+                (principal_id,),
+            ).fetchall()
+            for work_id, project_id in assigned_work:
+                coordinators = [record[0] for record in db.execute(
+                    "SELECT DISTINCT c.principal_id FROM principal_credentials c "
+                    "JOIN project_grants g ON g.principal_id=c.principal_id "
+                    "WHERE c.kind='AGENT' AND c.enabled AND g.project_id=%s "
+                    "AND g.capability='work.assign' "
+                    "AND (g.expires_at IS NULL OR g.expires_at>clock_timestamp()) "
+                    "ORDER BY c.principal_id",
+                    (project_id,),
+                ).fetchall()]
+                blockage_id = str(uuid4())
+                reason = "Assigned agent credential revoked before execution claim"
+                next_action = (
+                    "An active project principal with work.assign must reassign this child "
+                    "to an eligible agent; current grants and competencies are rechecked."
+                    if coordinators else
+                    "No active project principal with work.assign was found. The CEO must "
+                    "select an eligible replacement; no assignment was changed automatically."
+                )
+                protocol_instance_id = start_work_protocol(
+                    db,
+                    protocol_id="blockage-escalation",
+                    work_id=str(work_id),
+                    started_by="ceo",
+                    subject_type="work_item",
+                    idempotency_key=(
+                        f"blockage-escalation:work_item:{work_id}:credential-revoked:{principal_id}"
+                    ),
+                    request={
+                        "blockage_id": blockage_id,
+                        "project_id": str(project_id),
+                        "reason": reason,
+                        "unavailable_principal_id": principal_id,
+                        "reported_by": "ceo",
+                    },
+                )
+                audit(db, str(work_id), "work.dispatch_blocked", {
+                    "project_id": str(project_id),
+                    "work_id": str(work_id),
+                    "principal_id": principal_id,
+                    "actor": "ceo",
+                    "reason": reason,
+                    "blockage_id": blockage_id,
+                    "protocol_instance_id": protocol_instance_id,
+                    "next_actor_principal_ids": coordinators,
+                    "next_action": next_action,
+                })
     return {"principal_id": principal_id, "enabled": False}
 
 
@@ -2349,9 +2413,10 @@ def _assign_group_child_work(
             raise HTTPException(409, "Reviewed or completed work cannot be reassigned")
         if db.execute(
             "SELECT 1 FROM execution_queue WHERE work_id=%s "
-            "AND status IN ('QUEUED','RUNNING','UNCERTAIN') FOR SHARE", (work_id,),
+            "AND (status IN ('RUNNING','UNCERTAIN') OR (status='QUEUED' AND attempts>0)) "
+            "FOR SHARE", (work_id,),
         ).fetchone():
-            raise HTTPException(409, "Active or uncertain execution prevents reassignment")
+            raise HTTPException(409, "Claimed or uncertain execution prevents reassignment")
         identity = db.execute(
             "SELECT enabled FROM principal_credentials WHERE principal_id=%s "
             "AND kind='AGENT' FOR SHARE", (payload.principal_id,),

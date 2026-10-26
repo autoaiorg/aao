@@ -3448,3 +3448,139 @@ def test_product_acceptance_closes_group_only_after_current_consolidation(monkey
         assert acceptance_protocol is not None
         assert acceptance_protocol[1:] == ("1.0.0", "ceo")
         assert event[0]["protocol_instance_id"] == str(acceptance_protocol[0])
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="Explicit disposable PostgreSQL database required",
+)
+def test_revoked_assignee_is_persistently_blocked_and_pm_can_reassign_unclaimed_queue(monkeypatch):
+    from aao.execution_queue import claim
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "rst2-ceo")
+    monkeypatch.setenv("AAO_SANDBOX_QUEUE_ENABLED", "true")
+    ceo = {"X-CEO-Token": "rst2-ceo"}
+
+    def issue(principal_id):
+        response = client.post("/v1/principals/credentials", headers=ceo, json={
+            "principal_id": principal_id, "kind": "AGENT",
+        })
+        assert response.status_code == 201, response.text
+        return {"X-Agent-Token": response.json()["token"]}
+
+    old_agent_id = "rst2-old-" + str(uuid4())
+    new_agent_id = "rst2-new-" + str(uuid4())
+    pm_id = "rst2-pm-" + str(uuid4())
+    with TestClient(app) as client:
+        old_agent = issue(old_agent_id)
+        new_agent = issue(new_agent_id)
+        pm = issue(pm_id)
+        mandate_id = client.post("/v1/mandates", headers=ceo, json={
+            "title": "Agent unavailable " + str(uuid4()),
+            "objective": "Reassign safely after credential revocation",
+        }).json()["id"]
+        assert client.post(f"/v1/mandates/{mandate_id}/confirm", headers=ceo).status_code == 200
+        project_id = client.post("/v1/projects", headers=ceo, json={
+            "name": "RST-2 agent unavailable", "mandate_id": mandate_id,
+        }).json()["id"]
+        for principal_id in (old_agent_id, new_agent_id):
+            for capability in ("work.admit", "execution.claim"):
+                grant = client.post(f"/v1/projects/{project_id}/grants", headers=ceo, json={
+                    "principal_id": principal_id, "capability": capability,
+                })
+                assert grant.status_code == 201, grant.text
+            profile = client.put("/v1/organization/profiles", headers=ceo, json={
+                "principal_id": principal_id, "display_name": principal_id,
+                "role_title": "Engineer", "competencies": ["python"],
+            })
+            assert profile.status_code == 200, profile.text
+        assert client.post(f"/v1/projects/{project_id}/grants", headers=ceo, json={
+            "principal_id": pm_id, "capability": "work.assign",
+        }).status_code == 201
+
+        conversation_id = client.post(
+            f"/v1/projects/{project_id}/conversations", headers=ceo,
+            json={"title": "Unavailable assignee"},
+        ).json()["id"]
+        group_response = client.post(
+            f"/v1/projects/{project_id}/conversations/{conversation_id}/work-groups",
+            headers=ceo,
+            json={
+                "idempotency_key": str(uuid4()), "title": "Plan", "description": "A task",
+                "acceptance_criteria": ["queue survives reassignment"],
+                "tasks": [{
+                    "key": "task", "title": "Queued task",
+                    "acceptance_criteria": ["claimed by currently assigned agent"],
+                    "required_competencies": ["python"],
+                    "assigned_principal_id": old_agent_id,
+                }],
+            },
+        )
+        assert group_response.status_code == 201, group_response.text
+        work_id = group_response.json()["tasks"][0]["id"]
+        admitted = client.post(f"/v1/work/{work_id}/admit", headers=old_agent)
+        assert admitted.status_code == 200, admitted.text
+        staged = client.post(f"/v1/work/{work_id}/stage-inert", headers=old_agent)
+        assert staged.status_code == 202, staged.text
+        execution_id = staged.json()["execution_id"]
+
+        revoked = client.post(f"/v1/principals/{old_agent_id}/revoke", headers=ceo)
+        assert revoked.status_code == 200, revoked.text
+        assert client.post("/v1/agent/dispatch-next", headers=old_agent, json={
+            "project_id": project_id, "principal_id": old_agent_id, "base_sha": "a" * 40,
+        }).status_code == 403
+
+        with connect_postgres() as db:
+            row = db.execute(
+                "SELECT details FROM events WHERE subject_id=%s AND kind='work.dispatch_blocked'",
+                (work_id,),
+            ).fetchone()
+            protocol = db.execute(
+                "SELECT id,protocol_id,protocol_version,started_by FROM protocol_instances "
+                "WHERE subject_type='work_item' AND subject_id=%s AND protocol_id='blockage-escalation'",
+                (work_id,),
+            ).fetchone()
+        assert row is not None
+        block = row[0]
+        assert block["principal_id"] == old_agent_id
+        assert block["actor"] == "ceo"
+        assert block["reason"] == "Assigned agent credential revoked before execution claim"
+        assert block["next_actor_principal_ids"] == [pm_id]
+        assert block["protocol_instance_id"] == str(protocol[0])
+        assert protocol[1:] == ("blockage-escalation", "1.0.0", "ceo")
+        assert "work.assign" in block["next_action"]
+
+        denied = client.put(
+            f"/v1/agent/work/{work_id}/assignment", headers=new_agent,
+            json={"principal_id": new_agent_id},
+        )
+        assert denied.status_code == 403
+        reassigned = client.put(
+            f"/v1/agent/work/{work_id}/assignment", headers=pm,
+            json={"principal_id": new_agent_id},
+        )
+        assert reassigned.status_code == 200, reassigned.text
+        assert reassigned.json()["principal_id"] == new_agent_id
+
+    lease = claim(new_agent_id, agent_credential=new_agent["X-Agent-Token"], project_id=project_id)
+    assert lease and lease["execution_id"] == execution_id
+    assert lease["worker_id"] == new_agent_id
+    with connect_postgres() as db:
+        queue = db.execute(
+            "SELECT status,worker_id,attempts FROM execution_queue WHERE id=%s", (execution_id,),
+        ).fetchone()
+        assignments = db.execute(
+            "SELECT details FROM events WHERE subject_id=%s AND kind='work.assigned' "
+            "ORDER BY created_at,id", (work_id,),
+        ).fetchall()
+        grant_count = db.execute(
+            "SELECT count(*) FROM project_grants WHERE principal_id=%s AND project_id=%s",
+            (new_agent_id, project_id),
+        ).fetchone()[0]
+    assert queue == ("RUNNING", new_agent_id, 1)
+    assert assignments[-1][0]["principal_id"] == new_agent_id
+    assert assignments[-1][0]["previous_principal_id"] == old_agent_id
+    assert grant_count == 2

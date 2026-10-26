@@ -1199,6 +1199,182 @@ def test_organization_profiles_are_persisted_and_do_not_create_grants(monkeypatc
     not os.getenv("AAO_TEST_POSTGRES_URL") or os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
     reason="Explicit disposable PostgreSQL test database required",
 )
+def test_organization_projection_respects_execution_lease_expiry(monkeypatch):
+    from aao.execution_queue import claim
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "org-lease-ceo")
+    monkeypatch.setenv("AAO_SANDBOX_QUEUE_ENABLED", "true")
+    ceo = {"X-CEO-Token": "org-lease-ceo"}
+    with TestClient(app) as client:
+        worker_id = "org-lease-" + str(uuid4())
+        token = client.post("/v1/principals/credentials", headers=ceo, json={
+            "principal_id": worker_id, "kind": "AGENT",
+        }).json()["token"]
+        worker = {"X-Agent-Token": token}
+        mandate = client.post("/v1/mandates", headers=ceo, json={
+            "title": "Org lease " + str(uuid4()), "objective": "Check projection lease state",
+        }).json()["id"]
+        client.post(f"/v1/mandates/{mandate}/confirm", headers=ceo)
+        project = client.post("/v1/projects", headers=ceo, json={
+            "name": "Org lease", "mandate_id": mandate,
+        }).json()["id"]
+        for cap in ("work.create", "work.admit", "execution.claim", "project.read"):
+            assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
+                "principal_id": worker_id, "capability": cap,
+            }).status_code == 201
+        execution_ids = []
+        for title in ("expired", "active"):
+            work = client.post(f"/v1/projects/{project}/work", headers=worker, json={
+                "title": title, "author_id": worker_id, "acceptance_criteria": ["projected"],
+            }).json()["id"]
+            assert client.post(f"/v1/work/{work}/admit", headers=worker).status_code == 200
+            staged = client.post(f"/v1/work/{work}/stage-inert", headers=worker)
+            assert staged.status_code == 202, staged.text
+            lease = claim(worker_id, agent_credential=token, project_id=project)
+            assert lease
+            execution_ids.append(staged.json()["execution_id"])
+        with connect_postgres() as db:
+            db.execute(
+                "UPDATE execution_queue SET lease_expires_at=CASE WHEN id=%s "
+                "THEN clock_timestamp()-interval '1 second' "
+                "ELSE clock_timestamp()+interval '10 minutes' END WHERE id=ANY(%s::uuid[])",
+                (execution_ids[0], execution_ids),
+            )
+        projection = client.get("/v1/organization", headers=worker).json()
+        agent = next(row for row in projection["agents"] if row["id"] == worker_id)
+        by_id = {row["id"]: row for row in agent["currentAssignments"]}
+        assert by_id[execution_ids[0]]["status"] == "EXPIRED"
+        assert by_id[execution_ids[1]]["status"] == "ACTIVE"
+        assert agent["status"] == "BUSY"
+        assert agent["operationalState"] == "EJECUTANDO"
+        assert projection["activeAssignmentsCount"] == 1
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="Explicit disposable PostgreSQL test database required",
+)
+def test_organization_projection_never_infers_certification_from_grants_or_reviews(monkeypatch):
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "org-capability-ceo")
+    ceo = {"X-CEO-Token": "org-capability-ceo"}
+    with TestClient(app) as client:
+        principal = "org-capability-" + str(uuid4())
+        issued = client.post("/v1/principals/credentials", headers=ceo, json={
+            "principal_id": principal, "kind": "AGENT",
+        })
+        worker = {"X-Agent-Token": issued.json()["token"]}
+        mandate = client.post("/v1/mandates", headers=ceo, json={
+            "title": "Org capability " + str(uuid4()), "objective": "Projection must not certify",
+        }).json()["id"]
+        client.post(f"/v1/mandates/{mandate}/confirm", headers=ceo)
+        project = client.post("/v1/projects", headers=ceo, json={
+            "name": "Org capabilities", "mandate_id": mandate,
+        }).json()["id"]
+        for cap in ("project.read", "work.create", "work.admit"):
+            assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
+                "principal_id": principal, "capability": cap,
+            }).status_code == 201
+        reviewers = []
+        for _ in range(2):
+            reviewer = "org-auditor-" + str(uuid4())
+            issued_reviewer = client.post("/v1/principals/credentials", headers=ceo, json={
+                "principal_id": reviewer, "kind": "AUDITOR",
+            })
+            assert issued_reviewer.status_code == 201
+            reviewers.append(reviewer)
+        work = client.post(f"/v1/projects/{project}/work", headers=worker, json={
+            "title": "Approval is not a capability", "author_id": principal,
+            "acceptance_criteria": ["Projection remains un-certified"],
+        }).json()["id"]
+        with connect_postgres() as db:
+            for reviewer in reviewers:
+                db.execute(
+                    "INSERT INTO reviews(id,work_id,reviewer_id,decision,evidence,candidate_sha) "
+                    "VALUES (%s,%s,%s,'APPROVE','[\"sha256:test\"]'::jsonb,%s)",
+                    (str(uuid4()), work, reviewer, "a" * 40),
+                )
+        projection = client.get("/v1/organization", headers=worker).json()
+        agent = next(row for row in projection["agents"] if row["id"] == principal)
+        assert agent["capabilities"] == []
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="Explicit disposable PostgreSQL test database required",
+)
+def test_organization_projection_does_not_infer_unit_from_principal_name(monkeypatch):
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "org-unit-ceo")
+    ceo = {"X-CEO-Token": "org-unit-ceo"}
+    with TestClient(app) as client:
+        principal = "eng-agent-" + str(uuid4())
+        token = client.post("/v1/principals/credentials", headers=ceo, json={
+            "principal_id": principal, "kind": "AGENT",
+        }).json()["token"]
+        worker = {"X-Agent-Token": token}
+        mandate = client.post("/v1/mandates", headers=ceo, json={
+            "title": "Org unit " + str(uuid4()), "objective": "Unit requires a persisted profile",
+        }).json()["id"]
+        client.post(f"/v1/mandates/{mandate}/confirm", headers=ceo)
+        project = client.post("/v1/projects", headers=ceo, json={
+            "name": "Org unit", "mandate_id": mandate,
+        }).json()["id"]
+        assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
+            "principal_id": principal, "capability": "project.read",
+        }).status_code == 201
+        projection = client.get("/v1/organization", headers=worker).json()
+        agent = next(row for row in projection["agents"] if row["id"] == principal)
+        assert agent["unitId"] == "unit-unassigned"
+        assert agent["status"] == "UNKNOWN"
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="Explicit disposable PostgreSQL test database required",
+)
+def test_organization_projection_counts_every_readable_project(monkeypatch):
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "org-coverage-ceo")
+    ceo = {"X-CEO-Token": "org-coverage-ceo"}
+    with TestClient(app) as client:
+        principal = "org-coverage-" + str(uuid4())
+        token = client.post("/v1/principals/credentials", headers=ceo, json={
+            "principal_id": principal, "kind": "AGENT",
+        }).json()["token"]
+        agent = {"X-Agent-Token": token}
+        for index in range(11):
+            mandate = client.post("/v1/mandates", headers=ceo, json={
+                "title": f"Org coverage {index} " + str(uuid4()), "objective": "Count all visible projects",
+            }).json()["id"]
+            client.post(f"/v1/mandates/{mandate}/confirm", headers=ceo)
+            project = client.post("/v1/projects", headers=ceo, json={
+                "name": f"Org coverage {index}", "mandate_id": mandate,
+            }).json()["id"]
+            assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
+                "principal_id": principal, "capability": "project.read",
+            }).status_code == 201
+        projection = client.get("/v1/organization", headers=agent)
+        assert projection.status_code == 200, projection.text
+        assert projection.json()["coverage"] == {
+            "totalProjects": 11, "inspectedProjects": 11, "failedProjects": 0, "isPartial": False,
+        }
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="Explicit disposable PostgreSQL test database required",
+)
 def test_organization_unit_concurrent_reparenting_cannot_create_cycle(monkeypatch):
     from aao.work_management_api import app
 

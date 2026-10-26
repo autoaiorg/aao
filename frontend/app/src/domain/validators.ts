@@ -64,6 +64,15 @@ export const ActivityEventSchema = z.object({
   created_at: z.string(),
 });
 
+export const KnowledgeSourceSchema = z.object({
+  work_id: z.string(), project_id: z.string(), project_name: z.string(),
+  title: z.string(), status: z.string(), evidence_references: z.array(z.string()),
+  reviews: z.array(z.object({
+    id: z.string(), reviewer_id: z.string(), decision: z.string(),
+    created_at: z.string(), evidence_references: z.array(z.string()),
+  })),
+});
+
 export const PrincipalSchema = z.object({
   principal_id: z.string(),
   kind: z.enum(['AGENT', 'AUDITOR', 'CEO']),

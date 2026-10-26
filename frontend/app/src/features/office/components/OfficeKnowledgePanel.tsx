@@ -1,90 +1,56 @@
 import React, { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { AaoReadPort } from '../../../data/ports/AaoReadPort';
-import type { DataState, ProjectBoard, ProjectSummary, TaskItem } from '../../../domain/models';
+import type { DataState, KnowledgeSourceRecord, ProjectSummary } from '../../../domain/models';
 import { DataStatePanel } from '../../../components/ui/DataStatePanel';
 import './office-forms.css';
 
-function evidenceReferences(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((reference): reference is string => typeof reference === 'string' && reference.trim().length > 0)
-    : [];
-}
-
 interface OfficeKnowledgePanelProps {
   projects: DataState<ProjectSummary[]>;
-  port: Pick<AaoReadPort, 'getProjectBoard'>;
+  port: Pick<AaoReadPort, 'getKnowledgeSourceIndex'>;
   sessionId: string;
   onOpenBoard: (projectId: string, workId: string) => void;
 }
 
 /** Read-only index over canonical project work/evidence; this is not a separate knowledge store. */
 export const OfficeKnowledgePanel: React.FC<OfficeKnowledgePanelProps> = ({ projects, port, sessionId, onOpenBoard }) => {
-  const activeProjects = useMemo(() => projects.kind === 'ready'
-    ? projects.data.filter((project) => (project.status || 'ACTIVE') === 'ACTIVE')
-    : [], [projects]);
-  const [requestedProjectId, setRequestedProjectId] = useState('');
-  const projectId = activeProjects.some((project) => project.id === requestedProjectId)
-    ? requestedProjectId : activeProjects[0]?.id || '';
-  const boardQuery = useQuery({
-    queryKey: ['office-project-knowledge', sessionId, projectId],
-    queryFn: () => port.getProjectBoard(projectId),
-    enabled: !!projectId,
-  });
+  const [search, setSearch] = useState('');
+  const indexQuery = useQuery({ queryKey: ['office-corporate-sources', sessionId], queryFn: () => port.getKnowledgeSourceIndex() });
+  const projectNames = useMemo(() => new Map(projects.kind === 'ready' ? projects.data.map((project) => [project.id, project.name]) : []), [projects]);
+  const records = indexQuery.data?.kind === 'ready' ? indexQuery.data.data : [];
+  const filteredRecords = records.filter((record) => `${record.projectName} ${record.title} ${record.status} ${record.workId} ${record.evidenceReferences.join(' ')} ${record.reviews.map((review) => `${review.decision} ${review.reviewerId} ${review.evidenceReferences.join(' ')}`).join(' ')}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
 
   return (
     <section className="office-form-panel" aria-labelledby="office-knowledge-title">
-      <h3 id="office-knowledge-title" className="office-form-panel__title">Conocimiento y evidencia del proyecto</h3>
+      <h3 id="office-knowledge-title" className="office-form-panel__title">Índice corporativo de fuentes</h3>
       <p className="office-form-panel__description">
-        Índice de lectura de trabajos y evidencias ya persistidos en AAO. No crea conocimiento nuevo ni sustituye sus fuentes canónicas.
+        Búsqueda de descubrimiento sobre trabajos y revisiones persistidos. No es una base curada y no sustituye las fuentes canónicas.
       </p>
       <label className="office-form-field office-knowledge__project">
-        Proyecto
-        <select className="office-form-control" aria-label="Proyecto del índice de conocimiento"
-          value={projectId} onChange={(event) => setRequestedProjectId(event.target.value)} disabled={!activeProjects.length}>
-          {activeProjects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
-        </select>
+        Buscar en fuentes
+        <input className="office-form-control" aria-label="Buscar en índice corporativo" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Proyecto, trabajo, estado o referencia" />
       </label>
-      {!projectId && <p role="status">No hay un proyecto activo disponible para consultar.</p>}
-      {boardQuery.isLoading && <p role="status">Consultando registros persistidos…</p>}
-      {boardQuery.data && <DataStatePanel state={boardQuery.data} title="Índice de conocimiento"
-        onRetry={() => void boardQuery.refetch()} renderEmpty={() => <p>No hay trabajos ni evidencias en este proyecto.</p>}
-        renderReady={(board: ProjectBoard) => board.items.length === 0
-          ? <p>No hay trabajos ni evidencias en este proyecto.</p>
-          : <ol className="office-knowledge__list" aria-label="Registros de trabajo del proyecto">
-            {board.items.map((item: TaskItem) => (
-              <li className="office-knowledge__item" key={item.id}>
-                <button type="button" className="office-knowledge__link" onClick={() => onOpenBoard(projectId, item.id)}>
-                  <strong>{item.title}</strong><span>Estado: {item.status || 'desconocido'}</span>
+      {indexQuery.isLoading && <p role="status">Consultando fuentes persistidas…</p>}
+      {indexQuery.data && <DataStatePanel state={indexQuery.data} title="Índice corporativo de fuentes"
+        onRetry={() => void indexQuery.refetch()} renderEmpty={() => <p>No hay trabajos ni revisiones persistidos en el índice.</p>}
+        renderReady={() => filteredRecords.length === 0
+          ? <p>{records.length ? 'No hay resultados para la búsqueda.' : 'No hay trabajos ni revisiones persistidos en el índice.'}</p>
+          : <ol className="office-knowledge__list" aria-label="Fuentes de trabajo corporativas">
+            {filteredRecords.map((item: KnowledgeSourceRecord) => (
+              <li className="office-knowledge__item" key={item.workId}>
+                <button type="button" className="office-knowledge__link" onClick={() => onOpenBoard(item.projectId, item.workId)}>
+                  <strong>{item.title}</strong><span>{item.projectName || projectNames.get(item.projectId) || item.projectId} · Estado: {item.status}</span>
                 </button>
-                <small>
-                  {item.evidence?.length ?? 0} referencias de evidencia · {item.executions?.length ?? 0} ejecuciones · {item.reviews?.length ?? 0} revisiones
-                </small>
-                {item.acceptanceCriteria && item.acceptanceCriteria.length > 0 && (
-                  <details>
-                    <summary>Criterios de aceptación ({item.acceptanceCriteria.length})</summary>
-                    <ul>{item.acceptanceCriteria.map((criterion, index) => <li key={`${item.id}-criterion-${index}`}>{criterion}</li>)}</ul>
-                  </details>
-                )}
-                {(() => {
-                  const references = [...new Set([
-                    ...evidenceReferences(item.evidence),
-                    ...(item.reviews ?? []).flatMap((review) => evidenceReferences(review.evidence)),
-                  ])];
-                  return references.length > 0 ? (
-                    <details>
-                      <summary>Referencias canónicas ({references.length})</summary>
-                      <ul className="office-knowledge__references">
-                        {references.map((reference) => <li key={`${item.id}-${reference}`}><code>{reference}</code></li>)}
-                      </ul>
-                    </details>
-                  ) : null;
-                })()}
+                <small>{item.evidenceReferences.length} referencias de trabajo · {item.reviews.length} revisiones · ID {item.workId}</small>
+                {[...new Set([...item.evidenceReferences, ...item.reviews.flatMap((review) => review.evidenceReferences)])].length > 0 && <details>
+                  <summary>Referencias canónicas ({[...new Set([...item.evidenceReferences, ...item.reviews.flatMap((review) => review.evidenceReferences)])].length})</summary>
+                  <ul className="office-knowledge__references">{[...new Set([...item.evidenceReferences, ...item.reviews.flatMap((review) => review.evidenceReferences)])].map((reference) => <li key={`${item.workId}-${reference}`}><code>{reference}</code></li>)}</ul>
+                </details>}
                 {item.reviews && item.reviews.length > 0 && (
                   <details>
                     <summary>Revisiones registradas ({item.reviews.length})</summary>
                     <ul className="office-knowledge__references">
-                      {item.reviews.map((review) => <li key={review.id}>{review.decision} · {review.reviewer_id} · {review.created_at}</li>)}
+                      {item.reviews.map((review) => <li key={review.id}>{review.decision} · {review.reviewerId} · {review.createdAt}</li>)}
                     </ul>
                   </details>
                 )}

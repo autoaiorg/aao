@@ -112,6 +112,23 @@ export interface ActivityEvent {
   created_at: string;
 }
 
+/** Read-only discovery projection over canonical work and review records. */
+export interface KnowledgeSourceRecord {
+  workId: string;
+  projectId: string;
+  projectName: string;
+  title: string;
+  status: string;
+  evidenceReferences: string[];
+  reviews: Array<{
+    id: string;
+    reviewerId: string;
+    decision: string;
+    createdAt: string;
+    evidenceReferences: string[];
+  }>;
+}
+
 export interface TaskItem {
   id: string;
   title: string;

@@ -2699,6 +2699,47 @@ def list_capability_evaluations(
                 for row in rows]
 
 
+@app.get("/v1/knowledge/index")
+def knowledge_source_index(_: str = Depends(require_ceo)):
+    """CEO-only discovery projection over persisted work/review metadata.
+
+    This is not a curated knowledge store. Return references and provenance only;
+    never execution results, evidence bytes, patches or arbitrary payloads.
+    """
+    def references(value) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return list(dict.fromkeys(
+            item.strip() for item in value
+            if isinstance(item, str) and item.strip()
+        ))
+
+    with tx() as db:
+        rows = db.execute(
+            "SELECT w.id,w.project_id,p.name,w.title,w.status,w.evidence "
+            "FROM work_items w JOIN projects p ON p.id=w.project_id "
+            "ORDER BY p.name,w.title,w.id"
+        ).fetchall()
+        review_rows = db.execute(
+            "SELECT r.id,r.work_id,r.reviewer_id,r.decision,r.evidence,r.created_at "
+            "FROM reviews r JOIN work_items w ON w.id=r.work_id "
+            "ORDER BY r.created_at DESC,r.id"
+        ).fetchall()
+    reviews_by_work: dict[str, list[dict]] = {}
+    for review_id, work_id, reviewer_id, decision, evidence, created_at in review_rows:
+        reviews_by_work.setdefault(str(work_id), []).append({
+            "id": str(review_id), "reviewer_id": str(reviewer_id),
+            "decision": decision, "created_at": created_at.isoformat(),
+            "evidence_references": references(evidence),
+        })
+    return [{
+        "work_id": str(work_id), "project_id": str(project_id),
+        "project_name": project_name, "title": title, "status": status,
+        "evidence_references": references(evidence),
+        "reviews": reviews_by_work.get(str(work_id), []),
+    } for work_id, project_id, project_name, title, status, evidence in rows]
+
+
 @app.post("/v1/work/{work_id}/resolve-outside-cycle")
 def resolve_outside_cycle(work_id: str, payload: ExternalResolutionRequest, principal: str = Depends(require_ceo)):
     """CEO-only: close work whose change reached main outside the agent cycle, keeping that fact explicit."""

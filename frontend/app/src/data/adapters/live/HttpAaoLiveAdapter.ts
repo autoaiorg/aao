@@ -29,6 +29,7 @@ import type {
   BoardStage,
   TaskItem,
   ActivityEvent,
+  KnowledgeSourceRecord,
 } from '../../../domain/models';
 import {
   parseModelProfile,
@@ -37,6 +38,7 @@ import {
 } from '../../../features/ronin/modelProfile';
 import {
   ActivityEventSchema,
+  KnowledgeSourceSchema,
   ProjectsListSchema,
   PrincipalSchema,
   GrantSchema,
@@ -689,6 +691,26 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
       return { kind: 'empty', origin: 'live', fetchedAt: new Date().toISOString() };
     }
     return { kind: 'ready', origin: 'live', data: res.data, fetchedAt: new Date().toISOString() };
+  }
+
+  async getKnowledgeSourceIndex(): Promise<DataState<KnowledgeSourceRecord[]>> {
+    if (this.getAuthRole() !== 'CEO') {
+      return { kind: 'forbidden', reason: 'El índice corporativo de fuentes requiere una sesión CEO.' };
+    }
+    const result = await this.request('/v1/knowledge/index', z.array(KnowledgeSourceSchema));
+    if (result.kind !== 'ready') return result;
+    if (result.data.length === 0) return { kind: 'empty', origin: 'live', fetchedAt: new Date().toISOString() };
+    return {
+      kind: 'ready', origin: 'live', fetchedAt: new Date().toISOString(),
+      data: result.data.map((record) => ({
+        workId: record.work_id, projectId: record.project_id, projectName: record.project_name,
+        title: record.title, status: record.status, evidenceReferences: record.evidence_references,
+        reviews: record.reviews.map((review) => ({
+          id: review.id, reviewerId: review.reviewer_id, decision: review.decision,
+          createdAt: review.created_at, evidenceReferences: review.evidence_references,
+        })),
+      })),
+    };
   }
 
   async getCeoOverview(projectId?: string): Promise<CeoOverview> {

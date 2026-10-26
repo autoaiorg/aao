@@ -61,9 +61,9 @@ describe('Phase F4: VirtualOfficeView & 3D Office Experience', () => {
 
   it('does not show the LIVE knowledge index in DEMO', () => {
     render(<VirtualOfficeView organization={readyDemoState} conversationSessionId="demo-session"
-      knowledgeReadPort={{ getProjectBoard: vi.fn() }} />);
+      knowledgeReadPort={{ getKnowledgeSourceIndex: vi.fn() }} />);
 
-    expect(screen.queryByRole('heading', { name: 'Conocimiento y evidencia del proyecto' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Índice corporativo de fuentes' })).not.toBeInTheDocument();
   });
 
   it('toggles between 3D viewport and 2D accessible blueprint map', () => {

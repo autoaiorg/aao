@@ -1781,47 +1781,62 @@ def _consolidation_response(row, *, created: bool):
 def list_project_work_groups(project_id: str, _: str = Depends(require_ceo)):
     """CEO view of durable work groups and evidence-backed consolidation readiness."""
     with tx() as db:
-        if not db.execute("SELECT 1 FROM projects WHERE id=%s", (project_id,)).fetchone():
-            raise HTTPException(404, "Project not found")
-        groups = db.execute(
-            "SELECT g.id,g.conversation_id,g.parent_work_id,w.title,w.status,"
-            "c.id,c.summary,c.source_sha256,c.source_snapshot,c.idempotency_key,"
-            "c.created_by,c.created_at FROM work_groups g "
-            "JOIN work_items w ON w.id=g.parent_work_id "
-            "LEFT JOIN work_group_consolidations c ON c.work_group_id=g.id "
-            "WHERE g.project_id=%s ORDER BY g.created_at,g.id", (project_id,),
+        return _list_project_work_groups(db, project_id)
+
+
+@app.get("/v1/agent/projects/{project_id}/work-groups")
+def list_agent_project_work_groups(
+    project_id: str,
+    principal: str = Depends(require_worker),
+):
+    """Expose persisted group progress only to a project-scoped coordinator."""
+    with tx() as db:
+        require_grant(db, principal, project_id, "work.coordinate")
+        return _list_project_work_groups(db, project_id)
+
+
+def _list_project_work_groups(db, project_id: str):
+    if not db.execute("SELECT 1 FROM projects WHERE id=%s", (project_id,)).fetchone():
+        raise HTTPException(404, "Project not found")
+    groups = db.execute(
+        "SELECT g.id,g.conversation_id,g.parent_work_id,w.title,w.status,"
+        "c.id,c.summary,c.source_sha256,c.source_snapshot,c.idempotency_key,"
+        "c.created_by,c.created_at FROM work_groups g "
+        "JOIN work_items w ON w.id=g.parent_work_id "
+        "LEFT JOIN work_group_consolidations c ON c.work_group_id=g.id "
+        "WHERE g.project_id=%s ORDER BY g.created_at,g.id", (project_id,),
+    ).fetchall()
+    result = []
+    for row in groups:
+        snapshot, source_sha256 = _work_group_source_snapshot(db, project_id, str(row[2]))
+        children = snapshot["children"]
+        stored = None
+        if row[5] is not None:
+            stored = {
+                "id": str(row[5]), "summary": row[6],
+                "source_sha256": row[7], "source_snapshot": row[8],
+                "idempotency_key": str(row[9]), "created_by": row[10],
+                "created_at": row[11].isoformat(),
+            }
+        reports = db.execute(
+            "SELECT id,report_kind,summary,source_sha256,source_snapshot,idempotency_key,"
+            "created_by,created_at FROM work_group_partial_reports "
+            "WHERE work_group_id=%s ORDER BY created_at,id", (row[0],),
         ).fetchall()
-        result = []
-        for row in groups:
-            snapshot, source_sha256 = _work_group_source_snapshot(db, project_id, str(row[2]))
-            children = snapshot["children"]
-            stored = None
-            if row[5] is not None:
-                stored = {
-                    "id": str(row[5]), "summary": row[6],
-                    "source_sha256": row[7], "source_snapshot": row[8],
-                    "idempotency_key": str(row[9]), "created_by": row[10],
-                    "created_at": row[11].isoformat(),
-                }
-            reports = db.execute(
-                "SELECT id,report_kind,summary,source_sha256,source_snapshot,idempotency_key,"
-                "created_by,created_at FROM work_group_partial_reports "
-                "WHERE work_group_id=%s ORDER BY created_at,id", (row[0],),
-            ).fetchall()
-            result.append({
-                "id": str(row[0]), "conversation_id": str(row[1]),
-                "parent_work_id": str(row[2]), "title": row[3],
-                "parent_status": row[4], "children": children,
-                "source_sha256": source_sha256,
-                "consolidation_ready": bool(children) and all(child["status"] == "DONE" for child in children),
-                "consolidation": stored,
-                "partial_reports": [{
-                    "id": str(report[0]), "report_kind": report[1], "summary": report[2],
-                    "source_sha256": report[3], "source_snapshot": report[4],
-                    "idempotency_key": str(report[5]), "created_by": report[6],
-                    "created_at": report[7].isoformat(),
-                } for report in reports],
-            })
+        result.append({
+            "id": str(row[0]), "conversation_id": str(row[1]),
+            "parent_work_id": str(row[2]), "title": row[3],
+            "parent_status": row[4], "children": children,
+            "source_sha256": source_sha256,
+            "consolidation_ready": bool(children) and all(child["status"] == "DONE" for child in children),
+            "consolidation": stored,
+            "partial_reports": [{
+                "id": str(report[0]), "report_kind": report[1], "summary": report[2],
+                "source_sha256": report[3], "source_snapshot": report[4],
+                "idempotency_key": str(report[5]), "created_by": report[6],
+                "created_at": report[7].isoformat(),
+            } for report in reports],
+        })
     return result
 
 

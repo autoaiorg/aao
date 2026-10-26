@@ -74,6 +74,8 @@ def test_project_coordinator_consolidates_without_ceo_impersonation(monkeypatch)
         assert issued.status_code == 201, issued.text
         token = issued.json()["token"]
         pm_headers = {"X-Agent-Token": token}
+        groups_url = f"/v1/agent/projects/{project}/work-groups"
+        assert client.get(groups_url, headers=pm_headers).status_code == 403
         url = f"/v1/agent/projects/{project}/work-groups/{group['id']}/consolidation"
         ungranted_payload = {
             "idempotency_key": str(uuid4()), "expected_source_sha256": "0" * 64,
@@ -86,6 +88,12 @@ def test_project_coordinator_consolidates_without_ceo_impersonation(monkeypatch)
         assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
             "principal_id": coordinator_id, "capability": "work.coordinate",
         }).status_code == 201
+        pm_groups = client.get(groups_url, headers=pm_headers)
+        assert pm_groups.status_code == 200, pm_groups.text
+        assert len(pm_groups.json()) == 1
+        assert pm_groups.json()[0]["id"] == group["id"]
+        assert pm_groups.json()[0]["parent_status"] == "INBOX"
+        assert pm_groups.json()[0]["consolidation_ready"] is False
         with connect_postgres() as db:
             db.execute(
                 "UPDATE work_items SET status='DONE',evidence=%s::jsonb WHERE id=%s",

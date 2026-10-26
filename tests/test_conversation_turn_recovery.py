@@ -33,7 +33,7 @@ def test_claim_requires_expired_pending_turn_and_matching_provider_model():
 
         def fetchone(self):
             return ("turn-1", "conversation-1", "project-1", "key-1", "message-1",
-                    "openai-compatible", "model-1", "hello")
+                    "openai-compatible", "model-1", "https://provider.invalid/v1/chat/completions", "hello")
 
     db = FakeDB()
     config = RecoveryConfiguration("openai-compatible", "model-1")
@@ -45,8 +45,8 @@ def test_claim_requires_expired_pending_turn_and_matching_provider_model():
     assert "t.state='PENDING'" in normalized
     assert "t.lease_expires_at <= clock_timestamp()" in normalized
     assert "FOR UPDATE OF t SKIP LOCKED" in normalized
-    assert "t.provider=%s AND t.model=%s" in normalized
-    assert select_params == ("openai-compatible", "model-1")
+    assert "t.provider=%s AND t.model=%s AND t.endpoint=%s" in normalized
+    assert select_params == ("openai-compatible", "model-1", "unknown")
     assert "lease_owner=%s" in update_sql and "lease_expires_at <= clock_timestamp()" in update_sql
     assert update_params == ("owner-1", 90, "turn-1")
 
@@ -70,10 +70,11 @@ def test_claim_does_not_call_provider_or_touch_database_when_disabled(monkeypatc
 
 
 def test_recovery_configuration_requires_recorded_provider_and_model_match():
-    config = RecoveryConfiguration("openai-compatible", "model-1")
-    assert config.matches("openai-compatible", "model-1")
-    assert not config.matches("other-provider", "model-1")
-    assert not config.matches("openai-compatible", "model-2")
+    config = RecoveryConfiguration("openai-compatible", "model-1", "https://provider.invalid/chat")
+    assert config.matches("openai-compatible", "model-1", "https://provider.invalid/chat")
+    assert not config.matches("other-provider", "model-1", "https://provider.invalid/chat")
+    assert not config.matches("openai-compatible", "model-2", "https://provider.invalid/chat")
+    assert not config.matches("openai-compatible", "model-1", "https://other.invalid/chat")
 
 
 def test_recovery_no_matching_recorded_provider_model_never_calls_provider(monkeypatch):

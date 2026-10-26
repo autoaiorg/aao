@@ -294,3 +294,6 @@ S = menos de un día de constructor; M = 1-3 días; L = más.
 | Bloqueos | Ninguno para la propuesta. La medida real de coste depende del piloto |
 | Autoridad usada | Régimen de construcción externa. Ninguna autoridad de AAO |
 | Siguiente | El CEO revisa y fusiona. Después de su visto bueno, I1 puede ir en una PR pequeña. I3 e I4 van después del piloto de Codex |
+### I7: conversación por el catálogo de capacidades, con activación y presupuesto (pendiente)
+
+La conversación CEO–AAO aún selecciona proveedor/modelo mediante `AAO_CONVERSATION_*`, fuera del catálogo de capacidades y de la activación/presupuesto de I3–I5. Evolucionar a una capacidad de conversación independiente, con proveedor activado expresamente, modelo del catálogo, límites de coste/presupuesto y trazabilidad por turno. **No implementado**: activar cualquier proveedor sigue siendo decisión reservada al CEO.

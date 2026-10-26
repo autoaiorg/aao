@@ -4,6 +4,10 @@
 
 **Por defecto:** el proveedor está desactivado. `agent_runner` rechaza el backend `codex` si falta `AAO_AGENT_PROVIDER=codex` y también si falta un `AAO_AGENT_CODEX_HOME` dedicado. Esas dos variables se exportan solo en el proceso del worker del piloto.
 
+## Conversación con proveedor (reservado al CEO)
+
+Configurar cualquiera de las variables `AAO_CONVERSATION_*` para seleccionar un modelo/proveedor constituye **activar un proveedor de modelos**, una decisión reservada al CEO. No se debe configurar ni iniciar una llamada fuera de una autorización expresa del CEO. En la revisión del entorno de construcción del 2026-10-26, `AAO_CONVERSATION_PROVIDER`, `AAO_CONVERSATION_API_URL`, `AAO_CONVERSATION_MODEL`, `AAO_CONVERSATION_API_KEY` y `AAO_CONVERSATION_RECOVERY_ENABLED` estaban ausentes del entorno del proceso; no se leyó `.env.local`. Por tanto, la conversación no está configurada aquí. La URL almacenada como procedencia excluye userinfo, query y fragmentos para evitar filtrar credenciales incluidas accidentalmente en la URL.
+
 ## Tarea del piloto
 
 | Campo | Valor |

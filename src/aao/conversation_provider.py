@@ -1,7 +1,9 @@
 """Opt-in OpenAI-compatible streaming adapter for CEO conversations.
 
 AAO owns the conversation contract and persistence; this module is only a replaceable
-transport adapter. It makes no provider call unless all explicit environment settings exist.
+transport adapter. Setting any ``AAO_CONVERSATION_*`` provider configuration activates
+a model provider and is reserved to the CEO. Those settings are currently not configured.
+It makes no provider call unless all explicit environment settings exist.
 """
 from __future__ import annotations
 
@@ -9,6 +11,7 @@ import json
 import os
 from collections.abc import Iterator
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 
@@ -16,6 +19,21 @@ class ProviderUnavailable(RuntimeError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
+
+
+def safe_endpoint_metadata(endpoint: str) -> str:
+    """Return endpoint provenance without userinfo, query parameters, or fragments."""
+    try:
+        parsed = urlsplit(endpoint)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return "configured-endpoint"
+    if not parsed.scheme or not host:
+        return "configured-endpoint"
+    if port is not None:
+        host += f":{port}"
+    return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
 
 
 def stream_reply(messages: list[dict[str, str]]) -> Iterator[str]:

@@ -31,9 +31,11 @@ def tx():
 class RecoveryConfiguration:
     provider: str
     model: str
+    endpoint: str = "unknown"
 
-    def matches(self, recorded_provider: str, recorded_model: str) -> bool:
-        return self.provider == recorded_provider and self.model == recorded_model
+    def matches(self, recorded_provider: str, recorded_model: str, recorded_endpoint: str = "unknown") -> bool:
+        return (self.provider == recorded_provider and self.model == recorded_model
+                and self.endpoint == recorded_endpoint)
 
 
 class TurnLeaseLost(RuntimeError):
@@ -169,16 +171,16 @@ def claim_expired_turn(db, config: RecoveryConfiguration, *, lease_owner: str):
     """Claim one expired turn with SKIP LOCKED and a fenced lease update."""
     row = db.execute(
         "SELECT t.id::text,t.conversation_id::text,c.project_id::text,"
-        "t.idempotency_key::text,t.user_message_id::text,t.provider,t.model,m.body "
+        "t.idempotency_key::text,t.user_message_id::text,t.provider,t.model,t.endpoint,m.body "
         "FROM project_conversation_turns t "
         "JOIN project_conversations c ON c.id=t.conversation_id "
         "JOIN projects p ON p.id=c.project_id "
         "JOIN project_conversation_messages m ON m.id=t.user_message_id "
         "WHERE t.state='PENDING' AND (t.lease_expires_at IS NULL "
         "OR t.lease_expires_at <= clock_timestamp()) AND p.state='ACTIVE' "
-        "AND t.provider=%s AND t.model=%s "
+        "AND t.provider=%s AND t.model=%s AND t.endpoint=%s "
         "ORDER BY t.created_at,t.id FOR UPDATE OF t SKIP LOCKED LIMIT 1",
-        (config.provider, config.model),
+        (config.provider, config.model, config.endpoint),
     ).fetchone()
     if not row:
         return None
@@ -194,7 +196,8 @@ def claim_expired_turn(db, config: RecoveryConfiguration, *, lease_owner: str):
     return {
         "turn_id": row[0], "conversation_id": row[1], "project_id": row[2],
         "idempotency_key": row[3], "user_message_id": row[4],
-        "provider": row[5], "model": row[6], "body": row[7], "lease_owner": lease_owner,
+        "provider": row[5], "model": row[6], "endpoint": row[7], "body": row[8],
+        "lease_owner": lease_owner,
     }
 
 
@@ -205,8 +208,8 @@ def has_mismatched_expired_turn(db, config: RecoveryConfiguration) -> bool:
         "JOIN projects p ON p.id=c.project_id "
         "WHERE t.state='PENDING' AND (t.lease_expires_at IS NULL "
         "OR t.lease_expires_at <= clock_timestamp()) AND p.state='ACTIVE' "
-        "AND (t.provider<>%s OR t.model<>%s))",
-        (config.provider, config.model),
+        "AND (t.provider<>%s OR t.model<>%s OR t.endpoint<>%s))",
+        (config.provider, config.model, config.endpoint),
     ).fetchone()
     return bool(row and row[0])
 
@@ -222,9 +225,9 @@ def _finish_turn(turn: dict, answer: str, config: RecoveryConfiguration) -> bool
     response_id = str(uuid4())
     with tx() as db:
         db.execute(
-            "INSERT INTO project_conversation_messages(id,conversation_id,sender,body,provider,model) "
-            "VALUES (%s,%s,'AAO',%s,%s,%s)",
-            (response_id, turn["conversation_id"], answer, config.provider, config.model),
+            "INSERT INTO project_conversation_messages(id,conversation_id,sender,body,provider,model,endpoint) "
+            "VALUES (%s,%s,'AAO',%s,%s,%s,%s)",
+            (response_id, turn["conversation_id"], answer, config.provider, config.model, config.endpoint),
         )
         changed = db.execute(
             "UPDATE project_conversation_turns SET state='COMPLETED',assistant_message_id=%s,"
@@ -238,6 +241,7 @@ def _finish_turn(turn: dict, answer: str, config: RecoveryConfiguration) -> bool
                    (turn["conversation_id"],))
         _audit(db, turn["conversation_id"], "conversation.turn.completed", {
             "user_message_id": turn["user_message_id"], "assistant_message_id": response_id,
+            "provider": config.provider, "model": config.model, "endpoint": config.endpoint,
             "recovered_by": "backend_worker",
         })
     return True
@@ -266,9 +270,12 @@ def recover_one_turn(env: dict[str, str] | None = None) -> dict[str, str]:
     error = configuration_error(env)
     if error:
         return {"status": error}
-    config = RecoveryConfiguration(env["AAO_CONVERSATION_PROVIDER"].strip(),
-                                   env["AAO_CONVERSATION_MODEL"].strip())
-    from aao.conversation_provider import ProviderUnavailable, stream_reply
+    from aao.conversation_provider import ProviderUnavailable, safe_endpoint_metadata, stream_reply
+
+    config = RecoveryConfiguration(
+        env["AAO_CONVERSATION_PROVIDER"].strip(), env["AAO_CONVERSATION_MODEL"].strip(),
+        safe_endpoint_metadata(env["AAO_CONVERSATION_API_URL"].strip()),
+    )
 
     owner = str(uuid4())
     with tx() as db:

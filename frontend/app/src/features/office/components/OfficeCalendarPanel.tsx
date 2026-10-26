@@ -83,7 +83,7 @@ export const OfficeCalendarPanel: React.FC<OfficeCalendarPanelProps> = ({ projec
           </div>
           {datedItems.length === 0
             ? <p role="status">No hay trabajos con fecha objetivo registrada en este proyecto.</p>
-            : <table className="office-calendar__grid" aria-label={`Calendario de ${monthLabel}`}>
+            : <div className="office-calendar__grid-wrap"><table className="office-calendar__grid" aria-label={`Calendario de ${monthLabel}`}>
               <thead><tr>{['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'].map((day) => <th key={day} scope="col">{day}</th>)}</tr></thead>
               <tbody>{Array.from({ length: cellCount / 7 }, (_, week) => <tr key={week}>
                 {Array.from({ length: 7 }, (_, weekday) => {
@@ -103,7 +103,7 @@ export const OfficeCalendarPanel: React.FC<OfficeCalendarPanelProps> = ({ projec
                   </td>;
                 })}
               </tr>)}</tbody>
-            </table>}
+            </table></div>}
           {datedItems.length > 0 && !datedItems.some((item) => item.dueDate.startsWith(`${year}-${String(month + 1).padStart(2, '0')}-`))
             && <p role="status">No hay trabajos con fecha objetivo en este mes.</p>}
         </>;

@@ -581,8 +581,14 @@
 
 .office-calendar__grid {
   width: 100%;
+  min-width: 700px;
   table-layout: fixed;
   border-collapse: collapse;
+}
+
+.office-calendar__grid-wrap {
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 .office-calendar__grid th,
@@ -641,13 +647,8 @@
 }
 
 @media (max-width: 760px) {
-  .office-calendar__grid td {
-    height: 78px;
-    padding: 3px;
-  }
-
   .office-calendar__work {
-    padding: 3px;
-    font-size: 0.72rem;
+    padding: 4px;
+    font-size: 0.78rem;
   }
 }

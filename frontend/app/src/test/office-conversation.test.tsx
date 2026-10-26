@@ -186,6 +186,27 @@ describe('office persistent project conversation', () => {
     ));
   });
 
+  it('reconciles a persisted pending turn until the backend records its completion', async () => {
+    const pending = { ...message, turn_status: 'PENDING' as const, turn_idempotency_key: 'turn-key' };
+    const completed = { ...message, id: 'reply-1', sender: 'AAO' as const, body: 'Respuesta recuperada', turn_status: 'COMPLETED' as const };
+    const port: AaoConversationPort = {
+      listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
+      listAssignableAgents: vi.fn().mockResolvedValue(ready([])),
+      listConversationMessages: vi.fn()
+        .mockResolvedValueOnce(ready([pending]))
+        .mockResolvedValue(ready([pending, completed])),
+      createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(), streamCEOConversationTurn: vi.fn(),
+      createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(),
+      createWorkGroupFromConversation: vi.fn(), proposeWorkGroupFromConversation: vi.fn(),
+      listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), assignWorkGroupChild: vi.fn(),
+      confirmWorkGroupConsolidation: vi.fn(), createWorkGroupPartialReport: vi.fn(),
+    };
+    setup(port);
+    expect(await screen.findByRole('button', { name: 'Reintentar si quedó interrumpida' })).toBeInTheDocument();
+    expect(await screen.findByText('Respuesta recuperada', {}, { timeout: 4_000 })).toBeInTheDocument();
+    expect(port.listConversationMessages).toHaveBeenCalledTimes(2);
+  });
+
   it('structures CEO-confirmed parent and dependent tasks from the conversation thread', async () => {
     const port: AaoConversationPort = {
       listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),

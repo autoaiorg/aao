@@ -155,6 +155,10 @@ class WorkAssignmentRequest(BaseModel):
     principal_id: str = Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$")
 
 
+class WorkPriorityRequest(BaseModel):
+    priority: Literal["NORMAL", "HIGH"]
+
+
 class WorkGroupTaskRequest(BaseModel):
     key: str = Field(min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
     title: str = Field(min_length=1, max_length=200)
@@ -2367,6 +2371,37 @@ def _list_assignable_agents(db, project_id: str):
     return [{"principal_id": row[0], "display_name": row[1], "competencies": row[2]} for row in rows]
 
 
+@app.put("/v1/work/{work_id}/priority")
+def set_work_priority(
+    work_id: str, payload: WorkPriorityRequest, _: str = Depends(require_ceo),
+):
+    """CEO-only scheduling adjustment on canonical work; never grants execution authority."""
+    with tx() as db:
+        work = db.execute(
+            "SELECT project_id,status,priority FROM work_items WHERE id=%s FOR UPDATE",
+            (work_id,),
+        ).fetchone()
+        if not work:
+            raise HTTPException(404, "Work not found")
+        project_id, status, previous_priority = work
+        if status in {"VERIFIED", "DONE"}:
+            raise HTTPException(409, "Completed or verified work cannot be reprioritized")
+        if db.execute(
+            "SELECT 1 FROM execution_queue WHERE work_id=%s "
+            "AND status IN ('RUNNING','UNCERTAIN','SUCCEEDED') FOR SHARE",
+            (work_id,),
+        ).fetchone():
+            raise HTTPException(409, "Running, uncertain, or successful execution prevents reprioritization")
+        changed = previous_priority != payload.priority
+        if changed:
+            db.execute("UPDATE work_items SET priority=%s WHERE id=%s", (payload.priority, work_id))
+            audit(db, work_id, "work.priority_changed", {
+                "actor": "ceo", "project_id": str(project_id), "work_id": work_id,
+                "previous_priority": previous_priority, "priority": payload.priority,
+            })
+    return {"work_id": work_id, "priority": payload.priority, "changed": changed}
+
+
 @app.put("/v1/work/{work_id}/assignment")
 def assign_group_child_work(
     work_id: str, payload: WorkAssignmentRequest,
@@ -2979,7 +3014,7 @@ def board(project_id: str, principal: str = Depends(read_principal)):
             "COALESCE((SELECT json_agg(d.depends_on_work_id ORDER BY d.depends_on_work_id) "
             "FROM work_item_dependencies d WHERE d.work_id=w.id),'[]'::json),"
             "(SELECT g.id FROM work_groups g WHERE g.parent_work_id=w.id) "
-            ",(SELECT a.principal_id FROM work_item_assignments a WHERE a.work_id=w.id),w.due_date "
+            ",(SELECT a.principal_id FROM work_item_assignments a WHERE a.work_id=w.id),w.due_date,w.priority "
             "FROM work_items w "
             "WHERE w.project_id=%s ORDER BY w.id", (project_id,),
         ).fetchall()
@@ -3053,6 +3088,7 @@ def board(project_id: str, principal: str = Depends(read_principal)):
              "work_group_id": str(r[8]) if r[8] else None,
              "assigned_principal_id": r[9],
              "due_date": r[10].isoformat() if r[10] else None,
+             "priority": r[11],
              "patch_proposals": patches_by_work.get(str(r[0]), []),
              "pull_requests": prs_by_work.get(str(r[0]), []),
              "resolution": resolutions.get(str(r[0]))}
@@ -4142,7 +4178,8 @@ def dispatch_next_agent_work(
             "  ORDER BY created_at DESC,id DESC LIMIT 1) e ON true "
             "WHERE w.project_id=%s AND a.principal_id=%s AND w.parent_work_id IS NOT NULL "
             "AND w.status IN ('INBOX','READY','IN_PROGRESS') "
-            "ORDER BY CASE w.status WHEN 'IN_PROGRESS' THEN 0 WHEN 'READY' THEN 1 ELSE 2 END, w.id "
+            "ORDER BY CASE w.priority WHEN 'HIGH' THEN 0 ELSE 1 END, "
+            "CASE w.status WHEN 'IN_PROGRESS' THEN 0 WHEN 'READY' THEN 1 ELSE 2 END, w.id "
             "FOR UPDATE OF w SKIP LOCKED",
             (payload.project_id, str(principal)),
         ).fetchall()

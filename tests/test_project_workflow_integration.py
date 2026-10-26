@@ -3762,3 +3762,85 @@ def test_revoked_assignee_is_persistently_blocked_and_pm_can_reassign_unclaimed_
     assert assignments[-1][0]["principal_id"] == new_agent_id
     assert assignments[-1][0]["previous_principal_id"] == old_agent_id
     assert grant_count == 2
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="Explicit disposable PostgreSQL database required",
+)
+def test_ceo_priority_change_is_persisted_and_controls_next_agent_claim(monkeypatch):
+    """A CEO priority change reorders only unclaimed work in the persistent queue."""
+    from uuid import uuid4
+
+    from aao.execution_queue import claim
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "priority-ceo")
+    ceo = {"X-CEO-Token": "priority-ceo"}
+    with TestClient(app) as client:
+        principal_id = "priority-agent-" + str(uuid4())
+        token = client.post("/v1/principals/credentials", headers=ceo, json={
+            "principal_id": principal_id, "kind": "AGENT",
+        }).json()["token"]
+        agent = {"X-Agent-Token": token}
+        mandate_id = client.post("/v1/mandates", headers=ceo, json={
+            "title": "Priority " + str(uuid4()), "objective": "Verify explicit scheduling priority",
+        }).json()["id"]
+        assert client.post(f"/v1/mandates/{mandate_id}/confirm", headers=ceo).status_code == 200
+        project_id = client.post("/v1/projects", headers=ceo, json={
+            "name": "Priority scheduling", "mandate_id": mandate_id,
+        }).json()["id"]
+        assert client.post(f"/v1/projects/{project_id}/grants", headers=ceo, json={
+            "principal_id": principal_id, "capability": "execution.claim",
+        }).status_code == 201
+
+        work_ids = [str(uuid4()), str(uuid4())]
+        execution_ids = [str(uuid4()), str(uuid4())]
+        with connect_postgres() as db:
+            for index, (work_id, execution_id) in enumerate(zip(work_ids, execution_ids, strict=True)):
+                db.execute(
+                    "INSERT INTO work_items(id,project_id,title,description,author_id,status,acceptance_criteria) "
+                    "VALUES (%s,%s,%s,'',%s,'READY','[\"done\"]'::jsonb)",
+                    (work_id, project_id, f"queued {index}", principal_id),
+                )
+                db.execute(
+                    "INSERT INTO execution_queue(id,work_id,project_id,status,input_json,created_at) "
+                    "VALUES (%s,%s,%s,'QUEUED','{}'::jsonb,clock_timestamp()+make_interval(secs => %s))",
+                    (execution_id, work_id, project_id, index),
+                )
+
+        # The agent has no CEO authority. Priority is CEO-only and is recorded
+        # on the same canonical work item consumed by queue ordering.
+        denied = client.put(f"/v1/work/{work_ids[1]}/priority", headers=agent, json={"priority": "HIGH"})
+        assert denied.status_code == 403
+        changed = client.put(f"/v1/work/{work_ids[1]}/priority", headers=ceo, json={"priority": "HIGH"})
+        assert changed.status_code == 200, changed.text
+        assert changed.json() == {"work_id": work_ids[1], "priority": "HIGH", "changed": True}
+        repeated = client.put(
+            f"/v1/work/{work_ids[1]}/priority", headers=ceo, json={"priority": "HIGH"},
+        )
+        assert repeated.status_code == 200 and repeated.json()["changed"] is False
+
+        board = client.get(f"/v1/projects/{project_id}/board", headers=ceo).json()
+        assert {item["id"]: item["priority"] for item in board} == {
+            work_ids[0]: "NORMAL", work_ids[1]: "HIGH",
+        }
+        with connect_postgres() as db:
+            events = db.execute(
+                "SELECT details FROM events WHERE subject_id=%s AND kind='work.priority_changed'",
+                (work_ids[1],),
+            ).fetchall()
+        assert len(events) == 1
+        assert events[0][0] == {
+            "actor": "ceo", "project_id": project_id, "work_id": work_ids[1],
+            "previous_priority": "NORMAL", "priority": "HIGH",
+        }
+
+        lease = claim(principal_id, agent_credential=token, project_id=project_id)
+        assert lease and lease["execution_id"] == execution_ids[1]
+        active_change = client.put(
+            f"/v1/work/{work_ids[1]}/priority", headers=ceo, json={"priority": "NORMAL"},
+        )
+        assert active_change.status_code == 409

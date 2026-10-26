@@ -13,9 +13,9 @@ describe('OfficeKnowledgePanel', () => {
     kind: 'ready', origin: 'live', fetchedAt: '2026-10-26T00:00:00Z',
     data: {
       projectId: 'project-1', totalCount: 1, unrecognizedItems: [],
-      items: [{ id: 'work-1', title: 'Actualizar motor', status: 'DONE', evidence: ['evidence-ref'],
+      items: [{ id: 'work-1', title: 'Actualizar motor', status: 'DONE', evidence: ['sha256:work-evidence-ref', { patch: 'private patch data' }],
         executions: [{ id: 'execution-1', status: 'SUCCEEDED', attempts: 1, created_at: '2026-10-26T00:00:00Z' }],
-        reviews: [{ id: 'review-1', work_id: 'work-1', reviewer_id: 'auditor', decision: 'APPROVE', created_at: '2026-10-26T00:00:00Z' }],
+        reviews: [{ id: 'review-1', work_id: 'work-1', reviewer_id: 'auditor', decision: 'APPROVE', evidence: ['sha256:review-evidence-ref'], created_at: '2026-10-26T00:00:00Z' }],
         acceptanceCriteria: ['Pruebas verdes'] }],
       stages: { INBOX: [], READY: [], IN_PROGRESS: [], IN_REVIEW: [], VERIFIED: [], DONE: [] },
     },
@@ -30,7 +30,11 @@ describe('OfficeKnowledgePanel', () => {
     </QueryClientProvider>);
 
     expect(await screen.findByText('Actualizar motor')).toBeInTheDocument();
-    expect(screen.getByText(/1 referencias de evidencia · 1 ejecuciones · 1 revisiones/)).toBeInTheDocument();
+    expect(screen.getByText(/2 referencias de evidencia · 1 ejecuciones · 1 revisiones/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText(/Referencias canónicas \(2\)/));
+    expect(screen.getByText('sha256:work-evidence-ref')).toBeInTheDocument();
+    expect(screen.getByText('sha256:review-evidence-ref')).toBeInTheDocument();
+    expect(screen.queryByText('private patch data')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Actualizar motor/ }));
     expect(onOpenBoard).toHaveBeenCalledWith('project-1', 'work-1');
     await waitFor(() => expect(port.getProjectBoard).toHaveBeenCalledWith('project-1'));

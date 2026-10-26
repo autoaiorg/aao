@@ -442,6 +442,10 @@ class CapabilityEvaluationRequest(BaseModel):
     version: str | None = Field(default=None, max_length=64)
 
 
+class CapabilityFeedbackReviewRequest(BaseModel):
+    status: Literal["accepted", "rejected"]
+
+
 class CapabilityFeedbackRequest(BaseModel):
     capability_id: str = Field(min_length=1, max_length=128)
     version: str = Field(min_length=1, max_length=64)
@@ -2737,16 +2741,55 @@ def list_capability_feedback(project_id: str, _: str = Depends(require_ceo)):
         if not db.execute("SELECT 1 FROM projects WHERE id=%s", (project_id,)).fetchone():
             raise HTTPException(404, "Project not found")
         rows = db.execute(
-            "SELECT id,capability_id,version,work_id,correction,evidence,status,created_by,created_at "
-            "FROM capability_feedback_proposals WHERE project_id=%s ORDER BY created_at DESC,id",
+            "SELECT id,capability_id,version,work_id,correction,evidence,status,created_by,created_at,"
+            "reviewed_by,reviewed_at FROM capability_feedback_proposals "
+            "WHERE project_id=%s ORDER BY created_at DESC,id",
             (project_id,),
         ).fetchall()
     return [{
         "id": str(row[0]), "capability_id": row[1], "version": row[2],
         "work_id": str(row[3]) if row[3] else None, "correction": row[4],
         "evidence": row[5], "status": row[6], "created_by": row[7],
-        "created_at": row[8].isoformat(), "applied": False,
+        "created_at": row[8].isoformat(), "reviewed_by": row[9],
+        "reviewed_at": row[10].isoformat() if row[10] else None, "applied": False,
     } for row in rows]
+
+
+@app.post("/v1/projects/{project_id}/capability-feedback/{proposal_id}/review")
+def review_capability_feedback(
+    project_id: str, proposal_id: UUID, payload: CapabilityFeedbackReviewRequest,
+    _: str = Depends(require_ceo),
+):
+    """Record one explicit CEO decision; accepted proposals remain unapplied."""
+    with tx() as db:
+        row = db.execute(
+            "SELECT status,reviewed_by,reviewed_at FROM capability_feedback_proposals "
+            "WHERE project_id=%s AND id=%s FOR UPDATE",
+            (project_id, str(proposal_id)),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Capability feedback proposal not found")
+        if row[0] != "proposed":
+            if row[0] != payload.status:
+                raise HTTPException(409, "Capability feedback proposal already has a different decision")
+            return {
+                "id": str(proposal_id), "status": row[0], "reviewed_by": row[1],
+                "reviewed_at": row[2].isoformat(), "applied": False,
+            }
+        reviewed = db.execute(
+            "UPDATE capability_feedback_proposals SET status=%s,reviewed_by='ceo',"
+            "reviewed_at=clock_timestamp() WHERE id=%s AND project_id=%s "
+            "RETURNING reviewed_at",
+            (payload.status, str(proposal_id), project_id),
+        ).fetchone()
+        audit(db, project_id, "capability.feedback.reviewed", {
+            "proposal_id": str(proposal_id), "status": payload.status,
+            "actor": "ceo", "applied": False,
+        })
+    return {
+        "id": str(proposal_id), "status": payload.status, "reviewed_by": "ceo",
+        "reviewed_at": reviewed[0].isoformat(), "applied": False,
+    }
 
 
 @app.post("/v1/projects/{project_id}/capability-feedback", status_code=201)

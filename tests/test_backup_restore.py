@@ -140,8 +140,16 @@ def test_restore_requires_ceo_authorization_on_non_empty_database(tmp_path, monk
         mock_conn = MagicMock()
         mock_connect.return_value.__enter__.return_value = mock_conn
         mock_cursor = MagicMock()
+        mock_cursor.execute.return_value = mock_cursor
         mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
-        mock_cursor.fetchone.return_value = [10]  # 10 tables exist in target
+
+        def fake_fetchone():
+            query = str(mock_cursor.execute.call_args[0][0])
+            if "information_schema.tables" in query:
+                return [10]
+            return [0]
+
+        mock_cursor.fetchone.side_effect = fake_fetchone
         mock_run.return_value = MagicMock(returncode=0)
 
         # 1. Fail if allow_non_empty_target is False
@@ -198,8 +206,16 @@ def test_restore_rolls_back_on_partial_failure(tmp_path, monkeypatch):
         mock_conn = MagicMock()
         mock_connect.return_value.__enter__.return_value = mock_conn
         mock_cursor = MagicMock()
+        mock_cursor.execute.return_value = mock_cursor
         mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
-        mock_cursor.fetchone.return_value = [10]  # 10 tables exist
+
+        def fake_fetchone():
+            query = str(mock_cursor.execute.call_args[0][0])
+            if "information_schema.tables" in query:
+                return [10]
+            return [0]
+
+        mock_cursor.fetchone.side_effect = fake_fetchone
 
         call_count = 0
         def fake_run(cmd, *args, **kwargs):
@@ -225,6 +241,62 @@ def test_restore_rolls_back_on_partial_failure(tmp_path, monkeypatch):
                 pre_verified_isolated=True,
                 ceo_token="valid-ceo-token-1234",
             )
+
+
+def test_structured_restore_authorization_verification(tmp_path, monkeypatch):
+    """Test full matrix of structured CEO authorization controls (Finding A-08)."""
+    dump_file = tmp_path / "db.sql"
+    dump_file.write_text("SELECT 1;", encoding="utf-8")
+    archive = tmp_path / "target_backup.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(dump_file, arcname="db.sql")
+
+    other_archive = tmp_path / "other_backup.tar.gz"
+    with tarfile.open(other_archive, "w:gz") as tar:
+        tar.add(dump_file, arcname="db.sql")
+
+    ceo_key = "secure-ceo-secret-key-999"
+    monkeypatch.setenv("AAO_CEO_TOKEN", ceo_key)
+
+    from aao.backup import create_restore_authorization, verify_destructive_restore_authorization
+
+    # 1. Valid authorization artifact
+    valid_auth = create_restore_authorization(archive, "aao_prod", ceo_key, valid_minutes=60)
+    ok, msg, nonce = verify_destructive_restore_authorization(None, archive, "aao_prod", valid_auth, ceo_key)
+    assert ok is True
+    assert nonce is not None
+
+    # 2. Reject mismatched backup archive
+    bad_hash_auth = create_restore_authorization(other_archive, "aao_prod", ceo_key)
+    ok, msg, _ = verify_destructive_restore_authorization(None, archive, "aao_prod", bad_hash_auth, ceo_key)
+    assert ok is False
+    assert "backup hash mismatch" in msg
+
+    # 3. Reject mismatched target database
+    bad_db_auth = create_restore_authorization(archive, "other_db", ceo_key)
+    ok, msg, _ = verify_destructive_restore_authorization(None, archive, "aao_prod", bad_db_auth, ceo_key)
+    assert ok is False
+    assert "target database mismatch" in msg
+
+    # 4. Reject expired authorization
+    expired_auth = create_restore_authorization(archive, "aao_prod", ceo_key, valid_minutes=-5)
+    ok, msg, _ = verify_destructive_restore_authorization(None, archive, "aao_prod", expired_auth, ceo_key)
+    assert ok is False
+    assert "expired" in msg
+
+    # 5. Reject invalid signature
+    tampered_auth = dict(valid_auth)
+    tampered_auth["ceo_signature"] = "tampered_signature"
+    ok, msg, _ = verify_destructive_restore_authorization(None, archive, "aao_prod", tampered_auth, ceo_key)
+    assert ok is False
+    assert "signature verification failed" in msg
+
+    # 6. Reject replay if nonce was already consumed in database
+    mock_db = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = [1]  # already consumed!
+    ok, msg, _ = verify_destructive_restore_authorization(mock_db, archive, "aao_prod", valid_auth, ceo_key)
+    assert ok is False
+    assert "already been consumed" in msg
 
 
 def test_backup_includes_candidate_repository(tmp_path, monkeypatch):

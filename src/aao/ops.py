@@ -306,12 +306,24 @@ def main(argv: list[str] | None = None) -> int:
     p_restore.add_argument("--target-dsn", default=os.environ.get("AAO_POSTGRES_URL"))
     p_restore.add_argument("--allow-non-empty", action="store_true",
                            help="Allow restoring over non-empty database (requires verifiable CEO authorization)")
+    p_restore.add_argument("--auth-file", default=None,
+                           help="Path to structured, signed CEO authorization JSON file")
     p_restore.add_argument("--ceo-token", default=None,
                            help="Explicit CEO credential token for verifiable authorization")
-    p_restore.add_argument("--ceo-decision-id", default=None,
-                           help="Specific CEO decision ID authorizing database restoration")
     p_restore.add_argument("--verify-isolated-dsn", default=None,
                            help="Verify restoration into an isolated destination before touching target")
+
+    # authorize-restore
+    p_auth = subparsers.add_parser("authorize-restore", help="Generate structured cryptographic CEO authorization for restore")
+    p_auth.add_argument("archive", type=Path)
+    p_auth.add_argument("--target-database", default="aao_prod")
+    p_auth.add_argument("--ceo-token", default=None)
+    p_auth.add_argument("--output", type=Path, default=None)
+
+    # register-host-worker
+    p_reg = subparsers.add_parser("register-host-worker", help="Explicitly bind a worker identity to a host node")
+    p_reg.add_argument("--worker-id", required=True)
+    p_reg.add_argument("--host-id", default=os.uname().nodename)
 
     # fence-host
     p_fence = subparsers.add_parser("fence-host", help="Apply targeted host fencing: revoke worker leases and credentials")
@@ -352,8 +364,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.archive,
                 args.target_dsn,
                 allow_non_empty_target=args.allow_non_empty,
+                restore_authorization=args.auth_file,
                 ceo_token=args.ceo_token,
-                ceo_decision_id=args.ceo_decision_id,
                 pre_verified_isolated=bool(args.verify_isolated_dsn),
                 isolated_dsn=args.verify_isolated_dsn,
             )
@@ -361,6 +373,39 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         except (RuntimeError, OSError) as exc:
             print(f"RESTORE FAILED: {exc}", file=sys.stderr)
+            return 1
+
+    elif args.command == "authorize-restore":
+        import json
+
+        from aao.backup import create_restore_authorization
+        token = args.ceo_token or os.environ.get("AAO_CEO_TOKEN")
+        if not token and Path("/etc/aao/aao-ceo.token").is_file():
+            try:
+                token = Path("/etc/aao/aao-ceo.token").read_text(encoding="utf-8").strip()
+            except OSError:
+                pass
+        if not token:
+            print("ERROR: CEO token required via --ceo-token, AAO_CEO_TOKEN or /etc/aao/aao-ceo.token", file=sys.stderr)
+            return 1
+        auth = create_restore_authorization(args.archive, args.target_database, token)
+        auth_json = json.dumps(auth, indent=2)
+        if args.output:
+            args.output.write_text(auth_json, encoding="utf-8")
+            print(f"Saved restore authorization to {args.output}")
+        else:
+            print(auth_json)
+        return 0
+
+    elif args.command == "register-host-worker":
+        from aao.backup import register_host_worker
+        try:
+            with connect_postgres() as db:
+                register_host_worker(db, host_id=args.host_id, worker_id=args.worker_id)
+            print(f"PASS: Worker '{args.worker_id}' bound to host '{args.host_id}'.")
+            return 0
+        except (RuntimeError, OSError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
             return 1
 
     elif args.command == "fence-host":

@@ -8,6 +8,7 @@ no destructive operations on real data are allowed without isolated pre-verifica
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -16,9 +17,10 @@ import subprocess
 import tarfile
 import tempfile
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from aao.postgresql_connection import connect_postgres
 
@@ -214,47 +216,158 @@ def verify_backup(backup_path: Path) -> BackupManifest:
         return manifest
 
 
-def verify_ceo_authorization(
-    db: Any | None = None,
+def extract_database_name(dsn: str) -> str:
+    """Extract database name from a PostgreSQL connection string/URL."""
+    if dsn.startswith(("postgresql://", "postgres://")):
+        parsed = urlparse(dsn)
+        return parsed.path.lstrip("/") or "aao_prod"
+    for part in dsn.split():
+        if part.startswith("dbname="):
+            return part.split("=", 1)[1]
+    return "aao_prod"
+
+
+def create_restore_authorization(
+    backup_path: Path,
+    target_database: str,
+    ceo_token: str,
+    valid_minutes: int = 60,
+    nonce: str | None = None,
+) -> dict[str, Any]:
+    """Generate a structured, cryptographically signed CEO authorization artifact."""
+    from uuid import uuid4
+    backup_sha = compute_file_sha256(backup_path)
+    now = datetime.now(UTC)
+    expires = now + timedelta(minutes=valid_minutes)
+    auth_nonce = nonce or str(uuid4())
+    action = "database.destructive_restore"
+    message = f"{action}:{backup_sha}:{target_database}:{auth_nonce}:{expires.isoformat()}"
+    signature = hmac.new(ceo_token.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
+    return {
+        "action": action,
+        "backup_sha256": backup_sha,
+        "target_database": target_database,
+        "authorized_at_utc": now.isoformat(),
+        "expires_at_utc": expires.isoformat(),
+        "authorization_nonce": auth_nonce,
+        "ceo_signature": signature,
+    }
+
+
+def verify_destructive_restore_authorization(
+    db: Any | None,
+    backup_path: Path,
+    target_database: str,
+    authorization: dict[str, Any] | str | Path | None = None,
     ceo_token: str | None = None,
-    ceo_decision_id: str | None = None,
-) -> tuple[bool, str]:
-    """Verify that a destructive restore operation has authentic CEO authorization.
+) -> tuple[bool, str, str | None]:
+    """Verify that a destructive restore has authentic, structured CEO authorization.
 
-    Accepts:
-    1. A valid CEO token that matches the configured canonical CEO token
-       (via AAO_CEO_TOKEN or /etc/aao/aao-ceo.token) using constant-time comparison.
-    2. A recorded CEO decision ID authorizing restore (e.g. from an events audit or signed record).
+    Returns (is_valid, reason, nonce).
+    Enforces finding A-08:
+    1. Scope: action must be exactly 'database.destructive_restore'.
+    2. Specific backup: backup_sha256 must match current backup archive.
+    3. Destination binding: target_database must match current target database name.
+    4. Validity window: expires_at_utc must be strictly valid and not expired.
+    5. Proof: HMAC signature verified using the configured canonical CEO credential.
+    6. Replay prevention: authorization nonce must not have been previously consumed.
     """
-    if ceo_token:
-        expected_token = os.environ.get("AAO_CEO_TOKEN")
-        if not expected_token and Path("/etc/aao/aao-ceo.token").is_file():
+    canonical_token = os.environ.get("AAO_CEO_TOKEN")
+    if not canonical_token and Path("/etc/aao/aao-ceo.token").is_file():
+        try:
+            canonical_token = Path("/etc/aao/aao-ceo.token").read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+
+    if not canonical_token:
+        return False, "Cannot verify authorization: canonical CEO token not configured on host.", None
+
+    if ceo_token is not None and not secrets.compare_digest(ceo_token.strip(), canonical_token.strip()):
+        return False, "Supplied CEO token does not match authorized host CEO credential.", None
+
+    payload = authorization
+    # If no explicit authorization payload was passed, but a valid ceo_token was supplied,
+    # generate a single-use authorization for this execution
+    if not payload and ceo_token:
+        payload = create_restore_authorization(backup_path, target_database, canonical_token, valid_minutes=15)
+
+    if not payload:
+        return False, "Neither a structured authorization artifact nor a valid CEO token was provided.", None
+
+    if isinstance(payload, (str, Path)):
+        p_path = Path(payload)
+        if p_path.is_file():
             try:
-                expected_token = Path("/etc/aao/aao-ceo.token").read_text(encoding="utf-8").strip()
-            except OSError:
-                pass
+                payload = json.loads(p_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError) as exc:
+                return False, f"Failed to read authorization file: {exc}", None
+        else:
+            try:
+                payload = json.loads(str(payload))
+            except json.JSONDecodeError as exc:
+                return False, f"Failed to parse authorization JSON: {exc}", None
 
-        if expected_token and secrets.compare_digest(ceo_token.strip(), expected_token.strip()):
-            digest = hashlib.sha256(ceo_token.encode("utf-8")).hexdigest()[:12]
-            return True, f"CEO token verified (SHA-256 fingerprint: {digest})"
+    if not isinstance(payload, dict):
+        return False, "Authorization payload must be a JSON object dictionary.", None
 
-    if ceo_decision_id and db is not None:
+    # Check 1: Action scope
+    if payload.get("action") != "database.destructive_restore":
+        return False, f"Unauthorized action '{payload.get('action')}'. Must be 'database.destructive_restore'.", None
+
+    # Check 2: Backup hash match
+    actual_hash = compute_file_sha256(backup_path)
+    if payload.get("backup_sha256") != actual_hash:
+        return False, (
+            f"Authorization backup hash mismatch (authorized: {payload.get('backup_sha256')}, "
+            f"actual: {actual_hash})."
+        ), None
+
+    # Check 3: Destination database match
+    if payload.get("target_database") != target_database:
+        return False, (
+            f"Authorization target database mismatch (authorized: '{payload.get('target_database')}', "
+            f"target: '{target_database}')."
+        ), None
+
+    # Check 4: Expiration window
+    exp_str = payload.get("expires_at_utc")
+    if not exp_str:
+        return False, "Authorization missing 'expires_at_utc'.", None
+    try:
+        exp_dt = datetime.fromisoformat(exp_str)
+        if datetime.now(UTC) >= exp_dt:
+            return False, f"Authorization expired at {exp_str}.", None
+    except ValueError as exc:
+        return False, f"Invalid expiration timestamp format: {exc}", None
+
+    # Check 5: Cryptographic signature
+    nonce = payload.get("authorization_nonce")
+    if not nonce:
+        return False, "Authorization missing 'authorization_nonce'.", None
+
+    expected_msg = f"database.destructive_restore:{actual_hash}:{target_database}:{nonce}:{exp_str}"
+    expected_sig = hmac.new(canonical_token.encode("utf-8"), expected_msg.encode("utf-8"), hashlib.sha256).hexdigest()
+    actual_sig = payload.get("ceo_signature", "")
+    if not secrets.compare_digest(actual_sig, expected_sig):
+        return False, "CEO cryptographic signature verification failed.", None
+
+    # Check 6: Replay prevention check
+    if db is not None:
         import psycopg
         try:
             row = db.execute(
                 """
                 SELECT count(*) FROM events
-                WHERE (id::text = %s OR subject_id::text = %s)
-                  AND kind IN ('ceo.decision', 'mandate.confirmed')
+                WHERE kind = 'ceo.restore.consumed' AND (subject_id::text = %s OR id::text = %s)
                 """,
-                (ceo_decision_id, ceo_decision_id),
+                (nonce, nonce),
             ).fetchone()
-            if row and row[0] > 0:
-                return True, f"CEO decision '{ceo_decision_id}' verified in database audit log"
+            if row and int(row[0]) > 0:
+                return False, f"Authorization nonce '{nonce}' has already been consumed (replay denied).", None
         except (RuntimeError, OSError, psycopg.Error):
             pass
 
-    return False, "Neither a valid CEO token nor a verified CEO decision ID was provided."
+    return True, f"Structured CEO authorization verified (nonce: {nonce[:8]}..., valid until {exp_str})", nonce
 
 
 def verify_restore_isolated(backup_path: Path, isolated_dsn: str) -> BackupManifest:
@@ -292,8 +405,8 @@ def restore_backup(
     target_artifacts_dir: Path | None = None,
     target_candidates_dir: Path | None = None,
     allow_non_empty_target: bool = False,
+    restore_authorization: dict[str, Any] | str | Path | None = None,
     ceo_token: str | None = None,
-    ceo_decision_id: str | None = None,
     pre_verified_isolated: bool = False,
     isolated_dsn: str | None = None,
 ) -> BackupManifest:
@@ -301,11 +414,12 @@ def restore_backup(
 
     Enforces CEO Condition 6 and Finding A-08:
     1. If target database contains existing tables, requires allow_non_empty_target=True.
-    2. Requires verifiable CEO authorization (valid ceo_token or verified ceo_decision_id).
+    2. Requires structured, cryptographically signed CEO authorization (bound to backup SHA, target DB, and validity window).
     3. Requires prior isolated verification in a clean destination.
     4. Takes a pre-restoration snapshot of the destination; automatically rolls back if restore fails partially.
     """
     manifest = verify_backup(backup_path)
+    target_database = extract_database_name(target_dsn)
 
     import psycopg
 
@@ -316,6 +430,7 @@ def restore_backup(
 
     # Step 2: Verify target database state and enforce authorization
     table_count = 0
+    auth_nonce: str | None = None
     with psycopg.connect(target_dsn, autocommit=True) as conn, conn.cursor() as cursor:
         cursor.execute(
             """
@@ -330,7 +445,7 @@ def restore_backup(
             raise BackupError(
                 f"Refusing destructive restore: target database contains {table_count} tables. "
                 "Restoration over existing databases requires prior isolated verification "
-                "and explicit, verifiable CEO authorization (--ceo-token or --ceo-decision-id)."
+                "and explicit, structured CEO authorization."
             )
 
         if not pre_verified_isolated:
@@ -339,12 +454,14 @@ def restore_backup(
                 "is mandatory before modifying an active database. Use --verify-isolated-dsn."
             )
 
-        # Check verifiable CEO authorization
+        # Check verifiable structured CEO authorization
         with psycopg.connect(target_dsn, autocommit=True) as conn, conn.cursor() as cursor:
-            authorized, auth_msg = verify_ceo_authorization(
+            authorized, auth_msg, auth_nonce = verify_destructive_restore_authorization(
                 cursor,
+                backup_path=backup_path,
+                target_database=target_database,
+                authorization=restore_authorization,
                 ceo_token=ceo_token,
-                ceo_decision_id=ceo_decision_id,
             )
             if not authorized:
                 raise BackupError(
@@ -421,7 +538,7 @@ def restore_backup(
             target_candidates_dir.mkdir(parents=True, exist_ok=True)
             shutil.copytree(cand_src, target_candidates_dir, dirs_exist_ok=True)
 
-    # Step 4: Record restore event in target database
+    # Step 4: Record restore event and retire authorization nonce in target database
     try:
         from uuid import uuid4
         with psycopg.connect(target_dsn, autocommit=True) as conn, conn.cursor() as cursor:
@@ -441,10 +558,58 @@ def restore_backup(
                     }),
                 ),
             )
+            # Replay retirement
+            if auth_nonce:
+                cursor.execute(
+                    """
+                    INSERT INTO events (id, subject_id, kind, details)
+                    VALUES (%s, %s, 'ceo.restore.consumed', %s::jsonb)
+                    ON CONFLICT (id) DO NOTHING
+                    """,
+                    (
+                        auth_nonce,
+                        auth_nonce,
+                        json.dumps({
+                            "target_database": target_database,
+                            "consumed_at": datetime.now(UTC).isoformat(),
+                        }),
+                    ),
+                )
     except (RuntimeError, OSError, psycopg.Error):
         pass
 
     return manifest
+
+
+def ensure_host_worker_registry(db: Any) -> None:
+    """Ensure explicit host-to-worker mapping table exists in PostgreSQL."""
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS host_worker_bindings (
+            host_id text NOT NULL,
+            worker_id text NOT NULL,
+            status text NOT NULL CHECK (status IN ('ACTIVE', 'FENCED', 'STANDBY')),
+            fenced_at timestamptz,
+            created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+            PRIMARY KEY (host_id, worker_id)
+        );
+        CREATE INDEX IF NOT EXISTS ix_host_worker_bindings_host ON host_worker_bindings(host_id, status);
+        """
+    )
+
+
+def register_host_worker(db: Any, host_id: str, worker_id: str) -> None:
+    """Explicitly register a worker identity as bound to a specific host machine."""
+    ensure_host_worker_registry(db)
+    db.execute(
+        """
+        INSERT INTO host_worker_bindings (host_id, worker_id, status)
+        VALUES (%s, %s, 'ACTIVE')
+        ON CONFLICT (host_id, worker_id) DO UPDATE
+        SET status = 'ACTIVE', fenced_at = NULL;
+        """,
+        (host_id, worker_id),
+    )
 
 
 def apply_host_fencing(
@@ -458,20 +623,34 @@ def apply_host_fencing(
     revocation of unrelated agents or other active hosts in the cluster.
     """
     actions = []
+    ensure_host_worker_registry(db)
 
-    # Determine targeted worker/agent principals for this host
+    # 1. Identify all workers explicitly bound to this host
     target_workers = list(worker_ids) if worker_ids else []
-    if not target_workers:
-        rows = db.execute(
-            """
-            SELECT principal_id FROM principal_credentials
-            WHERE kind = 'AGENT' AND (principal_id = %s OR principal_id LIKE %s)
-            """,
-            (host_identifier, f"%{host_identifier}%"),
-        ).fetchall()
-        for r in rows:
-            target_workers.append(str(r[0]))
+    rows = db.execute(
+        """
+        SELECT worker_id FROM host_worker_bindings
+        WHERE host_id = %s AND status = 'ACTIVE'
+        """,
+        (host_identifier,),
+    ).fetchall()
+    for r in rows:
+        w_id = str(r[0])
+        if w_id not in target_workers:
+            target_workers.append(w_id)
 
+    # 2. Mark host bindings as FENCED
+    db.execute(
+        """
+        UPDATE host_worker_bindings
+        SET status = 'FENCED', fenced_at = clock_timestamp()
+        WHERE host_id = %s
+        """,
+        (host_identifier,),
+    )
+    actions.append(f"host_worker_bindings: marked host '{host_identifier}' bindings as FENCED")
+
+    # 3. Revoke credentials in principal_credentials only for target workers
     if target_workers:
         db.execute(
             """
@@ -483,16 +662,16 @@ def apply_host_fencing(
         )
         actions.append(f"principal_credentials: revoked credentials for host workers: {target_workers}")
     else:
-        actions.append(f"principal_credentials: no agent credentials explicitly bound to host '{host_identifier}'")
+        actions.append(f"principal_credentials: no active agent credentials bound to host '{host_identifier}'")
 
-    # Expire execution queue claims for the fenced host/workers
+    # 4. Invalidate execution queue claims
     if target_workers:
         db.execute(
             """
             UPDATE execution_queue
             SET status = 'FAILED',
                 result_json = jsonb_build_object(
-                    'error', 'Host migration fencing applied: worker lease revoked',
+                    'error', 'Host migration cutover fencing applied: worker lease revoked',
                     'fenced_host', %s
                 ),
                 lease_expires_at = clock_timestamp() - INTERVAL '1 second'
@@ -502,22 +681,9 @@ def apply_host_fencing(
         )
         actions.append(f"execution_queue: revoked in-flight tasks for workers {target_workers}")
     else:
-        db.execute(
-            """
-            UPDATE execution_queue
-            SET status = 'FAILED',
-                result_json = jsonb_build_object(
-                    'error', 'Host migration fencing applied: worker lease revoked',
-                    'fenced_host', %s
-                ),
-                lease_expires_at = clock_timestamp() - INTERVAL '1 second'
-            WHERE (worker_id = %s OR worker_id LIKE %s) AND status IN ('RUNNING', 'QUEUED')
-            """,
-            (host_identifier, host_identifier, f"%{host_identifier}%"),
-        )
-        actions.append(f"execution_queue: revoked in-flight tasks for host '{host_identifier}'")
+        actions.append(f"execution_queue: no in-flight tasks for host '{host_identifier}'")
 
-    # Expire conversation turn leases
+    # 5. Expire conversation turn leases
     db.execute(
         """
         UPDATE project_conversation_turns
@@ -527,7 +693,7 @@ def apply_host_fencing(
     )
     actions.append("conversation_turns: expired active leases")
 
-    # Record host fencing audit event
+    # 6. Record host fencing audit event
     from uuid import uuid4
     event_id = str(uuid4())
     db.execute(

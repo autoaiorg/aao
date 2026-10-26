@@ -157,22 +157,36 @@ done
 say "SSH port reachable. Waiting for cloud-init to finish provisioning..."
 SSH_OPTS="-i $SSH_DIR/id_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -p $SSH_PORT"
 
-while ! ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "cloud-init status --wait" >/dev/null 2>&1; do
+TIMEOUT=300
+ELAPSED=0
+while true; do
+  STATUS=$(ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "cloud-init status" 2>/dev/null || true)
+  if echo "$STATUS" | grep -qE "status: (done|degraded)"; then
+    say "cloud-init completed: $STATUS"
+    break
+  fi
   sleep 5
+  ELAPSED=$((ELAPSED + 5))
+  if (( ELAPSED >= TIMEOUT )); then
+    die "Timed out waiting for cloud-init to complete."
+  fi
 done
 
-say "6. Synchronizing AAO repository into clean VM..."
-ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "mkdir -p /home/${CEO_USER}/aao-repo"
-rsync -avz -e "ssh $SSH_OPTS" \
-  --exclude ".git" \
-  --exclude ".worktrees" \
-  --exclude "node_modules" \
-  --exclude ".pytest_cache" \
-  --exclude "__pycache__" \
-  "$REPO_DIR/" ${CEO_USER}@127.0.0.1:/home/${CEO_USER}/aao-repo/
+say "6. Synchronizing AAO repository into clean VM as verified plain git clone..."
+git -C "$REPO_DIR" bundle create "$VM_DIR/repo.bundle" HEAD
+rsync -avz -e "ssh $SSH_OPTS" "$VM_DIR/repo.bundle" ${CEO_USER}@127.0.0.1:/home/${CEO_USER}/repo.bundle
 
-say "7. Executing AAO Integral Bootstrap in clean VM (including full frontend build)..."
-ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo bash /home/${CEO_USER}/aao-repo/scripts/bootstrap/aao_bootstrap.sh --apply --ceo-user ${CEO_USER}"
+ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "
+  rm -rf /home/${CEO_USER}/aao-repo
+  git clone /home/${CEO_USER}/repo.bundle /home/${CEO_USER}/aao-repo
+  cd /home/${CEO_USER}/aao-repo
+  git checkout -q ${CURRENT_SHA}
+  sudo chown -R root:root /home/${CEO_USER}/aao-repo
+  sudo chmod -R go-w /home/${CEO_USER}/aao-repo
+"
+
+say "7. Executing AAO Integral Bootstrap in clean VM (including governance & React build)..."
+ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo bash /home/${CEO_USER}/aao-repo/scripts/bootstrap/aao_bootstrap.sh --apply --ceo-user ${CEO_USER} --rev ${CURRENT_SHA}"
 
 say "8. Running diagnostic verification in clean VM..."
 ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo /opt/aao/venv/bin/aao-ops doctor"
@@ -196,7 +210,12 @@ done
 say "VM rebooted successfully. Verifying post-reboot health..."
 sleep 5
 ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo /opt/aao/venv/bin/aao-ops verify"
+ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo /opt/aao/venv/bin/aao-ops doctor"
 ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "curl -fsSL http://127.0.0.1:8001/ready"
+
+say "11. Running live PostgreSQL tests inside the VM..."
+ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo /opt/aao/venv/bin/pip install --quiet pytest"
+ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo -E AAO_DATABASE_URL=\"postgresql://aao_app:\$(cat /etc/aao/aao-db.secret)@127.0.0.1:5432/aao_prod\" /opt/aao/venv/bin/pytest /opt/aao/current/tests/test_migrator.py /opt/aao/current/tests/test_ops_doctor.py"
 
 say "CLEAN VM VALIDATION COMPLETED SUCCESSFULLY (AC-01 through AC-18 verified)."
 say "Tested Git Revision: $CURRENT_SHA"

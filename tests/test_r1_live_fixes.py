@@ -283,3 +283,27 @@ def test_verifier_lists_dispatch_integrator_and_attribution_units():
                 "aao-supervisor-attribution.service", "aao-supervisor-attribution.timer",
                 "aao-supervisor-watch.service", "aao-supervisor-watch.timer"}
     assert expected <= set(verifier.UNITS)
+
+
+def test_attribution_reads_available_event_pages_beyond_first_100(tmp_path):
+    head, creation = "a" * 40, "b" * 40
+    pulls = "/repos/owner/repo/pulls?state=open&per_page=100"
+    first_page = [{"type": "WatchEvent"} for _ in range(100)]
+    second_page = [
+        {"type": "PushEvent", "actor": {"login": "aao-impl-codex[bot]"}, "payload": {
+            "head": head, "before": creation, "ref": "refs/heads/feature"}},
+        {"type": "PushEvent", "actor": {"login": "aao-pm[bot]"}, "payload": {
+            "head": creation, "before": "0" * 40, "ref": "refs/heads/feature"}},
+    ]
+    responses = {
+        pulls: [{"number": 7, "head": {"sha": head, "ref": "feature",
+                  "repo": {"full_name": "owner/repo"}}}],
+        "/repos/owner/repo/events?per_page=100": first_page,
+        "/repos/owner/repo/events?per_page=100&page=2": second_page,
+        "/repos/owner/repo/pulls/7/commits?per_page=100": [{"sha": head}],
+    }
+    path = tmp_path / "attribution.json"
+    result = supervisor_service.attribution(
+        {"repository": "owner/repo", "attribution_path": str(path)}, _AttributionClient(responses))
+    assert result == {"candidates": 1, "skipped_prs": []}
+    assert json.loads(path.read_text())["candidates"][head] == ["aao-impl-codex[bot]", "aao-pm[bot]"]

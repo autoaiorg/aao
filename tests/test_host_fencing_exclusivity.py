@@ -87,8 +87,12 @@ def test_external_effect_propose_rejects_fenced_host_unit():
     def fake_execute(query, params=None):
         m = MagicMock()
         q = str(query)
+        if "to_regclass" in q:
+            m.fetchone.return_value = ("public.host_worker_bindings",)
+        elif "information_schema.columns" in q:
+            m.fetchone.return_value = (1,)
         if "FROM host_worker_bindings" in q:
-            m.fetchone.return_value = ("host-a", "FENCED")
+            m.fetchall.return_value = [("host-a", "FENCED", 2)]
         elif "FROM principal_credentials" in q:
             m.fetchone.return_value = ("worker-host-a",)
         return m
@@ -99,7 +103,7 @@ def test_external_effect_propose_rejects_fenced_host_unit():
          patch("aao.principal_credentials.authenticate_in_transaction", return_value="worker-host-a"):
         mock_conn.return_value.__enter__.return_value = mock_db
 
-        with pytest.raises(EffectConflict, match="bound to fenced host"):
+        with pytest.raises(EffectConflict, match="exactly one active host binding"):
             propose(
                 execution_id="exec-1",
                 worker_id="worker-host-a",
@@ -108,6 +112,35 @@ def test_external_effect_propose_rejects_fenced_host_unit():
                 idempotency_key="key-1",
                 capability="effect.propose",
                 request={"action": "test"},
+            )
+
+
+def test_execution_and_effect_routes_fail_closed_when_fencing_schema_is_missing():
+    from unittest.mock import patch
+
+    from aao.execution_queue import ExecutionConflict, claim, complete
+    from aao.external_effect_registry import EffectConflict, propose
+
+    db = MagicMock()
+    absent = MagicMock()
+    absent.fetchone.return_value = (None,)
+    db.execute.return_value = absent
+
+    with patch("aao.execution_queue.connect_postgres") as connect, \
+         patch("aao.execution_queue.verify_execution_principal"):
+        connect.return_value.__enter__.return_value = db
+        with pytest.raises(ExecutionConflict, match="registry unavailable"):
+            claim("worker", agent_credential="cred", project_id="project")
+        with pytest.raises(ExecutionConflict, match="registry unavailable"):
+            complete("execution", "lease", "worker", {}, agent_credential="cred")
+
+    with patch("aao.external_effect_registry.connect_postgres") as connect, \
+         patch("aao.principal_credentials.authenticate_in_transaction", return_value="worker"):
+        connect.return_value.__enter__.return_value = db
+        with pytest.raises(EffectConflict, match="registry unavailable"):
+            propose(
+                execution_id="execution", worker_id="worker", lease_token="lease",
+                agent_credential="cred", idempotency_key="key", capability="test", request={},
             )
 
 

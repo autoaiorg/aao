@@ -61,6 +61,27 @@ def test_worker_runs_one_authorized_queue_item_without_logging_token(tmp_path, m
     assert "agent-token-fixture" not in output
 
 
+def test_worker_does_not_downgrade_production_environment(tmp_path, monkeypatch):
+    runtime, _ = make_runtime(tmp_path)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setattr(worker.os, "getuid", lambda: os.stat(runtime).st_uid)
+    monkeypatch.setenv("AAO_ENV", "production")
+    monkeypatch.setenv("AAO_ENV_FILE", ".env.local")
+    monkeypatch.setenv("AAO_TEST_HOST_ID", "attacker-controlled-test-host")
+    observed = {}
+
+    def fake_run_one(*_args, **_kwargs):
+        observed["environment"] = os.environ["AAO_ENV"]
+        observed["env_file"] = os.environ.get("AAO_ENV_FILE")
+        return {"status": "SUCCEEDED", "execution_id": "exec-production"}
+
+    monkeypatch.setattr("aao.inert_execution_worker.run_one", fake_run_one)
+    result = worker.run("project-1", "agent-1")
+
+    assert result["status"] == "SUCCEEDED"
+    assert observed == {"environment": "production", "env_file": None}
+
+
 def test_worker_token_file_must_be_regular_and_owned(tmp_path, monkeypatch):
     runtime, token_path = make_runtime(tmp_path)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))

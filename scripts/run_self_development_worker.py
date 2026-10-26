@@ -80,8 +80,13 @@ def run(project_id: str, principal_id: str) -> dict:
     if not project_id or not principal_id:
         raise WorkerError("project and principal identifiers are required")
     token = _read_agent_token()
-    os.environ["AAO_ENV"] = "development"
-    os.environ["AAO_ENV_FILE"] = ".env.local"
+    os.environ.setdefault("AAO_ENV", "development")
+    if os.environ["AAO_ENV"].lower() == "production":
+        # Keep production controls intact: local dotenv and test-only host
+        # identity overrides must not become available by downgrading mode.
+        os.environ.pop("AAO_ENV_FILE", None)
+    else:
+        os.environ.setdefault("AAO_ENV_FILE", ".env.local")
     os.environ["AAO_SANDBOX_QUEUE_ENABLED"] = "true"
     os.environ["AAO_SELF_DEV_REPOSITORY"] = str(ROOT)
     data_home = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")

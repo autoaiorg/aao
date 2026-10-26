@@ -77,6 +77,41 @@ export interface ConversationWorkGroupProposal {
   persisted_as_work: false;
 }
 
+export interface WorkGroupConsolidation {
+  id: string;
+  summary: string;
+  source_sha256: string;
+  idempotency_key: string;
+  created_by: string;
+  created_at: string;
+}
+
+export interface ProjectWorkGroup {
+  id: string;
+  conversation_id: string;
+  parent_work_id: string;
+  title: string;
+  parent_status: string;
+  source_sha256: string;
+  consolidation_ready: boolean;
+  children: Array<{
+    work_id: string;
+    status: string;
+    evidence: unknown;
+    executions: Array<{ id: string; status: string; worker_id: string | null; result_sha256: string | null }>;
+    reviews: Array<{ id: string; decision: string; candidate_sha: string | null; evidence: unknown }>;
+  }>;
+  consolidation: WorkGroupConsolidation | null;
+}
+
+export interface WorkGroupConsolidationResult extends WorkGroupConsolidation {
+  project_id: string;
+  work_group_id: string;
+  parent_work_id: string;
+  source_snapshot: { children: ProjectWorkGroup['children'] };
+  created: boolean;
+}
+
 export interface AaoConversationPort {
   listAssignableAgents(projectId: string): Promise<DataState<AssignableAgent[]>>;
   listProjectConversations(projectId: string): Promise<DataState<ProjectConversation[]>>;
@@ -110,4 +145,10 @@ export interface AaoConversationPort {
     projectId: string,
     conversationId: string,
   ): Promise<DataState<ConversationWorkGroupProposal>>;
+  listProjectWorkGroups(projectId: string): Promise<DataState<ProjectWorkGroup[]>>;
+  confirmWorkGroupConsolidation(
+    projectId: string,
+    groupId: string,
+    input: { idempotency_key: string; expected_source_sha256: string; summary: string },
+  ): Promise<DataState<WorkGroupConsolidationResult>>;
 }

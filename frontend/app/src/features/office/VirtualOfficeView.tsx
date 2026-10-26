@@ -8,6 +8,7 @@ import { OfficeContextSidebar } from './components/OfficeContextSidebar';
 import { AgentDetailDrawer } from '../organization/AgentDetailDrawer';
 import { OfficeWorkRequestPanel } from './components/OfficeWorkRequestPanel';
 import { OfficeConversationPanel } from './components/OfficeConversationPanel';
+import { OfficeWorkGroupPanel } from './components/OfficeWorkGroupPanel';
 
 export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
   organization,
@@ -270,12 +271,20 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
       )}
 
       {conversationPort && conversationSessionId && !isDemo && (
-        <OfficeConversationPanel
-          projects={projects}
-          port={conversationPort}
-          sessionId={conversationSessionId}
-          onOpenBoard={(projectId) => onNavigate?.('kanban', projectId)}
-        />
+        <>
+          <OfficeConversationPanel
+            projects={projects}
+            port={conversationPort}
+            sessionId={conversationSessionId}
+            onOpenBoard={(projectId) => onNavigate?.('kanban', projectId)}
+          />
+          <OfficeWorkGroupPanel
+            projects={projects}
+            port={conversationPort}
+            sessionId={conversationSessionId}
+            onOpenBoard={(projectId) => onNavigate?.('kanban', projectId)}
+          />
+        </>
       )}
 
       {/* Enriched Agent Drawer */}

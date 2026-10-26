@@ -11,6 +11,7 @@ import { OfficeConversationPanel } from './components/OfficeConversationPanel';
 import { OfficeWorkGroupPanel } from './components/OfficeWorkGroupPanel';
 import { OfficeCapabilityCatalogPanel } from './components/OfficeCapabilityCatalogPanel';
 import { OfficeActivityPanel } from './components/OfficeActivityPanel';
+import { OfficeKnowledgePanel } from './components/OfficeKnowledgePanel';
 
 export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
   organization,
@@ -19,6 +20,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
   conversationPort,
   capabilityReadPort,
   activityReadPort,
+  knowledgeReadPort,
   conversationSessionId,
   onCreateWorkRequest,
   onNavigate,
@@ -303,6 +305,15 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
         <OfficeActivityPanel
           projects={projects}
           port={activityReadPort}
+          sessionId={conversationSessionId}
+          onOpenBoard={(projectId, workId) => onNavigate?.('kanban', projectId, workId)}
+        />
+      )}
+
+      {knowledgeReadPort && conversationSessionId && !isDemo && (
+        <OfficeKnowledgePanel
+          projects={projects}
+          port={knowledgeReadPort}
           sessionId={conversationSessionId}
           onOpenBoard={(projectId, workId) => onNavigate?.('kanban', projectId, workId)}
         />

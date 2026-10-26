@@ -17,7 +17,7 @@ Estado inicial de esta matriz: revisión base `95d8427cea3d5748ca7041ee054cfc99a
 
 ### Requisito futuro de operación autónoma (no bloquea la construcción)
 
-Cuando `work.coordinate` se habilite para operación autónoma, quien consolide un grupo no podrá ser autor de ninguna de sus tareas hijas. El backend deberá comprobarlo sobre la atribución persistida de cada hijo y denegar la consolidación cuando haya coincidencia, siguiendo la separación existente entre autor y revisor. No es una limitación de construcción del incremento #252 ni bloquea la Oficina Virtual durante el régimen constructor.
+Cuando `work.coordinate` se habilite para operación autónoma, quien consolide un grupo no podrá ser autor de ninguna de sus tareas hijas. El backend deberá comprobarlo sobre la atribución persistida de cada hijo y denegar la consolidación cuando haya coincidencia, siguiendo la separación existente entre autor y revisor. La implementación deberá incluir cobertura positiva y negativa antes de habilitar operación autónoma. No es una limitación de construcción del incremento #252 ni bloquea la Oficina Virtual durante el régimen constructor.
 
 ## Registro de incrementos
 | Revisión / SHA | Incremento | Evidencia | Limitación |

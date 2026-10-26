@@ -17,7 +17,7 @@ Registro de procedencia para código y conceptos externos relacionados con AAO.
 ## RONIN Orchestration Engine
 
 | Campo | Valor |
-|---|---|
+| --- | --- |
 | Repositorio | <https://github.com/Gaurav2693/ronin-orchestration-engine> |
 | Autor | Gaurav2693 (GitHub) |
 | Revisión consultada | `0a3666a` («feat: add live cost dashboard (flip-flap UI) + metrics API») |
@@ -30,7 +30,7 @@ Registro de procedencia para código y conceptos externos relacionados con AAO.
 **Inspiraciones implementadas:**
 
 | Idea de RONIN | Origen en RONIN | Implementación original en AAO | PR |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Registrar qué modelo ejecuta cada tarea, con sus propiedades (proveedor, modelo) | `config/modelConfig.mjs` (catálogo por modelo) | `agent_runner.backend_identity()`: proveedor, modelo fijado y versión real del CLI en la evidencia de cada ejecución; el panel de la tarea en el Control Center los muestra. AAO hace lo **contrario** que RONIN en un punto: RONIN oculta el modelo (`model_hidden`, ADR-010) y AAO lo exige como evidencia | #113 |
 | Detectar bucles de un agente | `middleware/loopDetection.mjs` (llamadas repetidas a herramientas) | `stage_agent_run`: rechaza un intento nuevo si los dos últimos acabaron igual (mismo parche y mismo resultado). Se compara entre intentos, no entre llamadas a herramientas | #116 |
 | Roles de modelo (*seats*) y catálogo de modelos | `config/modelConfig.mjs` (`seat`, `getModelsBySeat`) | Bloque `model_profile` (backend, proveedor, modelo, seats) en el contrato de la capacidad `agent`, validado al registrarla. El worker ejecuta lo que dice la capacidad del job, no el entorno. El modelo es un dato del catálogo; registrar una capacidad no activa el proveedor | I3 |
@@ -40,13 +40,14 @@ Registro de procedencia para código y conceptos externos relacionados con AAO.
 **Inspiraciones planificadas, sin implementar** (incremento I6 del análisis):
 
 | Idea de RONIN | Origen en RONIN | Plan en AAO |
-|---|---|---|
+| --- | --- | --- |
 | Límites y clases de datos por modelo | `config/modelConfig.mjs` (`maxTokens`) | Ampliar `model_profile` con `limits` y `data_classes` cuando haga falta (`quality` y `cost_per_attempt_usd` ya existen) |
 | Árbol de tareas y cronología del ciclo | `forge/forgeTaskTree.mjs`, `api/cycleManager.mjs`, `dashboard/index.html` | Presentación de los intentos en el Control Center sobre los datos que AAO ya persiste |
 
 Cuando alguna idea planificada se implemente, se actualizará su estado con la evidencia de AAO correspondiente.
 
 **Descartado de forma expresa:**
+
 - el modelo oculto;
 - el fallback silencioso entre proveedores;
 - BYOK y el baúl de claves;
@@ -61,7 +62,7 @@ Gracias al autor de RONIN por publicar su trabajo con licencia abierta.
 ### Agents Office — referencia conceptual estudiada; sin adaptación
 
 | Campo | Valor |
-|---|---|
+| --- | --- |
 | Repositorio | <https://github.com/ajsahni/agents-office> |
 | Autor | Ajsahni / Sahni.ai (según los metadatos del repositorio) |
 | Revisión consultada | `3773c9b6aed6a1d2c3ab2765d113c644261c2019` |
@@ -74,7 +75,7 @@ Gracias al autor de RONIN por publicar su trabajo con licencia abierta.
 **Ideas funcionales estudiadas, no atribuidas como implementadas:**
 
 | Idea observada | Evolución independiente propuesta para AAO | Estado |
-|---|---|---|
+| --- | --- | --- |
 | Un espacio visual que enlaza organización, personas y trabajo | Proyección original de solo lectura `/v1/organization`, derivada de proyectos, ejecuciones y revisiones persistidos; identidad organizativa no persistida se marca desconocida | F0 implementado en `feat/agents-office-aa-integration`; validación inicial backend PostgreSQL y test del adapter, pendiente CI/merge |
 | Actividad visual asociada a trabajos | Mostrar solo estados y eventos de PostgreSQL/API con IDs, hora y procedencia; reutilizar board y Activity del Control Center | Propuesta |
 | Chat, equipos temporales y síntesis | En su caso, convertir órdenes en trabajo AAO persistente y autorizado; los equipos requieren trabajos padre/hijos en backend | Diferido; no copiar prompts ni protocolo de `teams.mjs` |

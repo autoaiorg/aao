@@ -346,7 +346,17 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
                         </li>;
                       })}
                     </ul>
-                    {group.consolidation && <p>Consolidación CEO registrada · {group.consolidation.created_at}</p>}
+                    {group.partial_reports.length > 0 && <section aria-label={`Informes registrados: ${group.title}`}>
+                      {group.partial_reports.map((report) => <article key={report.id}>
+                        <strong>{report.report_kind === 'PARTIAL' ? 'Informe parcial CEO' : 'Revisión de conflicto CEO'}</strong>
+                        <small> · {report.created_at}</small>
+                        <p>{report.summary}</p>
+                      </article>)}
+                    </section>}
+                    {group.consolidation && <article>
+                      <strong>Consolidación CEO registrada · {group.consolidation.created_at}</strong>
+                      <p>{group.consolidation.summary}</p>
+                    </article>}
                   </article>
                 ))}
               </section>

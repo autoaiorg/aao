@@ -345,6 +345,40 @@ class CEOWorkRequest(BaseModel):
     due_date: date | None = None
 
 
+class RoutineRequest(BaseModel):
+    idempotency_key: UUID
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=5000)
+    acceptance_criteria: list[str] = Field(min_length=1, max_length=50)
+    interval_seconds: int = Field(ge=60, le=31536000)
+    first_run_at: datetime
+
+    @field_validator("title")
+    @classmethod
+    def nonblank_title(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Routine title must not be blank")
+        return value.strip()
+
+    @field_validator("acceptance_criteria")
+    @classmethod
+    def nonblank_criteria(cls, values: list[str]) -> list[str]:
+        if any(not value.strip() or len(value) > 5000 for value in values):
+            raise ValueError("Routine criteria must be nonblank and bounded")
+        return [value.strip() for value in values]
+
+    @field_validator("first_run_at")
+    @classmethod
+    def aware_time(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("Routine first_run_at must include a timezone")
+        return value.astimezone(UTC)
+
+
+class RoutineEnabledRequest(BaseModel):
+    enabled: bool
+
+
 class ConversationWorkRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=5000)
@@ -1568,6 +1602,131 @@ def _insert_ceo_work_request(
         },
     )
     return work_id
+
+
+@app.post("/v1/projects/{project_id}/routines", status_code=201)
+def create_routine(project_id: UUID, payload: RoutineRequest, _: str = Depends(require_ceo)):
+    """CEO authorizes a fixed-interval INBOX template, not execution or new grants."""
+    request_json = payload.model_dump(mode="json")
+    digest = hashlib.sha256(json.dumps(request_json, sort_keys=True).encode()).hexdigest()
+    template = {key: request_json[key] for key in ("title", "description", "acceptance_criteria")}
+    with tx() as db:
+        project = db.execute("SELECT state FROM projects WHERE id=%s FOR UPDATE", (project_id,)).fetchone()
+        if not project:
+            raise HTTPException(404, "Project not found")
+        if project[0] != "ACTIVE":
+            raise HTTPException(409, "Routine requires an active project")
+        previous = db.execute(
+            "SELECT id,request_sha256 FROM project_routines WHERE project_id=%s AND idempotency_key=%s",
+            (project_id, payload.idempotency_key),
+        ).fetchone()
+        if previous:
+            if previous[1] != digest:
+                raise HTTPException(409, "Routine idempotency key already used for another request")
+            return {"id": str(previous[0]), "created": False}
+        routine_id = str(uuid4())
+        db.execute(
+            "INSERT INTO project_routines(id,project_id,idempotency_key,request_sha256,task_template,"
+            "interval_seconds,next_run_at,authorized_by) VALUES (%s,%s,%s,%s,%s::jsonb,%s,%s,'ceo')",
+            (routine_id, project_id, payload.idempotency_key, digest, json.dumps(template),
+             payload.interval_seconds, payload.first_run_at),
+        )
+        audit(db, routine_id, "routine.authorized", {
+            "project_id": str(project_id), "actor": "ceo", "request_sha256": digest,
+            "execution_authorized": False,
+        })
+    return {"id": routine_id, "created": True}
+
+
+@app.get("/v1/projects/{project_id}/routines")
+def list_routines(project_id: UUID, principal: str = Depends(read_principal)):
+    with tx() as db:
+        if not db.execute("SELECT 1 FROM projects WHERE id=%s", (project_id,)).fetchone():
+            raise HTTPException(404, "Project not found")
+        if principal is not _CEO_PRINCIPAL:
+            require_grant(db, principal, str(project_id), "project.read")
+        rows = db.execute(
+            "SELECT id,task_template,interval_seconds,next_run_at,enabled,authorized_by,created_at "
+            "FROM project_routines WHERE project_id=%s ORDER BY created_at,id", (project_id,),
+        ).fetchall()
+    return [{"id": str(row[0]), "template": row[1], "interval_seconds": row[2],
+             "next_run_at": row[3].isoformat(), "enabled": row[4], "authorized_by": row[5],
+             "created_at": row[6].isoformat(), "execution_authorized": False} for row in rows]
+
+
+@app.patch("/v1/projects/{project_id}/routines/{routine_id}")
+def set_routine_enabled(project_id: UUID, routine_id: UUID, payload: RoutineEnabledRequest,
+                        _: str = Depends(require_ceo)):
+    """Stop future materialization only; never cancel or rewrite existing work."""
+    with tx() as db:
+        if not db.execute("SELECT 1 FROM projects WHERE id=%s FOR SHARE", (project_id,)).fetchone():
+            raise HTTPException(404, "Project not found")
+        row = db.execute(
+            "SELECT enabled FROM project_routines WHERE id=%s AND project_id=%s FOR UPDATE",
+            (routine_id, project_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Routine not found")
+        if row[0] != payload.enabled:
+            db.execute("UPDATE project_routines SET enabled=%s WHERE id=%s", (payload.enabled, routine_id))
+            audit(db, str(routine_id), "routine.enabled_changed", {
+                "project_id": str(project_id), "actor": "ceo", "enabled": payload.enabled,
+            })
+    return {"id": str(routine_id), "enabled": payload.enabled}
+
+
+@app.post("/v1/agent/projects/{project_id}/routines/materialize")
+def materialize_routines(project_id: UUID, principal: str = Depends(require_worker)):
+    """One bounded backend tick. No browser state, model calls, admission or authority creation.
+
+    Lock order: project SHARE, current credential/grant SHARE, due routines UPDATE SKIP LOCKED.
+    Work, pinned intake protocol, occurrence, next timestamp and journal commit together.
+    Downtime coalesces missed intervals into one request per routine; no catch-up burst.
+    """
+    results = []
+    with tx() as db:
+        project = db.execute("SELECT state FROM projects WHERE id=%s FOR SHARE", (project_id,)).fetchone()
+        if not project:
+            raise HTTPException(404, "Project not found")
+        if project[0] != "ACTIVE":
+            raise HTTPException(409, "Routine requires an active project")
+        require_grant(db, principal, str(project_id), "work.create")
+        rows = db.execute(
+            "SELECT id,task_template,interval_seconds,next_run_at FROM project_routines "
+            "WHERE project_id=%s AND enabled AND next_run_at<=clock_timestamp() "
+            "ORDER BY next_run_at,id LIMIT 25 FOR UPDATE SKIP LOCKED", (project_id,),
+        ).fetchall()
+        now = db.execute("SELECT clock_timestamp()").fetchone()[0]
+        for routine_id, template, interval_seconds, scheduled_for in rows:
+            skipped = int((now - scheduled_for).total_seconds() // interval_seconds)
+            next_run = scheduled_for + timedelta(seconds=(skipped + 1) * interval_seconds)
+            work_id = str(uuid4())
+            db.execute(
+                "INSERT INTO work_items(id,project_id,title,description,author_id,status,acceptance_criteria,due_date) "
+                "VALUES (%s,%s,%s,%s,%s,'INBOX',%s::jsonb,%s)",
+                (work_id, project_id, template["title"], template["description"], str(principal),
+                 json.dumps(template["acceptance_criteria"]), scheduled_for.astimezone(UTC).date()),
+            )
+            audit(db, work_id, "work.created", {"project_id": str(project_id), "principal_id": str(principal)})
+            start_work_protocol(db, protocol_id="intake-classification", work_id=work_id,
+                                started_by=str(principal), request={
+                                    "project_id": str(project_id), "routine_id": str(routine_id),
+                                    "scheduled_for": scheduled_for.isoformat(), **template,
+                                })
+            db.execute(
+                "INSERT INTO routine_occurrences(routine_id,scheduled_for,work_id,materialized_by) "
+                "VALUES (%s,%s,%s,%s)", (routine_id, scheduled_for, work_id, str(principal)),
+            )
+            db.execute("UPDATE project_routines SET next_run_at=%s WHERE id=%s", (next_run, routine_id))
+            audit(db, work_id, "routine.materialized", {
+                "project_id": str(project_id), "routine_id": str(routine_id),
+                "scheduled_for": scheduled_for.isoformat(), "next_run_at": next_run.isoformat(),
+                "principal_id": str(principal), "authorized_by": "ceo",
+                "missed_periods_coalesced": skipped, "execution_authorized": False,
+            })
+            results.append({"routine_id": str(routine_id), "work_id": work_id,
+                            "scheduled_for": scheduled_for.isoformat()})
+    return {"materialized": results}
 
 
 @app.post("/v1/projects/{project_id}/work-requests", status_code=201)

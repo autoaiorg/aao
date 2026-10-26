@@ -138,7 +138,7 @@ def test_watch_runs_again_until_stopped(monkeypatch):
     calls = []
     waits = []
 
-    def one_pass(project_id, principal_id, *, auto_consolidate=False):
+    def one_pass(project_id, principal_id, *, auto_consolidate=False, materialize_routines=False):
         calls.append((project_id, principal_id))
         if len(calls) == 2:
             stop.set()
@@ -160,3 +160,51 @@ def test_watch_rejects_unbounded_poll_interval(interval):
             "p", "pm", poll_interval_seconds=interval,
             stop_event=threading.Event(),
         )
+
+
+def test_routines_materialize_only_when_explicitly_enabled(monkeypatch):
+    calls = []
+
+    def api(path, **kwargs):
+        calls.append((path, kwargs))
+        if path == "/v1/principals/me":
+            return {"principal_id": "pm-1"}
+        if path.endswith("/routines/materialize"):
+            return {"materialized": [{"work_id": "real-work"}]}
+        return []
+
+    monkeypatch.setattr(coordinator, "api_call", api)
+    assert coordinator.coordinate_once("p", "pm-1").materialized == 0
+    assert not any("routines" in path for path, _ in calls)
+    assert coordinator.coordinate_once("p", "pm-1", materialize_routines=True).materialized == 1
+    assert ("/v1/agent/projects/p/routines/materialize", {"method": "POST"}) in calls
+
+
+def test_watch_keeps_backend_routine_ticks_without_a_browser(monkeypatch):
+    stop = threading.Event()
+    calls = []
+
+    def one_pass(project_id, principal_id, *, auto_consolidate=False, materialize_routines=False):
+        calls.append(materialize_routines)
+        if len(calls) == 2:
+            stop.set()
+        return coordinator.CoordinatorPassResult(materialized=1)
+
+    monkeypatch.setattr(coordinator, "coordinate_once", one_pass)
+    assert coordinator.run_watch("p", "pm", poll_interval_seconds=1, stop_event=stop,
+                                 materialize_routines=True, wait=lambda _: None) == 0
+    assert calls == [True, True]
+
+
+def test_cli_parses_routine_opt_in(monkeypatch):
+    calls = []
+    monkeypatch.setattr("sys.argv", ["coordinator", "--project-id", "p", "--principal-id", "pm",
+                                    "--materialize-routines"])
+
+    def one_pass(project, principal, **kwargs):
+        calls.append((project, principal, kwargs))
+        return coordinator.CoordinatorPassResult(materialized=1)
+
+    monkeypatch.setattr(coordinator, "coordinate_once", one_pass)
+    assert coordinator.main() == 0
+    assert calls == [("p", "pm", {"auto_consolidate": False, "materialize_routines": True})]

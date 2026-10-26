@@ -33,6 +33,7 @@ export interface ConversationWorkRequestInput {
   title: string;
   description: string;
   acceptance_criteria: string[];
+  due_date?: string | null;
 }
 
 export interface ConversationWorkRequestResult {
@@ -49,6 +50,7 @@ export interface ConversationWorkGroupInput extends ConversationWorkRequestInput
     title: string;
     description: string;
     acceptance_criteria: string[];
+    due_date?: string | null;
     depends_on: string[];
     assigned_principal_id?: string | null;
   }>;

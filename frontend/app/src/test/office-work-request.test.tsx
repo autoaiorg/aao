@@ -26,11 +26,13 @@ describe('office CEO work requests', () => {
     fireEvent.change(screen.getByLabelText('Solicitud'), { target: { value: 'Añadir informe' } });
     fireEvent.change(screen.getByLabelText('Contexto'), { target: { value: 'Usar datos persistentes' } });
     fireEvent.change(screen.getByLabelText('Criterios de aceptación'), { target: { value: 'Debe aparecer en el tablero\nTests verdes' } });
+    fireEvent.change(screen.getByLabelText('Fecha objetivo'), { target: { value: '2026-11-15' } });
     fireEvent.click(screen.getByRole('button', { name: 'Registrar en Entrada' }));
 
     await waitFor(() => expect(onCreate).toHaveBeenCalledWith('project-a', {
       title: 'Añadir informe', description: 'Usar datos persistentes',
       acceptance_criteria: ['Debe aparecer en el tablero', 'Tests verdes'],
+      due_date: '2026-11-15',
     }));
     expect(screen.getByText(/00000000-0000-4000-8000-000000000001/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Abrir tablero' }));

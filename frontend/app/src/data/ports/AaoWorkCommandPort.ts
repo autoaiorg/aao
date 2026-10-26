@@ -4,6 +4,7 @@ export interface CEOWorkRequest {
   title: string;
   description: string;
   acceptance_criteria: string[];
+  due_date?: string | null;
 }
 
 export interface CreatedWorkRequest {

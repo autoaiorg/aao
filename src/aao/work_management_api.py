@@ -8,7 +8,7 @@ import json
 import os
 import secrets
 from contextlib import contextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
@@ -157,6 +157,7 @@ class WorkGroupTaskRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=5000)
     acceptance_criteria: list[str] = Field(min_length=1, max_length=20)
+    due_date: date | None = None
     depends_on: list[str] = Field(default_factory=list, max_length=20)
     assigned_principal_id: str | None = Field(
         default=None, min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$",
@@ -178,6 +179,7 @@ class ConversationWorkGroupRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=5000)
     acceptance_criteria: list[str] = Field(min_length=1, max_length=20)
+    due_date: date | None = None
     tasks: list[WorkGroupTaskRequest] = Field(min_length=1, max_length=20)
 
     @field_validator("acceptance_criteria")
@@ -224,6 +226,7 @@ class ConversationWorkGroupProposal(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     description: str = Field(min_length=1, max_length=5000)
     acceptance_criteria: list[str] = Field(min_length=1, max_length=20)
+    due_date: date | None = None
     tasks: list[WorkGroupTaskRequest] = Field(max_length=20)
 
     @field_validator("acceptance_criteria")
@@ -298,12 +301,14 @@ class CEOWorkRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     acceptance_criteria: list[str] = Field(min_length=1)
     description: str = Field(default="", max_length=5000)
+    due_date: date | None = None
 
 
 class ConversationWorkRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=5000)
     acceptance_criteria: list[str] = Field(min_length=1)
+    due_date: date | None = None
 
     @field_validator("title")
     @classmethod
@@ -1369,14 +1374,15 @@ def create_work(project_id: str, payload: WorkRequest,
 
 def _insert_ceo_work_request(
     db, project_id: str, title: str, description: str,
-    acceptance_criteria: list[str], *, source_message_id: str | None = None,
+    acceptance_criteria: list[str], *, due_date: date | None = None,
+    source_message_id: str | None = None,
 ) -> str:
     """Persist CEO direction using the canonical, unadmitted work-item semantics."""
     work_id = str(uuid4())
     db.execute(
-        "INSERT INTO work_items(id,project_id,title,description,author_id,status,acceptance_criteria) "
-        "VALUES (%s,%s,%s,%s,'ceo','INBOX',%s::jsonb)",
-        (work_id, project_id, title, description, json.dumps(acceptance_criteria)),
+        "INSERT INTO work_items(id,project_id,title,description,author_id,status,acceptance_criteria,due_date) "
+        "VALUES (%s,%s,%s,%s,'ceo','INBOX',%s::jsonb,%s)",
+        (work_id, project_id, title, description, json.dumps(acceptance_criteria), due_date),
     )
     details = {
         "project_id": project_id, "actor": "ceo", "status": "INBOX",
@@ -1405,7 +1411,7 @@ def create_ceo_work_request(
             raise HTTPException(409, "Project not active")
         work_id = _insert_ceo_work_request(
             db, project_id, payload.title, payload.description,
-            payload.acceptance_criteria,
+            payload.acceptance_criteria, due_date=payload.due_date,
         )
     return {"id": work_id, "status": "INBOX"}
 
@@ -1455,7 +1461,7 @@ def create_work_request_from_conversation_message(
 
         work_id = _insert_ceo_work_request(
             db, project_id, payload.title, message[1],
-            payload.acceptance_criteria, source_message_id=message_id,
+            payload.acceptance_criteria, due_date=payload.due_date, source_message_id=message_id,
         )
         db.execute(
             "UPDATE project_conversation_messages SET related_work_id=%s WHERE id=%s",
@@ -1554,7 +1560,7 @@ def create_conversation_work_group(
             group_id = str(uuid4())
             parent_work_id = _insert_ceo_work_request(
                 db, project_id, payload.title, payload.description,
-                payload.acceptance_criteria,
+                payload.acceptance_criteria, due_date=payload.due_date,
             )
             db.execute(
                 "INSERT INTO work_groups(id,project_id,conversation_id,parent_work_id,"
@@ -1583,9 +1589,9 @@ def create_conversation_work_group(
             for task in payload.tasks:
                 db.execute(
                     "INSERT INTO work_items(id,project_id,title,description,author_id,status,"
-                    "acceptance_criteria,parent_work_id) VALUES (%s,%s,%s,%s,'ceo','INBOX',%s::jsonb,%s)",
+                    "acceptance_criteria,parent_work_id,due_date) VALUES (%s,%s,%s,%s,'ceo','INBOX',%s::jsonb,%s,%s)",
                     (task_ids[task.key], project_id, task.title, task.description,
-                     json.dumps(task.acceptance_criteria), parent_work_id),
+                     json.dumps(task.acceptance_criteria), parent_work_id, task.due_date),
                 )
                 if task.assigned_principal_id is not None:
                     db.execute(
@@ -2371,8 +2377,10 @@ def propose_conversation_work_group(
             "Use the full conversation and preserve agreed scope; do not invent commitments, "
             "facts, owners, permissions, dates, or acceptance evidence. If the discussion is "
             "too ambiguous to produce useful work, return an empty tasks array. Return only "
-            "valid JSON with keys title, description, acceptance_criteria, tasks. Each task "
-            "must have key, title, description, acceptance_criteria, depends_on; dependencies "
+            "valid JSON with keys title, description, acceptance_criteria, due_date, tasks. "
+            "Set due_date to null unless a date was explicitly agreed. Each task must have "
+            "key, title, description, acceptance_criteria, due_date, depends_on; set due_date "
+            "to null unless explicitly agreed. Dependencies "
             "must reference task keys and form an acyclic graph. The result is a proposal for "
             "CEO review, not authorization to admit or execute work."
         ),
@@ -2427,7 +2435,7 @@ def board(project_id: str, principal: str = Depends(read_principal)):
             "COALESCE((SELECT json_agg(d.depends_on_work_id ORDER BY d.depends_on_work_id) "
             "FROM work_item_dependencies d WHERE d.work_id=w.id),'[]'::json),"
             "(SELECT g.id FROM work_groups g WHERE g.parent_work_id=w.id) "
-            ",(SELECT a.principal_id FROM work_item_assignments a WHERE a.work_id=w.id) "
+            ",(SELECT a.principal_id FROM work_item_assignments a WHERE a.work_id=w.id),w.due_date "
             "FROM work_items w "
             "WHERE w.project_id=%s ORDER BY w.id", (project_id,),
         ).fetchall()
@@ -2500,6 +2508,7 @@ def board(project_id: str, principal: str = Depends(read_principal)):
              "depends_on": [str(item) for item in (r[7] or [])],
              "work_group_id": str(r[8]) if r[8] else None,
              "assigned_principal_id": r[9],
+             "due_date": r[10].isoformat() if r[10] else None,
              "patch_proposals": patches_by_work.get(str(r[0]), []),
              "pull_requests": prs_by_work.get(str(r[0]), []),
              "resolution": resolutions.get(str(r[0]))}

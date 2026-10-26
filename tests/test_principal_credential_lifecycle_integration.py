@@ -11,6 +11,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+def _register_test_worker(worker_id):
+    """Give integration workers an explicit host binding before exercising claims."""
+    from aao.backup import register_host_worker
+    from aao.postgresql_connection import connect_postgres
+
+    with connect_postgres() as db:
+        register_host_worker(db, "integration-test-host", worker_id)
+
+
 @pytest.mark.skipif(
     not os.getenv("AAO_TEST_POSTGRES_URL") or os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
     reason="Explicit disposable PostgreSQL database required",
@@ -545,6 +554,7 @@ def test_individual_agent_claim_and_revocation(monkeypatch):
             "INSERT INTO principal_credentials(principal_id,kind,token_digest,enabled) "
             "VALUES (%s,'AGENT',%s,true)", (principal, digest_token(secret)),
         )
+    _register_test_worker(principal)
     with TestClient(app) as client:
         worker = {"X-Agent-Token": secret}
         mid = client.post("/v1/mandates", headers=ceo, json={

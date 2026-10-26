@@ -9,6 +9,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+def _register_test_worker(worker_id):
+    """Give integration workers an explicit host binding before exercising claims."""
+    from aao.backup import register_host_worker
+    from aao.postgresql_connection import connect_postgres
+
+    with connect_postgres() as db:
+        register_host_worker(db, "integration-test-host", worker_id)
+
+
 @pytest.mark.skipif(
     not os.getenv("AAO_TEST_POSTGRES_URL") or
     os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
@@ -71,6 +80,7 @@ def test_postgres_inert_staging_is_default_off_and_idempotent(monkeypatch):
         worker_id = "agent-" + str(uuid4())
         issued = client.post("/v1/principals/credentials", headers=ceo, json={"principal_id": worker_id, "kind": "AGENT"})
         assert issued.status_code == 201, issued.text
+        _register_test_worker(worker_id)
         worker = {"X-Agent-Token": issued.json()["token"]}
         mid = client.post("/v1/mandates", headers=ceo, json={
             "title": "Queue " + str(uuid4()), "objective": "Inert test"
@@ -155,6 +165,7 @@ def test_worker_claim_complete_respects_identity_and_project_state(monkeypatch):
         })
         assert issued.status_code == 201, issued.text
         token = issued.json()["token"]
+        _register_test_worker(worker_id)
         worker = {"X-Agent-Token": token}
         mid = client.post("/v1/mandates", headers=ceo, json={
             "title": "Lease " + str(uuid4()), "objective": "Isolated worker tests"
@@ -356,6 +367,7 @@ def test_inert_worker_concurrent_claims_never_duplicate(monkeypatch):
         })
         assert issued.status_code == 201, issued.text
         secret = issued.json()["token"]
+        _register_test_worker(identity)
         worker = {"X-Agent-Token": secret}
         mid = client.post("/v1/mandates", headers=ceo, json={"title": str(uuid4()), "objective": "Concurrency"}).json()["id"]
         client.post(f"/v1/mandates/{mid}/confirm", headers=ceo)
@@ -398,6 +410,7 @@ def test_execution_claim_serializes_with_grant_revocation(monkeypatch):
         })
         assert issued.status_code == 201, issued.text
         token = issued.json()["token"]
+        _register_test_worker(identity)
         worker = {"X-Agent-Token": token}
         mandate = client.post("/v1/mandates", headers=ceo, json={
             "title": "Claim revoke " + str(uuid4()), "objective": "Serialize claim and revocation",
@@ -486,6 +499,7 @@ def test_execution_completion_serializes_with_grant_revocation(monkeypatch):
         })
         assert issued.status_code == 201, issued.text
         token = issued.json()["token"]
+        _register_test_worker(identity)
         worker = {"X-Agent-Token": token}
         mandate = client.post("/v1/mandates", headers=ceo, json={
             "title": "Complete revoke " + str(uuid4()), "objective": "Serialize completion and revocation",
@@ -576,6 +590,7 @@ def test_execution_completion_serializes_with_credential_revocation(monkeypatch)
         })
         assert issued.status_code == 201, issued.text
         token = issued.json()["token"]
+        _register_test_worker(identity)
         worker = {"X-Agent-Token": token}
         mandate = client.post("/v1/mandates", headers=ceo, json={
             "title": "Credential revoke " + str(uuid4()),
@@ -666,6 +681,7 @@ def test_execution_claim_serializes_with_credential_revocation(monkeypatch):
         })
         assert issued.status_code == 201, issued.text
         token = issued.json()["token"]
+        _register_test_worker(identity)
         worker = {"X-Agent-Token": token}
         mandate = client.post("/v1/mandates", headers=ceo, json={
             "title": "Claim credential revoke " + str(uuid4()),

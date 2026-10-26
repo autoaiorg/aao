@@ -85,6 +85,21 @@ def test_dual_host_isolation_unit():
     assert not any("WHERE kind = 'AGENT' AND enabled = true" in c for c in calls)
 
 
+def test_active_worker_cannot_be_reassigned_before_old_host_is_fenced(clean_postgres):
+    """The DB constraint arbitrates host assignment races; a caller cannot make two active copies."""
+    with connect_postgres() as db:
+        register_host_worker(db, "fencing-reassign-a", "worker-fencing-reassign")
+        with pytest.raises(psycopg.errors.UniqueViolation), db.transaction():
+            register_host_worker(db, "fencing-reassign-b", "worker-fencing-reassign")
+
+        active = db.execute(
+            "SELECT host_id FROM host_worker_bindings "
+            "WHERE worker_id=%s AND status='ACTIVE'",
+            ("worker-fencing-reassign",),
+        ).fetchall()
+        assert active == [("fencing-reassign-a",)]
+
+
 def test_external_effect_propose_rejects_fenced_host_unit():
     """Unit test: verify propose() queries host_worker_bindings and raises EffectConflict if fenced (Finding A-07)."""
     from unittest.mock import patch
@@ -192,7 +207,8 @@ def clean_postgres(monkeypatch):
         DELETE FROM host_worker_bindings WHERE worker_id IN (
             'worker-host-a',
             'worker-host-b',
-            'unrelated-agent'
+            'unrelated-agent',
+            'worker-fencing-reassign'
         );
         DELETE FROM projects WHERE id IN (
             '00000000-0000-0000-0000-0000000000a1',
@@ -269,6 +285,12 @@ def _setup_dual_host_environment(db):
     # Register explicit host-worker bindings
     register_host_worker(db, "host-a", "worker-host-a")
     register_host_worker(db, "host-b", "worker-host-b")
+    epoch_a = db.execute(
+        "SELECT fence_epoch FROM host_worker_bindings WHERE host_id='host-a' AND worker_id='worker-host-a'"
+    ).fetchone()[0]
+    epoch_b = db.execute(
+        "SELECT fence_epoch FROM host_worker_bindings WHERE host_id='host-b' AND worker_id='worker-host-b'"
+    ).fetchone()[0]
 
     # Register project grants for effect proposal
     db.execute(
@@ -295,10 +317,10 @@ def _setup_dual_host_environment(db):
     )
     db.execute(
         """
-        INSERT INTO execution_queue (id, work_id, project_id, status, input_json, lease_token, worker_id, lease_expires_at, project_state_generation)
-        VALUES (%s, %s, %s, 'RUNNING', '{}'::jsonb, %s, 'worker-host-a', clock_timestamp() + INTERVAL '1 hour', 0);
+        INSERT INTO execution_queue (id, work_id, project_id, status, input_json, lease_token, worker_id, lease_expires_at, project_state_generation, claim_fence_epoch)
+        VALUES (%s, %s, %s, 'RUNNING', '{}'::jsonb, %s, 'worker-host-a', clock_timestamp() + INTERVAL '1 hour', 0, %s);
         """,
-        (exec_a, work_a, proj_a, lease_token_a),
+        (exec_a, work_a, proj_a, lease_token_a, epoch_a),
     )
 
     # Work item and claim for Host B
@@ -314,10 +336,10 @@ def _setup_dual_host_environment(db):
     )
     db.execute(
         """
-        INSERT INTO execution_queue (id, work_id, project_id, status, input_json, lease_token, worker_id, lease_expires_at, project_state_generation)
-        VALUES (%s, %s, %s, 'RUNNING', '{}'::jsonb, %s, 'worker-host-b', clock_timestamp() + INTERVAL '1 hour', 0);
+        INSERT INTO execution_queue (id, work_id, project_id, status, input_json, lease_token, worker_id, lease_expires_at, project_state_generation, claim_fence_epoch)
+        VALUES (%s, %s, %s, 'RUNNING', '{}'::jsonb, %s, 'worker-host-b', clock_timestamp() + INTERVAL '1 hour', 0, %s);
         """,
-        (exec_b, work_b, proj_b, lease_token_b),
+        (exec_b, work_b, proj_b, lease_token_b, epoch_b),
     )
     db.commit()
 

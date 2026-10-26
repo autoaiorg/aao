@@ -9,6 +9,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+def _register_test_worker(worker_id):
+    """Give integration workers an explicit host binding before exercising claims."""
+    from aao.backup import register_host_worker
+    from aao.postgresql_connection import connect_postgres
+
+    with connect_postgres() as db:
+        register_host_worker(db, "integration-test-host", worker_id)
+
+
 def _registered_evidence(project_id, agent_id, credential):
     from aao.evidence_registry import register_evidence
 
@@ -40,6 +49,7 @@ def test_reconciliation_requires_distinct_granted_reviewer(monkeypatch):
         })
         assert issued.status_code == 201, issued.text
         secret = issued.json()["token"]
+        _register_test_worker(worker_id)
         worker = {"X-Agent-Token": secret}
         auditor_issued = client.post("/v1/principals/credentials", headers=ceo, json={
             "principal_id": auditor_id, "kind": "AUDITOR",
@@ -483,6 +493,7 @@ def test_reconciliation_serializes_with_auditor_credential_revocation(
         })
         assert worker_response.status_code == auditor_response.status_code == 201
         worker_token = worker_response.json()["token"]
+        _register_test_worker(worker_id)
         auditor_token = auditor_response.json()["token"]
         worker = {"X-Agent-Token": worker_token}
         mandate = client.post("/v1/mandates", headers=ceo, json={
@@ -591,6 +602,7 @@ def test_execution_reconciliation_serializes_with_grant_revocation(monkeypatch):
         })
         assert worker_response.status_code == auditor_response.status_code == 201
         worker_token = worker_response.json()["token"]
+        _register_test_worker(worker_id)
         auditor_token = auditor_response.json()["token"]
         worker = {"X-Agent-Token": worker_token}
         mandate = client.post("/v1/mandates", headers=ceo, json={
@@ -718,6 +730,7 @@ def test_effect_proposal_serializes_with_agent_credential_revocation(monkeypatch
         })
         assert issued.status_code == 201, issued.text
         credential = issued.json()["token"]
+        _register_test_worker(worker_id)
         worker = {"X-Agent-Token": credential}
         mandate = client.post("/v1/mandates", headers=ceo, json={
             "title": "Proposal revoke " + str(uuid4()),
@@ -855,6 +868,7 @@ def test_effect_proposal_serializes_with_agent_credential_revocation(monkeypatch
         })
         assert second_issued.status_code == 201, second_issued.text
         second_credential = second_issued.json()["token"]
+        _register_test_worker(second_worker_id)
         second_worker = {"X-Agent-Token": second_credential}
         for capability in ("work.create", "work.admit", "execution.claim", "effect.propose"):
             response = client.post(f"/v1/projects/{project}/grants", headers=ceo, json={

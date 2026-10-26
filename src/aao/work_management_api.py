@@ -3780,11 +3780,36 @@ def review(work_id: str, payload: ReviewRequest, principal: str = Depends(requir
                 "UPDATE work_items SET status=%s,evidence=%s::jsonb WHERE id=%s",
                 (next_state, json.dumps(payload.evidence), work_id),
             )
+        escalation_protocol_instance_id = None
+        if payload.decision == "REJECT":
+            escalation_protocol_instance_id = start_work_protocol(
+                db,
+                protocol_id="blockage-escalation",
+                work_id=work_id,
+                started_by=principal,
+                subject_type="work_item",
+                idempotency_key=(
+                    f"blockage-escalation:work_item:{work_id}:review:{rid}"
+                ),
+                request={
+                    "review_id": rid,
+                    "candidate_sha": payload.candidate_sha,
+                    "decision": payload.decision,
+                    "reviewer": principal,
+                },
+            )
         audit(db, work_id, "work.reviewed", {
             "review_id": rid, "decision": payload.decision, "reviewer": principal,
             "candidate_sha": payload.candidate_sha,
             "verified_evidence": verified_evidence,
             **({"protocol_instance_id": str(protocol_row[0])} if protocol_row else {}),
+            **({
+                "escalation_protocol_instance_id": escalation_protocol_instance_id,
+                "next_action": (
+                    "Implement changes under the existing assignment; submit a new candidate "
+                    "and obtain a separate review."
+                ),
+            } if escalation_protocol_instance_id else {}),
         })
     return {"review_id": rid, "status": next_state, "candidate_sha": payload.candidate_sha}
 

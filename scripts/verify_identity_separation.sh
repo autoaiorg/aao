@@ -48,7 +48,11 @@ for g in sudo admin wheel docker adm lxd libvirt "$CEO_USER"; do
 done
 (( priv )) || pass "no privileged group membership"
 
-denied w /var/run/docker.sock          "docker socket"
+if [[ -e /var/run/docker.sock ]]; then
+  denied w /var/run/docker.sock          "docker socket"
+else
+  pass "docker socket (not present on host)"
+fi
 denied x "/home/$CEO_USER"             "enter CEO home"
 denied r "/home/$CEO_USER"             "list CEO home"
 denied w /srv/aao/trust                "write trust registry"

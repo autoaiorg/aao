@@ -73,6 +73,7 @@ describe('office persistent project conversation', () => {
     };
     const onOpenBoard = setup(port);
     expect(await screen.findByText('Proyecto acordado')).toBeInTheDocument();
+    expect(screen.getByText(/Se actualiza cada 15 segundos mientras este hilo está abierto/)).toBeInTheDocument();
     expect(screen.getByText(/work-current · DONE/)).toBeInTheDocument();
     expect(screen.getByText(new RegExp(`Última ejecución execution-current: SUCCEEDED · resultado SHA-256 ${resultSha}`))).toBeInTheDocument();
     expect(screen.queryByText('No pertenece a este hilo')).not.toBeInTheDocument();

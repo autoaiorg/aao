@@ -12,6 +12,15 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 
+def test_work_coordinate_is_an_explicit_project_capability():
+    from aao.work_management_api import GrantRequest
+
+    grant = GrantRequest(principal_id="aao-pm", capability="work.coordinate")
+    assert grant.capability == "work.coordinate"
+    with pytest.raises(ValueError):
+        GrantRequest(principal_id="aao-pm", capability="work.execute")
+
+
 def test_agent_dispatch_rejects_a_declared_identity_that_disagrees_with_credential():
     from aao.work_management_api import (
         AgentDispatchRequest,
@@ -31,6 +40,86 @@ def test_agent_dispatch_rejects_a_declared_identity_that_disagrees_with_credenti
     not os.getenv("AAO_TEST_POSTGRES_URL") or
     os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
     reason="PostgreSQL integration requires an explicitly disposable test database",
+)
+def test_project_coordinator_consolidates_without_ceo_impersonation(monkeypatch):
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "coordinator-ceo")
+    ceo = {"X-CEO-Token": "coordinator-ceo"}
+    with TestClient(app) as client:
+        mandate = client.post("/v1/mandates", headers=ceo, json={
+            "title": "PM coordination " + str(uuid4()), "objective": "Persist PM synthesis",
+        }).json()["id"]
+        assert client.post(f"/v1/mandates/{mandate}/confirm", headers=ceo).status_code == 200
+        project = client.post("/v1/projects", headers=ceo, json={
+            "name": "PM coordination", "mandate_id": mandate,
+        }).json()["id"]
+        conversation = client.post(f"/v1/projects/{project}/conversations", headers=ceo, json={
+            "title": "PM result thread",
+        }).json()["id"]
+        group = client.post(
+            f"/v1/projects/{project}/conversations/{conversation}/work-groups",
+            headers=ceo, json={
+                "idempotency_key": str(uuid4()), "title": "One outcome",
+                "description": "Confirmed group", "acceptance_criteria": ["done"],
+                "tasks": [{"key": "one", "title": "Outcome", "acceptance_criteria": ["evidence"]}],
+            },
+        ).json()
+        coordinator_id = "aao-pm-test-" + uuid4().hex[:8]
+        issued = client.post("/v1/principals/credentials", headers=ceo, json={
+            "principal_id": coordinator_id, "kind": "AGENT",
+        })
+        assert issued.status_code == 201, issued.text
+        token = issued.json()["token"]
+        pm_headers = {"X-Agent-Token": token}
+        url = f"/v1/agent/projects/{project}/work-groups/{group['id']}/consolidation"
+        ungranted_payload = {
+            "idempotency_key": str(uuid4()), "expected_source_sha256": "0" * 64,
+            "summary": "This coordinator has no project grant.",
+        }
+        assert client.post(url, headers=pm_headers, json=ungranted_payload).status_code == 403
+        assert client.post(f"/v1/projects/{project}/grants", headers=pm_headers, json={
+            "principal_id": coordinator_id, "capability": "work.coordinate",
+        }).status_code == 403
+        assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
+            "principal_id": coordinator_id, "capability": "work.coordinate",
+        }).status_code == 201
+        with connect_postgres() as db:
+            db.execute(
+                "UPDATE work_items SET status='DONE',evidence=%s::jsonb WHERE id=%s",
+                (json.dumps(["artifact://outcome/result"]), group["tasks"][0]["id"]),
+            )
+        listed = client.get(f"/v1/projects/{project}/work-groups", headers=ceo).json()[0]
+        payload = {
+            "idempotency_key": str(uuid4()), "expected_source_sha256": listed["source_sha256"],
+            "summary": "PM synthesis from persisted evidence.",
+        }
+        assert client.post(url, headers={"X-Agent-Token": "invalid"}, json=payload).status_code == 403
+        saved = client.post(url, headers=pm_headers, json=payload)
+        assert saved.status_code == 201, saved.text
+        assert saved.json()["created_by"] == coordinator_id
+        replay = client.post(url, headers=pm_headers, json=payload)
+        assert replay.status_code == 201 and replay.json()["created"] is False
+        with connect_postgres() as db:
+            event = db.execute(
+                "SELECT details FROM events WHERE subject_id=%s AND kind='work.group_consolidated'",
+                (group["parent_work_id"],),
+            ).fetchone()[0]
+            message = db.execute(
+                "SELECT body FROM project_conversation_messages "
+                "WHERE conversation_id=%s AND message_kind='WORK_GROUP_RESULT'", (conversation,),
+            ).fetchone()[0]
+        assert event["actor"] == coordinator_id
+        assert "Consolidación registrada por PM (" + coordinator_id in message
+        assert "confirmada por CEO" not in message
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or
+    os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="Explicit disposable PostgreSQL database required",
 )
 def test_postgres_mandate_project_grant_work_admission(monkeypatch):
     from aao.work_management_api import app

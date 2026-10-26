@@ -388,7 +388,7 @@ class PrincipalCredentialRequest(BaseModel):
 
 class GrantRequest(BaseModel):
     principal_id: str = Field(min_length=1)
-    capability: str = Field(pattern=r"^(?:work\.(?:create|admit|review|progress)|project\.read|execution\.claim|execution\.reconcile|effect\.(?:propose|reconcile)|evidence\.submit|code\.(?:propose|publish))$")
+    capability: str = Field(pattern=r"^(?:work\.(?:create|admit|review|progress|coordinate)|project\.read|execution\.claim|execution\.reconcile|effect\.(?:propose|reconcile)|evidence\.submit|code\.(?:propose|publish))$")
     expires_at: datetime | None = None
 
     @field_validator("expires_at")
@@ -1833,11 +1833,37 @@ def create_work_group_consolidation(
     _: str = Depends(require_ceo),
 ):
     """Persist one CEO-confirmed summary without changing parent, child or execution states."""
+    return _persist_work_group_consolidation(project_id, group_id, payload, actor="ceo")
+
+
+@app.post("/v1/agent/projects/{project_id}/work-groups/{group_id}/consolidation", status_code=201)
+def coordinate_work_group_consolidation(
+    project_id: str,
+    group_id: str,
+    payload: WorkGroupConsolidationRequest,
+    principal: str = Depends(require_worker),
+):
+    """Persist PM synthesis under an explicit project grant; never impersonates the CEO."""
+    return _persist_work_group_consolidation(
+        project_id, group_id, payload, actor=str(principal), coordinator=principal,
+    )
+
+
+def _persist_work_group_consolidation(
+    project_id: str,
+    group_id: str,
+    payload: WorkGroupConsolidationRequest,
+    *,
+    actor: str,
+    coordinator: AuthenticatedPrincipal | None = None,
+):
     request_sha256 = hashlib.sha256(json.dumps({
         "expected_source_sha256": payload.expected_source_sha256,
         "summary": payload.summary,
     }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     with tx() as db:
+        if coordinator is not None:
+            require_grant(db, coordinator, project_id, "work.coordinate")
         group = db.execute(
             "SELECT parent_work_id,conversation_id FROM work_groups WHERE id=%s AND project_id=%s FOR UPDATE",
             (group_id, project_id),
@@ -1872,18 +1898,19 @@ def create_work_group_consolidation(
         row = db.execute(
             "INSERT INTO work_group_consolidations(id,project_id,work_group_id,parent_work_id,"
             "summary,source_sha256,source_snapshot,idempotency_key,request_sha256,created_by) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,'ceo') "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s) "
             "RETURNING id,project_id,work_group_id,parent_work_id,summary,source_sha256,"
             "source_snapshot,idempotency_key,created_by,created_at,request_sha256",
             (str(uuid4()), project_id, group_id, parent_work_id, payload.summary,
-             source_sha256, json.dumps(snapshot), payload.idempotency_key, request_sha256),
+             source_sha256, json.dumps(snapshot), payload.idempotency_key, request_sha256, actor),
         ).fetchone()
-        # Keep the original CEO-AAO thread as the durable user-facing record.
-        # This is a system notification of a CEO-confirmed summary, not a model reply.
+        # Keep the originating CEO-AAO thread as the durable user-facing record,
+        # while explicitly preserving whether the summary was authored by CEO or PM.
+        actor_label = "CEO" if actor == "ceo" else f"PM ({actor})"
         message_body = (
             f"Resultado del grupo de trabajo: {payload.summary}\n\n"
-            f"Consolidación confirmada por CEO. Snapshot de origen SHA-256: {source_sha256}. "
-            "Esta notificación registra la consolidación persistida; no añade una verificación independiente."
+            f"Consolidación registrada por {actor_label}. Snapshot de origen SHA-256: {source_sha256}. "
+            "Esta notificación registra la síntesis persistida; no añade una verificación independiente."
         )
         db.execute(
             "INSERT INTO project_conversation_messages(id,conversation_id,sender,body,related_work_id,message_kind) "
@@ -1897,7 +1924,7 @@ def create_work_group_consolidation(
         audit(db, parent_work_id, "work.group_consolidated", {
             "project_id": project_id, "work_group_id": group_id,
             "consolidation_id": str(row[0]), "source_sha256": source_sha256,
-            "child_count": len(children), "actor": "ceo",
+            "child_count": len(children), "actor": actor,
             "work_status_changed": False, "execution_created": False,
         })
     return _consolidation_response(row, created=True)

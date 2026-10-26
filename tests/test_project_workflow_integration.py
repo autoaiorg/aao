@@ -3074,6 +3074,52 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         pr_state = {"state": "closed", "merged": True, "merge_commit_sha": None, "head_sha": candidate_sha}
         merge_sha = "e" * 40
         pr_state.update(merge_commit_sha=merge_sha)
+        # RST-7: once a PR exists, drift in its persisted successful execution must still block
+        # reconciliation. Do not accept the old PR merely because its remote head is unchanged.
+        with connect_postgres() as db:
+            execution = db.execute(
+                "SELECT id,result_json FROM execution_queue WHERE work_id=%s AND status='SUCCEEDED' "
+                "AND result_json->>'candidate_sha'=%s ORDER BY created_at DESC LIMIT 1 FOR UPDATE",
+                (work, candidate_sha),
+            ).fetchone()
+            assert execution is not None
+            execution_id, original_result = execution
+            changed_sha = "a" * 40
+            assert changed_sha != candidate_sha
+            db.execute(
+                "UPDATE execution_queue SET result_json=jsonb_set(result_json,'{candidate_sha}',to_jsonb(%s::text),true) "
+                "WHERE id=%s", (changed_sha, execution_id),
+            )
+        pr_lookups = []
+        try:
+            with pytest.raises(PublishError, match="no longer matches a succeeded candidate execution"):
+                reconcile(work, publisher, get_pr=lambda n: pr_lookups.append(n) or pr_state)
+            assert pr_lookups == []
+            board_after_drift = client.get(f"/v1/projects/{project}/board", headers=ceo).json()
+            assert next(item for item in board_after_drift if item["id"] == work)["status"] == "VERIFIED"
+        finally:
+            with connect_postgres() as db:
+                db.execute("UPDATE execution_queue SET result_json=%s::jsonb WHERE id=%s",
+                           (json.dumps(original_result), execution_id))
+        # Also inject drift after the remote lookup starts, exercising the transaction-time
+        # recheck immediately before the canonical VERIFIED -> DONE transition.
+        def drift_during_lookup(_number):
+            with connect_postgres() as db:
+                db.execute(
+                    "UPDATE execution_queue SET result_json=jsonb_set(result_json,'{candidate_sha}',to_jsonb(%s::text),true) "
+                    "WHERE id=%s", (changed_sha, execution_id),
+                )
+            return pr_state
+
+        try:
+            with pytest.raises(PublishError, match="no longer matches a succeeded candidate execution"):
+                reconcile(work, publisher, get_pr=drift_during_lookup)
+            board_after_race = client.get(f"/v1/projects/{project}/board", headers=ceo).json()
+            assert next(item for item in board_after_race if item["id"] == work)["status"] == "VERIFIED"
+        finally:
+            with connect_postgres() as db:
+                db.execute("UPDATE execution_queue SET result_json=%s::jsonb WHERE id=%s",
+                           (json.dumps(original_result), execution_id))
         done = reconcile(work, publisher, get_pr=lambda n: pr_state)
         assert done["status"] == "DONE" and done["merge_commit_sha"] == merge_sha
         assert reconcile(work, publisher, get_pr=lambda n: pr_state) == {"status": "DONE"}

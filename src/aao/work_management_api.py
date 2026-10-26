@@ -2839,6 +2839,7 @@ def stream_project_conversation_turn(
                 db.execute("UPDATE project_conversations SET updated_at=clock_timestamp() WHERE id=%s", (conversation_id,))
                 audit(db, conversation_id, "conversation.turn.completed", {
                     "user_message_id": user_message_id, "assistant_message_id": response_id,
+                    "idempotency_key": str(payload.idempotency_key),
                     "provider": provider, "model": model, "endpoint": endpoint,
                 })
             yield f"event: done\ndata: {json_module.dumps({'message_id': response_id})}\n\n"

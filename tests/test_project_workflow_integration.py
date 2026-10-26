@@ -1301,6 +1301,63 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
             for message in turn_messages
         )
 
+        # A duplicate arriving while the canonical turn owns a live lease
+        # must conflict, not invoke the provider or persist a second message.
+        concurrent_key = str(uuid4())
+        concurrent_body = "Handle a concurrent duplicate"
+        provider_entered = Event()
+        release_provider = Event()
+        concurrent_provider_calls = 0
+
+        def blocked_provider(_messages):
+            nonlocal concurrent_provider_calls
+            concurrent_provider_calls += 1
+            provider_entered.set()
+            assert release_provider.wait(timeout=5)
+            yield "One canonical answer."
+
+        monkeypatch.setattr(conversation_provider, "stream_reply", blocked_provider)
+        concurrent_turn = {"body": concurrent_body, "idempotency_key": concurrent_key}
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            first_request = pool.submit(client.post, turn_url, headers=ceo, json=concurrent_turn)
+            assert provider_entered.wait(timeout=5)
+            duplicate_request = client.post(turn_url, headers=ceo, json=concurrent_turn)
+            assert duplicate_request.status_code == 409
+            assert "still processing" in duplicate_request.text
+            release_provider.set()
+            completed_request = first_request.result(timeout=10)
+        assert completed_request.status_code == 200
+        assert '"delta": "One canonical answer."' in completed_request.text
+        assert concurrent_provider_calls == 1
+        replayed_concurrent_turn = client.post(
+            turn_url, headers=ceo, json=concurrent_turn,
+        )
+        assert replayed_concurrent_turn.status_code == 200
+        assert replayed_concurrent_turn.text == completed_request.text
+        assert concurrent_provider_calls == 1
+        with connect_postgres() as db:
+            turn_count = db.execute(
+                "SELECT count(*) FROM project_conversation_turns "
+                "WHERE conversation_id=%s AND idempotency_key=%s",
+                (conversation_id, concurrent_key),
+            ).fetchone()[0]
+            message_counts = db.execute(
+                "SELECT count(*) FILTER (WHERE sender='CEO'),"
+                "count(*) FILTER (WHERE sender='AAO') "
+                "FROM project_conversation_messages WHERE conversation_id=%s "
+                "AND body IN (%s,'One canonical answer.')",
+                (conversation_id, concurrent_body),
+            ).fetchone()
+            turn_events = db.execute(
+                "SELECT count(*) FILTER (WHERE kind='conversation.turn.started'),"
+                "count(*) FILTER (WHERE kind='conversation.turn.completed') "
+                "FROM events WHERE subject_id=%s AND details->>'idempotency_key'=%s",
+                (conversation_id, concurrent_key),
+            ).fetchone()
+        assert turn_count == 1
+        assert tuple(message_counts) == (1, 1)
+        assert tuple(turn_events) == (1, 1)
+
         # A process crash leaves a durable PENDING row. Only an expired/missing
         # lease can be reclaimed, and retry reuses the same CEO message/key.
         crashed_key = str(uuid4())
@@ -1426,8 +1483,6 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
                 (concurrent_turn_id, conversation_id, concurrent_key,
                  sha256(b"Concurrent recovery").hexdigest(), concurrent_message_id, str(uuid4())),
             )
-        from threading import Event
-
         provider_entered = Event()
         release_provider = Event()
         provider_calls = []

@@ -1088,7 +1088,8 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
         parent_work_id: z.string().uuid(), status: z.string(), created: z.boolean(),
         tasks: z.array(z.object({
           id: z.string().uuid(), title: z.string(), status: z.string(),
-          assigned_principal_id: z.string().nullable(), depends_on: z.array(z.string().uuid()),
+          assigned_principal_id: z.string().nullable(), required_competencies: z.array(z.string()).default([]),
+          depends_on: z.array(z.string().uuid()),
         })),
       }),
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) },
@@ -1109,7 +1110,8 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
           tasks: z.array(z.object({
             key: z.string(), title: z.string(), description: z.string(),
             acceptance_criteria: z.array(z.string()), due_date: z.string().date().nullable().optional(),
-            depends_on: z.array(z.string()), assigned_principal_id: z.string().nullable().optional(),
+            depends_on: z.array(z.string()), required_competencies: z.array(z.string()).default([]),
+            assigned_principal_id: z.string().nullable().optional(),
           })),
         }),
         based_on_message_ids: z.array(z.string().uuid()),
@@ -1124,7 +1126,8 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
     if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede consultar equipos de trabajo.' };
     const evidence = z.unknown();
     const child = z.object({
-      work_id: z.string().uuid(), status: z.string(), assigned_principal_id: z.string().nullable(), evidence,
+      work_id: z.string().uuid(), status: z.string(), assigned_principal_id: z.string().nullable(),
+      required_competencies: z.array(z.string()).default([]), evidence,
       dependencies: z.array(z.object({ work_id: z.string().uuid(), status: z.string() })).default([]),
       executions: z.array(z.object({
         id: z.string().uuid(), status: z.string(), worker_id: z.string().nullable(),
@@ -1173,7 +1176,8 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
     if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede confirmar una consolidación.' };
     const evidence = z.unknown();
     const child = z.object({
-      work_id: z.string().uuid(), status: z.string(), assigned_principal_id: z.string().nullable(), evidence,
+      work_id: z.string().uuid(), status: z.string(), assigned_principal_id: z.string().nullable(),
+      required_competencies: z.array(z.string()).default([]), evidence,
       dependencies: z.array(z.object({ work_id: z.string().uuid(), status: z.string() })).default([]),
       executions: z.array(z.object({
         id: z.string().uuid(), status: z.string(), worker_id: z.string().nullable(),

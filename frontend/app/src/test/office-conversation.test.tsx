@@ -300,7 +300,7 @@ describe('office persistent project conversation', () => {
     const port: AaoConversationPort = {
       listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
       listAssignableAgents: vi.fn().mockResolvedValue(ready([
-        { principal_id: 'worker-1', display_name: 'Agente de implementación', competencies: ['implementación'] },
+        { principal_id: 'worker-1', display_name: 'Agente de implementación', competencies: ['technical-writing'] },
       ])),
       listConversationMessages: vi.fn().mockResolvedValue(ready([message, { ...message, id: 'message-2', sender: 'AAO', body: 'Propongo documentar los hallazgos.' } ])),
       createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(), streamCEOConversationTurn: vi.fn(),
@@ -315,7 +315,7 @@ describe('office persistent project conversation', () => {
         proposal: {
           title: 'Plan acordado', description: 'Resultado del hilo',
           acceptance_criteria: ['Criterios trazables'],
-          tasks: [{ key: 'task-1', title: 'Investigar', description: 'Revisar fuentes', acceptance_criteria: ['Fuentes registradas'], depends_on: [], assigned_principal_id: 'worker-1' }],
+          tasks: [{ key: 'task-1', title: 'Investigar', description: 'Revisar fuentes', acceptance_criteria: ['Fuentes registradas'], depends_on: [], required_competencies: ['technical-writing'], assigned_principal_id: 'worker-1' }],
         },
         based_on_message_ids: ['message-1', 'message-2'], provider: 'openai-compatible', model: 'test-model', persisted_as_work: false,
       })),
@@ -326,6 +326,7 @@ describe('office persistent project conversation', () => {
     expect(screen.queryByRole('button', { name: /Convertir en solicitud/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Proponer desglose con AAO' }));
     await screen.findByText(/AAO propuso 1 tareas a partir de 2 mensajes/);
+    expect((await screen.findByLabelText('technical-writing')).getAttribute('type')).toBe('checkbox');
     expect(await screen.findByText(/AAO lo sugiere según competencias declaradas/)).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Título de tarea desde conversación'), { target: { value: 'Documentar hallazgos' } });
     fireEvent.change(screen.getByLabelText('Descripción de tarea desde conversación'), { target: { value: 'A partir del hilo, documentar los hallazgos acordados.' } });
@@ -343,8 +344,8 @@ describe('office persistent project conversation', () => {
       based_on_message_ids: ['message-1', 'message-2'],
       title: 'Documentar hallazgos', description: 'A partir del hilo, documentar los hallazgos acordados.', acceptance_criteria: ['Hallazgos documentados', 'CEO puede revisarlos'], due_date: null,
       tasks: [
-        { key: 'task-1', title: 'Documentar hallazgos', description: 'Revisar fuentes', acceptance_criteria: ['Hallazgos documentados'], due_date: null, depends_on: [], assigned_principal_id: 'worker-1' },
-        { key: 'task-2', title: 'Revisar documentación', description: '', acceptance_criteria: ['CEO puede revisarlos'], due_date: null, depends_on: ['task-1'], assigned_principal_id: 'worker-1' },
+        { key: 'task-1', title: 'Documentar hallazgos', description: 'Revisar fuentes', acceptance_criteria: ['Hallazgos documentados'], due_date: null, depends_on: [], required_competencies: ['technical-writing'], assigned_principal_id: 'worker-1' },
+        { key: 'task-2', title: 'Revisar documentación', description: '', acceptance_criteria: ['CEO puede revisarlos'], due_date: null, depends_on: ['task-1'], required_competencies: [], assigned_principal_id: 'worker-1' },
       ],
     }));
     expect(await screen.findByText(/no se ha admitido ni ejecutado/)).toBeInTheDocument();

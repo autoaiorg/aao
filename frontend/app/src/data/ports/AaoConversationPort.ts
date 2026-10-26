@@ -54,6 +54,7 @@ export interface ConversationWorkGroupInput extends ConversationWorkRequestInput
     acceptance_criteria: string[];
     due_date?: string | null;
     depends_on: string[];
+    required_competencies?: string[];
     assigned_principal_id?: string | null;
   }>;
 }
@@ -71,7 +72,7 @@ export interface ConversationWorkGroupResult {
   parent_work_id: string;
   status: string;
   created: boolean;
-  tasks: Array<{ id: string; title: string; status: string; depends_on: string[] }>;
+  tasks: Array<{ id: string; title: string; status: string; required_competencies?: string[]; depends_on: string[] }>;
 }
 
 export interface ConversationWorkGroupProposal {
@@ -113,6 +114,7 @@ export interface ProjectWorkGroup {
     work_id: string;
     status: string;
     assigned_principal_id: string | null;
+    required_competencies?: string[];
     evidence: unknown;
     dependencies: Array<{ work_id: string; status: string }>;
     executions: Array<{ id: string; status: string; worker_id: string | null; result_sha256: string | null }>;

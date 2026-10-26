@@ -66,9 +66,11 @@ def test_project_coordinator_consolidates_without_ceo_impersonation(monkeypatch)
             headers=ceo, json={
                 "idempotency_key": str(uuid4()), "title": "One outcome",
                 "description": "Confirmed group", "acceptance_criteria": ["done"],
-                "tasks": [{"key": "one", "title": "Outcome", "acceptance_criteria": ["evidence"]}],
+                "tasks": [{"key": "one", "title": "Outcome", "acceptance_criteria": ["evidence"],
+                           "required_competencies": ["technical-writing"]}],
             },
         ).json()
+        assert group["tasks"][0]["required_competencies"] == ["technical-writing"]
         coordinator_id = "aao-pm-test-" + uuid4().hex[:8]
         issued = client.post("/v1/principals/credentials", headers=ceo, json={
             "principal_id": coordinator_id, "kind": "AGENT",
@@ -100,6 +102,12 @@ def test_project_coordinator_consolidates_without_ceo_impersonation(monkeypatch)
             assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
                 "principal_id": target_id, "capability": capability,
             }).status_code == 201
+        with connect_postgres() as db:
+            db.execute(
+                "INSERT INTO organization_profiles(principal_id,display_name,role_title,competencies) "
+                "VALUES (%s,'Test assignee','Implementer','{}')",
+                (target_id,),
+            )
         assignment_url = f"/v1/agent/work/{child_id}/assignment"
         assignment_body = {"principal_id": target_id}
         assert client.put(assignment_url, headers=pm_headers, json=assignment_body).status_code == 403
@@ -111,6 +119,14 @@ def test_project_coordinator_consolidates_without_ceo_impersonation(monkeypatch)
         assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
             "principal_id": coordinator_id, "capability": "work.assign",
         }).status_code == 201
+        mismatched = client.put(assignment_url, headers=pm_headers, json=assignment_body)
+        assert mismatched.status_code == 409
+        assert mismatched.json()["detail"]["code"] == "ASSIGNEE_COMPETENCY_MISMATCH"
+        with connect_postgres() as db:
+            db.execute(
+                "UPDATE organization_profiles SET competencies=ARRAY['technical-writing'] "
+                "WHERE principal_id=%s", (target_id,),
+            )
         assigned = client.put(assignment_url, headers=pm_headers, json=assignment_body)
         assert assigned.status_code == 200, assigned.text
         assignable = client.get(assignable_url, headers=pm_headers)
@@ -137,6 +153,7 @@ def test_project_coordinator_consolidates_without_ceo_impersonation(monkeypatch)
         assert pm_groups.json()[0]["id"] == group["id"]
         assert pm_groups.json()[0]["parent_status"] == "INBOX"
         assert pm_groups.json()[0]["consolidation_ready"] is False
+        assert pm_groups.json()[0]["children"][0]["required_competencies"] == ["technical-writing"]
         with connect_postgres() as db:
             db.execute(
                 "UPDATE work_items SET status='DONE',evidence=%s::jsonb WHERE id=%s",
@@ -1176,9 +1193,11 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
             "tasks": [
                 {"key": "inspect", "title": "Inspect evidence", "description": "Review inputs",
                  "acceptance_criteria": ["Evidence recorded"], "depends_on": [],
+                 "required_competencies": ["PostgreSQL"],
                  "assigned_principal_id": eligible_worker},
                 {"key": "summarize", "title": "Summarize", "description": "Consolidate results",
                  "acceptance_criteria": ["Summary reviewed"], "depends_on": ["inspect"],
+                 "required_competencies": [],
                  "assigned_principal_id": None},
             ],
         })
@@ -1198,6 +1217,7 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         proposal_body = proposed.json()
         assert proposal_body["proposal"]["title"] == "Reviewed outcome"
         assert len(proposal_body["proposal"]["tasks"]) == 2
+        assert proposal_body["proposal"]["tasks"][0]["required_competencies"] == ["PostgreSQL"]
         assert proposal_body["proposal"]["tasks"][0]["assigned_principal_id"] == eligible_worker
         assert proposal_body["proposal"]["tasks"][1]["assigned_principal_id"] is None
         assert proposal_body["provider"] == "openai-compatible"

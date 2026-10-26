@@ -20,7 +20,18 @@
 [1;36m=== [VM VALIDATION] Downloading cloud image from https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img...[0m
   % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
                                  Dload  Upload   Total   Spent    Left  Speed
-  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0  0  247M    0  480k    0     0  1436k      0  0:02:56 --:--:--  0:02:56 1437k  5  247M    5 14.1M    0     0  10.3M      0  0:00:24  0:00:01  0:00:23 10.3M 16  247M   16 40.4M    0     0  17.3M      0  0:00:14  0:00:02  0:00:12 17.3M 25  247M   25 64.0M    0     0  19.1M      0  0:00:12  0:00:03  0:00:09 19.1M 42  247M   42  105M    0     0  24.1M      0  0:00:10  0:00:04  0:00:06 24.1M 54  247M   54  134M    0     0  25.1M      0  0:00:09  0:00:05  0:00:04 26.7M 69  247M   69  173M    0     0  27.4M      0  0:00:09  0:00:06  0:00:03 32.1M 84  247M   84  209M    0     0  28.5M      0  0:00:08  0:00:07  0:00:01 33.7M 95  247M   95  237M    0     0  28.4M      0  0:00:08  0:00:08 --:--:-- 34.7M100  247M  100  247M    0     0  28.9M      0  0:00:08  0:00:08 --:--:-- 33.7M
+
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+  0  247M    0  480k    0     0  1436k      0  0:02:56 --:--:--  0:02:56 1437k
+  5  247M    5 14.1M    0     0  10.3M      0  0:00:24  0:00:01  0:00:23 10.3M
+ 16  247M   16 40.4M    0     0  17.3M      0  0:00:14  0:00:02  0:00:12 17.3M
+ 25  247M   25 64.0M    0     0  19.1M      0  0:00:12  0:00:03  0:00:09 19.1M
+ 42  247M   42  105M    0     0  24.1M      0  0:00:10  0:00:04  0:00:06 24.1M
+ 54  247M   54  134M    0     0  25.1M      0  0:00:09  0:00:05  0:00:04 26.7M
+ 69  247M   69  173M    0     0  27.4M      0  0:00:09  0:00:06  0:00:03 32.1M
+ 84  247M   84  209M    0     0  28.5M      0  0:00:08  0:00:07  0:00:01 33.7M
+ 95  247M   95  237M    0     0  28.4M      0  0:00:08  0:00:08 --:--:-- 34.7M
+100  247M  100  247M    0     0  28.9M      0  0:00:08  0:00:08 --:--:-- 33.7M
 
 [1;36m=== [VM VALIDATION] Verifying base image SHA-256 integrity...[0m
 
@@ -88,7 +99,7 @@ INFO: Port 5432 (PostgreSQL) is currently listening.
 == [IDENTITIES] Applying governance identity separation for CEO_USER='alessbarb'...
 # preflight
 # preflight OK
-# docker group members (not modified): 
+# docker group members (not modified):
 + groupadd --system aao-ledger-read
 + groupadd --system aao-events
 + useradd --create-home --home-dir /home/aao-pm --shell /bin/bash --user-group aao-pm
@@ -160,7 +171,7 @@ rev=7618096a5c963e40cb141bc39ca9d01df53b724f ceo=alessbarb src=/home/alessbarb/a
 == identities (P1)
 # preflight
 # preflight OK
-# docker group members (not modified): 
+# docker group members (not modified):
 # DRY RUN: no changes will be made.
 + chmod 0700 /home/aao-pm
 + chmod 0700 /home/aao-impl-codex
@@ -396,7 +407,28 @@ PASS     enter /home/aao-trust
 == [DEPENDENCIES] Updating apt package index...
 == [DEPENDENCIES] Installing core system packages...
 debconf: delaying package configuration, since apt-utils is not installed
-(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 29565 files and directories currently installed.)
+(Reading database ...
+(Reading database ... 5%
+(Reading database ... 10%
+(Reading database ... 15%
+(Reading database ... 20%
+(Reading database ... 25%
+(Reading database ... 30%
+(Reading database ... 35%
+(Reading database ... 40%
+(Reading database ... 45%
+(Reading database ... 50%
+(Reading database ... 55%
+(Reading database ... 60%
+(Reading database ... 65%
+(Reading database ... 70%
+(Reading database ... 75%
+(Reading database ... 80%
+(Reading database ... 85%
+(Reading database ... 90%
+(Reading database ... 95%
+(Reading database ... 100%
+(Reading database ... 29565 files and directories currently installed.)
 Preparing to unpack .../ca-certificates_20260816ubuntu0.24.04.1_all.deb ...
 Unpacking ca-certificates (20260816ubuntu0.24.04.1) over (20260601~24.04.1) ...
 Selecting previously unselected package libssl-dev:amd64.
@@ -420,7 +452,28 @@ done.
 == [DEPENDENCIES] Configuring NodeSource repository with verified GPG keyring...
 debconf: delaying package configuration, since apt-utils is not installed
 Selecting previously unselected package nodejs.
-(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 29738 files and directories currently installed.)
+(Reading database ...
+(Reading database ... 5%
+(Reading database ... 10%
+(Reading database ... 15%
+(Reading database ... 20%
+(Reading database ... 25%
+(Reading database ... 30%
+(Reading database ... 35%
+(Reading database ... 40%
+(Reading database ... 45%
+(Reading database ... 50%
+(Reading database ... 55%
+(Reading database ... 60%
+(Reading database ... 65%
+(Reading database ... 70%
+(Reading database ... 75%
+(Reading database ... 80%
+(Reading database ... 85%
+(Reading database ... 90%
+(Reading database ... 95%
+(Reading database ... 100%
+(Reading database ... 29738 files and directories currently installed.)
 Preparing to unpack .../nodejs_22.23.4-1nodesource1_amd64.deb ...
 Unpacking nodejs (22.23.4-1nodesource1) ...
 Setting up nodejs (22.23.4-1nodesource1) ...
@@ -448,8 +501,8 @@ Executing: /usr/lib/systemd/systemd-sysv-install enable postgresql
 == [POSTGRES] Configuring PostgreSQL role and database without SQL password interpolation...
 DO
 == [POSTGRES] Setting application database password via secure encrypted channel...
-Enter new password for user "aao_app": 
-Enter it again: 
+Enter new password for user "aao_app":
+Enter it again:
 == [POSTGRES] Creating database 'aao_prod'...
 GRANT
 GRANT

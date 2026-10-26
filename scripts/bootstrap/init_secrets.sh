@@ -14,6 +14,16 @@ chmod 0750 /etc/aao
 DB_SECRET_FILE="/etc/aao/aao-db.secret"
 API_ENV_FILE="/etc/aao/aao-api.env"
 WORKER_ENV_FILE="/etc/aao/aao-worker.env"
+HOST_ID_FILE="/etc/aao/host-id"
+
+if [[ -L "$HOST_ID_FILE" ]]; then
+  die "$HOST_ID_FILE must not be a symbolic link"
+fi
+if [[ ! -e "$HOST_ID_FILE" ]]; then
+  [[ -s /etc/machine-id ]] || die "A stable /etc/machine-id is required for host fencing."
+  install -o root -g root -m 0440 /etc/machine-id "$HOST_ID_FILE"
+fi
+[[ -f "$HOST_ID_FILE" && -s "$HOST_ID_FILE" ]] || die "Host identity file is invalid."
 
 say "Reading or generating database password..."
 if [[ ! -f "$DB_SECRET_FILE" ]]; then
@@ -75,8 +85,12 @@ fi
 if id aao-impl-ag >/dev/null 2>&1; then
   chown root:aao-impl-ag "$WORKER_ENV_FILE"
   chmod 0640 "$WORKER_ENV_FILE"
+  chown root:aao-impl-ag "$HOST_ID_FILE"
+  chmod 0440 "$HOST_ID_FILE"
+  chown root:aao-impl-ag /etc/aao
 else
   chmod 0600 "$WORKER_ENV_FILE"
+  chmod 0600 "$HOST_ID_FILE"
 fi
 
 say "Secrets configured with strict least-privilege permissions."

@@ -30,3 +30,9 @@ def restore_test_signing_key(tmp_path, monkeypatch):
     monkeypatch.setattr("aao.backup.RESTORE_AUTHORITY_PUBLIC_KEY_FILE", public_key)
     monkeypatch.setattr("aao.backup.RESTORE_AUTHORITY_FILE_OWNER_UID", os.geteuid())
     return private_key
+
+
+@pytest.fixture(autouse=True)
+def test_local_host_identity(monkeypatch):
+    """Give disposable local tests a deterministic host separate from prod config."""
+    monkeypatch.setenv("AAO_TEST_HOST_ID", "integration-test-host")

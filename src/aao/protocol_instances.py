@@ -6,7 +6,10 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
-PROTOCOL_VERSIONS = {"intake-classification": "1.0.0"}
+PROTOCOL_VERSIONS = {
+    "intake-classification": "1.0.0",
+    "planning-assignment": "1.0.0",
+}
 
 
 def start_work_protocol(
@@ -16,6 +19,7 @@ def start_work_protocol(
     work_id: str,
     started_by: str,
     request: dict,
+    subject_type: str = "work_item",
 ) -> str:
     """Pin a fixed protocol version and emit its start event in the caller's tx."""
     version = PROTOCOL_VERSIONS.get(protocol_id)
@@ -23,20 +27,20 @@ def start_work_protocol(
         raise ValueError(f"Protocol is not enabled: {protocol_id}")
     canonical = json.dumps(request, sort_keys=True, separators=(",", ":"), default=str)
     request_sha256 = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    key = f"{protocol_id}:{work_id}"
+    key = f"{protocol_id}:{subject_type}:{work_id}"
     instance_id = str(uuid4())
     inserted = db.execute(
         "INSERT INTO protocol_instances(id,protocol_id,protocol_version,subject_type,subject_id,"
-        "idempotency_key,request_sha256,started_by) VALUES (%s,%s,%s,'work_item',%s,%s,%s,%s) "
+        "idempotency_key,request_sha256,started_by) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
         "ON CONFLICT (protocol_id,subject_type,subject_id,idempotency_key) DO NOTHING RETURNING id",
-        (instance_id, protocol_id, version, work_id, key, request_sha256, started_by),
+        (instance_id, protocol_id, version, subject_type, work_id, key, request_sha256, started_by),
     ).fetchone()
     if inserted is None:
         existing = db.execute(
             "SELECT id,protocol_version,request_sha256 FROM protocol_instances "
-            "WHERE protocol_id=%s AND subject_type='work_item' AND subject_id=%s "
+            "WHERE protocol_id=%s AND subject_type=%s AND subject_id=%s "
             "AND idempotency_key=%s",
-            (protocol_id, work_id, key),
+            (protocol_id, subject_type, work_id, key),
         ).fetchone()
         if not existing or existing[1] != version or existing[2] != request_sha256:
             raise HTTPException(409, "Protocol instance conflicts with the original request")

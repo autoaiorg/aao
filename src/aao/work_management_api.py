@@ -1676,6 +1676,18 @@ def create_conversation_work_group(
                 (group_id, project_id, conversation_id, parent_work_id,
                  payload.idempotency_key, request_hash),
             )
+            start_work_protocol(
+                db,
+                protocol_id="planning-assignment",
+                work_id=group_id,
+                subject_type="work_group",
+                started_by="ceo",
+                request={
+                    "project_id": project_id,
+                    "conversation_id": conversation_id,
+                    **payload.model_dump(mode="json"),
+                },
+            )
             task_ids = {task.key: str(uuid4()) for task in payload.tasks}
             assigned_principals = {task.assigned_principal_id for task in payload.tasks
                                    if task.assigned_principal_id is not None}

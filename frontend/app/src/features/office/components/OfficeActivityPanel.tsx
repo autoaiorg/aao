@@ -16,6 +16,7 @@ interface OfficeActivityPanelProps {
 function describeActivity(event: ActivityEvent): string {
   if (event.kind === 'work.dispatch_blocked') return 'Bloqueo de despacho';
   if (event.kind === 'work.execution_quarantined') return 'Lease expirada · ejecución en cuarentena';
+  if (event.kind === 'work.execution_reconciled') return 'Ejecución reconciliada por auditoría';
   if (event.kind.startsWith('execution.')) return 'Ejecución';
   if (event.kind.startsWith('work.')) return 'Trabajo';
   if (event.kind.startsWith('review.')) return 'Revisión';
@@ -24,6 +25,17 @@ function describeActivity(event: ActivityEvent): string {
 }
 
 function activityExplanation(event: ActivityEvent): string | undefined {
+  if (event.kind === 'work.execution_reconciled'
+    && event.details && typeof event.details === 'object') {
+    const details = event.details as Record<string, unknown>;
+    if (details.disposition === 'RETRY_CONFIRMED_SAFE') {
+      return 'Un auditor autorizó el reintento y la ejecución volvió a la cola.';
+    }
+    if (details.disposition === 'MARK_FAILED') {
+      return 'Un auditor revisó la evidencia y marcó la ejecución como fallida.';
+    }
+    return undefined;
+  }
   if (!['work.dispatch_blocked', 'work.execution_quarantined'].includes(event.kind)
     || !event.details || typeof event.details !== 'object') {
     return undefined;

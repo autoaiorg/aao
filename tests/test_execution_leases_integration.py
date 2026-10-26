@@ -1,8 +1,11 @@
 """PostgreSQL integration tests, opt-in for explicitly disposable databases."""
 import os
+import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -376,6 +379,106 @@ def test_inert_worker_concurrent_claims_never_duplicate(monkeypatch):
     assert set(claimed) == set(ids)
     assert len(claimed) == len(set(claimed)) == 4
     assert all(state(eid)["status"] == "RUNNING" for eid in ids)
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="Explicit disposable PostgreSQL database required",
+)
+def test_recovery_worker_process_quarantines_expired_lease_once(monkeypatch):
+    """Exercise restart recovery through the standalone service entry point."""
+    from aao.execution_queue import claim
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    db_url = os.environ["AAO_TEST_POSTGRES_URL"]
+    monkeypatch.setenv("AAO_ENV", "test")
+    monkeypatch.setenv("AAO_POSTGRES_URL", db_url)
+    monkeypatch.setenv("AAO_CEO_TOKEN", "recovery-process-ceo")
+    monkeypatch.setenv("AAO_SANDBOX_QUEUE_ENABLED", "true")
+    ceo = {"X-CEO-Token": "recovery-process-ceo"}
+    worker_id = "recovery-worker-" + str(uuid4())
+
+    with TestClient(app) as client:
+        issued = client.post("/v1/principals/credentials", headers=ceo, json={
+            "principal_id": worker_id, "kind": "AGENT",
+        })
+        assert issued.status_code == 201, issued.text
+        token = issued.json()["token"]
+        worker = {"X-Agent-Token": token}
+        mandate_id = client.post("/v1/mandates", headers=ceo, json={
+            "title": "Recovery " + str(uuid4()), "objective": "Restart recovery",
+        }).json()["id"]
+        assert client.post(f"/v1/mandates/{mandate_id}/confirm", headers=ceo).status_code == 200
+        project_id = client.post("/v1/projects", headers=ceo, json={
+            "name": "Recovery process", "mandate_id": mandate_id,
+        }).json()["id"]
+        for capability in ("work.create", "work.admit", "execution.claim"):
+            grant = client.post(f"/v1/projects/{project_id}/grants", headers=ceo, json={
+                "principal_id": worker_id, "capability": capability,
+            })
+            assert grant.status_code == 201, grant.text
+        work_id = client.post(f"/v1/projects/{project_id}/work", headers=worker, json={
+            "title": "Recover expired execution", "author_id": worker_id,
+            "acceptance_criteria": ["uncertain after expired lease"],
+        }).json()["id"]
+        assert client.post(f"/v1/work/{work_id}/admit", headers=worker).status_code == 200
+        staged = client.post(f"/v1/work/{work_id}/stage-inert", headers=worker)
+        assert staged.status_code == 202, staged.text
+        execution_id = staged.json()["execution_id"]
+
+    lease = claim(worker_id, agent_credential=token, project_id=project_id, seconds=3600)
+    assert lease and lease["execution_id"] == execution_id
+    with connect_postgres() as db:
+        db.execute(
+            "UPDATE execution_queue SET lease_expires_at=clock_timestamp()-interval '1 second' "
+            "WHERE id=%s", (execution_id,),
+        )
+
+    env = os.environ.copy()
+    env["AAO_ENV"] = "test"
+    env["AAO_POSTGRES_URL"] = db_url
+    repo_root = Path(__file__).resolve().parents[1]
+    command = [
+        sys.executable, str(repo_root / "scripts/run_execution_lease_recovery_worker.py"), "--once",
+    ]
+    first = subprocess.run(command, cwd=repo_root, env=env, capture_output=True, text=True, check=False)
+    assert first.returncode == 0, first.stderr
+    assert first.stdout.startswith("Quarantined ")
+    assert int(first.stdout.split()[1]) >= 1
+
+    with connect_postgres() as db:
+        status = db.execute(
+            "SELECT status FROM execution_queue WHERE id=%s", (execution_id,),
+        ).fetchone()[0]
+        journal_count = db.execute(
+            "SELECT count(*) FROM execution_journal WHERE execution_id=%s AND kind='quarantined'",
+            (execution_id,),
+        ).fetchone()[0]
+        event_count = db.execute(
+            "SELECT count(*) FROM events WHERE subject_id=%s AND kind='work.execution_quarantined'",
+            (work_id,),
+        ).fetchone()[0]
+        protocol_count = db.execute(
+            "SELECT count(*) FROM protocol_instances WHERE subject_id=%s AND subject_type='work_item' "
+            "AND protocol_id='blockage-escalation'",
+            (work_id,),
+        ).fetchone()[0]
+    assert status == "UNCERTAIN"
+    assert (journal_count, event_count, protocol_count) == (1, 1, 1)
+
+    second = subprocess.run(command, cwd=repo_root, env=env, capture_output=True, text=True, check=False)
+    assert second.returncode == 0, second.stderr
+    assert second.stdout == ""
+    with connect_postgres() as db:
+        assert db.execute(
+            "SELECT count(*) FROM execution_journal WHERE execution_id=%s AND kind='quarantined'",
+            (execution_id,),
+        ).fetchone()[0] == 1
+        assert db.execute(
+            "SELECT count(*) FROM events WHERE subject_id=%s AND kind='work.execution_quarantined'",
+            (work_id,),
+        ).fetchone()[0] == 1
 
 
 @pytest.mark.skipif(

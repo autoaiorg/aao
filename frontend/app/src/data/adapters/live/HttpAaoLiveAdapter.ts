@@ -1081,6 +1081,12 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
           source_snapshot: z.object({ children: z.array(child) }), idempotency_key: z.string().uuid(),
           created_by: z.string(), created_at: z.string(),
         }).nullable(),
+        partial_reports: z.array(z.object({
+          id: z.string().uuid(), report_kind: z.enum(['PARTIAL', 'CONFLICT_REVIEW']),
+          summary: z.string(), source_sha256: z.string().regex(/^[0-9a-f]{64}$/),
+          source_snapshot: z.unknown(), idempotency_key: z.string().uuid(),
+          created_by: z.string(), created_at: z.string(),
+        })),
       })),
     );
   }
@@ -1119,6 +1125,24 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
         parent_work_id: z.string().uuid(), summary: z.string(), source_sha256: z.string(),
         source_snapshot: z.object({ children: z.array(child) }), idempotency_key: z.string().uuid(),
         created_by: z.string(), created_at: z.string(), created: z.boolean(),
+      }),
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) },
+    );
+  }
+
+  async createWorkGroupPartialReport(
+    projectId: string,
+    groupId: string,
+    input: { idempotency_key: string; expected_source_sha256: string; report_kind: 'PARTIAL' | 'CONFLICT_REVIEW'; summary: string },
+  ) {
+    if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden' as const, reason: 'Solo la sesión CEO puede registrar informes.' };
+    return this.request(
+      `/v1/projects/${encodeURIComponent(projectId)}/work-groups/${encodeURIComponent(groupId)}/partial-reports`,
+      z.object({
+        id: z.string().uuid(), report_kind: z.enum(['PARTIAL', 'CONFLICT_REVIEW']),
+        summary: z.string(), source_sha256: z.string().regex(/^[0-9a-f]{64}$/),
+        source_snapshot: z.unknown(), idempotency_key: z.string().uuid(),
+        created_by: z.string(), created_at: z.string(), created: z.boolean(), final: z.literal(false),
       }),
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) },
     );

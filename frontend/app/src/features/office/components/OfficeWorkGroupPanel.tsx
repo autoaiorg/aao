@@ -19,6 +19,8 @@ export const OfficeWorkGroupPanel: React.FC<OfficeWorkGroupPanelProps> = ({ proj
     : [], [projects]);
   const [projectId, setProjectId] = useState('');
   const [summaries, setSummaries] = useState<Record<string, string>>({});
+  const [reportSummaries, setReportSummaries] = useState<Record<string, string>>({});
+  const [reportKinds, setReportKinds] = useState<Record<string, 'PARTIAL' | 'CONFLICT_REVIEW'>>({});
   const [pendingGroup, setPendingGroup] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const selectedProjectId = activeProjects.some((project) => project.id === projectId)
@@ -74,6 +76,26 @@ export const OfficeWorkGroupPanel: React.FC<OfficeWorkGroupPanelProps> = ({ proj
       }
     } else if (result.kind === 'forbidden') setNotice(result.reason);
     else setNotice('No se pudo confirmar la consolidación.');
+  };
+
+  const reportPartial = async (groupId: string, sourceHash: string) => {
+    const summary = reportSummaries[groupId]?.trim();
+    if (!selectedProjectId || !summary || pendingGroup) return;
+    setPendingGroup(groupId); setNotice(null);
+    const result = await port.createWorkGroupPartialReport(selectedProjectId, groupId, {
+      idempotency_key: crypto.randomUUID(), expected_source_sha256: sourceHash,
+      report_kind: reportKinds[groupId] || 'PARTIAL', summary,
+    });
+    setPendingGroup(null);
+    if (result.kind === 'ready') {
+      setNotice('Informe no final guardado contra la evidencia observada; no cambia estados ni inicia ejecuciones.');
+      setReportSummaries((current) => ({ ...current, [groupId]: '' }));
+      await queryClient.invalidateQueries({ queryKey: ['office-work-groups', sessionId, selectedProjectId] });
+    } else if (result.kind === 'error') {
+      setNotice(`${result.code}: ${result.message}`);
+      if (result.code === 'HTTP_409') await queryClient.invalidateQueries({ queryKey: ['office-work-groups', sessionId, selectedProjectId] });
+    } else if (result.kind === 'forbidden') setNotice(result.reason);
+    else setNotice('No se pudo guardar el informe no final.');
   };
 
   return <section className="office-form-panel" aria-labelledby="office-work-groups-heading">
@@ -141,6 +163,20 @@ export const OfficeWorkGroupPanel: React.FC<OfficeWorkGroupPanelProps> = ({ proj
           </li>;
         })}
       </ul>
+      {group.partial_reports.map((report) => <div className="office-work-group__saved" key={report.id}>
+        <strong>{report.report_kind === 'CONFLICT_REVIEW' ? 'Revisión de conflicto declarada por CEO' : 'Informe parcial CEO'} · NO FINAL</strong>
+        <p>{report.summary}</p><small>Snapshot {report.source_sha256.slice(0, 16)}{report.source_sha256 === group.source_sha256 ? ' · coincide con el estado actual' : ' · snapshot anterior, no refleja necesariamente el estado actual'} · {new Date(report.created_at).toLocaleString()}</small>
+      </div>)}
+      {!group.consolidation && <form onSubmit={(event) => { event.preventDefault(); void reportPartial(group.id, group.source_sha256); }}>
+        <label className="office-form-field">
+          <span>Registrar observación no final</span>
+          <select className="office-form-control" value={reportKinds[group.id] || 'PARTIAL'} onChange={(event) => setReportKinds((current) => ({ ...current, [group.id]: event.target.value as 'PARTIAL' | 'CONFLICT_REVIEW' }))}>
+            <option value="PARTIAL">Resultado parcial</option><option value="CONFLICT_REVIEW">Revisión de conflicto</option>
+          </select>
+          <textarea className="office-form-control office-form-control--textarea" rows={2} maxLength={20000} required value={reportSummaries[group.id] || ''} onChange={(event) => setReportSummaries((current) => ({ ...current, [group.id]: event.target.value }))} disabled={pendingGroup === group.id} placeholder="Registra una observación CEO sobre el snapshot actual; no es una síntesis final." />
+        </label>
+        <Button type="submit" variant="secondary" disabled={!reportSummaries[group.id]?.trim() || pendingGroup === group.id}>{pendingGroup === group.id ? 'Guardando…' : 'Guardar informe no final'}</Button>
+      </form>}
       {group.consolidation ? <div className="office-work-group__saved">
         <strong>Consolidación guardada · {group.consolidation.created_by}</strong>
         <p>{group.consolidation.summary}</p>

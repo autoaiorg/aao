@@ -433,6 +433,9 @@ describe('HttpAaoLiveAdapter organization projection', () => {
     expect((await agent.confirmWorkGroupConsolidation('p', 'g', {
       idempotency_key: '00000000-0000-4000-8000-000000000051', expected_source_sha256: 'a'.repeat(64), summary: 'CEO reviewed',
     })).kind).toBe('forbidden');
+    expect((await agent.createWorkGroupPartialReport('p', 'g', {
+      idempotency_key: '00000000-0000-4000-8000-000000000051', expected_source_sha256: 'a'.repeat(64), report_kind: 'PARTIAL', summary: 'Not final',
+    })).kind).toBe('forbidden');
     expect(fetch).not.toHaveBeenCalled();
 
     fetch.mockResolvedValueOnce({ status: 200, ok: true, json: async () => [] } as Response);
@@ -454,6 +457,23 @@ describe('HttpAaoLiveAdapter organization projection', () => {
     expect(fetch).toHaveBeenNthCalledWith(2, expect.stringContaining('/v1/projects/project%2F1/work-groups/group%2F1/consolidation'), expect.objectContaining({
       method: 'POST', headers: expect.objectContaining({ 'X-CEO-Token': 'ceo-token', 'Content-Type': 'application/json' }),
     }));
+  });
+
+  it('records CEO partial reports through the canonical endpoint', async () => {
+    const fetch = vi.spyOn(global, 'fetch');
+    fetch.mockResolvedValueOnce({ status: 201, ok: true, json: async () => ({
+      id: '00000000-0000-4000-8000-000000000056', report_kind: 'PARTIAL', summary: 'One child pending',
+      source_sha256: 'a'.repeat(64), source_snapshot: { children: [] },
+      idempotency_key: '00000000-0000-4000-8000-000000000057', created_by: 'ceo',
+      created_at: '2026-10-26T00:00:00Z', created: true, final: false,
+    }) } as Response);
+    const ceo = new HttpAaoLiveAdapter({ getToken: () => 'ceo-token', getAuthRole: () => 'CEO', requireAuth: true });
+    const result = await ceo.createWorkGroupPartialReport('project/1', 'group/1', {
+      idempotency_key: '00000000-0000-4000-8000-000000000057', expected_source_sha256: 'a'.repeat(64),
+      report_kind: 'PARTIAL', summary: 'One child pending',
+    });
+    expect(result.kind).toBe('ready');
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('/v1/projects/project%2F1/work-groups/group%2F1/partial-reports'), expect.objectContaining({ method: 'POST' }));
   });
 
   it('assigns a work-group child only in a CEO session and uses the canonical assignment route', async () => {

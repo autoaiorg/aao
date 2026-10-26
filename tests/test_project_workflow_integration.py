@@ -1968,7 +1968,35 @@ def test_work_group_consolidation_is_ceo_confirmed_idempotent_and_evidence_bound
         group = group_response.json()
         group_list_url = f"/v1/projects/{project}/work-groups"
         assert client.get(group_list_url).status_code == 403
-        assert client.get(group_list_url, headers=ceo).json()[0]["consolidation_ready"] is False
+        initial_group = client.get(group_list_url, headers=ceo).json()[0]
+        assert initial_group["consolidation_ready"] is False
+        assert initial_group["partial_reports"] == []
+        partial_endpoint = f"/v1/projects/{project}/work-groups/{group['id']}/partial-reports"
+        partial_payload = {
+            "idempotency_key": str(uuid4()),
+            "expected_source_sha256": initial_group["source_sha256"],
+            "report_kind": "PARTIAL",
+            "summary": "One outcome is still in progress; this is not final.",
+        }
+        assert client.post(partial_endpoint, json=partial_payload).status_code == 403
+        partial = client.post(partial_endpoint, headers=ceo, json=partial_payload)
+        assert partial.status_code == 201, partial.text
+        assert partial.json()["final"] is False
+        assert client.post(partial_endpoint, headers=ceo, json=partial_payload).json()["created"] is False
+        changed_partial = {**partial_payload, "summary": "Changed after submission"}
+        assert client.post(partial_endpoint, headers=ceo, json=changed_partial).status_code == 409
+        with connect_postgres() as db:
+            statuses = db.execute(
+                "SELECT status FROM work_items WHERE id = ANY(%s)",
+                ([child["id"] for child in group["tasks"]],),
+            ).fetchall()
+            report_events = db.execute(
+                "SELECT details FROM events WHERE subject_id=%s AND kind='work.group_partial_reported'",
+                (group["parent_work_id"],),
+            ).fetchall()
+        assert [status[0] for status in statuses] == ["INBOX", "INBOX"]
+        assert len(report_events) == 1 and report_events[0][0]["final"] is False
+        assert len(client.get(group_list_url, headers=ceo).json()[0]["partial_reports"]) == 1
 
         with connect_postgres() as db:
             for index, child in enumerate(group["tasks"]):
@@ -2009,6 +2037,12 @@ def test_work_group_consolidation_is_ceo_confirmed_idempotent_and_evidence_bound
             ).fetchone()[0]
         assert records == 0
 
+        changed_report = {
+            **partial_payload, "expected_source_sha256": "0" * 64,
+            "idempotency_key": str(uuid4()),
+        }
+        assert client.post(partial_endpoint, headers=ceo, json=changed_report).status_code == 409
+
         saved = client.post(endpoint, headers=ceo, json=payload)
         assert saved.status_code == 201, saved.text
         consolidation = saved.json()
@@ -2023,6 +2057,13 @@ def test_work_group_consolidation_is_ceo_confirmed_idempotent_and_evidence_bound
         assert "must-not-leak" not in saved.text
         replay = client.post(endpoint, headers=ceo, json=payload)
         assert replay.status_code == 201 and replay.json()["created"] is False
+        after_final = {
+            "idempotency_key": str(uuid4()),
+            "expected_source_sha256": listed["source_sha256"],
+            "report_kind": "PARTIAL", "summary": "Cannot append a partial report after final consolidation.",
+        }
+        assert client.post(partial_endpoint, headers=ceo, json=after_final).status_code == 409
+        assert client.post(partial_endpoint, headers=ceo, json=partial_payload).json()["created"] is False
 
         with connect_postgres() as db:
             parent_status = db.execute(

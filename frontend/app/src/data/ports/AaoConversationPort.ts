@@ -86,6 +86,16 @@ export interface WorkGroupConsolidation {
   created_at: string;
 }
 
+export interface WorkGroupPartialReport {
+  id: string;
+  report_kind: 'PARTIAL' | 'CONFLICT_REVIEW';
+  summary: string;
+  source_sha256: string;
+  idempotency_key: string;
+  created_by: string;
+  created_at: string;
+}
+
 export interface ProjectWorkGroup {
   id: string;
   conversation_id: string;
@@ -103,6 +113,7 @@ export interface ProjectWorkGroup {
     reviews: Array<{ id: string; decision: string; candidate_sha: string | null; evidence: unknown }>;
   }>;
   consolidation: WorkGroupConsolidation | null;
+  partial_reports: WorkGroupPartialReport[];
 }
 
 export interface WorkGroupConsolidationResult extends WorkGroupConsolidation {
@@ -153,4 +164,9 @@ export interface AaoConversationPort {
     groupId: string,
     input: { idempotency_key: string; expected_source_sha256: string; summary: string },
   ): Promise<DataState<WorkGroupConsolidationResult>>;
+  createWorkGroupPartialReport(
+    projectId: string,
+    groupId: string,
+    input: { idempotency_key: string; expected_source_sha256: string; report_kind: 'PARTIAL' | 'CONFLICT_REVIEW'; summary: string },
+  ): Promise<DataState<WorkGroupPartialReport & { created: boolean; final: false }>>;
 }

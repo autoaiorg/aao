@@ -10,7 +10,7 @@ import secrets
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 from aao.environment_settings import load_local_env
@@ -273,6 +273,21 @@ class WorkGroupConsolidationRequest(BaseModel):
     @field_validator("summary")
     @classmethod
     def summary_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Summary must not be blank")
+        return value
+
+
+class WorkGroupPartialReportRequest(BaseModel):
+    idempotency_key: UUID
+    expected_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    report_kind: Literal["PARTIAL", "CONFLICT_REVIEW"]
+    summary: str = Field(min_length=1, max_length=20000)
+
+    @field_validator("summary")
+    @classmethod
+    def partial_summary_not_blank(cls, value: str) -> str:
         value = value.strip()
         if not value:
             raise ValueError("Summary must not be blank")
@@ -1710,6 +1725,11 @@ def list_project_work_groups(project_id: str, _: str = Depends(require_ceo)):
                     "idempotency_key": str(row[9]), "created_by": row[10],
                     "created_at": row[11].isoformat(),
                 }
+            reports = db.execute(
+                "SELECT id,report_kind,summary,source_sha256,source_snapshot,idempotency_key,"
+                "created_by,created_at FROM work_group_partial_reports "
+                "WHERE work_group_id=%s ORDER BY created_at,id", (row[0],),
+            ).fetchall()
             result.append({
                 "id": str(row[0]), "conversation_id": str(row[1]),
                 "parent_work_id": str(row[2]), "title": row[3],
@@ -1717,6 +1737,12 @@ def list_project_work_groups(project_id: str, _: str = Depends(require_ceo)):
                 "source_sha256": source_sha256,
                 "consolidation_ready": bool(children) and all(child["status"] == "DONE" for child in children),
                 "consolidation": stored,
+                "partial_reports": [{
+                    "id": str(report[0]), "report_kind": report[1], "summary": report[2],
+                    "source_sha256": report[3], "source_snapshot": report[4],
+                    "idempotency_key": str(report[5]), "created_by": report[6],
+                    "created_at": report[7].isoformat(),
+                } for report in reports],
             })
     return result
 
@@ -1780,6 +1806,74 @@ def create_work_group_consolidation(
             "work_status_changed": False, "execution_created": False,
         })
     return _consolidation_response(row, created=True)
+
+
+@app.post("/v1/projects/{project_id}/work-groups/{group_id}/partial-reports", status_code=201)
+def create_work_group_partial_report(
+    project_id: str,
+    group_id: str,
+    payload: WorkGroupPartialReportRequest,
+    _: str = Depends(require_ceo),
+):
+    """Persist a CEO-authored, explicitly non-final observation of a work-group snapshot."""
+    request_sha256 = hashlib.sha256(json.dumps({
+        "project_id": project_id, "work_group_id": group_id,
+        "expected_source_sha256": payload.expected_source_sha256,
+        "report_kind": payload.report_kind,
+        "summary": payload.summary,
+    }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    with tx() as db:
+        group = db.execute(
+            "SELECT parent_work_id FROM work_groups WHERE id=%s AND project_id=%s FOR UPDATE",
+            (group_id, project_id),
+        ).fetchone()
+        if not group:
+            raise HTTPException(404, "Work group not found")
+        parent_work_id = str(group[0])
+        prior_key = db.execute(
+            "SELECT id,report_kind,summary,source_sha256,source_snapshot,idempotency_key,"
+            "created_by,created_at,request_sha256 FROM work_group_partial_reports "
+            "WHERE project_id=%s AND idempotency_key=%s", (project_id, payload.idempotency_key),
+        ).fetchone()
+        if prior_key:
+            if prior_key[8] == request_sha256:
+                return _partial_report_response(prior_key, created=False)
+            raise HTTPException(409, "Idempotency key was used for another report")
+        if db.execute(
+            "SELECT 1 FROM work_group_consolidations WHERE work_group_id=%s", (group_id,),
+        ).fetchone():
+            raise HTTPException(409, "A final consolidation already exists for this work group")
+        snapshot, source_sha256 = _work_group_source_snapshot(
+            db, project_id, parent_work_id, lock=True,
+        )
+        if source_sha256 != payload.expected_source_sha256:
+            raise HTTPException(409, "Work group results changed; reload before recording report")
+        row = db.execute(
+            "INSERT INTO work_group_partial_reports(id,project_id,work_group_id,parent_work_id,"
+            "report_kind,summary,source_sha256,source_snapshot,idempotency_key,request_sha256,created_by) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,'ceo') "
+            "RETURNING id,report_kind,summary,source_sha256,source_snapshot,idempotency_key,"
+            "created_by,created_at,request_sha256",
+            (str(uuid4()), project_id, group_id, parent_work_id, payload.report_kind,
+             payload.summary, source_sha256, json.dumps(snapshot), payload.idempotency_key, request_sha256),
+        ).fetchone()
+        audit(db, parent_work_id, "work.group_partial_reported", {
+            "project_id": project_id, "work_group_id": group_id,
+            "partial_report_id": str(row[0]), "report_kind": payload.report_kind,
+            "source_sha256": source_sha256, "child_count": len(snapshot["children"]),
+            "actor": "ceo", "final": False, "work_status_changed": False,
+            "execution_created": False,
+        })
+    return _partial_report_response(row, created=True)
+
+
+def _partial_report_response(row, *, created: bool):
+    return {
+        "id": str(row[0]), "report_kind": row[1], "summary": row[2],
+        "source_sha256": row[3], "source_snapshot": row[4],
+        "idempotency_key": str(row[5]), "created_by": row[6],
+        "created_at": row[7].isoformat(), "created": created, "final": False,
+    }
 
 
 @app.get("/v1/projects/{project_id}/assignable-agents")

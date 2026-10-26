@@ -569,9 +569,14 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         assert proposal_body["provider"] == "openai-compatible"
         assert proposal_body["model"] == "proposal-test-model"
         assert proposal_body["persisted_as_work"] is False
-        assert len(proposal_body["based_on_message_ids"]) == len(turn_messages)
+        current_turn_messages = client.get(
+            f"/v1/projects/{project}/conversations/{conversation_id}/messages", headers=ceo,
+        ).json()
+        assert len(proposal_body["based_on_message_ids"]) == len(current_turn_messages)
         assert any(item["content"] == turn["body"] for item in proposal_calls[0])
         assert any(item["content"] == "Conversación persistida." for item in proposal_calls[0])
+        assert any(item["content"] == crashed_body for item in proposal_calls[0])
+        assert any(item["content"] == "Recovered once." for item in proposal_calls[0])
         with connect_postgres() as db:
             work_count_after_proposal = db.execute(
                 "SELECT count(*) FROM work_items WHERE project_id=%s", (project,),

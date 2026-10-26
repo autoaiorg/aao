@@ -2167,7 +2167,7 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
     exactly that SHA and opens the PR; the merged PR makes the task DONE; the activity feed shows each step."""
     import subprocess
 
-    from aao.inert_execution_worker import run_one
+    import aao.inert_execution_worker as execution_worker
     from aao.work_management_api import app
 
     # The fixture repository is this checkout's HEAD, so the sandboxed core-unit check has real tests to run.
@@ -2197,6 +2197,24 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
     monkeypatch.setenv("AAO_AGENT_BACKEND", "codex")
     monkeypatch.delenv("AAO_AGENT_PROVIDER", raising=False)
     monkeypatch.setenv("AAO_AGENT_FIXTURE_PATCH", str(failing))
+
+    # Exercise the real authenticated API routes while keeping this opt-in
+    # integration test isolated from a separately running host API service.
+    # The VM's production aao-api process correctly rejects development/test
+    # credentials, so pointing the worker at localhost would cross that boundary.
+    def request_through_test_client(path, credential, *, body, method="POST"):
+        response = client.request(
+            method, path,
+            headers={"X-Agent-Token": credential},
+            json=body,
+        )
+        if response.status_code >= 400:
+            raise execution_worker.WorkerAPIError(
+                response.status_code, "AAO worker API rejected the operation",
+            )
+        return response.json()
+
+    monkeypatch.setattr(execution_worker, "_api_request", request_through_test_client)
     ceo = {"X-CEO-Token": "agent-run-ceo"}
     with TestClient(app) as client:
         identity = "w1-agent-" + str(uuid4())
@@ -2274,7 +2292,7 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         assert client.post(f"/v1/work/{work}/progress", headers=agent).status_code == 200
 
         # Attempt 1: the candidate is committed and stored, but its own test fails, so the execution FAILED.
-        assert run_one(identity, token, project_id=project, seconds=400)["status"] == "FAILED"
+        assert execution_worker.run_one(identity, token, project_id=project, seconds=400)["status"] == "FAILED"
         # Recovery: the task can be re-run after a failed attempt.
         monkeypatch.setenv("AAO_AGENT_FIXTURE_PATCH", str(passing))
         # I5: attempt 1 spent an estimated 0.5 today; with a daily budget of 0.9 another 0.5 does not fit. The
@@ -2296,11 +2314,11 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         def broken(*_args, **_kwargs):
             raise checks.RepositoryCheckError("sandbox unavailable")
         monkeypatch.setattr(checks, "run_repository_check", broken)
-        assert run_one(identity, token, project_id=project, seconds=400)["status"] == "FAILED"
+        assert execution_worker.run_one(identity, token, project_id=project, seconds=400)["status"] == "FAILED"
         monkeypatch.setattr(checks, "run_repository_check", real_check)
         # ...and attempt 3 reproduces the same patch: it reuses that proposal instead of failing on it.
         assert client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run).status_code == 202
-        outcome = run_one(identity, token, project_id=project, seconds=400)
+        outcome = execution_worker.run_one(identity, token, project_id=project, seconds=400)
         board = client.get(f"/v1/projects/{project}/board", headers=agent).json()
         last = next(i for i in board if i["id"] == work)["executions"][-1]["result"]
         print(last.get("check", {}).get("stderr"))  # shown by pytest only on failure
@@ -2412,7 +2430,7 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         # Attempts 2 and 3 share a patch but end differently (sandbox unavailable, then tested): that is progress.
         monkeypatch.setenv("AAO_AGENT_MAX_ATTEMPTS", "4")
         assert client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run).status_code == 202
-        assert run_one(identity, token, project_id=project, seconds=400)["status"] == "SUCCEEDED"
+        assert execution_worker.run_one(identity, token, project_id=project, seconds=400)["status"] == "SUCCEEDED"
         # Attempt 4 reproduced attempt 3 exactly (same patch, same tested outcome): no progress, so a fifth is
         # refused even below the attempt limit.
         monkeypatch.setenv("AAO_AGENT_MAX_ATTEMPTS", "10")

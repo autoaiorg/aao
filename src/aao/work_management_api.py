@@ -2230,6 +2230,28 @@ def _persist_work_group_consolidation(
         children = snapshot["children"]
         if not children or any(child["status"] != "DONE" for child in children):
             raise HTTPException(409, "All child work must be DONE before consolidation")
+        if coordinator is not None:
+            child_ids = [child["work_id"] for child in children]
+            self_attribution = db.execute(
+                "SELECT EXISTS(SELECT 1 FROM work_items WHERE project_id=%s "
+                "AND parent_work_id=%s AND author_id=%s) "
+                "OR EXISTS(SELECT 1 FROM work_item_assignments WHERE project_id=%s "
+                "AND work_id=ANY(%s) AND principal_id=%s) "
+                "OR EXISTS(SELECT 1 FROM events WHERE subject_id=ANY(%s) "
+                "AND kind='work.assigned' AND details->>'principal_id'=%s "
+                "AND details->>'assigned_by'=%s) "
+                "OR EXISTS(SELECT 1 FROM execution_queue WHERE project_id=%s "
+                "AND work_id=ANY(%s) AND worker_id=%s)",
+                (project_id, parent_work_id, str(coordinator),
+                 project_id, child_ids, str(coordinator),
+                 child_ids, str(coordinator), str(coordinator),
+                 project_id, child_ids, str(coordinator)),
+            ).fetchone()[0]
+            if self_attribution:
+                raise HTTPException(
+                    409,
+                    "A coordinator cannot consolidate work they authored, assigned to themselves, or executed",
+                )
         if source_sha256 != payload.expected_source_sha256:
             raise HTTPException(409, "Work group results changed; reload before confirming consolidation")
         row = db.execute(
@@ -2440,6 +2462,8 @@ def _assign_group_child_work(
         project_id, parent_work_id, status, required_competencies = work
         if coordinator is not None:
             require_grant(db, coordinator, str(project_id), "work.assign")
+            if payload.principal_id == str(coordinator):
+                raise HTTPException(409, "A coordinator cannot assign group work to themselves")
         if parent_work_id is None or not db.execute(
             "SELECT 1 FROM work_groups WHERE parent_work_id=%s", (parent_work_id,),
         ).fetchone():

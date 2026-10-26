@@ -76,7 +76,7 @@ Esta sección concreta el uso del piloto sin introducir nuevos estados de trabaj
 - No repetir efectos no idempotentes: cada comando debe tener clave idempotente estable o precondición transaccional; duplicados devuelven el resultado previo o se rechazan sin duplicar ejecuciones.
 - La asignación declarativa y la identidad que efectivamente ejecuta se conservan separadas y ambas quedan auditables.
 - Una revisión se invalida si cambia la identidad/SHA del candidato revisado; ningún evento anterior equivale a aprobación vigente.
-- La consolidación de un grupo no es confirmación CEO ni revisión independiente. Quien consolida no puede haber sido autor de ninguna tarea hija (requisito operativo ya anotado en la matriz).
+- La consolidación de un grupo no es confirmación CEO ni revisión independiente. Un coordinador PM no puede consolidar si fue autor de cualquier hija, si la asignó a su propio principal (incluida atribución histórica en eventos aunque luego se reasignara), o si figura como ejecutor de cualquiera de las hijas. La ruta PM tampoco puede asignarle trabajo a sí mismo. El backend comprueba atribuciones persistidas y rechaza el conflicto; los casos positivos y negativos deben estar cubiertos antes de la operación autónoma. Esta segregación sigue el principio autor/revisor, sin cambiar la ruta CEO.
 - Fallos de autoridad, persistencia, lease o integridad son fail-closed; no degradar a SQLite, datos simulados ni autorización por rol textual en operación LIVE.
 - Ninguna ruta propuesta habilita integrador, modifica el ledger/root of trust, publica política oficial o decide materias reservadas. Cualquier protocolo que toque esas materias necesita una decisión CEO explícita antes de implementarse o activarse.
 

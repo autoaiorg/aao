@@ -56,11 +56,18 @@ mkdir -p /opt/aao/repo /opt/aao/frontend /var/log/aao /etc/aao /var/backups/aao
 chmod 0755 /opt/aao
 chmod 0750 /var/log/aao /etc/aao /var/backups/aao
 
-say "Setting up isolated production Python virtual environment in /opt/aao/venv..."
-if [[ ! -d /opt/aao/venv ]]; then
-  python3 -m venv /opt/aao/venv
+say "Setting up base Python virtual environment in /opt/aao/base_venv..."
+if [[ ! -d /opt/aao/base_venv ]]; then
+  if [[ -d /opt/aao/venv && ! -L /opt/aao/venv ]]; then
+    mv /opt/aao/venv /opt/aao/base_venv
+  else
+    python3 -m venv /opt/aao/base_venv
+  fi
+  /opt/aao/base_venv/bin/pip install --quiet --upgrade pip setuptools wheel
 fi
-/opt/aao/venv/bin/pip install --quiet --upgrade pip setuptools wheel
+if [[ ! -e /opt/aao/venv ]]; then
+  ln -sfn /opt/aao/base_venv /opt/aao/venv
+fi
 
 say "Dependencies installed successfully."
 exit 0

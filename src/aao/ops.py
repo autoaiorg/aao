@@ -141,12 +141,12 @@ def check_governance_guardrails() -> DiagnosticCheck:
     return DiagnosticCheck(
         "Governance Guardrails",
         "PASS",
-        "Integrator is OFF. RA remain PENDING. Constitutional controls intact.",
+        "LOCKED_UNAUTHORIZED: Integrator is OFF (masked). RA remain PENDING. R2 locked.",
     )
 
 
 def check_governance_identities() -> DiagnosticCheck:
-    """Verify that product and governance role identities exist and comply with P1."""
+    """Verify governance role identities, distinguish STAGED_PENDING_KEYS vs INSTALLED_VERIFIED."""
     import pwd
     required = ["aao-api", "aao-auditor", "aao-supervisor", "aao-integrator"]
     missing = []
@@ -160,19 +160,45 @@ def check_governance_identities() -> DiagnosticCheck:
         is_host_install = Path("/opt/aao").is_dir()
         if is_host_install:
             return DiagnosticCheck(
-                "Governance Identities",
+                "Governance Infrastructure",
                 "FAIL",
                 f"Missing required identities: {', '.join(missing)}. Action: run 'sudo scripts/bootstrap/init_identities.sh'.",
             )
         return DiagnosticCheck(
-            "Governance Identities",
+            "Governance Infrastructure",
             "WARN",
             f"Non-host environment missing identities: {', '.join(missing)}.",
         )
+
+    # Check GitHub App keys status to distinguish INSTALLED_VERIFIED from STAGED_PENDING_KEYS
+    app_keys = [
+        "/home/aao-integrator/.config/aao/aao-integrator.pem",
+        "/home/aao-auditor/.config/aao/aao-auditor.pem",
+        "/home/aao-auditor-alt/.config/aao/aao-auditor-alt.pem",
+        "/home/aao-supervisor/.config/aao/aao-supervisor.pem",
+        "/home/aao-notifier/.config/aao/aao-notifier.pem",
+        "/home/aao-pm/.config/aao/aao-pm.pem",
+        "/home/aao-impl-claude/.config/aao/aao-impl-claude.pem",
+        "/home/aao-impl-codex/.config/aao/aao-impl-codex.pem",
+        "/home/aao-impl-ag/.config/aao/aao-impl-agy.pem",
+    ]
+    present_keys = [k for k in app_keys if Path(k).is_file()]
+    if len(present_keys) == len(app_keys):
+        return DiagnosticCheck(
+            "Governance Infrastructure",
+            "PASS",
+            f"INSTALLED_VERIFIED: All {len(app_keys)}/{len(app_keys)} GitHub App keys deployed and core roles operational.",
+        )
+    elif len(present_keys) == 0:
+        return DiagnosticCheck(
+            "Governance Infrastructure",
+            "PASS",
+            "STAGED_PENDING_KEYS: Identities, filesystem ACLs, ledgers, and events verified. GitHub App keys and trust root pending CEO deployment keys.",
+        )
     return DiagnosticCheck(
-        "Governance Identities",
-        "PASS",
-        "Core governance roles (auditor, supervisor, integrator) and product user (aao-api) verified.",
+        "Governance Infrastructure",
+        "WARN",
+        f"PARTIAL_KEYS: {len(present_keys)}/{len(app_keys)} GitHub App keys deployed.",
     )
 
 

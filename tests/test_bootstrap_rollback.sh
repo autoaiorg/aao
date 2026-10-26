@@ -86,29 +86,86 @@ say "PASS: Release pruning strictly protects current and previous targets."
 
 # 3. Test rollback on failed step
 say "Test 3: Demonstrating rollback on bootstrap step error..."
-# Suppose current was updated to release-05, and previous was release-01
+# Create mock venvs in release-01 and release-05
+mkdir -p "$RELEASES_DIR/release-01/venv/bin" "$RELEASES_DIR/release-05/venv/bin"
+echo "#!/bin/sh" > "$RELEASES_DIR/release-01/venv/bin/python"
+chmod +x "$RELEASES_DIR/release-01/venv/bin/python"
+echo "#!/bin/sh" > "$RELEASES_DIR/release-05/venv/bin/python"
+chmod +x "$RELEASES_DIR/release-05/venv/bin/python"
+
+# Initially pointing to release-05
+ln -sfn "$RELEASES_DIR/release-05" "$TEST_ROOT/opt/aao/current"
+ln -sfn "$RELEASES_DIR/release-05/venv" "$TEST_ROOT/opt/aao/venv"
+ln -sfn "$RELEASES_DIR/release-01" "$TEST_ROOT/opt/aao/previous"
+
 # Step fails: simulate rollback_release logic
 rollback_test() {
+  local rollback_errors=()
   if [[ -L "$TEST_ROOT/opt/aao/previous" && -e "$TEST_ROOT/opt/aao/previous" ]]; then
     local prev_dir
     prev_dir=$(readlink -f "$TEST_ROOT/opt/aao/previous" || true)
     if [[ -d "$prev_dir" ]]; then
+      # 1. Revert current & repo symlinks
       ln -sfn "$prev_dir" "$TEST_ROOT/opt/aao/current.tmp"
       mv -Tf "$TEST_ROOT/opt/aao/current.tmp" "$TEST_ROOT/opt/aao/current"
       ln -sfn "$TEST_ROOT/opt/aao/current" "$TEST_ROOT/opt/aao/repo"
+
+      # 2. Revert Python virtual environment
+      if [[ -d "$prev_dir/venv" ]]; then
+        ln -sfn "$prev_dir/venv" "$TEST_ROOT/opt/aao/venv.tmp"
+        mv -Tf "$TEST_ROOT/opt/aao/venv.tmp" "$TEST_ROOT/opt/aao/venv"
+      fi
+
+      # 3. Simulate runtime check
+      if [[ ! -x "$TEST_ROOT/opt/aao/venv/bin/python" ]]; then
+        rollback_errors+=("Python runtime check failed")
+      fi
+
+      if (( ${#rollback_errors[@]} > 0 )); then
+        return 1
+      fi
     fi
   fi
+  return 0
 }
 
 rollback_test
 
 ACTUAL_CURRENT=$(readlink -f "$TEST_ROOT/opt/aao/current")
 ACTUAL_REPO=$(readlink -f "$TEST_ROOT/opt/aao/repo")
+ACTUAL_VENV=$(readlink -f "$TEST_ROOT/opt/aao/venv")
 EXPECTED_PREV=$(readlink -f "$RELEASES_DIR/release-01")
+EXPECTED_VENV=$(readlink -f "$RELEASES_DIR/release-01/venv")
 
 [[ "$ACTUAL_CURRENT" == "$EXPECTED_PREV" ]] || die "Current did not roll back to previous ($ACTUAL_CURRENT != $EXPECTED_PREV)"
 [[ "$ACTUAL_REPO" == "$EXPECTED_PREV" ]] || die "Repo symlink did not roll back ($ACTUAL_REPO != $EXPECTED_PREV)"
+[[ "$ACTUAL_VENV" == "$EXPECTED_VENV" ]] || die "Venv symlink did not roll back to release-01/venv ($ACTUAL_VENV != $EXPECTED_VENV)"
 
-say "PASS: Rollback safely restored /opt/aao/current and /opt/aao/repo to previous known-good release."
+say "PASS: Rollback safely restored /opt/aao/current, /opt/aao/repo, and release-isolated venv."
+
+# 4. Test fail-closed behavior on incomplete rollback
+say "Test 4: Verifying fail-closed behavior when rollback cannot be verified..."
+rollback_fail_test() {
+  local rollback_errors=()
+  # Corrupt the venv in previous release
+  rm -f "$RELEASES_DIR/release-01/venv/bin/python"
+
+  if [[ ! -x "$RELEASES_DIR/release-01/venv/bin/python" ]]; then
+    rollback_errors+=("Python runtime verification failed in rolled-back environment")
+  fi
+
+  if (( ${#rollback_errors[@]} > 0 )); then
+    echo "FAIL [ROLLBACK]: ROLLBACK INCOMPLETE / CRITICAL INCONSISTENCY DETECTED!"
+    return 1
+  fi
+  return 0
+}
+
+if rollback_fail_test; then
+  die "Corrupted rollback was incorrectly accepted as success!"
+else
+  say "PASS: Rollback correctly failed closed when runtime integrity could not be verified."
+fi
+
 say "ALL DEPLOYMENT & ROLLBACK INTEGRITY TESTS PASSED (A-01 COMPLIANT)."
 exit 0

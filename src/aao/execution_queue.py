@@ -39,6 +39,27 @@ def claim(worker_id: str, *, agent_credential: str, project_id: str,
         raise ExecutionConflict("Worker and positive lease duration required")
     with connect_postgres() as db:
         verify_execution_principal(db, worker_id, agent_credential)
+
+        # Check host-worker cutover fencing status (Finding A-07)
+        has_table = db.execute(
+            "SELECT to_regclass('public.host_worker_bindings')"
+        ).fetchone()[0]
+        if has_table:
+            host_row = db.execute(
+                """
+                SELECT host_id, status FROM host_worker_bindings
+                WHERE worker_id = %s
+                ORDER BY created_at DESC LIMIT 1
+                FOR SHARE
+                """,
+                (worker_id,),
+            ).fetchone()
+            if host_row and host_row[1] == "FENCED":
+                raise ExecutionConflict(
+                    f"Worker '{worker_id}' is bound to fenced host '{host_row[0]}'. "
+                    "Authority revoked via cutover fencing."
+                )
+
         grant = db.execute(
             "SELECT 1 FROM project_grants WHERE principal_id=%s AND project_id=%s "
             "AND capability='execution.claim' "
@@ -104,6 +125,27 @@ def complete(execution_id: str, token: str, worker_id: str, result: dict,
              *, agent_credential: str):
     with connect_postgres() as db:
         verify_execution_principal(db, worker_id, agent_credential)
+
+        # Check host-worker cutover fencing status (Finding A-07)
+        has_table = db.execute(
+            "SELECT to_regclass('public.host_worker_bindings')"
+        ).fetchone()[0]
+        if has_table:
+            host_row = db.execute(
+                """
+                SELECT host_id, status FROM host_worker_bindings
+                WHERE worker_id = %s
+                ORDER BY created_at DESC LIMIT 1
+                FOR SHARE
+                """,
+                (worker_id,),
+            ).fetchone()
+            if host_row and host_row[1] == "FENCED":
+                raise ExecutionConflict(
+                    f"Worker '{worker_id}' is bound to fenced host '{host_row[0]}'. "
+                    "Authority revoked via cutover fencing."
+                )
+
         execution = db.execute(
             "SELECT project_id,project_state_generation FROM execution_queue "
             "WHERE id=%s FOR UPDATE",

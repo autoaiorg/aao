@@ -2,6 +2,7 @@
 
 Does not override existing environment values. Production dotenv is disabled.
 """
+import os
 import subprocess
 
 import pytest
@@ -26,5 +27,6 @@ def restore_test_signing_key(tmp_path, monkeypatch):
         check=True, capture_output=True, timeout=10,
     )
     public_key.chmod(0o644)
-    monkeypatch.setenv("AAO_RESTORE_AUTHORITY_PUBLIC_KEY", str(public_key))
+    monkeypatch.setattr("aao.backup.RESTORE_AUTHORITY_PUBLIC_KEY_FILE", public_key)
+    monkeypatch.setattr("aao.backup.RESTORE_AUTHORITY_FILE_OWNER_UID", os.geteuid())
     return private_key

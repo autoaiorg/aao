@@ -232,7 +232,8 @@ ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo bash -c '
   export AAO_POSTGRES_URL=\"postgresql://aao_app:\${DB_PASS}@127.0.0.1:5432/aao_prod\"
   export AAO_TEST_POSTGRES_URL=\"\$AAO_POSTGRES_URL\"
   export AAO_ENV=\"test\"
-  /opt/aao/venv/bin/pytest /opt/aao/current/tests/test_migrator.py /opt/aao/current/tests/test_ops_doctor.py /opt/aao/current/tests/test_host_fencing_exclusivity.py /opt/aao/current/tests/test_adversarial_remediation.py /opt/aao/current/tests/test_backup_restore.py
+  cd /opt/aao/current
+  /opt/aao/venv/bin/pytest tests/test_migrator.py tests/test_ops_doctor.py tests/test_host_fencing_exclusivity.py tests/test_adversarial_remediation.py tests/test_backup_restore.py
 '"
 
 say "12. Running complete self-development cycle from task admission to merged PR and DONE (AC-15)..."

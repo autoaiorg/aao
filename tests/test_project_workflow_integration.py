@@ -492,6 +492,52 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
             for message in turn_messages
         )
 
+        # A process crash leaves a durable PENDING row. Only an expired/missing
+        # lease can be reclaimed, and retry reuses the same CEO message/key.
+        crashed_key = str(uuid4())
+        crashed_message_id = str(uuid4())
+        crashed_turn_id = str(uuid4())
+        crashed_body = "Recover the interrupted answer"
+        with connect_postgres() as db:
+            db.execute(
+                "INSERT INTO project_conversation_messages(id,conversation_id,sender,body) "
+                "VALUES (%s,%s,'CEO',%s)", (crashed_message_id, conversation_id, crashed_body),
+            )
+            db.execute(
+                "INSERT INTO project_conversation_turns(id,conversation_id,idempotency_key,"
+                "request_sha256,user_message_id,state,provider,model,lease_owner,lease_expires_at) "
+                "VALUES (%s,%s,%s,%s,%s,'PENDING','test','model',%s,clock_timestamp()+interval '10 minutes')",
+                (crashed_turn_id, conversation_id, crashed_key, sha256(crashed_body.encode()).hexdigest(),
+                 crashed_message_id, str(uuid4())),
+            )
+        assert client.post(turn_url, headers=ceo, json={
+            "body": crashed_body, "idempotency_key": crashed_key,
+        }).status_code == 409
+        with connect_postgres() as db:
+            db.execute(
+                "UPDATE project_conversation_turns SET lease_expires_at=clock_timestamp()-interval '1 second' "
+                "WHERE id=%s", (crashed_turn_id,),
+            )
+        monkeypatch.setattr(conversation_provider, "stream_reply", lambda _messages: iter(["Recovered once."]))
+        recovered_crash = client.post(turn_url, headers=ceo, json={
+            "body": crashed_body, "idempotency_key": crashed_key,
+        })
+        assert recovered_crash.status_code == 200, recovered_crash.text
+        assert "Recovered once." in recovered_crash.text
+        with connect_postgres() as db:
+            recovered_row = db.execute(
+                "SELECT state,user_message_id,lease_owner,lease_expires_at "
+                "FROM project_conversation_turns WHERE id=%s", (crashed_turn_id,),
+            ).fetchone()
+            recovery_events = db.execute(
+                "SELECT count(*) FROM events WHERE subject_id=%s "
+                "AND kind='conversation.turn.recovered'", (conversation_id,),
+            ).fetchone()[0]
+        assert recovered_row[0] == "COMPLETED"
+        assert str(recovered_row[1]) == crashed_message_id
+        assert recovered_row[2] is None and recovered_row[3] is None
+        assert recovery_events == 1
+
         proposal_url = f"/v1/projects/{project}/conversations/{conversation_id}/work-group-proposals"
         proposal_calls = []
         proposal_json = json.dumps({
@@ -523,9 +569,14 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         assert proposal_body["provider"] == "openai-compatible"
         assert proposal_body["model"] == "proposal-test-model"
         assert proposal_body["persisted_as_work"] is False
-        assert len(proposal_body["based_on_message_ids"]) == len(turn_messages)
+        current_turn_messages = client.get(
+            f"/v1/projects/{project}/conversations/{conversation_id}/messages", headers=ceo,
+        ).json()
+        assert len(proposal_body["based_on_message_ids"]) == len(current_turn_messages)
         assert any(item["content"] == turn["body"] for item in proposal_calls[0])
         assert any(item["content"] == "Conversación persistida." for item in proposal_calls[0])
+        assert any(item["content"] == crashed_body for item in proposal_calls[0])
+        assert any(item["content"] == "Recovered once." for item in proposal_calls[0])
         with connect_postgres() as db:
             work_count_after_proposal = db.execute(
                 "SELECT count(*) FROM work_items WHERE project_id=%s", (project,),

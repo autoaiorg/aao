@@ -34,6 +34,8 @@ def _ceo_bearer_enabled() -> bool:
 
 CEO_SESSION_COOKIE = "__Host-aao_ceo_session"
 CEO_SESSION_TTL_HOURS = 12
+CONVERSATION_TURN_LEASE_SECONDS = 90
+CONVERSATION_TURN_HEARTBEAT_SECONDS = 20
 
 
 def _session_digest(value: str) -> str:
@@ -1614,7 +1616,7 @@ def list_project_conversation_messages(
         rows = db.execute(
             "SELECT m.id,m.sender,m.body,m.related_work_id,m.created_at,w.status,"
             "q.id,q.status,q.result_json->>'backend',q.result_json->>'provider',"
-            "q.result_json->>'model',m.provider,m.model,t.state,t.error_code "
+            "q.result_json->>'model',m.provider,m.model,t.state,t.error_code,t.idempotency_key "
             "FROM project_conversation_messages m "
             "LEFT JOIN work_items w ON w.id=m.related_work_id "
             "LEFT JOIN project_conversation_turns t ON t.user_message_id=m.id "
@@ -1630,7 +1632,8 @@ def list_project_conversation_messages(
          "latest_execution": ({"id": str(row[6]), "status": row[7],
                                "backend": row[8], "provider": row[9], "model": row[10]}
                               if row[6] else None), "provider": row[11], "model": row[12],
-         "turn_status": row[13], "turn_error_code": row[14]}
+         "turn_status": row[13], "turn_error_code": row[14],
+         "turn_idempotency_key": str(row[15]) if row[15] else None}
         for row in rows
     ]
 
@@ -1694,6 +1697,7 @@ def stream_project_conversation_turn(
     request_hash = hashlib.sha256(payload.body.encode("utf-8")).hexdigest()
     provider = os.getenv("AAO_CONVERSATION_PROVIDER", "openai-compatible")
     model = os.getenv("AAO_CONVERSATION_MODEL", "")
+    lease_owner = str(uuid4())
     replay: tuple[str, str | None, str | None, str | None] | None = None
     user_message_id = str(uuid4())
     turn_id: str | None = None
@@ -1718,7 +1722,27 @@ def stream_project_conversation_turn(
             if existing[0] != request_hash:
                 raise HTTPException(409, "Idempotency key was already used with a different message")
             if existing[1] == "PENDING":
-                raise HTTPException(409, "Conversation turn is already processing")
+                claimed = db.execute(
+                    "UPDATE project_conversation_turns SET lease_owner=%s,"
+                    "lease_expires_at=clock_timestamp()+(%s * interval '1 second'),"
+                    "provider=%s,model=%s,updated_at=clock_timestamp() "
+                    "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING' "
+                    "AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp()) RETURNING id",
+                    (lease_owner, CONVERSATION_TURN_LEASE_SECONDS, provider, model,
+                     conversation_id, payload.idempotency_key),
+                ).fetchone()
+                if not claimed:
+                    raise HTTPException(409, "Conversation turn is still processing")
+                turn_id = str(claimed[0])
+                user_message_id = str(existing[5])
+                history = db.execute(
+                    "SELECT sender,body FROM project_conversation_messages "
+                    "WHERE conversation_id=%s ORDER BY created_at,id", (conversation_id,),
+                ).fetchall()
+                audit(db, conversation_id, "conversation.turn.recovered", {
+                    "turn_id": turn_id, "user_message_id": user_message_id,
+                    "idempotency_key": str(payload.idempotency_key), "actor": "ceo",
+                })
             if existing[1] == "COMPLETED":
                 replay = (existing[1], existing[2], str(existing[3]) if existing[3] else None, existing[4])
             else:
@@ -1728,9 +1752,12 @@ def stream_project_conversation_turn(
                 ).fetchone()[0])
                 user_message_id = str(existing[5])
                 db.execute(
-                    "UPDATE project_conversation_turns SET state='PENDING',error_code=NULL,provider=%s,model=%s,updated_at=clock_timestamp() "
+                    "UPDATE project_conversation_turns SET state='PENDING',error_code=NULL,"
+                    "lease_owner=%s,lease_expires_at=clock_timestamp()+(%s * interval '1 second'),"
+                    "provider=%s,model=%s,updated_at=clock_timestamp() "
                     "WHERE conversation_id=%s AND idempotency_key=%s",
-                    (provider, model, conversation_id, payload.idempotency_key),
+                    (lease_owner, CONVERSATION_TURN_LEASE_SECONDS, provider, model,
+                     conversation_id, payload.idempotency_key),
                 )
                 history = db.execute(
                     "SELECT sender,body FROM project_conversation_messages "
@@ -1748,10 +1775,12 @@ def stream_project_conversation_turn(
             )
             db.execute(
                 "INSERT INTO project_conversation_turns(id,conversation_id,idempotency_key,"
-                "request_sha256,user_message_id,state,provider,model) "
-                "VALUES (%s,%s,%s,%s,%s,'PENDING',%s,%s)",
+                "request_sha256,user_message_id,state,provider,model,lease_owner,lease_expires_at) "
+                "VALUES (%s,%s,%s,%s,%s,'PENDING',%s,%s,%s,"
+                "clock_timestamp()+(%s * interval '1 second'))",
                 (turn_id, conversation_id, payload.idempotency_key, request_hash,
-                 user_message_id, provider, model),
+                 user_message_id, provider, model, lease_owner,
+                 CONVERSATION_TURN_LEASE_SECONDS),
             )
             history = db.execute(
                 "SELECT sender,body FROM project_conversation_messages "
@@ -1768,6 +1797,9 @@ def stream_project_conversation_turn(
 
     def events():
         import json as json_module
+        import threading
+
+        from psycopg import Error as PostgresError
         response_id = str(uuid4())
         answer = []
         if replay:
@@ -1777,6 +1809,30 @@ def stream_project_conversation_turn(
                 yield f"event: delta\ndata: {json_module.dumps({'delta': replay[3]})}\n\n"
                 yield f"event: done\ndata: {json_module.dumps({'message_id': replay[2]})}\n\n"
             return
+        stop_heartbeat = threading.Event()
+        lease_lost = threading.Event()
+
+        def renew_lease():
+            while not stop_heartbeat.wait(CONVERSATION_TURN_HEARTBEAT_SECONDS):
+                try:
+                    with tx() as db:
+                        updated = db.execute(
+                            "UPDATE project_conversation_turns SET lease_expires_at="
+                            "clock_timestamp()+(%s * interval '1 second'),updated_at=clock_timestamp() "
+                            "WHERE conversation_id=%s AND idempotency_key=%s "
+                            "AND lease_owner=%s AND state='PENDING'",
+                            (CONVERSATION_TURN_LEASE_SECONDS, conversation_id,
+                             payload.idempotency_key, lease_owner),
+                        ).rowcount
+                    if not updated:
+                        lease_lost.set()
+                        return
+                except PostgresError:
+                    lease_lost.set()
+                    return
+
+        heartbeat = threading.Thread(target=renew_lease, daemon=True)
+        heartbeat.start()
         try:
             conversation = [{
                 "role": "system",
@@ -1791,20 +1847,28 @@ def stream_project_conversation_turn(
             conversation.extend({"role": "assistant" if sender == "AAO" else "user", "content": body}
                                 for sender, body in history)
             for chunk in stream_reply(conversation):
+                if lease_lost.is_set():
+                    yield "event: error\ndata: {\"code\":\"TURN_LEASE_LOST\"}\n\n"
+                    return
                 answer.append(chunk)
                 yield f"event: delta\ndata: {json_module.dumps({'delta': chunk})}\n\n"
+            if lease_lost.is_set():
+                yield "event: error\ndata: {\"code\":\"TURN_LEASE_LOST\"}\n\n"
+                return
             body = "".join(answer).strip()
             if not body:
                 with tx() as db:
-                    db.execute(
-                        "UPDATE project_conversation_turns SET state='FAILED',error_code='EMPTY_PROVIDER_RESPONSE',updated_at=clock_timestamp() "
-                        "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING'",
-                        (conversation_id, payload.idempotency_key),
+                    changed = db.execute(
+                        "UPDATE project_conversation_turns SET state='FAILED',error_code='EMPTY_PROVIDER_RESPONSE',"
+                        "lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp() "
+                        "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING' AND lease_owner=%s",
+                        (conversation_id, payload.idempotency_key, lease_owner),
                     )
-                    audit(db, conversation_id, "conversation.turn.failed", {
-                        "turn_id": turn_id, "user_message_id": user_message_id,
-                        "error_code": "EMPTY_PROVIDER_RESPONSE",
-                    })
+                    if changed.rowcount:
+                        audit(db, conversation_id, "conversation.turn.failed", {
+                            "turn_id": turn_id, "user_message_id": user_message_id,
+                            "error_code": "EMPTY_PROVIDER_RESPONSE",
+                        })
                 yield "event: error\ndata: {\"code\":\"EMPTY_PROVIDER_RESPONSE\"}\n\n"
                 return
             with tx() as db:
@@ -1814,10 +1878,16 @@ def stream_project_conversation_turn(
                     (response_id, conversation_id, body, provider, model),
                 )
                 db.execute(
-                    "UPDATE project_conversation_turns SET state='COMPLETED',assistant_message_id=%s,updated_at=clock_timestamp() "
-                    "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING'",
-                    (response_id, conversation_id, payload.idempotency_key),
+                    "UPDATE project_conversation_turns SET state='COMPLETED',assistant_message_id=%s,"
+                    "lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp() "
+                    "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING' AND lease_owner=%s",
+                    (response_id, conversation_id, payload.idempotency_key, lease_owner),
                 )
+                if not db.execute(
+                    "SELECT 1 FROM project_conversation_turns WHERE id=%s AND state='COMPLETED' "
+                    "AND assistant_message_id=%s", (turn_id, response_id),
+                ).fetchone():
+                    raise RuntimeError("Conversation turn lease was lost before completion")
                 db.execute("UPDATE project_conversations SET updated_at=clock_timestamp() WHERE id=%s", (conversation_id,))
                 audit(db, conversation_id, "conversation.turn.completed", {
                     "user_message_id": user_message_id, "assistant_message_id": response_id,
@@ -1825,28 +1895,35 @@ def stream_project_conversation_turn(
             yield f"event: done\ndata: {json_module.dumps({'message_id': response_id})}\n\n"
         except ProviderUnavailable as exc:
             with tx() as db:
-                db.execute(
-                    "UPDATE project_conversation_turns SET state='FAILED',error_code=%s,updated_at=clock_timestamp() "
-                    "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING'",
-                    (exc.code, conversation_id, payload.idempotency_key),
+                changed = db.execute(
+                    "UPDATE project_conversation_turns SET state='FAILED',error_code=%s,"
+                    "lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp() "
+                    "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING' AND lease_owner=%s",
+                    (exc.code, conversation_id, payload.idempotency_key, lease_owner),
                 )
-                audit(db, conversation_id, "conversation.turn.failed", {
-                    "turn_id": turn_id, "user_message_id": user_message_id,
-                    "error_code": exc.code,
-                })
+                if changed.rowcount:
+                    audit(db, conversation_id, "conversation.turn.failed", {
+                        "turn_id": turn_id, "user_message_id": user_message_id,
+                        "error_code": exc.code,
+                    })
             yield f"event: error\ndata: {json_module.dumps({'code': exc.code, 'message': str(exc)})}\n\n"
         except Exception:  # noqa: BLE001 - persist every unexpected provider/stream failure durably.
             with tx() as db:
-                db.execute(
-                    "UPDATE project_conversation_turns SET state='FAILED',error_code='PROVIDER_ERROR',updated_at=clock_timestamp() "
-                    "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING'",
-                    (conversation_id, payload.idempotency_key),
+                changed = db.execute(
+                    "UPDATE project_conversation_turns SET state='FAILED',error_code='PROVIDER_ERROR',"
+                    "lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp() "
+                    "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING' AND lease_owner=%s",
+                    (conversation_id, payload.idempotency_key, lease_owner),
                 )
-                audit(db, conversation_id, "conversation.turn.failed", {
-                    "turn_id": turn_id, "user_message_id": user_message_id,
-                    "error_code": "PROVIDER_ERROR",
-                })
+                if changed.rowcount:
+                    audit(db, conversation_id, "conversation.turn.failed", {
+                        "turn_id": turn_id, "user_message_id": user_message_id,
+                        "error_code": "PROVIDER_ERROR",
+                    })
             yield "event: error\ndata: {\"code\":\"PROVIDER_ERROR\",\"message\":\"AAO no pudo completar la respuesta.\"}\n\n"
+        finally:
+            stop_heartbeat.set()
+            heartbeat.join(timeout=1)
 
     return StreamingResponse(events(), media_type="text/event-stream", headers={
         "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no",

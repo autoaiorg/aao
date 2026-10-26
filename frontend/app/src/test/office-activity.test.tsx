@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, expect, it, vi } from 'vitest';
 import { OfficeActivityPanel } from '../features/office/components/OfficeActivityPanel';
@@ -62,5 +62,25 @@ describe('office persisted activity panel', () => {
     expect(await screen.findByText('No hay actividad registrada en este proyecto.')).toBeInTheDocument();
     fireEvent.change(screen.getByRole('combobox', { name: 'Proyecto de actividad' }), { target: { value: 'project-b' } });
     await waitFor(() => expect(getActivity).toHaveBeenCalledWith('project-b'));
+  });
+
+  it('refreshes persisted activity every 15 seconds while the office is open', async () => {
+    vi.useFakeTimers();
+    try {
+      const getActivity = vi.fn().mockResolvedValue(ready(events));
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      await act(async () => {
+        render(<QueryClientProvider client={client}><OfficeActivityPanel projects={projects}
+          port={{ getProjectActivity: getActivity }} sessionId="session-a" onOpenBoard={vi.fn()} /></QueryClientProvider>);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(getActivity).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+      expect(getActivity).toHaveBeenCalledTimes(2);
+      client.clear();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

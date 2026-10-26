@@ -45,6 +45,9 @@ export const OfficeActivityPanel: React.FC<OfficeActivityPanelProps> = ({ projec
     queryKey: ['office-project-activity', sessionId, projectId],
     queryFn: () => port.getProjectActivity(projectId),
     enabled: !!projectId,
+    // Keep the office view aligned with PostgreSQL-backed events while it is open.
+    // React Query does not poll in a background tab unless explicitly requested.
+    refetchInterval: 15_000,
   });
 
   return (
@@ -56,7 +59,11 @@ export const OfficeActivityPanel: React.FC<OfficeActivityPanelProps> = ({ projec
             Eventos y journal persistidos por AAO, no una señal de presencia del agente. Usa «Abrir tablero» para consultar el trabajo asociado.
           </p>
         </div>
-        {projectId && <Button type="button" variant="secondary" onClick={() => onOpenBoard(projectId)}>Abrir tablero</Button>}
+        {projectId && <div className="office-form-panel__actions">
+          <Button type="button" variant="secondary" onClick={() => void activityQuery.refetch()}
+            disabled={activityQuery.isFetching}>Actualizar actividad</Button>
+          <Button type="button" variant="secondary" onClick={() => onOpenBoard(projectId)}>Abrir tablero</Button>
+        </div>}
       </div>
       <label className="office-form-field office-activity__project">
         Proyecto

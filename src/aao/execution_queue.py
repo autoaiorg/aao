@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from aao.postgresql_connection import connect_postgres
 from aao.principal_credentials import digest_token
+from aao.protocol_instances import start_work_protocol
 
 
 class ExecutionConflict(ValueError):
@@ -152,13 +153,57 @@ def complete(execution_id: str, token: str, worker_id: str, result: dict,
 
 
 def quarantine_expired() -> int:
+    """Quarantine expired leases and pin an auditable escalation episode.
+
+    This system transition does not retry, assign, reconcile, or authorize work.
+    """
     with connect_postgres() as db:
         rows = db.execute(
             "UPDATE execution_queue SET status='UNCERTAIN' "
-            "WHERE status='RUNNING' AND lease_expires_at<=clock_timestamp() RETURNING id",
+            "WHERE status='RUNNING' AND lease_expires_at<=clock_timestamp() "
+            "RETURNING id,work_id,project_id,worker_id,attempts",
         ).fetchall()
         for row in rows:
-            journal(db, str(row[0]), "quarantined", {"reason": "lease expired"})
+            execution_id, work_id, project_id, worker_id, attempts = row
+            execution_id = str(execution_id)
+            work_id = str(work_id)
+            protocol_instance_id = start_work_protocol(
+                db,
+                protocol_id="blockage-escalation",
+                work_id=work_id,
+                started_by="system:execution_queue.quarantine_expired",
+                subject_type="work_item",
+                idempotency_key=(
+                    f"blockage-escalation:work_item:{work_id}:execution:{execution_id}:"
+                    f"attempt:{attempts}"
+                ),
+                request={
+                    "execution_id": execution_id,
+                    "project_id": str(project_id),
+                    "worker_id": worker_id,
+                    "attempt": attempts,
+                    "reason": "lease expired; execution outcome uncertain",
+                },
+            )
+            journal(db, execution_id, "quarantined", {
+                "reason": "lease expired",
+                "protocol_instance_id": protocol_instance_id,
+            })
+            db.execute(
+                "INSERT INTO events(id,subject_id,kind,details) "
+                "VALUES (%s,%s,'work.execution_quarantined',%s::jsonb)",
+                (str(uuid4()), work_id, json.dumps({
+                    "execution_id": execution_id,
+                    "project_id": str(project_id),
+                    "former_worker_id": worker_id,
+                    "attempt": attempts,
+                    "protocol_instance_id": protocol_instance_id,
+                    "next_action": (
+                        "An independent auditor with the existing execution.reconcile grant "
+                        "must review evidence before disposition; do not retry automatically."
+                    ),
+                })),
+            )
         return len(rows)
 
 

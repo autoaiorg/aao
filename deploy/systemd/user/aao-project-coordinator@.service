@@ -1,0 +1,30 @@
+[Unit]
+Description=AAO project coordinator for project %i
+After=default.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+EnvironmentFile=%h/.config/aao/project-coordinator/%i.env
+WorkingDirectory=/srv/aao/frozen/aao-pm/tree
+ExecStart=/srv/aao/frozen/aao-pm/venv/bin/python -I -c "import sys; sys.path.insert(0, '/srv/aao/frozen/aao-pm/tree'); from scripts.run_project_coordinator import main; raise SystemExit(main())" --project-id ${AAO_PROJECT_ID} --principal-id ${AAO_PM_PRINCIPAL_ID} --watch
+Restart=on-failure
+RestartSec=30s
+TimeoutStopSec=30s
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=read-only
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=default.target

@@ -104,3 +104,16 @@ This is persistence evidence for the local development instance only. It is not
 production state, proof of end-to-end MVP acceptance, independent audit, or
 authorization to expand execution. Project registration remains distinct from
 provisioning or validating identities and grants.
+
+## Adenda 1 (2026-10-26): objetivo final
+
+**Autoridad:** CEO. **Decisión:** [`CEO-DEC-ENTERPRISE-MODEL-2026-10-26`](decisions/CEO-DEC-ENTERPRISE-MODEL-2026-10-26.md).
+
+1. **Objetivo final.** El objetivo final de este mandato es que AAO funcione como **empresa autónoma de ingeniería de software** conforme a [`AAO_ENTERPRISE_OPERATING_MODEL.md`](architecture/AAO_ENTERPRISE_OPERATING_MODEL.md), con las decisiones D-01 a D-10 y las condiciones de la decisión citada.
+2. **Primer hito.** El criterio de éxito de la sección *Success criteria* se mantiene como **primer hito** del mandato.
+3. **Criterio de éxito final.** El mandato se considerará cumplido cuando se satisfagan, con evidencia reproducible sobre revisiones exactas:
+   - los gates de las fases 0 a 5;
+   - el piloto del §14;
+   - los 15 escenarios del §19.
+4. **Traspaso.** Se rige por el §4 de la decisión citada.
+5. **Sin nuevas facultades.** Esta adenda no modifica las secciones *Reserved matters and restrictions* ni *Acceptance boundaries*, ni concede permisos, grants, activaciones o delegaciones.

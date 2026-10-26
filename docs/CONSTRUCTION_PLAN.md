@@ -54,3 +54,21 @@ Los planes anteriores (M2-A en `CLOSURE_PLAN.md`, F4 en `F4_PENDING_WORK.md`) qu
 ## Operación real (2026-10-25)
 
 El ciclo se ha ejecutado en la instancia de desarrollo con estado persistente: [`construction-runs/20261025-self-development-cycle.md`](construction-runs/20261025-self-development-cycle.md). Una tarea real produjo las PR #104 (cerrada: la CI falló y la tarea volvió a IN_PROGRESS) y #106 (tercer intento). La tarea llegó a DONE tras fusionarse #106. El piloto de Codex se ejecutó el 2026-10-25 con autorización del CEO: Codex escribió el parche, la tarea quedó en DONE y la PR #114 se fusionó ([registro](construction-runs/20261025-codex-pilot.md)). Fuera del piloto, el proveedor sigue desactivado.
+
+## Objetivo final (CEO-DEC-ENTERPRISE-MODEL-2026-10-26)
+
+El objetivo final del mandato es el [modelo operativo de empresa autónoma](architecture/AAO_ENTERPRISE_OPERATING_MODEL.md), adoptado con las condiciones de [`CEO-DEC-ENTERPRISE-MODEL-2026-10-26`](decisions/CEO-DEC-ENTERPRISE-MODEL-2026-10-26.md).
+
+- **Alcance de la construcción (§4 de la decisión):**
+  - la Fase 0, completa;
+  - de las fases 1 a 4, lo mínimo necesario para ejecutar el piloto del §14 del modelo.
+- **Después del traspaso:** el resto lo completa AAO bajo su propio gobierno.
+- **Correspondencia entre fases, gates, construcción y traspaso:** [Anexo A de la decisión](decisions/CEO-DEC-ENTERPRISE-MODEL-2026-10-26.md#anexo-a-correspondencia-operativa-informativa).
+- **Cada PR de construcción indica a qué fase y gate contribuye.**
+- **Condiciones de diseño vinculantes** (texto completo en la decisión):
+  - la organización declarativa no concede autoridad (D-01);
+  - primero los cinco protocolos mínimos, reutilizando la cola, los eventos y el journal, y sin motor de workflows genérico antes (D-03);
+  - un protocolo nunca crea autoridad (D-04);
+  - los eventos no son permisos (D-05);
+  - el núcleo de confianza no se sustituye (D-10).
+

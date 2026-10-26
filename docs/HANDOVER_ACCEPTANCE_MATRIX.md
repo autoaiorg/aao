@@ -71,6 +71,17 @@ Cuando `work.coordinate` se habilite para operación autónoma, quien consolide 
 | `8a3b68de52ca8c793715f3048037192553bba057` | Construcción: la consolidación confirmada por CEO agrega una notificación AAO persistente en el hilo original, vinculada al trabajo padre y con SHA del snapshot; se marca como `WORK_GROUP_RESULT`, sin suplantar una respuesta de proveedor. La UI invalida el transcript y muestra procedencia explícita | PR #239 squash-mergeada en `af7cce23bd85d1be8b0e3d3f1f4e4fee69cc7acc`; CI post-merge run `40298962164`: jobs `test` (`121491846135`) y `frontend` (`121491846524`) SUCCESS. Validación local: migraciones PostgreSQL 001–030 en contenedor desechable, backend `680 passed`, Ruff/compileall, TypeScript y Vitest `202 passed`. [PR #239](https://github.com/autoaiorg/aao/pull/239), [CI main](https://github.com/autoaiorg/aao/actions/runs/40298962164) | Incremento técnico, no demostración de AAO conversacional autónomo ni de ejecución; el resumen sigue siendo CEO-confirmado; no hay proveedor autorizado, demo con agentes reales, auditoría independiente ni aceptación CEO |
 | `57d67e800afe3b1c926688a719ed19deedd65b9e` | Construcción: primera ruta de asignación PM de hijos persistidos mediante el grant distinto `work.assign`; incluye lectura de AGENTs elegibles y registra al PM real en la asignación/evento, sin crear grants ni suplantar al CEO | Suite PostgreSQL desechable: `710 passed`; Ruff, compileall, `pip check`, TypeScript y Vitest (`203 passed`) SUCCESS. Red test inicial observó 404 antes de implementar la ruta | Pendiente CI completa de PR. No convierte `work.coordinate` en grant de asignación ni permite al PM emitir grants; no implementa admisión, ejecución, supervisión, retry o consolidación autónoma; no demuestra el ensayo final ni la autorización de proveedor real |
 
+## Condiciones adicionales de traspaso (CEO-DEC-ENTERPRISE-MODEL-2026-10-26)
+
+Además de los 10 criterios de arriba, el traspaso exige (§4.2 de [`CEO-DEC-ENTERPRISE-MODEL-2026-10-26`](decisions/CEO-DEC-ENTERPRISE-MODEL-2026-10-26.md)):
+
+| # | Condición | Estado | Evidencia | Siguiente acción |
+|---|---|---|---|---|
+| E-1 | Gates de la Fase 0 del [modelo operativo](architecture/AAO_ENTERPRISE_OPERATING_MODEL.md) (§13): protección de rama y autorización efectivas, evidencias reproducibles, identidades separadas, fail-closed, ciclo R1 demostrado o bloqueo mantenido | Pendiente | Coincide en gran parte con los criterios 1 a 8 | Cerrar junto con esos criterios |
+| E-2 | Piloto del §14 del modelo superado sobre la revisión candidata, con sus pruebas de resistencia: reinicio de worker, agente indisponible, revisión rechazada, cambio de prioridad, dependencia bloqueada, evento duplicado, revisión invalidada por cambio de SHA y respuesta externa incierta | Pendiente | — | Construir lo mínimo de las fases 1 a 4 que exige el piloto (§4.1 de la decisión) |
+
+Los 15 escenarios del §19 del modelo **no** condicionan el traspaso: son obligatorios antes de declarar completo el modelo operativo (§5 de la decisión).
+
 ## Reglas de mantenimiento
 - Anotar SHA exacto y URL/artefacto de evidencia; actualizar solo criterios afectados por un cambio.
 - En construcción, traducir brechas a tareas de implementación, como arriba; no ejecutar el paquete de certificación ni congelar un candidato.

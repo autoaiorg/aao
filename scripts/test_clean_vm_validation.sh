@@ -8,17 +8,25 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
 EVIDENCE_DIR="$REPO_DIR/tests/evidence"
 mkdir -p "$EVIDENCE_DIR"
-LOG_FILE="$EVIDENCE_DIR/vm_validation_transcript.log"
-
-rm -f "$LOG_FILE"
+# Each run gets a unique transcript. Never overwrite the tracked historical
+# transcript or another run's evidence.
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+LOG_FILE="${AAO_VM_EVIDENCE_LOG:-$EVIDENCE_DIR/vm_validation_${RUN_ID}.log}"
+VM_DIR="${AAO_VM_DIR:-$(mktemp -d "/tmp/aao-vm-validation-${RUN_ID}.XXXXXX")}"
 # Tee output to console and transcript log
 exec > >(tee "$LOG_FILE") 2>&1
 
 say() { echo -e "\n\033[1;36m=== [VM VALIDATION] $*\033[0m"; }
 die() { echo -e "\n\033[1;31mFAIL [VM VALIDATION]: $*\033[0m" >&2; exit 1; }
 
+if [[ -n "${AAO_VM_DIR:-}" ]]; then
+  [[ -d "$VM_DIR" ]] || die "AAO_VM_DIR must be an existing empty directory: $VM_DIR"
+  [[ -z "$(find "$VM_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ]] || die "AAO_VM_DIR must be empty; refusing to overwrite user artifacts: $VM_DIR"
+fi
+[[ ! -e "$LOG_FILE" ]] || die "Evidence log already exists; refusing to overwrite: $LOG_FILE"
+mkdir -p "$VM_DIR"
+
 CEO_USER="${1:-${CEO_USER:-$(whoami)}}"
-VM_DIR="/tmp/aao-vm-validation"
 IMAGE_URL="https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img"
 SUMS_URL="https://cloud-images.ubuntu.com/minimal/releases/noble/release/SHA256SUMS"
 BASE_IMAGE="$VM_DIR/ubuntu-24.04-minimal-cloudimg-amd64.img"
@@ -42,8 +50,6 @@ if [[ -e /dev/kvm && -r /dev/kvm && -w /dev/kvm ]]; then
 else
   echo "WARN: KVM hardware acceleration not accessible; running emulated."
 fi
-
-mkdir -p "$VM_DIR"
 
 say "2. Verifying Ubuntu 24.04 Noble cloud image provenance and SHA-256 digest..."
 say "Fetching official Ubuntu SHA256SUMS from $SUMS_URL..."
@@ -225,23 +231,27 @@ ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo /opt/aao/venv/bin/aao-ops verify"
 ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo /opt/aao/venv/bin/aao-ops doctor"
 ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "curl -fsSL http://127.0.0.1:8001/ready"
 
-say "11. Running live PostgreSQL tests inside the VM..."
+say "11. Running PostgreSQL tests against a dedicated disposable database inside the VM..."
 ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo /opt/aao/venv/bin/pip install --quiet pytest httpx"
 ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo bash -c '
   DB_PASS=\$(cat /etc/aao/aao-db.secret)
-  export AAO_POSTGRES_URL=\"postgresql://aao_app:\${DB_PASS}@127.0.0.1:5432/aao_prod\"
-  export AAO_TEST_POSTGRES_URL=\"\$AAO_POSTGRES_URL\"
+  sudo -u postgres dropdb --if-exists aao_test_bootstrap_validation
+  sudo -u postgres createdb --owner=aao_app aao_test_bootstrap_validation
+  export AAO_TEST_POSTGRES_URL=\"postgresql://aao_app:\${DB_PASS}@127.0.0.1:5432/aao_test_bootstrap_validation\"
+  export AAO_POSTGRES_URL=\"\$AAO_TEST_POSTGRES_URL\"
+  export AAO_TEST_DB_DISPOSABLE=yes
   export AAO_ENV=\"test\"
+  /opt/aao/venv/bin/aao-migrate --apply --dsn \"\$AAO_TEST_POSTGRES_URL\"
   cd /opt/aao/current
   /opt/aao/venv/bin/pytest tests/test_migrator.py tests/test_ops_doctor.py tests/test_host_fencing_exclusivity.py tests/test_adversarial_remediation.py tests/test_backup_restore.py
 '"
 
-say "12. Running complete self-development cycle from task admission to merged PR and DONE (AC-15)..."
+say "12. Running fixture-only self-development lifecycle test (no remote PR or merge)..."
 ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo bash -c '
   git config --global --add safe.directory \"*\"
   DB_PASS=\$(cat /etc/aao/aao-db.secret)
-  sudo -u postgres psql -c \"DROP DATABASE IF EXISTS aao_test_cycle;\"
-  sudo -u postgres psql -c \"CREATE DATABASE aao_test_cycle OWNER aao_app;\"
+  sudo -u postgres dropdb --if-exists aao_test_cycle
+  sudo -u postgres createdb --owner=aao_app aao_test_cycle
   export AAO_TEST_POSTGRES_URL=\"postgresql://aao_app:\${DB_PASS}@127.0.0.1:5432/aao_test_cycle\"
   export AAO_TEST_DB_DISPOSABLE=\"yes\"
   export AAO_ENV=\"test\"

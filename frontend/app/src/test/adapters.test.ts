@@ -455,4 +455,21 @@ describe('HttpAaoLiveAdapter organization projection', () => {
       method: 'POST', headers: expect.objectContaining({ 'X-CEO-Token': 'ceo-token', 'Content-Type': 'application/json' }),
     }));
   });
+
+  it('assigns a work-group child only in a CEO session and uses the canonical assignment route', async () => {
+    const fetch = vi.spyOn(global, 'fetch');
+    const agent = new HttpAaoLiveAdapter({ getToken: () => 'agent-token', getAuthRole: () => 'AGENT' });
+    expect((await agent.assignWorkGroupChild('work-id', 'agent-id')).kind).toBe('forbidden');
+    expect(fetch).not.toHaveBeenCalled();
+
+    fetch.mockResolvedValueOnce({ status: 200, ok: true, json: async () => ({
+      work_id: '00000000-0000-4000-8000-000000000061', principal_id: 'agent-a', assigned_by: 'ceo', grants_created: false,
+    }) } as Response);
+    const ceo = new HttpAaoLiveAdapter({ getToken: () => 'ceo-token', getAuthRole: () => 'CEO', requireAuth: true });
+    expect((await ceo.assignWorkGroupChild('00000000-0000-4000-8000-000000000061', 'agent-a')).kind).toBe('ready');
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('/v1/work/00000000-0000-4000-8000-000000000061/assignment'), expect.objectContaining({
+      method: 'PUT', headers: expect.objectContaining({ 'X-CEO-Token': 'ceo-token', 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ principal_id: 'agent-a' }),
+    }));
+  });
 });

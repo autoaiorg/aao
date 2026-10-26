@@ -1061,7 +1061,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
     if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede consultar equipos de trabajo.' };
     const evidence = z.unknown();
     const child = z.object({
-      work_id: z.string().uuid(), status: z.string(), evidence,
+      work_id: z.string().uuid(), status: z.string(), assigned_principal_id: z.string().nullable(), evidence,
       executions: z.array(z.object({
         id: z.string().uuid(), status: z.string(), worker_id: z.string().nullable(),
         result_sha256: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
@@ -1085,6 +1085,16 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
     );
   }
 
+  async assignWorkGroupChild(workId: string, principalId: string): Promise<DataState<{ work_id: string; principal_id: string; assigned_by: string; grants_created: false }>> {
+    if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede asignar trabajos.' };
+    return this.request(`/v1/work/${encodeURIComponent(workId)}/assignment`, z.object({
+      work_id: z.string().uuid(), principal_id: z.string(), assigned_by: z.literal('ceo'), grants_created: z.literal(false),
+    }), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ principal_id: principalId }),
+    });
+  }
+
   async confirmWorkGroupConsolidation(
     projectId: string,
     groupId: string,
@@ -1093,7 +1103,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
     if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede confirmar una consolidación.' };
     const evidence = z.unknown();
     const child = z.object({
-      work_id: z.string().uuid(), status: z.string(), evidence,
+      work_id: z.string().uuid(), status: z.string(), assigned_principal_id: z.string().nullable(), evidence,
       executions: z.array(z.object({
         id: z.string().uuid(), status: z.string(), worker_id: z.string().nullable(),
         result_sha256: z.string().regex(/^[0-9a-f]{64}$/).nullable(),

@@ -28,7 +28,32 @@ export const OfficeWorkGroupPanel: React.FC<OfficeWorkGroupPanelProps> = ({ proj
     queryFn: () => port.listProjectWorkGroups(selectedProjectId),
     enabled: !!selectedProjectId,
   });
+  const agentsQuery = useQuery({
+    queryKey: ['office-assignable-agents', sessionId, selectedProjectId],
+    queryFn: () => port.listAssignableAgents(selectedProjectId),
+    enabled: !!selectedProjectId,
+  });
   const groups = groupsQuery.data?.kind === 'ready' ? groupsQuery.data.data : [];
+  const agents = agentsQuery.data?.kind === 'ready' ? agentsQuery.data.data : [];
+  const [assigneeChoices, setAssigneeChoices] = useState<Record<string, string>>({});
+
+  const assign = async (workId: string, currentPrincipalId: string | null) => {
+    const principalId = assigneeChoices[workId] ?? currentPrincipalId ?? '';
+    if (!principalId || principalId === currentPrincipalId || pendingGroup) return;
+    setPendingGroup(workId);
+    setNotice(null);
+    const result = await port.assignWorkGroupChild(workId, principalId);
+    setPendingGroup(null);
+    if (result.kind === 'ready') {
+      setNotice(`Trabajo ${workId} asignado a ${result.data.principal_id}. No se han creado grants.`);
+      setAssigneeChoices((current) => { const next = { ...current }; delete next[workId]; return next; });
+      await queryClient.invalidateQueries({ queryKey: ['office-work-groups', sessionId, selectedProjectId] });
+    } else if (result.kind === 'error') {
+      setNotice(`${result.code}: ${result.message}`);
+      if (result.code === 'HTTP_409') await queryClient.invalidateQueries({ queryKey: ['office-work-groups', sessionId, selectedProjectId] });
+    } else if (result.kind === 'forbidden') setNotice(result.reason);
+    else setNotice('No se pudo asignar el trabajo.');
+  };
 
   const confirm = async (groupId: string, sourceHash: string) => {
     const summary = summaries[groupId]?.trim();
@@ -76,10 +101,30 @@ export const OfficeWorkGroupPanel: React.FC<OfficeWorkGroupPanelProps> = ({ proj
         <Button type="button" variant="secondary" onClick={() => onOpenBoard(selectedProjectId)}>Abrir tablero</Button>
       </header>
       <ul className="office-work-group__children">
-        {group.children.map((child) => <li key={child.work_id}>
-          <span>{child.work_id}</span><strong>{child.status}</strong>
-          <span>{child.executions.length} ejecuciones · {child.reviews.length} revisiones · {Array.isArray(child.evidence) ? child.evidence.length : child.evidence ? 1 : 0} evidencias</span>
-        </li>)}
+        {group.children.map((child) => {
+          const currentAssignment = agents.find((agent) => agent.principal_id === child.assigned_principal_id);
+          const hasActiveExecution = child.executions.some((execution) => ['QUEUED', 'RUNNING', 'UNCERTAIN'].includes(execution.status));
+          const assignmentLocked = ['IN_REVIEW', 'VERIFIED', 'DONE'].includes(child.status) || hasActiveExecution;
+          const selectedAssignee = assigneeChoices[child.work_id] ?? child.assigned_principal_id ?? '';
+          const canSaveAssignment = !!selectedAssignee && selectedAssignee !== child.assigned_principal_id && !assignmentLocked;
+          return <li key={child.work_id} className="office-work-group__child">
+            <span>{child.work_id}</span><strong>{child.status}</strong>
+            <span>{child.executions.length} ejecuciones · {child.reviews.length} revisiones · {Array.isArray(child.evidence) ? child.evidence.length : child.evidence ? 1 : 0} evidencias</span>
+            <span>Responsable: {currentAssignment?.display_name || child.assigned_principal_id || 'Sin asignar'}</span>
+            {!group.consolidation && <div className="office-work-group__assignment">
+              <label className="office-form-field">
+                <span>{child.assigned_principal_id ? 'Cambiar responsable' : 'Asignar responsable'}</span>
+                <select className="office-form-control" value={selectedAssignee} disabled={assignmentLocked || pendingGroup === child.work_id || agentsQuery.isLoading || agents.length === 0} onChange={(event) => setAssigneeChoices((current) => ({ ...current, [child.work_id]: event.target.value }))}>
+                  <option value="">Seleccionar identidad autorizada</option>
+                  {agents.map((agent) => <option key={agent.principal_id} value={agent.principal_id}>{agent.display_name} ({agent.principal_id})</option>)}
+                </select>
+              </label>
+              <Button type="button" variant="secondary" disabled={!canSaveAssignment || pendingGroup === child.work_id} onClick={() => void assign(child.work_id, child.assigned_principal_id)}>
+                {pendingGroup === child.work_id ? 'Guardando…' : child.assigned_principal_id ? 'Cambiar asignación' : 'Asignar'}
+              </Button>
+            </div>}
+          </li>;
+        })}
       </ul>
       {group.consolidation ? <div className="office-work-group__saved">
         <strong>Consolidación guardada · {group.consolidation.created_by}</strong>

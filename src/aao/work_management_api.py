@@ -1627,10 +1627,11 @@ def create_conversation_work_group(
 
 
 def _work_group_source_snapshot(db, project_id: str, parent_work_id: str, *, lock: bool = False):
-    lock_clause = " FOR UPDATE" if lock else ""
+    lock_clause = " FOR UPDATE OF w" if lock else ""
     children = db.execute(
-        "SELECT id,status,evidence FROM work_items "
-        "WHERE project_id=%s AND parent_work_id=%s ORDER BY id" + lock_clause,
+        "SELECT w.id,w.status,w.evidence,a.principal_id FROM work_items w "
+        "LEFT JOIN work_item_assignments a ON a.project_id=w.project_id AND a.work_id=w.id "
+        "WHERE w.project_id=%s AND w.parent_work_id=%s ORDER BY w.id" + lock_clause,
         (project_id, parent_work_id),
     ).fetchall()
     if not children:
@@ -1662,10 +1663,11 @@ def _work_group_source_snapshot(db, project_id: str, parent_work_id: str, *, loc
             "candidate_sha": candidate_sha, "evidence": evidence,
         })
     snapshot = {"children": [
-        {"work_id": str(work_id), "status": status, "evidence": evidence,
+        {"work_id": str(work_id), "status": status, "assigned_principal_id": assigned_principal_id,
+         "evidence": evidence,
          "executions": executions_by_work.get(str(work_id), []),
          "reviews": reviews_by_work.get(str(work_id), [])}
-        for work_id, status, evidence in children
+        for work_id, status, evidence, assigned_principal_id in children
     ]}
     canonical = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str)
     return snapshot, hashlib.sha256(canonical.encode()).hexdigest()

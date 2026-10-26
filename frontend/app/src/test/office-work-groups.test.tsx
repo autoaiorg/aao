@@ -16,7 +16,7 @@ const group: ProjectWorkGroup = {
   title: 'Resultados del proyecto', parent_status: 'INBOX', source_sha256: 'a'.repeat(64),
   consolidation_ready: false,
   children: [{
-    work_id: '44444444-4444-4444-8444-444444444444', status: 'IN_PROGRESS', evidence: [],
+    work_id: '44444444-4444-4444-8444-444444444444', status: 'IN_PROGRESS', assigned_principal_id: null, evidence: [],
     executions: [{ id: '55555555-5555-4555-8555-555555555555', status: 'RUNNING', worker_id: 'agent-a', result_sha256: null }], reviews: [],
   }],
   consolidation: null,
@@ -24,7 +24,12 @@ const group: ProjectWorkGroup = {
 
 function setup(groups: ProjectWorkGroup[]) {
   const port = {
+    listAssignableAgents: vi.fn().mockResolvedValue(ready([
+      { principal_id: 'agent-a', display_name: 'Agente A' },
+      { principal_id: 'agent-b', display_name: 'Agente B' },
+    ])),
     listProjectWorkGroups: vi.fn().mockResolvedValue(ready(groups)),
+    assignWorkGroupChild: vi.fn().mockResolvedValue(ready({ work_id: group.children[0].work_id, principal_id: 'agent-a', assigned_by: 'ceo', grants_created: false as const })),
     confirmWorkGroupConsolidation: vi.fn().mockResolvedValue(ready({ ...group, project_id: 'project-active', work_group_id: group.id, source_snapshot: { children: group.children }, summary: 'Resultado consolidado', idempotency_key: '66666666-6666-4666-8666-666666666666', created_by: 'ceo', created_at: '2026-10-26T00:00:00Z', created: true })),
   } as unknown as AaoConversationPort;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -51,5 +56,16 @@ describe('office work group consolidation', () => {
       idempotency_key: expect.any(String), expected_source_sha256: 'a'.repeat(64), summary: 'He revisado el resultado y la evidencia.',
     }));
     expect(await screen.findByText(/Consolidación CEO guardada/)).toBeInTheDocument();
+  });
+
+  it('assigns a child only to an agent returned by the backend and refreshes the projection', async () => {
+    const assignableGroup = { ...group, children: [{ ...group.children[0], executions: [] }] };
+    const port = setup([assignableGroup]);
+    await screen.findByText('IN_PROGRESS');
+    fireEvent.change(screen.getByLabelText('Asignar responsable'), { target: { value: 'agent-a' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Asignar' }));
+    await waitFor(() => expect(port.assignWorkGroupChild).toHaveBeenCalledWith(group.children[0].work_id, 'agent-a'));
+    expect(await screen.findByText(/No se han creado grants/)).toBeInTheDocument();
+    expect(port.listAssignableAgents).toHaveBeenCalledWith('project-active');
   });
 });

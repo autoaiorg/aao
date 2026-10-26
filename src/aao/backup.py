@@ -29,6 +29,12 @@ from aao.postgresql_connection import connect_postgres
 
 logger = logging.getLogger(__name__)
 
+RESTORE_AUTHORITY_PUBLIC_KEY_FILE = Path("/etc/aao/governance/ceo_restore_authority.pub")
+RESTORE_AUTHORITY_DATABASE_URL_FILE = Path("/etc/aao/restore-authority.database-url")
+RESTORE_AUTHORITY_ID = "ceo-restore-authority"
+RESTORE_AUTHORITY_FILE_OWNER_UID = 0
+MAX_RESTORE_AUTHORIZATION_MINUTES = 60
+
 
 class BackupError(RuntimeError):
     """Raised when backup, verification, or restoration fails."""
@@ -366,9 +372,13 @@ def consume_restore_authorization_nonce(
         or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for c in nonce)
     ):
         return False, "Authorization nonce has invalid characters."
-    dsn = os.environ.get("AAO_RESTORE_AUTHORITY_DATABASE_URL")
-    if not dsn:
-        return False, "Dedicated restore authority database is not configured."
+    try:
+        dsn = _read_root_owned_secret_file(
+            RESTORE_AUTHORITY_DATABASE_URL_FILE,
+            description="Restore authority database URL",
+        )
+    except (OSError, UnicodeError):
+        return False, "Dedicated protected restore authority database configuration is unavailable."
     try:
         with psycopg.connect(dsn) as authority_db:
             row = authority_db.execute(
@@ -405,6 +415,25 @@ def consume_restore_authorization_nonce(
     return True, f"Nonce '{nonce[:8]}...' durably consumed by the separate restore authority database."
 
 
+def _read_root_owned_secret_file(path: Path, *, description: str) -> str:
+    """Read a fixed-path root-owned secret; caller-controlled env cannot replace trust roots."""
+    try:
+        parent_info = path.parent.lstat()
+        info = path.lstat()
+    except OSError as exc:
+        raise OSError(f"{description} is unavailable") from exc
+    if (not stat.S_ISDIR(parent_info.st_mode)
+            or parent_info.st_uid != RESTORE_AUTHORITY_FILE_OWNER_UID
+            or parent_info.st_mode & 0o022
+            or not stat.S_ISREG(info.st_mode) or info.st_uid != RESTORE_AUTHORITY_FILE_OWNER_UID
+            or stat.S_IMODE(info.st_mode) != 0o600):
+        raise OSError(f"{description} must be a root-owned regular file with mode 0600")
+    value = path.read_text(encoding="utf-8").strip()
+    if not value or "\n" in value or "\r" in value:
+        raise OSError(f"{description} must contain one non-empty line")
+    return value
+
+
 def create_restore_authorization(
     backup_path: Path,
     target_database: str,
@@ -421,6 +450,10 @@ def create_restore_authorization(
     - Bounds authorization to specific backup hash, destination, nonce, and validity window.
     """
     from uuid import uuid4
+    if not isinstance(valid_minutes, int) or not 1 <= valid_minutes <= MAX_RESTORE_AUTHORIZATION_MINUTES:
+        raise BackupError(
+            f"Restore authorizations must be valid for 1 to {MAX_RESTORE_AUTHORIZATION_MINUTES} minutes."
+        )
     backup_sha = compute_file_sha256(backup_path)
     now = datetime.now(UTC)
     expires = now + timedelta(minutes=valid_minutes)
@@ -458,7 +491,6 @@ def verify_destructive_restore_authorization(
     target_database: str,
     authorization: dict[str, Any] | str | Path | None = None,
     ceo_token: str | None = None,
-    verification_key: str | None = None,
 ) -> tuple[bool, str, str | None]:
     """Verify that a destructive restore has authentic, structured CEO authorization.
 
@@ -472,8 +504,7 @@ def verify_destructive_restore_authorization(
     4. Specific backup: backup_sha256 must match current backup archive.
     5. Destination binding: target_database must match current target database name.
     6. Validity window: expires_at_utc must be strictly valid and not expired.
-    7. Independent anti-replay: nonce consumed in persistent host authority storage
-       independent of the destination database being restored.
+    7. Independent anti-replay: nonce committed to the protected external authority DB.
     """
     # A-11 check: Reject raw CEO token without structured authorization
     if ceo_token is not None and not authorization:
@@ -528,42 +559,57 @@ def verify_destructive_restore_authorization(
             f"target: '{target_database}')."
         ), None
 
-    # Check 4: Expiration window
+    # Check 4: Signed issuance and bounded expiration window.
+    issued_str = payload.get("authorized_at_utc")
     exp_str = payload.get("expires_at_utc")
-    if not exp_str:
-        return False, "Authorization missing 'expires_at_utc'.", None
+    if not issued_str or not exp_str:
+        return False, "Authorization must include 'authorized_at_utc' and 'expires_at_utc'.", None
     try:
+        issued_dt = datetime.fromisoformat(issued_str)
         exp_dt = datetime.fromisoformat(exp_str)
-        if datetime.now(UTC) >= exp_dt:
+        if issued_dt.tzinfo is None or issued_dt.utcoffset() is None or exp_dt.tzinfo is None or exp_dt.utcoffset() is None:
+            return False, "Authorization timestamps must include a timezone offset.", None
+        issued_dt = issued_dt.astimezone(UTC)
+        exp_dt = exp_dt.astimezone(UTC)
+        now = datetime.now(UTC)
+        if issued_dt > now:
+            return False, "Authorization issue time is in the future.", None
+        if exp_dt <= issued_dt:
+            return False, "Authorization expiry must follow its issue time.", None
+        if exp_dt - issued_dt > timedelta(minutes=MAX_RESTORE_AUTHORIZATION_MINUTES):
+            return False, "Authorization validity window exceeds the configured maximum.", None
+        if now >= exp_dt:
             return False, f"Authorization expired at {exp_str}.", None
-    except ValueError as exc:
-        return False, f"Invalid expiration timestamp format: {exc}", None
+    except (TypeError, ValueError):
+        return False, "Invalid authorization timestamp format.", None
 
     # Check 5: Cryptographic signature verification using dedicated authority key
     nonce = payload.get("authorization_nonce")
     if not nonce:
         return False, "Authorization missing 'authorization_nonce'.", None
 
-    authority_id = payload.get("authority_id", "ceo-restore-authority")
+    authority_id = payload.get("authority_id")
 
     # Resolve dedicated verification key (separated from API bearer token)
-    canonical_key = verification_key or os.environ.get("AAO_RESTORE_AUTHORITY_PUBLIC_KEY")
-    if not canonical_key and Path("/etc/aao/governance/ceo_restore_authority.pub").is_file():
-        canonical_key = "/etc/aao/governance/ceo_restore_authority.pub"
-    if not canonical_key:
-        return False, "Cannot verify authorization: authority verification key not configured on host.", None
+    canonical_key = RESTORE_AUTHORITY_PUBLIC_KEY_FILE
 
-    expected_authority = os.environ.get("AAO_RESTORE_AUTHORITY_ID", "ceo-restore-authority")
-    if authority_id != expected_authority:
+    expected_authority = RESTORE_AUTHORITY_ID
+    if not isinstance(authority_id, str) or authority_id != expected_authority:
         return False, "Authorization issuer identity does not match the configured authority.", None
     signed_payload = {key: value for key, value in payload.items() if key != "ceo_signature"}
     expected_msg = json.dumps(signed_payload, sort_keys=True, separators=(",", ":"))
     try:
         signature = base64.b64decode(payload.get("ceo_signature", ""), validate=True)
         key_path = Path(canonical_key)
+        parent_info = key_path.parent.lstat()
         key_info = key_path.lstat()
-        if not stat.S_ISREG(key_info.st_mode) or key_info.st_mode & 0o022:
-            raise OSError("Configured public verification key is not a regular protected file")
+        if (not stat.S_ISDIR(parent_info.st_mode)
+                or parent_info.st_uid != RESTORE_AUTHORITY_FILE_OWNER_UID
+                or parent_info.st_mode & 0o022
+                or not stat.S_ISREG(key_info.st_mode)
+                or key_info.st_uid != RESTORE_AUTHORITY_FILE_OWNER_UID
+                or key_info.st_mode & 0o022):
+            raise OSError("Pinned public verification key is not a root-owned protected regular file")
         with tempfile.TemporaryDirectory(prefix="aao-restore-verify-") as tmp:
             signature_path = Path(tmp) / "signature.bin"
             signature_path.write_bytes(signature)

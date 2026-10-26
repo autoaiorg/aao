@@ -62,6 +62,7 @@ if BUILD_VERSION=four PATH="$ROOT/interrupt-bin:$ROOT/bin:$PATH" \
 fi
 [[ "$(cat "$ROOT/frontend/dist/assets/version.js")" == three ]]
 [[ -f "$ROOT/frontend/dist/index.html" ]]
+[[ "$(cat "$(readlink -f "$ROOT/frontend/previous")/assets/version.js")" == two ]]
 
 # Interrupt immediately after the atomic dist exchange: old assets remain addressable.
 if BUILD_VERSION=five PATH="$ROOT/interrupt-bin:$ROOT/bin:$PATH" \

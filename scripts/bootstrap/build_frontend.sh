@@ -35,7 +35,20 @@ say "Publishing build to $TARGET_DIR atomically..."
 PARENT_DIR=$(dirname "$TARGET_DIR")
 mkdir -p "$PARENT_DIR"
 STAGING_DIR=$(mktemp -d "$PARENT_DIR/.dist_staging_XXXXXXXX")
+PUBLISH_RELEASE=""
+PUBLISH_PREVIOUS=""
 cleanup() {
+  # Reconcile the rollback pointer on normal exit and catchable interruption.
+  # If publication never switched, leave previous untouched. If dist already
+  # resolves to the new release, atomically point previous at the old release.
+  if [[ -n "$PUBLISH_RELEASE" && -n "$PUBLISH_PREVIOUS" && -L "$TARGET_DIR" ]]; then
+    LIVE_RELEASE=$(readlink -f -- "$TARGET_DIR" || true)
+    NEW_RELEASE=$(readlink -f -- "$PUBLISH_RELEASE" || true)
+    if [[ -n "$LIVE_RELEASE" && "$LIVE_RELEASE" == "$NEW_RELEASE" && -d "$PUBLISH_PREVIOUS" ]]; then
+      ln -s -- "$PUBLISH_PREVIOUS" "$FRONTEND_ROOT/previous.tmp.$$" 2>/dev/null || true
+      mv -Tf -- "$FRONTEND_ROOT/previous.tmp.$$" "$FRONTEND_ROOT/previous" 2>/dev/null || true
+    fi
+  fi
   if [[ -n "${STAGING_DIR:-}" && -e "$STAGING_DIR" ]]; then
     rm -rf -- "$STAGING_DIR"
   fi
@@ -87,12 +100,9 @@ PY
     CURRENT_RELEASE="$OLD_DIST"
   fi
 
-  if [[ -n "$CURRENT_RELEASE" && -d "$CURRENT_RELEASE" ]]; then
-    ln -s -- "$CURRENT_RELEASE" "$FRONTEND_ROOT/previous.tmp.$$"
-    mv -Tf -- "$FRONTEND_ROOT/previous.tmp.$$" "$FRONTEND_ROOT/previous"
-  fi
-
   # Atomic symlink swap; release directory is complete before becoming visible.
+  PUBLISH_RELEASE="$RELEASE_DIR"
+  PUBLISH_PREVIOUS="$CURRENT_RELEASE"
   ln -s -- "$RELEASE_DIR" "$TARGET_DIR.tmp.$$"
   mv -Tf -- "$TARGET_DIR.tmp.$$" "$TARGET_DIR"
 else

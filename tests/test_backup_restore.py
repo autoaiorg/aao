@@ -1,7 +1,6 @@
 """Tests for AAO backup, verification, isolated restoration, and host fencing."""
 
 import json
-import os
 import tarfile
 from unittest.mock import MagicMock, patch
 
@@ -321,13 +320,14 @@ def test_structured_restore_authorization_verification(tmp_path, monkeypatch, re
     ceo_key = "secure-ceo-secret-key-999"
     monkeypatch.setenv("AAO_CEO_TOKEN", ceo_key)
 
+    from aao import backup as backup_module
     from aao.backup import create_restore_authorization, verify_destructive_restore_authorization
 
     # 1. Valid authorization artifact
     valid_auth = create_restore_authorization(archive, "aao_prod", restore_test_signing_key, valid_minutes=60)
     with pytest.raises(BackupError, match="private regular file"):
         create_restore_authorization(
-            archive, "aao_prod", os.environ["AAO_RESTORE_AUTHORITY_PUBLIC_KEY"]
+            archive, "aao_prod", backup_module.RESTORE_AUTHORITY_PUBLIC_KEY_FILE
         )
     ok, msg, nonce = verify_destructive_restore_authorization(None, archive, "aao_prod", valid_auth, ceo_key)
     assert ok is True
@@ -346,10 +346,8 @@ def test_structured_restore_authorization_verification(tmp_path, monkeypatch, re
     assert "target database mismatch" in msg
 
     # 4. Reject expired authorization
-    expired_auth = create_restore_authorization(archive, "aao_prod", restore_test_signing_key, valid_minutes=-5)
-    ok, msg, _ = verify_destructive_restore_authorization(None, archive, "aao_prod", expired_auth, ceo_key)
-    assert ok is False
-    assert "expired" in msg
+    with pytest.raises(BackupError, match="1 to 60 minutes"):
+        create_restore_authorization(archive, "aao_prod", restore_test_signing_key, valid_minutes=-5)
 
     # 5. Reject invalid signature
     tampered_auth = dict(valid_auth)
@@ -368,9 +366,24 @@ def test_structured_restore_authorization_verification(tmp_path, monkeypatch, re
     )
     executor_key.chmod(0o600)
     forged = create_restore_authorization(archive, "aao_prod", executor_key)
+    executor_public_key = tmp_path / "executor-public.pem"
+    subprocess.run(
+        ["openssl", "pkey", "-in", str(executor_key), "-pubout", "-out", str(executor_public_key)],
+        check=True, capture_output=True, timeout=10,
+    )
+    monkeypatch.setenv("AAO_RESTORE_AUTHORITY_PUBLIC_KEY", str(executor_public_key))
+    monkeypatch.setenv("AAO_RESTORE_AUTHORITY_ID", "executor-controlled-identity")
     ok, msg, _ = verify_destructive_restore_authorization(None, archive, "aao_prod", forged, ceo_key)
     assert ok is False
     assert "signature verification failed" in msg
+
+    missing_issuer = dict(valid_auth)
+    missing_issuer.pop("authority_id")
+    ok, msg, _ = verify_destructive_restore_authorization(
+        None, archive, "aao_prod", missing_issuer, ceo_key,
+    )
+    assert ok is False
+    assert "issuer identity" in msg
 
     # 6. Reject replay if nonce was already consumed in database
     mock_db = MagicMock()

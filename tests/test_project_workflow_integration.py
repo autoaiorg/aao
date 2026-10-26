@@ -189,6 +189,11 @@ def test_group_assignment_routes_execution_without_creating_grants(monkeypatch):
                 assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
                     "principal_id": worker_id, "capability": capability,
                 }).status_code == 201
+        assignable = client.get(
+            f"/v1/projects/{project}/assignable-agents", headers=ceo,
+        )
+        assert assignable.status_code == 200, assignable.text
+        assert {agent["principal_id"] for agent in assignable.json()} == set(worker_ids)
         conversation = client.post(f"/v1/projects/{project}/conversations", headers=ceo, json={
             "title": "Assignment discussion",
         }).json()["id"]
@@ -199,11 +204,13 @@ def test_group_assignment_routes_execution_without_creating_grants(monkeypatch):
                 "description": "Consolidate children after completion",
                 "acceptance_criteria": ["Child evidence is preserved"],
                 "tasks": [{"key": "child", "title": "Assigned child",
-                           "acceptance_criteria": ["Evidence recorded"]}],
+                           "acceptance_criteria": ["Evidence recorded"],
+                           "assigned_principal_id": worker_ids[0]}],
             },
         )
         assert group.status_code == 201, group.text
         work_id = group.json()["tasks"][0]["id"]
+        assert group.json()["tasks"][0]["assigned_principal_id"] == worker_ids[0]
         assignment_path = f"/v1/work/{work_id}/assignment"
         assert client.put(assignment_path, headers=workers[0], json={
             "principal_id": worker_ids[0],

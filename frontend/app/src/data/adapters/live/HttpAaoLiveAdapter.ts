@@ -15,7 +15,7 @@
 import type { AaoReadPort } from '../../ports/AaoReadPort';
 import type { AaoOrganizationCommandPort, OrganizationProfileCommand, OrganizationUnitCommand } from '../../ports/AaoOrganizationCommandPort';
 import type { AaoWorkCommandPort, CEOWorkRequest, CreatedWorkRequest } from '../../ports/AaoWorkCommandPort';
-import type { AaoConversationPort, ConversationWorkGroupInput, ConversationWorkGroupProposal, ConversationWorkGroupResult, ConversationWorkRequestInput, ConversationWorkRequestResult, ProjectConversation, ProjectConversationMessage } from '../../ports/AaoConversationPort';
+import type { AaoConversationPort, AssignableAgent, ConversationWorkGroupInput, ConversationWorkGroupProposal, ConversationWorkGroupResult, ConversationWorkRequestInput, ConversationWorkRequestResult, ProjectConversation, ProjectConversationMessage } from '../../ports/AaoConversationPort';
 import type {
   PrincipalSummary,
   ProjectSummary,
@@ -881,6 +881,13 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
     })), { method: 'GET' });
   }
 
+  async listAssignableAgents(projectId: string): Promise<DataState<AssignableAgent[]>> {
+    if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede asignar trabajo.' };
+    return this.request(`/v1/projects/${encodeURIComponent(projectId)}/assignable-agents`, z.array(z.object({
+      principal_id: z.string(), display_name: z.string(),
+    })), { method: 'GET' });
+  }
+
   async listConversationMessages(projectId: string, conversationId: string): Promise<DataState<ProjectConversationMessage[]>> {
     if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede leer conversaciones de proyecto.' };
     return this.request(`/v1/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/messages`, z.array(z.object({
@@ -1019,7 +1026,8 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
         id: z.string().uuid(), project_id: z.string().uuid(), conversation_id: z.string().uuid(),
         parent_work_id: z.string().uuid(), status: z.string(), created: z.boolean(),
         tasks: z.array(z.object({
-          id: z.string().uuid(), title: z.string(), status: z.string(), depends_on: z.array(z.string().uuid()),
+          id: z.string().uuid(), title: z.string(), status: z.string(),
+          assigned_principal_id: z.string().nullable(), depends_on: z.array(z.string().uuid()),
         })),
       }),
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) },

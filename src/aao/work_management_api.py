@@ -158,6 +158,9 @@ class WorkGroupTaskRequest(BaseModel):
     description: str = Field(default="", max_length=5000)
     acceptance_criteria: list[str] = Field(min_length=1, max_length=20)
     depends_on: list[str] = Field(default_factory=list, max_length=20)
+    assigned_principal_id: str | None = Field(
+        default=None, min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$",
+    )
 
     @field_validator("acceptance_criteria")
     @classmethod
@@ -1531,6 +1534,23 @@ def create_conversation_work_group(
                  payload.idempotency_key, request_hash),
             )
             task_ids = {task.key: str(uuid4()) for task in payload.tasks}
+            assigned_principals = {task.assigned_principal_id for task in payload.tasks
+                                   if task.assigned_principal_id is not None}
+            for assigned_principal in assigned_principals:
+                identity = db.execute(
+                    "SELECT enabled FROM principal_credentials WHERE principal_id=%s "
+                    "AND kind='AGENT' FOR SHARE", (assigned_principal,),
+                ).fetchone()
+                grants = {row[0] for row in db.execute(
+                    "SELECT capability FROM project_grants WHERE principal_id=%s "
+                    "AND project_id=%s AND capability IN ('work.admit','execution.claim') "
+                    "AND (expires_at IS NULL OR expires_at>clock_timestamp()) FOR SHARE",
+                    (assigned_principal, project_id),
+                ).fetchall()}
+                if not identity or not identity[0] or grants != {"work.admit", "execution.claim"}:
+                    raise HTTPException(
+                        409, "Assigned child requires an active AGENT identity and existing work.admit/execution.claim grants",
+                    )
             for task in payload.tasks:
                 db.execute(
                     "INSERT INTO work_items(id,project_id,title,description,author_id,status,"
@@ -1538,6 +1558,17 @@ def create_conversation_work_group(
                     (task_ids[task.key], project_id, task.title, task.description,
                      json.dumps(task.acceptance_criteria), parent_work_id),
                 )
+                if task.assigned_principal_id is not None:
+                    db.execute(
+                        "INSERT INTO work_item_assignments(project_id,work_id,principal_id,assigned_by) "
+                        "VALUES (%s,%s,%s,'ceo')",
+                        (project_id, task_ids[task.key], task.assigned_principal_id),
+                    )
+                    audit(db, task_ids[task.key], "work.assigned", {
+                        "project_id": project_id, "principal_id": task.assigned_principal_id,
+                        "previous_principal_id": None, "assigned_by": "ceo",
+                        "grants_created": False,
+                    })
             for task in payload.tasks:
                 for dependency_key in task.depends_on:
                     db.execute(
@@ -1556,7 +1587,9 @@ def create_conversation_work_group(
             created = True
 
         children = db.execute(
-            "SELECT id,title,status FROM work_items WHERE project_id=%s AND parent_work_id=%s ORDER BY id",
+            "SELECT w.id,w.title,w.status,a.principal_id FROM work_items w "
+            "LEFT JOIN work_item_assignments a ON a.work_id=w.id "
+            "WHERE w.project_id=%s AND w.parent_work_id=%s ORDER BY w.id",
             (project_id, parent_work_id),
         ).fetchall()
         dependency_rows = db.execute(
@@ -1574,8 +1607,29 @@ def create_conversation_work_group(
             "conversation_id": conversation_id, "parent_work_id": parent_work_id,
             "status": "INBOX", "created": created,
             "tasks": [{"id": str(child[0]), "title": child[1], "status": child[2],
+                       "assigned_principal_id": child[3],
                        "depends_on": dependencies.get(str(child[0]), [])} for child in children],
         }
+
+
+@app.get("/v1/projects/{project_id}/assignable-agents")
+def list_assignable_agents(project_id: str, _: str = Depends(require_ceo)):
+    """Only expose identities already enabled and authorized to execute work in this project."""
+    with tx() as db:
+        if not db.execute("SELECT 1 FROM projects WHERE id=%s", (project_id,)).fetchone():
+            raise HTTPException(404, "Project not found")
+        rows = db.execute(
+            "SELECT c.principal_id,COALESCE(p.display_name,c.principal_id) "
+            "FROM principal_credentials c "
+            "JOIN project_grants ga ON ga.principal_id=c.principal_id AND ga.project_id=%s "
+            "AND ga.capability='work.admit' AND (ga.expires_at IS NULL OR ga.expires_at>clock_timestamp()) "
+            "JOIN project_grants gc ON gc.principal_id=c.principal_id AND gc.project_id=%s "
+            "AND gc.capability='execution.claim' AND (gc.expires_at IS NULL OR gc.expires_at>clock_timestamp()) "
+            "LEFT JOIN organization_profiles p ON p.principal_id=c.principal_id AND p.enabled "
+            "WHERE c.kind='AGENT' AND c.enabled ORDER BY c.principal_id",
+            (project_id, project_id),
+        ).fetchall()
+    return [{"principal_id": row[0], "display_name": row[1]} for row in rows]
 
 
 @app.put("/v1/work/{work_id}/assignment")

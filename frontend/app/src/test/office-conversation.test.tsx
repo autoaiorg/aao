@@ -22,6 +22,9 @@ describe('office persistent project conversation', () => {
   it('streams a provider response and does not create work merely by conversing', async () => {
     const port: AaoConversationPort = {
       listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
+      listAssignableAgents: vi.fn().mockResolvedValue(ready([
+        { principal_id: 'worker-1', display_name: 'Agente de implementación' },
+      ])),
       listConversationMessages: vi.fn().mockResolvedValue(ready([message])),
       createProjectConversation: vi.fn(),
       appendCEOConversationMessage: vi.fn().mockResolvedValue(ready(message)),
@@ -50,6 +53,7 @@ describe('office persistent project conversation', () => {
     };
     const port: AaoConversationPort = {
       listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
+      listAssignableAgents: vi.fn().mockResolvedValue(ready([])),
       listConversationMessages: vi.fn().mockResolvedValue(ready([message])),
       createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(),
       streamCEOConversationTurn: vi.fn()
@@ -75,6 +79,7 @@ describe('office persistent project conversation', () => {
     const pending = { ...message, turn_status: 'PENDING' as const, turn_idempotency_key: 'b7f4938a-98d3-45a7-a5d7-2bb3e2b4de34' };
     const port: AaoConversationPort = {
       listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
+      listAssignableAgents: vi.fn().mockResolvedValue(ready([])),
       listConversationMessages: vi.fn().mockResolvedValue(ready([pending])),
       createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(),
       streamCEOConversationTurn: vi.fn().mockResolvedValue(ready({ message_id: 'reply-recovered' })),
@@ -92,6 +97,9 @@ describe('office persistent project conversation', () => {
   it('structures CEO-confirmed parent and dependent tasks from the conversation thread', async () => {
     const port: AaoConversationPort = {
       listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
+      listAssignableAgents: vi.fn().mockResolvedValue(ready([
+        { principal_id: 'worker-1', display_name: 'Agente de implementación' },
+      ])),
       listConversationMessages: vi.fn().mockResolvedValue(ready([message, { ...message, id: 'message-2', sender: 'AAO', body: 'Propongo documentar los hallazgos.' } ])),
       createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(), streamCEOConversationTurn: vi.fn(),
       createWorkRequestFromMessage: vi.fn(),
@@ -99,7 +107,7 @@ describe('office persistent project conversation', () => {
       createWorkGroupFromConversation: vi.fn().mockResolvedValue(ready({
         id: 'group-1', project_id: 'project-active', conversation_id: 'conversation-1',
         parent_work_id: 'work-parent', status: 'INBOX', created: true,
-        tasks: [{ id: 'work-child', title: 'Documentar', status: 'INBOX', depends_on: [] }],
+        tasks: [{ id: 'work-child', title: 'Documentar', status: 'INBOX', assigned_principal_id: null, depends_on: [] }],
       })),
       proposeWorkGroupFromConversation: vi.fn().mockResolvedValue(ready({
         proposal: {
@@ -123,6 +131,7 @@ describe('office persistent project conversation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Añadir tarea' }));
     fireEvent.change(screen.getByLabelText('Título task-2'), { target: { value: 'Revisar documentación' } });
     fireEvent.change(screen.getByLabelText('Criterios task-2'), { target: { value: 'CEO puede revisarlos' } });
+    fireEvent.change(screen.getByLabelText('Asignar task-2'), { target: { value: 'worker-1' } });
     fireEvent.click(screen.getByLabelText('task-1: Documentar hallazgos'));
     fireEvent.click(screen.getByRole('button', { name: 'Confirmar desglose y crear en Entrada' }));
     await waitFor(() => expect(port.createWorkGroupFromConversation).toHaveBeenCalledWith('project-active', 'conversation-1', {
@@ -131,7 +140,7 @@ describe('office persistent project conversation', () => {
       title: 'Documentar hallazgos', description: 'A partir del hilo, documentar los hallazgos acordados.', acceptance_criteria: ['Hallazgos documentados', 'CEO puede revisarlos'],
       tasks: [
         { key: 'task-1', title: 'Documentar hallazgos', description: 'Revisar fuentes', acceptance_criteria: ['Hallazgos documentados'], depends_on: [] },
-        { key: 'task-2', title: 'Revisar documentación', description: '', acceptance_criteria: ['CEO puede revisarlos'], depends_on: ['task-1'] },
+        { key: 'task-2', title: 'Revisar documentación', description: '', acceptance_criteria: ['CEO puede revisarlos'], depends_on: ['task-1'], assigned_principal_id: 'worker-1' },
       ],
     }));
     expect(await screen.findByText(/no se ha admitido ni ejecutado/)).toBeInTheDocument();
@@ -141,6 +150,7 @@ describe('office persistent project conversation', () => {
   it('asks AAO for a reviewable breakdown based on the whole persisted thread', async () => {
     const port: AaoConversationPort = {
       listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
+      listAssignableAgents: vi.fn().mockResolvedValue(ready([])),
       listConversationMessages: vi.fn().mockResolvedValue(ready([
         message, { ...message, id: 'message-2', sender: 'AAO', body: 'Acuerdo del hilo.' },
       ])),

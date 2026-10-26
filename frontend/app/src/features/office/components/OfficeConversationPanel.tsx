@@ -18,6 +18,7 @@ interface WorkTaskDraft {
   description: string;
   acceptanceCriteria: string;
   dependsOn: string[];
+  assignedPrincipalId: string;
 }
 
 export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = ({ projects, port, sessionId, onOpenBoard }) => {
@@ -40,7 +41,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
   const [proposingWorkGroup, setProposingWorkGroup] = useState(false);
   const [proposalGenerated, setProposalGenerated] = useState(false);
   const [proposalSourceMessageIds, setProposalSourceMessageIds] = useState<string[] | null>(null);
-  const [workTasks, setWorkTasks] = useState<WorkTaskDraft[]>([{ key: 'task-1', title: '', description: '', acceptanceCriteria: '', dependsOn: [] }]);
+  const [workTasks, setWorkTasks] = useState<WorkTaskDraft[]>([{ key: 'task-1', title: '', description: '', acceptanceCriteria: '', dependsOn: [], assignedPrincipalId: '' }]);
   const [nextTaskNumber, setNextTaskNumber] = useState(2);
   const [workGroupIdempotencyKey, setWorkGroupIdempotencyKey] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
@@ -71,6 +72,12 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
     enabled: !!projectId && !!conversationId,
   });
   const messages = messagesQuery.data?.kind === 'ready' ? messagesQuery.data.data : [];
+  const assignableAgentsQuery = useQuery({
+    queryKey: ['office-assignable-agents', sessionId, projectId],
+    queryFn: () => port.listAssignableAgents(projectId),
+    enabled: !!projectId,
+  });
+  const assignableAgents = assignableAgentsQuery.data?.kind === 'ready' ? assignableAgentsQuery.data.data : [];
 
   const createConversation = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -96,7 +103,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
     setSendingTurn(true);
     if (proposalGenerated) {
       setRequestTitle(''); setRequestDescription(''); setRequestCriteria('');
-      setWorkTasks([{ key: 'task-1', title: '', description: '', acceptanceCriteria: '', dependsOn: [] }]);
+      setWorkTasks([{ key: 'task-1', title: '', description: '', acceptanceCriteria: '', dependsOn: [], assignedPrincipalId: '' }]);
       setNextTaskNumber(2); setWorkGroupIdempotencyKey(''); setProposalGenerated(false); setProposalSourceMessageIds(null);
     }
     const idempotencyKey = turnIdempotencyKey || crypto.randomUUID();
@@ -163,6 +170,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
       description: task.description.trim(),
       acceptance_criteria: task.acceptanceCriteria.split('\n').map((item) => item.trim()).filter(Boolean),
       depends_on: task.dependsOn,
+      ...(task.assignedPrincipalId ? { assigned_principal_id: task.assignedPrincipalId } : {}),
     }));
     if (!projectId || !conversationId || !requestTitle.trim() || !requestDescription.trim()
       || criteria.length === 0 || tasks.some((task) => !task.title || task.acceptance_criteria.length === 0)) return;
@@ -178,7 +186,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
     setRequestingMessageId(false);
     if (result.kind === 'ready') {
       setRequestTitle(''); setRequestDescription(''); setRequestCriteria('');
-      setWorkTasks([{ key: 'task-1', title: '', description: '', acceptanceCriteria: '', dependsOn: [] }]);
+      setWorkTasks([{ key: 'task-1', title: '', description: '', acceptanceCriteria: '', dependsOn: [], assignedPrincipalId: '' }]);
       setNextTaskNumber(2); setWorkGroupIdempotencyKey(''); setProposalGenerated(false); setProposalSourceMessageIds(null);
       setNotice(`Desglose ${result.data.id} (${result.data.tasks.length} tareas) registrado en Entrada; no se ha admitido ni ejecutado.`);
       await queryClient.invalidateQueries({ queryKey: ['board'] });
@@ -203,6 +211,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
         description: task.description,
         acceptanceCriteria: task.acceptance_criteria.join('\n'),
         dependsOn: task.depends_on,
+        assignedPrincipalId: '',
       })));
       setNextTaskNumber(proposal.tasks.length + 1);
       setWorkGroupIdempotencyKey('');
@@ -315,6 +324,10 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
                 </label>
                 <div className="office-conversation-task-list">
                   <strong>Tareas del desglose</strong>
+                  {assignableAgentsQuery.isLoading && <p role="status">Cargando identidades autorizadas para este proyecto…</p>}
+                  {assignableAgentsQuery.data && assignableAgentsQuery.data.kind !== 'ready' && (
+                    <p role="alert">No se pudieron cargar identidades asignables: {stateMessage(assignableAgentsQuery.data)}</p>
+                  )}
                   {workTasks.map((task, index) => (
                     <fieldset key={task.key} className="office-conversation-task">
                       <legend>{task.key}</legend>
@@ -326,6 +339,15 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
                       </label>
                       <label className="office-form-field">Criterios (uno por línea)
                         <textarea className="office-form-control office-form-control--textarea" aria-label={`Criterios ${task.key}`} required rows={2} value={task.acceptanceCriteria} onChange={(event) => updateWorkTask(task.key, { acceptanceCriteria: event.target.value })} />
+                      </label>
+                      <label className="office-form-field">Asignar a identidad autorizada (opcional)
+                        <select className="office-form-control" aria-label={`Asignar ${task.key}`} value={task.assignedPrincipalId}
+                          onChange={(event) => updateWorkTask(task.key, { assignedPrincipalId: event.target.value })}>
+                          <option value="">Sin asignar</option>
+                          {assignableAgents.map((agent) => <option key={agent.principal_id} value={agent.principal_id}>
+                            {agent.display_name} ({agent.principal_id})
+                          </option>)}
+                        </select>
                       </label>
                       {index > 0 && (
                         <fieldset className="office-conversation-dependencies">
@@ -349,7 +371,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
                     const key = `task-${nextTaskNumber}`;
                     setNextTaskNumber((number) => number + 1);
                     setWorkGroupIdempotencyKey('');
-                    setWorkTasks((current) => [...current, { key, title: '', description: '', acceptanceCriteria: '', dependsOn: [] }]);
+                    setWorkTasks((current) => [...current, { key, title: '', description: '', acceptanceCriteria: '', dependsOn: [], assignedPrincipalId: '' }]);
                   }}>Añadir tarea</Button>
                 </div>
                 <Button type="submit" disabled={requestingMessageId || !requestTitle.trim() || !requestDescription.trim() || !requestCriteria.trim() || workTasks.some((task) => !task.title.trim() || !task.acceptanceCriteria.trim())}>

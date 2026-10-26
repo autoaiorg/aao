@@ -50,7 +50,13 @@ export interface ConversationWorkGroupInput extends ConversationWorkRequestInput
     description: string;
     acceptance_criteria: string[];
     depends_on: string[];
+    assigned_principal_id?: string | null;
   }>;
+}
+
+export interface AssignableAgent {
+  principal_id: string;
+  display_name: string;
 }
 
 export interface ConversationWorkGroupResult {
@@ -72,6 +78,7 @@ export interface ConversationWorkGroupProposal {
 }
 
 export interface AaoConversationPort {
+  listAssignableAgents(projectId: string): Promise<DataState<AssignableAgent[]>>;
   listProjectConversations(projectId: string): Promise<DataState<ProjectConversation[]>>;
   listConversationMessages(projectId: string, conversationId: string): Promise<DataState<ProjectConversationMessage[]>>;
   createProjectConversation(projectId: string, title: string): Promise<DataState<Pick<ProjectConversation, 'id' | 'project_id' | 'title'>>>;

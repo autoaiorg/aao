@@ -114,6 +114,7 @@ export interface ProjectWorkGroup {
     status: string;
     assigned_principal_id: string | null;
     evidence: unknown;
+    dependencies: Array<{ work_id: string; status: string }>;
     executions: Array<{ id: string; status: string; worker_id: string | null; result_sha256: string | null }>;
     reviews: Array<{ id: string; decision: string; candidate_sha: string | null; evidence: unknown }>;
   }>;

@@ -1717,6 +1717,18 @@ def _work_group_source_snapshot(db, project_id: str, parent_work_id: str, *, loc
     if not children:
         return {"children": []}, hashlib.sha256(b'{"children":[]}').hexdigest()
     child_ids = [row[0] for row in children]
+    dependency_rows = db.execute(
+        "SELECT d.work_id,d.depends_on_work_id,p.status FROM work_item_dependencies d "
+        "JOIN work_items p ON p.project_id=d.project_id AND p.id=d.depends_on_work_id "
+        "WHERE d.project_id=%s AND d.work_id=ANY(%s) "
+        "ORDER BY d.work_id,d.depends_on_work_id FOR SHARE OF p",
+        (project_id, child_ids),
+    ).fetchall()
+    dependencies_by_work: dict[str, list[dict]] = {}
+    for work_id, prerequisite_id, prerequisite_status in dependency_rows:
+        dependencies_by_work.setdefault(str(work_id), []).append({
+            "work_id": str(prerequisite_id), "status": prerequisite_status,
+        })
     execution_rows = db.execute(
         "SELECT id,work_id,status,worker_id,result_json FROM execution_queue "
         "WHERE project_id=%s AND work_id=ANY(%s) ORDER BY work_id,id FOR SHARE",
@@ -1745,6 +1757,7 @@ def _work_group_source_snapshot(db, project_id: str, parent_work_id: str, *, loc
     snapshot = {"children": [
         {"work_id": str(work_id), "status": status, "assigned_principal_id": assigned_principal_id,
          "evidence": evidence,
+         "dependencies": dependencies_by_work.get(str(work_id), []),
          "executions": executions_by_work.get(str(work_id), []),
          "reviews": reviews_by_work.get(str(work_id), [])}
         for work_id, status, evidence, assigned_principal_id in children

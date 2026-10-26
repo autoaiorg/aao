@@ -138,6 +138,10 @@ export const OfficeWorkGroupPanel: React.FC<OfficeWorkGroupPanelProps> = ({ proj
             <span>Responsable: {currentAssignment?.display_name || child.assigned_principal_id || 'Sin asignar'}</span>
             <div className="office-work-group__outcomes" aria-label={`Resultados observados de ${child.work_id}`}>
               {child.status !== 'DONE' && <p className="office-work-group__outcome-note">Trabajo aún no completado: {child.status}. La consolidación final sigue bloqueada.</p>}
+              {child.dependencies.map((dependency) => <p key={dependency.work_id}>
+                Prerequisito {dependency.work_id.slice(0, 8)} · {dependency.status}
+                {dependency.status !== 'DONE' ? ' · dependencia todavía no satisfecha' : ' · dependencia satisfecha'}
+              </p>)}
               {child.executions.map((execution) => <p key={execution.id}>
                 Ejecución {execution.id.slice(0, 8)} · {execution.status}
                 {execution.worker_id ? ` · actor ${execution.worker_id}` : ''}

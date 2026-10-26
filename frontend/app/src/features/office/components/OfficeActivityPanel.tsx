@@ -15,6 +15,7 @@ interface OfficeActivityPanelProps {
 
 function describeActivity(event: ActivityEvent): string {
   if (event.kind === 'work.dispatch_blocked') return 'Bloqueo de despacho';
+  if (event.kind === 'work.execution_quarantined') return 'Lease expirada · ejecución en cuarentena';
   if (event.kind.startsWith('execution.')) return 'Ejecución';
   if (event.kind.startsWith('work.')) return 'Trabajo';
   if (event.kind.startsWith('review.')) return 'Revisión';
@@ -22,11 +23,14 @@ function describeActivity(event: ActivityEvent): string {
   return 'Evento persistido';
 }
 
-function dispatchBlockerReason(event: ActivityEvent): string | undefined {
-  if (event.kind !== 'work.dispatch_blocked' || !event.details || typeof event.details !== 'object') {
+function activityExplanation(event: ActivityEvent): string | undefined {
+  if (!['work.dispatch_blocked', 'work.execution_quarantined'].includes(event.kind)
+    || !event.details || typeof event.details !== 'object') {
     return undefined;
   }
-  const reason = (event.details as Record<string, unknown>).reason;
+  const details = event.details as Record<string, unknown>;
+  const reason = event.kind === 'work.execution_quarantined'
+    ? details.next_action : details.reason;
   return typeof reason === 'string' && reason.trim() ? reason.trim() : undefined;
 }
 
@@ -72,7 +76,7 @@ export const OfficeActivityPanel: React.FC<OfficeActivityPanelProps> = ({ projec
               <li key={event.id}>
                 <button type="button" className="office-activity__event" onClick={() => onOpenBoard(projectId, event.kind.startsWith('work.') ? event.subject_id : undefined)}>
                   <span className="office-activity__kind">{describeActivity(event)} · {event.kind}</span>
-                  {dispatchBlockerReason(event) && <span className="office-activity__reason">{dispatchBlockerReason(event)}</span>}
+                  {activityExplanation(event) && <span className="office-activity__reason">{activityExplanation(event)}</span>}
                   <code>{event.subject_id}</code>
                   <time dateTime={event.created_at}>{new Date(event.created_at).toLocaleString('es-ES')}</time>
                 </button>

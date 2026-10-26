@@ -3,7 +3,7 @@
 **Estado:** propuesta técnica para revisión; no es protocolo vigente ni concede autoridad.
 **Base:** `CEO-DEC-ENTERPRISE-MODEL-2026-10-26`, D-01, D-03, D-04, D-05 y D-10.
 **Alcance:** mínimo para el piloto §14, no un motor genérico de workflows.
-**Revisión de código:** `main` `3558fc592060ce8ae2396b4866b5b0ad717eb614`.
+**Revisión de código:** `main` `c38d0a9bb1ec7fee20bfea990488d63fc45ceef4` (revisión documental parcial; no equivale a integración E2E ni al gate de protocolo).
 
 ## Criterios de diseño
 
@@ -63,7 +63,7 @@ Esta sección concreta el uso del piloto sin introducir nuevos estados de trabaj
 - La propuesta conversacional de tareas no es plan aprobado. La ruta `POST .../work-group-proposals` solo devuelve borrador y registra su procedencia; la ruta CEO-confirmada distinta crea el grupo como trabajo canónico.
 - El grupo confirmado no admite tareas por sí mismo. La admisión, el despacho y la ejecución son posteriores y aplican las verificaciones de identidad/grant/estado existentes.
 - Los endpoints de PM observados tienen ámbitos concretos: `work.coordinate` autoriza lectura de grupos y persistencia de una síntesis; `work.assign` autoriza la asignación de hijos a identidades con grants de admisión/ejecución ya existentes. La síntesis compara un snapshot y se registra en la conversación; no es aceptación del CEO, verificación independiente ni transición automática del padre a `DONE`. Ninguno de esos endpoints ni de sus comprobaciones actuales cubre prioridad.
-- Hoy no hay operación de aceptación de producto para cerrar un grupo. El endpoint CEO `resolve-outside-cycle` no sustituye ese flujo: representa una resolución externa y no valida aceptación/grupo/snapshot. El protocolo propone una acción CEO separada, con idempotencia y verificación transaccional de criterios, estado `DONE` de cada hijo, ausencia de ejecución activa, SHA-256 esperado del snapshot, y para cada hijo un `APPROVE` ligado al SHA de una ejecución exitosa. Un estado `DONE` por `resolve-outside-cycle` sin review vigente no satisface el piloto. Su evento no concede permisos ni reemplaza el dictamen independiente. Esta brecha debe implementarse para el piloto; no queda resuelta por `work.coordinate`.
+- La aceptación de producto para cerrar un grupo ya existe como operación CEO separada: `POST /v1/projects/{project_id}/work-groups/{group_id}/acceptance`. Verifica criterios, snapshot y consolidación vigentes, hijos `DONE`, revisiones `APPROVE` ligadas al SHA de una ejecución exitosa y ausencia de ejecuciones activas/inciertas; cierra el padre y registra `work.group_accepted` dentro de la misma transacción. Es aceptación del CEO, no revisión independiente, coordinación PM ni integración. `resolve-outside-cycle` sigue siendo otro flujo y no la sustituye.
 - Los protocolos describen qué endpoint/servicio ejecutar después, no un ejecutor genérico que interprete pasos ni una nueva cola.
 
 ## Invariantes de estado y seguridad
@@ -85,7 +85,7 @@ La inspección de `main` confirma que hay operaciones reutilizables, pero no un 
 | Entrada/clasificación | La creación de una solicitud persistente (`INBOX`) y la confirmación de un grupo nacen de rutas CEO; los borradores conversacionales no son trabajo admitido | Clasificación persistida y trazable, enlace de vuelta al mensaje, e idempotencia donde falte; no convertir la recomendación en admisión/ejecución |
 | Planificación/asignación | CEO confirma el grupo; un PM autenticado con `work.assign` puede asignar hijos solo a AGENT activos con grants de admisión/ejecución y competencias declaradas coincidentes. `work.coordinate` no sustituye a `work.assign` | El PM no puede actualmente crear/confirmar el grupo por sí mismo ni cambiar prioridad. Mantener la confirmación CEO del alcance; no automatizar la ejecución de una propuesta antes de que el CEO confirme el objetivo. La forma de descargar la coordinación ordinaria al PM sin nuevas facultades debe quedar dentro de grants existentes; cualquier grant adicional es decisión separada |
 | Implementación | El agente asignado ejecuta `admit`/`dispatch-next` con `work.admit` y `execution.claim`; worker y lease registran el intento | Orquestación entre agentes no aparece en el endpoint del PM: debe permanecer en agentes con sus credenciales reales o incorporar una operación que valide autorización existente en el momento de actuar; PM no debe suplantar identidades |
-| Revisión/aceptación | AUDITOR autenticado con `work.review` puede revisar un SHA ligado a ejecución/evidencia, separado del autor/worker. La propuesta de aceptación de producto CEO es una operación distinta y no existe en el `main` examinado | Probar revisión rechazada y aprobación ligada a SHA; cerrar la ruta CEO de aceptación de producto solo si pasa contrato, concurrencia e idempotencia. No presentar consolidación PM como aceptación |
+| Revisión/aceptación | AUDITOR autenticado con `work.review` revisa SHA ligado a ejecución/evidencia, separado del autor/worker. La aceptación de producto existe como operación CEO distinta, idempotente y ligada a criterios, snapshot, consolidación y revisiones vigentes | Integrar y probar el ciclo completo de rechazo/aprobación y aceptación sobre el mismo resultado persistido; probar concurrencia/replay y mantener separadas aceptación CEO, revisión independiente y consolidación PM |
 | Bloqueos/escalado | Hay proyección de bloqueos de despacho; `work.coordinate` permite lectura/consolidación de grupos. Reconciliación de ejecución/efecto se asigna a AUDITOR con grants separados | El PM no tiene hoy un resolvedor general, permiso de reconciliación ni retry universal. El protocolo debe limitarse a identificar/dirigir la siguiente acción al actor ya competente, y mantener el trabajo bloqueado si no existe tal actor |
 
 Por tanto, los cinco protocolos pueden describirse ahora, pero su gate requiere construir transiciones/handlers explícitos sobre operaciones existentes y probar los permisos negativos. Este mapa no es autorización para mover operaciones CEO-only a PM ni reconciliaciones AUDITOR a PM.
@@ -113,7 +113,7 @@ Por tanto, los cinco protocolos pueden describirse ahora, pero su gate requiere 
 - La prioridad no está modelada como campo persistente del trabajo en el esquema actual. El código inspeccionado limita `work.coordinate` a leer grupos/consolidar y `work.assign` a asignar hijos; no hay una autoridad existente para cambiar prioridad que pueda inferirse con seguridad de esos grants. El escenario §14 de cambio de prioridad requiere un contrato persistente y una autoridad explícita antes de especificar el endpoint/principal de la prueba. No se debe ampliar el alcance de ninguno de esos grants ni inventar un rol PM por el nombre del puesto.
 - Antes de PR de implementación: verificar nuevamente endpoints, permisos, tablas y pruebas en la base de la rama objetivo; cada PR debe indicar fase y gate del modelo operativo.
 
-### Verificación de código realizada contra `main` `3558fc592060ce8ae2396b4866b5b0ad717eb614`
+### Verificación parcial de código contra `main` `c38d0a9bb1ec7fee20bfea990488d63fc45ceef4`
 
 Esta verificación acota el contrato y evita atribuir al borrador capacidad no existente:
 
@@ -125,7 +125,7 @@ Esta verificación acota el contrato y evita atribuir al borrador capacidad no e
 - Ninguno de estos contratos expone prioridad persistente. No se especifica una mutación ni una prueba que presuponga autoridad de PM hasta que exista contrato aprobado para ese dato.
 - La aceptación de producto del grupo ya tiene una ruta CEO-only: `POST /v1/projects/{project_id}/work-groups/{group_id}/acceptance`. Valida criterios y snapshot/consolidación vigentes, requiere APPROVE por SHA para las hijas y escribe `work.group_accepted` junto al cierre del padre en una transacción. Proporciona el cierre explícito de Producto para el piloto, pero requiere intervención CEO; no autoriza al PM, no es auditoría independiente ni integra código.
 
-Estas rutas se verificaron leyendo sus implementaciones en la revisión indicada; no se ejecutó una integración E2E ni una prueba de resistencia en este turno.
+Las observaciones anteriores proceden de lectura de código en la revisión indicada; esta actualización no ejecutó una integración E2E ni pruebas de resistencia. La revisión no cubre todos los handlers y roles de los cinco protocolos; debe completarse antes de fijar pruebas contra comportamiento aún inexistente.
 
 ## Plan de pruebas de resistencia §14 (propuesto; todavía no ejecutado)
 

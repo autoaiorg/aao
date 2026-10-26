@@ -2281,4 +2281,21 @@ def test_capability_feedback_is_persisted_as_non_applied_ceo_proposal(monkeypatc
         assert listing.json()[0]["correction"] == payload["correction"]
         assert listing.json()[0]["status"] == "proposed"
         assert listing.json()[0]["applied"] is False
+        proposal_id = proposed.json()["id"]
+        review_path = f"/v1/projects/{project}/capability-feedback/{proposal_id}/review"
+        decision = client.post(review_path, json={"status": "accepted"})
+        assert decision.status_code == 403
+        decision = client.post(review_path, headers=ceo, json={"status": "accepted"})
+        assert decision.status_code == 200, decision.text
+        assert decision.json()["status"] == "accepted"
+        assert decision.json()["reviewed_by"] == "ceo"
+        assert decision.json()["reviewed_at"]
+        assert decision.json()["applied"] is False
+        assert client.post(review_path, headers=ceo, json={"status": "accepted"}).json() == decision.json()
+        assert client.post(review_path, headers=ceo, json={"status": "rejected"}).status_code == 409
+        reviewed = client.get(f"/v1/projects/{project}/capability-feedback", headers=ceo).json()[0]
+        assert reviewed["status"] == "accepted"
+        assert reviewed["reviewed_by"] == "ceo"
+        assert reviewed["reviewed_at"] == decision.json()["reviewed_at"]
+        assert reviewed["applied"] is False
         assert client.get(f"/v1/projects/{project}/capabilities", headers=ceo).json()[0]["version"] == "1.0.0"

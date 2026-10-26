@@ -74,6 +74,7 @@ jobs:
           psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/030_conversation_work_group_results.sql
           psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/031_conversation_endpoint_metadata.sql
           psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/032_work_item_required_competencies.sql
+          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/033_protocol_instances.sql
       - run: python -m compileall -q src tests
       - run: python -m ruff check src tests
       - name: Run unit and PostgreSQL integration tests with warnings as errors

@@ -55,7 +55,8 @@ def claim(worker_id: str, *, agent_credential: str, project_id: str,
             "LEFT JOIN work_item_assignments a ON a.project_id=q.project_id AND a.work_id=q.work_id "
             "WHERE q.status='QUEUED' AND p.state='ACTIVE' AND q.project_id=%s "
             "AND (w.parent_work_id IS NULL OR a.principal_id=%s) "
-            "ORDER BY q.created_at,q.id FOR UPDATE OF q SKIP LOCKED LIMIT 1",
+            "ORDER BY CASE w.priority WHEN 'HIGH' THEN 0 ELSE 1 END,q.created_at,q.id "
+            "FOR UPDATE OF q SKIP LOCKED LIMIT 1",
             (project_id, worker_id),
         ).fetchone()
         if not row:

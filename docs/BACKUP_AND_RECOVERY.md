@@ -49,6 +49,16 @@ aao-ops verify-backup /var/backups/aao/aao-backup-20261026T120000Z.tar.gz
 
 ## 4. Procedimiento de Restauración Aislada (Pre-flight Obligatorio)
 
+### Autoridad anti-replay para restauraciones destructivas
+
+Antes de habilitar restauraciones destructivas, provisionar una base PostgreSQL de autoridad **duradera y operada por separado** del destino. Aplicar como propietario el SQL versionado `db/postgres/restore_authority/001_consumed_restore_authorizations.sql` únicamente en esa base, no en la base AAO restaurable. Configurar `AAO_RESTORE_AUTHORITY_DATABASE_URL` en el entorno protegido del proceso que ejecuta `aao-ops restore` (por ejemplo, el `EnvironmentFile` protegido del servicio/operador), nunca en argumentos de shell ni en logs. El destino y la base de autoridad deben tener nombres distintos. El cliente exige `fsync=on` y `synchronous_commit=on`; si falta la conexión, la tabla o la durabilidad, se deniega la restauración.
+
+El rol ejecutor de restauraciones debe tener únicamente `CONNECT` a la base, `USAGE` en `restore_authority` y `INSERT` más `SELECT(nonce)` sobre `restore_authority.consumed_authorizations`; no conceder `UPDATE`, `DELETE`, `TRUNCATE`, `CREATE` ni propiedad de objetos. El propietario de la base/tabla debe ser un rol de provisión distinto. Revise que la base de autoridad tenga retención, copias y recuperación independientes de la base restaurada. La aplicación no crea el esquema automáticamente. **La provisión/configuración de producción no se considera completada por el código o las pruebas**: debe quedar evidencia operacional antes de autorizar una restauración real.
+
+La separación por nombre de base evita escribir el ledger en el destino PostgreSQL inmediato, pero no demuestra que ambos nombres estén en clusters físicos o dominios de recuperación distintos. Esa independencia debe verificarse operacionalmente; no ejecutar una restauración que pueda reemplazar la base de autoridad.
+
+Las reservas se confirman antes de modificar el destino. Si la conexión se pierde con resultado incierto, el proceso deniega y exige reconciliación; no reintentar con el mismo permiso sin comprobar el ledger. Reservas previas no se eliminan: un permiso consumido por una restauración fallida requiere una nueva autorización.
+
 Para cumplir la directriz de restauración en entorno aislado:
 
 1. **Crear una base de datos desechable de verificación:**

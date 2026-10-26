@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import uuid
 from unittest.mock import MagicMock
 
@@ -220,6 +221,11 @@ def test_claim_complete_and_effect_proposal_reject_binding_for_another_host(monk
 def clean_postgres(monkeypatch):
     """Ensure clean PostgreSQL tables before and after test."""
     monkeypatch.setenv("AAO_ENV", "test")
+    test_dsn = os.environ.get("AAO_TEST_POSTGRES_URL")
+    if test_dsn and os.environ.get("AAO_TEST_DB_DISPOSABLE") == "yes":
+        # These integration tests use the runtime connection helper, which
+        # intentionally does not treat test-only DSNs as production defaults.
+        monkeypatch.setenv("AAO_POSTGRES_URL", test_dsn)
     try:
         with connect_postgres() as db:
             db.execute("SELECT 1")

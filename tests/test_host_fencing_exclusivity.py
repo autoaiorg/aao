@@ -424,7 +424,7 @@ def test_targeted_host_fencing_avoids_blanket_revocation(clean_postgres):
         assert exec_rows[env["exec_b"]] == "RUNNING", "Host B task must remain running without disturbance"
 
 
-def test_old_host_cannot_execute_external_effects_post_cutover(clean_postgres):
+def test_old_host_cannot_execute_external_effects_post_cutover(clean_postgres, monkeypatch):
     """Prove that an old fenced host cannot produce external effects after cutover."""
     from aao.external_effect_registry import EffectConflict
     with connect_postgres() as db:
@@ -435,6 +435,7 @@ def test_old_host_cannot_execute_external_effects_post_cutover(clean_postgres):
         db.commit()
 
         # Old Host A attempts to propose an external effect with its credentials and lease
+        monkeypatch.setenv("AAO_TEST_HOST_ID", "host-a")
         with pytest.raises(EffectConflict) as exc_info:
             propose_external_effect(
                 execution_id=env["exec_a"],
@@ -448,6 +449,7 @@ def test_old_host_cannot_execute_external_effects_post_cutover(clean_postgres):
         assert any(term in str(exc_info.value).lower() for term in ("fenced", "revoked", "credential", "lease", "conflict"))
 
         # Meanwhile, Host B remains fully authorized and can propose external effects
+        monkeypatch.setenv("AAO_TEST_HOST_ID", "host-b")
         res = propose_external_effect(
             execution_id=env["exec_b"],
             worker_id="worker-host-b",
@@ -461,7 +463,7 @@ def test_old_host_cannot_execute_external_effects_post_cutover(clean_postgres):
         assert "id" in res
 
 
-def test_network_partition_and_zero_duplicate_effects(clean_postgres):
+def test_network_partition_and_zero_duplicate_effects(clean_postgres, monkeypatch):
     """Prove that after cutover fencing and network reconnection, old host cannot create duplicate effects."""
     from aao.external_effect_registry import EffectConflict
     with connect_postgres() as db:
@@ -472,6 +474,7 @@ def test_network_partition_and_zero_duplicate_effects(clean_postgres):
 
         # Old host-a attempts to propose an effect after network recovery
         shared_key = f"idemp-shared-{uuid.uuid4()}"
+        monkeypatch.setenv("AAO_TEST_HOST_ID", "host-a")
         with pytest.raises(EffectConflict):
             propose_external_effect(
                 execution_id=env["exec_a"],
@@ -484,6 +487,7 @@ def test_network_partition_and_zero_duplicate_effects(clean_postgres):
             )
 
         # Host B proposes the effect successfully
+        monkeypatch.setenv("AAO_TEST_HOST_ID", "host-b")
         res = propose_external_effect(
             execution_id=env["exec_b"],
             worker_id="worker-host-b",

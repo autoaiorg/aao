@@ -13,6 +13,7 @@ import os
 import pwd
 import re
 import stat
+import subprocess
 import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -29,7 +30,9 @@ EXPECTED_RULE_TYPES = {"update", "pull_request", "non_fast_forward", "deletion",
 AUDIT_INTEGRATION_ID = 5448107
 _FIELDS = {"schema", "auditor_uid", "ledger_path", "state_path", "heartbeat_path", "intake_socket",
            "private_key", "key_id", "trust_registry", "validity_seconds", "repository", "attribution_path"}
-_OPTIONAL_FIELDS = {"integrator_login", "watch_expected_types", "watch_required_checks", "events_path"}
+_OPTIONAL_FIELDS = {"integrator_login", "watch_expected_types", "watch_required_checks", "events_path",
+                    "push_receipts_dir", "webhook_secret_path", "webhook_bind", "webhook_port",
+                    "webhook_repositories"}
 
 
 def _read_owned(path: Path, owners: tuple[int, ...]) -> bytes:
@@ -85,8 +88,26 @@ def heartbeat(config: dict[str, Any]) -> dict[str, Any]:
         seconds=config["validity_seconds"])).isoformat(), **custody)
 
 
+def serve_push_webhook(config: dict[str, Any]) -> None:
+    """Start the optional push receiver; network/TLS publication is an operator deployment step."""
+    from aao.push_receipts import serve_webhook
+
+    required = {"push_receipts_dir", "webhook_secret_path"}
+    if not required <= set(config):
+        raise ValueError("push receipt directory and webhook secret path must be configured")
+    secret = _read_owned(Path(config["webhook_secret_path"]), (0, os.geteuid())).strip()
+    if len(secret) < 32:
+        raise ValueError("GitHub webhook secret must contain at least 32 bytes")
+    repositories = config.get("webhook_repositories", [config["repository"]])
+    if not isinstance(repositories, list) or any(not isinstance(item, str) or item.count("/") != 1 for item in repositories):
+        raise ValueError("webhook_repositories must be a list of owner/repository names")
+    serve_webhook(bind=config.get("webhook_bind", "127.0.0.1"), port=config.get("webhook_port", 8765),
+        directory=Path(config["push_receipts_dir"]), repository=config["repository"], secret=secret,
+        private_key=config["private_key"], repositories=set(repositories))
+
+
 def attribution(config: dict[str, Any], client: Any | None = None) -> dict[str, Any]:
-    """Attribute PR head commits from GitHub push-event history; unresolved PRs fail closed."""
+    """Attribute PR head commits from API history and authenticated durable receipts."""
     from aao.github_app_auth import GitHubAppClient
     from aao.supervisor import record_attribution
 
@@ -159,6 +180,17 @@ def attribution(config: dict[str, Any], client: Any | None = None) -> dict[str, 
                 malformed = True
                 break
             pushes.append((actor["login"], payload["head"], payload["before"], payload["ref"]))
+        receipts_dir = config.get("push_receipts_dir")
+        if receipts_dir:
+            try:
+                from aao.push_receipts import read_push_receipts
+
+                receipts = read_push_receipts(Path(receipts_dir), repository=head_repo,
+                                              private_key=config["private_key"])
+            except (KeyError, OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+                skipped.update(pr["number"] for pr in repo_prs)
+                continue
+            pushes.extend((item["actor"], item["after"], item["before"], item["ref"]) for item in receipts)
         if malformed:
             skipped.update(pr["number"] for pr in repo_prs)
             continue
@@ -358,7 +390,7 @@ def watch(config: dict[str, Any], client: Any | None = None, *,
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="AAO supervisor service (config path is fixed)")
-    parser.add_argument("command", choices=("serve", "heartbeat", "attribution", "watch"))
+    parser.add_argument("command", choices=("serve", "heartbeat", "attribution", "watch", "webhook"))
     args = parser.parse_args()
     config = load_config()
     if args.command == "heartbeat":
@@ -371,6 +403,9 @@ def main() -> int:
         return 0
     if args.command == "watch":
         print(json.dumps({"status": "checked", **watch(config)}, sort_keys=True))
+        return 0
+    if args.command == "webhook":
+        serve_push_webhook(config)
         return 0
     serve_veto_intake(Path(config["intake_socket"]), auditor_uid=config["auditor_uid"],
                       validity_seconds=config["validity_seconds"], **_custody(config))

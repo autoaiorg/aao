@@ -58,7 +58,8 @@ UNITS = {"aao-auditor@probe.service": "aao-auditor@.service",
          "aao-supervisor-attribution.timer": "aao-supervisor-attribution.timer",
          "aao-supervisor-watch.service": "aao-supervisor-watch.service",
          "aao-supervisor-watch.timer": "aao-supervisor-watch.timer",
-         "aao-supervisor-intake.service": "aao-supervisor-intake.service"}
+         "aao-supervisor-intake.service": "aao-supervisor-intake.service",
+         "aao-supervisor-push-webhook.service": "aao-supervisor-push-webhook.service"}
 results: list[tuple[bool, str, str]] = []
 
 

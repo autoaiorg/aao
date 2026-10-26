@@ -4,7 +4,7 @@ import { render, screen, fireEvent, within } from '@testing-library/react';
 import { VirtualOfficeView } from '../features/office/VirtualOfficeView';
 import { Office2DPlan } from '../features/office/components/Office2DPlan';
 import { ThreeOfficeScene } from '../features/office/engine/ThreeOfficeScene';
-import type { DataState, OrganizationStructure } from '../domain/models';
+import type { AgentIdentity, DataState, OrganizationStructure } from '../domain/models';
 import { DEMO_ORG_STRUCTURE, DEMO_AGENTS, DEMO_ORG_UNITS } from '../data/adapters/demo/fixtures';
 
 describe('Phase F4: VirtualOfficeView & 3D Office Experience', () => {
@@ -469,12 +469,52 @@ describe('Phase F4.7: UI Contrast, Design Tokens & Operational Indicators', () =
       fetchedAt: new Date().toISOString(),
     };
 
-    render(<VirtualOfficeView organization={liveState} />);
+    const { rerender } = render(<VirtualOfficeView organization={{
+      kind: 'unavailable', reason: 'Sin estructura persistida.', retryable: true,
+    }} />);
+    rerender(<VirtualOfficeView organization={liveState} />);
 
     expect(screen.getByRole('button', { name: '[CUSTOM] Unidad dinámica live' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { level: 4, name: 'Unidad dinámica live' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Unidad dinámica live' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /\[GOV\]/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Vista 3D \(WebGL\)/i })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText(/LIVE · ESTRUCTURA PERSISTIDA · Plano 2D y escena 3D derivados/i)).toBeInTheDocument();
+    expect(screen.queryByText(/La escena 3D es solo DEMO/i)).not.toBeInTheDocument();
+  });
+
+  it('keeps LIVE 3D available for registered agents when no organizational unit is declared', () => {
+    const liveAgent: AgentIdentity = {
+      id: 'agent-live-unassigned',
+      name: 'Agente real sin adscripción',
+      type: 'UNKNOWN',
+      roleTitle: 'Función no declarada',
+      unitId: 'unit-unassigned',
+      capabilities: [],
+      heartbeatStatus: 'UNKNOWN',
+      lastHeartbeatAt: null,
+      status: 'UNKNOWN',
+      operationalState: 'DESCONOCIDO',
+      currentAssignments: [],
+      authorityBoundary: 'Sin autoridad adicional.',
+      isSyntheticDemo: false,
+    };
+    const liveState: DataState<OrganizationStructure> = {
+      kind: 'ready',
+      origin: 'live',
+      data: {
+        units: [],
+        agents: [liveAgent],
+        totalStandingAgents: 0,
+        totalEphemeralAgents: 0,
+        activeAssignmentsCount: 0,
+      },
+      fetchedAt: new Date().toISOString(),
+    };
+
+    render(<VirtualOfficeView organization={liveState} />);
+
     expect(screen.getByRole('button', { name: /Vista 3D \(WebGL\)/i })).toBeEnabled();
+    expect(screen.getByText(/LIVE · ESTRUCTURA PERSISTIDA/i)).toBeInTheDocument();
   });
 
   it('renders "Vista General" reset button and triggers camera reset callback', () => {

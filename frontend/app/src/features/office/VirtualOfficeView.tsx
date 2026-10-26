@@ -32,12 +32,13 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
   onRefresh,
 }) => {
   const [viewMode, setViewMode] = useState<OfficeViewMode>(
-    organization.kind === 'ready' && organization.origin === 'demo' ? '3d' : '2d'
+    organization.kind === 'ready' ? '3d' : '2d'
   );
   const [selectedRoomId, setSelectedRoomId] = useState<string>('unit-unassigned');
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [drawerAgent, setDrawerAgent] = useState<AgentIdentity | null>(null);
   const initialUnitSelectionDone = useRef(false);
+  const initialViewModeChosen = useRef(organization.kind === 'ready');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [typeFilter, setTypeFilter] = useState<'ALL' | 'STANDING' | 'EPHEMERAL'>('ALL');
   const [reducedMotion, setReducedMotion] = useState<boolean>(() => {
@@ -67,7 +68,13 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
     () => (isDemo ? OFFICE_ROOMS : buildLiveOfficeRooms(units)),
     [isDemo, units]
   );
-  const live3DAvailable = Boolean(data && units.length > 0);
+  const live3DAvailable = Boolean(data && (units.length > 0 || allAgents.length > 0));
+
+  useEffect(() => {
+    if (initialViewModeChosen.current || !data) return;
+    initialViewModeChosen.current = true;
+    setViewMode(isDemo || live3DAvailable ? '3d' : '2d');
+  }, [data, isDemo, live3DAvailable]);
 
   useEffect(() => {
     if (!isDemo && !live3DAvailable && viewMode === '3d') setViewMode('2d');
@@ -198,7 +205,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
             {isDemo
               ? 'DEMO · SIMULACIÓN 3D ACTIVA · Todos los departamentos, agentes y asignaciones son sintéticos y no representan datos de producción.'
               : data
-              ? `LIVE · ESTRUCTURA RECIBIDA · Plano 2D derivado de unidades y perfiles persistidos. La escena 3D es solo DEMO. ${
+              ? `LIVE · ESTRUCTURA PERSISTIDA · Plano 2D y escena 3D derivados de las unidades y agentes recibidos del backend. La geometría es una representación visual; estado y actividad solo reflejan evidencia proyectada. ${
                   data.coverage
                     ? data.coverage.notes ||
                       (data.coverage.isPartial
@@ -206,7 +213,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
                         : `Cobertura completa (${data.coverage.inspectedProjects}/${data.coverage.totalProjects} proyectos).`)
                     : 'La presencia operativa está condicionada a telemetría verificada en tiempo real.'
                 }`
-              : 'SIN CONEXIÓN AL NÚCLEO EN LIVE (F3/F4) · Los edificios son ilustrativos. Conmute a DEMO para explorar la escena 3D.'}
+              : 'SIN CONEXIÓN AL NÚCLEO EN LIVE (F3/F4) · No hay estructura operativa disponible. DEMO, si se selecciona, se identifica por separado como simulación.'}
           </span>
         </div>
       </div>
@@ -214,7 +221,10 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
       {/* 2. Unified Toolbar (Mode, Camera, Search, Filter) */}
       <OfficeToolbar
         viewMode={viewMode}
-        onViewModeChange={setViewMode}
+        onViewModeChange={(mode) => {
+          initialViewModeChosen.current = true;
+          setViewMode(mode);
+        }}
         selectedRoomId={selectedRoomId}
         units={units}
         onSelectRoom={handleSelectRoom}

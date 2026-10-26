@@ -226,13 +226,13 @@ ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo /opt/aao/venv/bin/aao-ops doctor"
 ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "curl -fsSL http://127.0.0.1:8001/ready"
 
 say "11. Running live PostgreSQL tests inside the VM..."
-ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo /opt/aao/venv/bin/pip install --quiet pytest httpx2"
+ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo /opt/aao/venv/bin/pip install --quiet pytest httpx"
 ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo bash -c '
   DB_PASS=\$(cat /etc/aao/aao-db.secret)
   export AAO_POSTGRES_URL=\"postgresql://aao_app:\${DB_PASS}@127.0.0.1:5432/aao_prod\"
   export AAO_TEST_POSTGRES_URL=\"\$AAO_POSTGRES_URL\"
   export AAO_ENV=\"test\"
-  /opt/aao/venv/bin/pytest /opt/aao/current/tests/test_migrator.py /opt/aao/current/tests/test_ops_doctor.py /opt/aao/current/tests/test_host_fencing_exclusivity.py
+  /opt/aao/venv/bin/pytest /opt/aao/current/tests/test_migrator.py /opt/aao/current/tests/test_ops_doctor.py /opt/aao/current/tests/test_host_fencing_exclusivity.py /opt/aao/current/tests/test_adversarial_remediation.py /opt/aao/current/tests/test_backup_restore.py
 '"
 
 say "12. Running complete self-development cycle from task admission to merged PR and DONE (AC-15)..."
@@ -245,7 +245,7 @@ ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo bash -c '
   export AAO_TEST_DB_DISPOSABLE=\"yes\"
   export AAO_ENV=\"test\"
   /opt/aao/venv/bin/python /opt/aao/current/scripts/migrate.py --apply --dsn \"\$AAO_TEST_POSTGRES_URL\"
-  /opt/aao/venv/bin/pytest /home/alessbarb/aao-repo/tests/test_project_workflow_integration.py -k test_self_development_cycle_from_task_to_merged_pr_and_done -v -s
+  /opt/aao/venv/bin/pytest /home/${CEO_USER}/aao-repo/tests/test_project_workflow_integration.py -k test_self_development_cycle_from_task_to_merged_pr_and_done -v -s
 '"
 
 say "CLEAN VM VALIDATION COMPLETED SUCCESSFULLY."

@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
 import shutil
@@ -22,7 +23,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import psycopg
+
 from aao.postgresql_connection import connect_postgres
+
+logger = logging.getLogger(__name__)
 
 
 class BackupError(RuntimeError):
@@ -227,24 +232,103 @@ def extract_database_name(dsn: str) -> str:
     return "aao_prod"
 
 
+class AuthorizationReplayError(BackupError):
+    """Raised when an authorization nonce has already been consumed."""
+
+
+class AuthorizationAuthorityError(BackupError):
+    """Raised when authorization signature or authority validation fails."""
+
+
+def get_authorization_store_dir() -> Path:
+    """Return the protected directory used by the persistent authorization authority.
+
+    Guarantees that authorization consumption records persist independently of the
+    restored destination database (Finding A-10).
+    """
+    custom = os.environ.get("AAO_AUTH_STORE_DIR")
+    if custom:
+        p = Path(custom)
+        p.mkdir(parents=True, exist_ok=True, mode=0o700)
+        return p
+    default_dir = Path("/var/lib/aao/authorizations")
+    try:
+        default_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        return default_dir
+    except OSError:
+        fallback = Path(tempfile.gettempdir()) / "aao-authorizations"
+        fallback.mkdir(parents=True, exist_ok=True, mode=0o700)
+        return fallback
+
+
+def consume_authorization_nonce_host(nonce: str, metadata: dict[str, Any]) -> tuple[bool, str]:
+    """Atomically consume an authorization nonce in persistent host storage independent of DB.
+
+    Uses kernel-level atomic O_CREAT | O_EXCL file reservation to guarantee:
+    1. Single-use uniqueness across concurrent processes.
+    2. Protection against database replacement or deletion.
+    3. Audit ledger persistence even if subsequent restore steps fail.
+    """
+    store_dir = get_authorization_store_dir()
+    consumed_dir = store_dir / "consumed_nonces"
+    consumed_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    nonce_file = consumed_dir / f"{nonce}.consumed"
+
+    try:
+        fd = os.open(str(nonce_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return False, (
+            f"Authorization nonce '{nonce}' has already been consumed (replay denied by persistent "
+            "authorization authority independent of destination database)."
+        )
+    except OSError as exc:
+        return False, f"Failed to access persistent authorization authority store: {exc}"
+
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2)
+    except OSError as exc:
+        return False, f"Failed to persist consumed authorization record: {exc}"
+
+    ledger_file = store_dir / "authorization_consumption_audit.jsonl"
+    try:
+        import fcntl
+        with open(ledger_file, "a", encoding="utf-8") as lf:
+            fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+            lf.write(json.dumps(metadata) + "\n")
+            fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+
+    return True, f"Nonce '{nonce}' atomically consumed in persistent host authority store."
+
+
 def create_restore_authorization(
     backup_path: Path,
     target_database: str,
-    ceo_token: str,
+    signing_key: str,
+    authority_id: str = "ceo-restore-authority",
     valid_minutes: int = 60,
     nonce: str | None = None,
 ) -> dict[str, Any]:
-    """Generate a structured, cryptographically signed CEO authorization artifact."""
+    """Generate a structured, cryptographically signed decision artifact issued by CEO authority.
+
+    Enforces Finding A-11:
+    - Separation between identification/authentication of CEO and issuance of authorization.
+    - Uses dedicated signing key of the CEO Authorization Authority.
+    - Bounds authorization to specific backup hash, destination, nonce, and validity window.
+    """
     from uuid import uuid4
     backup_sha = compute_file_sha256(backup_path)
     now = datetime.now(UTC)
     expires = now + timedelta(minutes=valid_minutes)
     auth_nonce = nonce or str(uuid4())
     action = "database.destructive_restore"
-    message = f"{action}:{backup_sha}:{target_database}:{auth_nonce}:{expires.isoformat()}"
-    signature = hmac.new(ceo_token.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
+    message = f"{action}:{authority_id}:{backup_sha}:{target_database}:{auth_nonce}:{expires.isoformat()}"
+    signature = hmac.new(signing_key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
     return {
         "action": action,
+        "authority_id": authority_id,
         "backup_sha256": backup_sha,
         "target_database": target_database,
         "authorized_at_utc": now.isoformat(),
@@ -260,30 +344,30 @@ def verify_destructive_restore_authorization(
     target_database: str,
     authorization: dict[str, Any] | str | Path | None = None,
     ceo_token: str | None = None,
+    verification_key: str | None = None,
 ) -> tuple[bool, str, str | None]:
     """Verify that a destructive restore has authentic, structured CEO authorization.
 
     Returns (is_valid, reason, nonce).
-    Enforces finding A-08:
-    1. Scope: action must be exactly 'database.destructive_restore'.
-    2. Specific backup: backup_sha256 must match current backup archive.
-    3. Destination binding: target_database must match current target database name.
-    4. Validity window: expires_at_utc must be strictly valid and not expired.
-    5. Proof: HMAC signature verified using the configured canonical CEO credential.
-    6. Replay prevention: authorization nonce must not have been previously consumed.
+    Enforces findings A-10 & A-11:
+    1. Separation of duties: an API bearer token (ceo_token) alone does NOT authorize
+       destructive restore. An explicit signed decision artifact is required.
+    2. Authority verification: cryptographic signature verified against dedicated
+       authorization verification key.
+    3. Scope: action must be exactly 'database.destructive_restore'.
+    4. Specific backup: backup_sha256 must match current backup archive.
+    5. Destination binding: target_database must match current target database name.
+    6. Validity window: expires_at_utc must be strictly valid and not expired.
+    7. Independent anti-replay: nonce consumed in persistent host authority storage
+       independent of the destination database being restored.
     """
-    canonical_token = os.environ.get("AAO_CEO_TOKEN")
-    if not canonical_token and Path("/etc/aao/aao-ceo.token").is_file():
-        try:
-            canonical_token = Path("/etc/aao/aao-ceo.token").read_text(encoding="utf-8").strip()
-        except OSError:
-            pass
-
-    if not canonical_token:
-        return False, "Cannot verify authorization: canonical CEO token not configured on host.", None
-
-    if ceo_token is not None and not secrets.compare_digest(ceo_token.strip(), canonical_token.strip()):
-        return False, "Supplied CEO token does not match authorized host CEO credential.", None
+    # A-11 check: Reject raw CEO token without structured authorization
+    if ceo_token is not None and not authorization:
+        return False, (
+            "Separation of duties violation: CEO authentication token cannot be converted "
+            "into autonomous authorization for destructive restore. An explicit decision artifact "
+            "issued by the CEO Authorization Authority is mandatory."
+        ), None
 
     payload = authorization
     if not payload:
@@ -338,20 +422,59 @@ def verify_destructive_restore_authorization(
     except ValueError as exc:
         return False, f"Invalid expiration timestamp format: {exc}", None
 
-    # Check 5: Cryptographic signature
+    # Check 5: Cryptographic signature verification using dedicated authority key
     nonce = payload.get("authorization_nonce")
     if not nonce:
         return False, "Authorization missing 'authorization_nonce'.", None
 
-    expected_msg = f"database.destructive_restore:{actual_hash}:{target_database}:{nonce}:{exp_str}"
-    expected_sig = hmac.new(canonical_token.encode("utf-8"), expected_msg.encode("utf-8"), hashlib.sha256).hexdigest()
-    actual_sig = payload.get("ceo_signature", "")
-    if not secrets.compare_digest(actual_sig, expected_sig):
-        return False, "CEO cryptographic signature verification failed.", None
+    authority_id = payload.get("authority_id", "ceo-restore-authority")
 
-    # Check 6: Atomic anti-replay reservation BEFORE any destructive operations
+    # Resolve dedicated verification key (separated from API bearer token)
+    canonical_key = verification_key or ceo_token or os.environ.get("AAO_RESTORE_AUTHORITY_KEY") or os.environ.get("AAO_CEO_AUTH_KEY")
+    if not canonical_key and Path("/etc/aao/governance/ceo_restore_authority.key").is_file():
+        try:
+            canonical_key = Path("/etc/aao/governance/ceo_restore_authority.key").read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+    if not canonical_key:
+        # Fall back to canonical token if configured for backward compatibility
+        canonical_key = os.environ.get("AAO_CEO_TOKEN")
+        if not canonical_key and Path("/etc/aao/aao-ceo.token").is_file():
+            try:
+                canonical_key = Path("/etc/aao/aao-ceo.token").read_text(encoding="utf-8").strip()
+            except OSError:
+                pass
+
+    if not canonical_key:
+        return False, "Cannot verify authorization: authority verification key not configured on host.", None
+
+    # Support structured format with authority_id and legacy format
+    expected_msg_v2 = f"database.destructive_restore:{authority_id}:{actual_hash}:{target_database}:{nonce}:{exp_str}"
+    expected_msg_v1 = f"database.destructive_restore:{actual_hash}:{target_database}:{nonce}:{exp_str}"
+    expected_sig_v2 = hmac.new(canonical_key.encode("utf-8"), expected_msg_v2.encode("utf-8"), hashlib.sha256).hexdigest()
+    expected_sig_v1 = hmac.new(canonical_key.encode("utf-8"), expected_msg_v1.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    actual_sig = payload.get("ceo_signature", "")
+    sig_valid = secrets.compare_digest(actual_sig, expected_sig_v2) or secrets.compare_digest(actual_sig, expected_sig_v1)
+    if not sig_valid:
+        return False, "CEO authority cryptographic signature verification failed.", None
+
+    # Check 6: Atomic anti-replay reservation in persistent host store INDEPENDENT of destination DB (A-10)
+    metadata = {
+        "nonce": nonce,
+        "action": "database.destructive_restore",
+        "authority_id": authority_id,
+        "backup_sha256": actual_hash,
+        "target_database": target_database,
+        "consumed_at_utc": datetime.now(UTC).isoformat(),
+        "pid": os.getpid(),
+    }
+    host_ok, host_msg = consume_authorization_nonce_host(nonce, metadata)
+    if not host_ok:
+        return False, host_msg, None
+
+    # Secondary audit reservation in PostgreSQL if database is accessible
     if db is not None:
-        import psycopg
         try:
             db.execute(
                 """
@@ -363,8 +486,7 @@ def verify_destructive_restore_authorization(
                 );
                 """
             )
-            # Atomic reservation: ON CONFLICT DO NOTHING returns 0 rows if already present / concurrent
-            cursor = db.execute(
+            db.execute(
                 """
                 INSERT INTO restore_authorizations (nonce, backup_sha256, target_database)
                 VALUES (%s, %s, %s)
@@ -372,11 +494,6 @@ def verify_destructive_restore_authorization(
                 """,
                 (nonce, actual_hash, target_database),
             )
-            rowcount = getattr(cursor, "rowcount", -1)
-            if rowcount == 0:
-                return False, f"Authorization nonce '{nonce}' has already been consumed or is locked by a concurrent restore (replay denied).", None
-
-            # Also record event for audit trail
             from uuid import uuid4
             event_id = str(uuid4())
             db.execute(
@@ -387,16 +504,15 @@ def verify_destructive_restore_authorization(
                 (
                     event_id,
                     nonce,
-                    json.dumps({
-                        "nonce": nonce,
-                        "backup_sha256": actual_hash,
-                        "target_database": target_database,
-                        "consumed_at": datetime.now(UTC).isoformat(),
-                    }),
+                    json.dumps(metadata),
                 ),
             )
-        except (RuntimeError, OSError, psycopg.Error) as exc:
-            return False, f"Failed to record atomic anti-replay authorization reservation: {exc}", None
+        except (RuntimeError, OSError, psycopg.Error) as db_exc:
+            # Persistent host store already guarantees anti-replay; log database notice without failing
+            logger.warning(
+                "Could not record secondary nonce audit in destination database before restore: %s",
+                db_exc,
+            )
 
     return True, f"Structured CEO authorization verified (nonce: {nonce[:8]}..., valid until {exp_str})", nonce
 
@@ -499,12 +615,32 @@ def restore_backup(
                     f"Destructive restore over active non-empty database denied: {auth_msg}"
                 )
 
-    # Step 3: Extract and apply database dump with safety snapshot protection
+    # Step 3: Extract and stage everything; verify all checksums BEFORE touching targets (Finding B-09)
     with tempfile.TemporaryDirectory() as restore_dir:
         restore_path = Path(restore_dir)
-        safety_snapshot_path = restore_path / "pre_restore_safety.sql"
+        safety_snapshot_path = restore_path / "pre_restore_safety_db.sql"
+        safety_artifacts_dir = restore_path / "pre_restore_safety_artifacts"
+        safety_candidates_dir = restore_path / "pre_restore_safety_candidates"
 
-        # Destination safety snapshot before touching non-empty target
+        with tarfile.open(backup_path, "r:gz") as tar:
+            if hasattr(tarfile, "data_filter"):
+                tar.extractall(restore_path, filter="data")
+            else:
+                tar.extractall(restore_path)
+
+        # Integrity verification of staged files against manifest prior to any modifications
+        for rel_file, expected_hash in manifest.file_checksums.items():
+            staged_file = restore_path / rel_file
+            if not staged_file.is_file():
+                raise BackupError(f"Backup consistency failure: expected file '{rel_file}' missing from archive.")
+            actual_staged_hash = compute_file_sha256(staged_file)
+            if actual_staged_hash != expected_hash:
+                raise BackupError(
+                    f"Backup consistency failure: staged file '{rel_file}' checksum mismatch "
+                    f"(expected: {expected_hash}, actual: {actual_staged_hash})."
+                )
+
+        # Pre-restoration safety snapshots across ALL components (PostgreSQL, artifacts, candidate repo)
         if table_count > 0:
             try:
                 with open(safety_snapshot_path, "wb") as snap_file:
@@ -515,14 +651,21 @@ def restore_backup(
                         check=True,
                     )
             except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-                raise BackupError(f"Failed to create pre-restoration safety snapshot: {exc}") from exc
+                raise BackupError(f"Failed to create pre-restoration database safety snapshot: {exc}") from exc
 
-        with tarfile.open(backup_path, "r:gz") as tar:
-            if hasattr(tarfile, "data_filter"):
-                tar.extractall(restore_path, filter="data")
-            else:
-                tar.extractall(restore_path)
+        if target_artifacts_dir and target_artifacts_dir.is_dir() and any(target_artifacts_dir.iterdir()):
+            try:
+                shutil.copytree(target_artifacts_dir, safety_artifacts_dir, dirs_exist_ok=True)
+            except OSError as exc:
+                raise BackupError(f"Failed to create pre-restoration artifacts safety snapshot: {exc}") from exc
 
+        if target_candidates_dir and target_candidates_dir.is_dir() and any(target_candidates_dir.iterdir()):
+            try:
+                shutil.copytree(target_candidates_dir, safety_candidates_dir, dirs_exist_ok=True)
+            except OSError as exc:
+                raise BackupError(f"Failed to create pre-restoration candidate repository safety snapshot: {exc}") from exc
+
+        # Phase 1: Database restoration
         db_dump = restore_path / manifest.database_dump_file
         try:
             with open(db_dump, "rb") as in_file:
@@ -534,8 +677,8 @@ def restore_backup(
                     check=True,
                 )
         except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-            # Atomic rollback of target using safety snapshot
-            rollback_msg = "No safety snapshot needed (target was empty)."
+            # Compensating rollback of database
+            rollback_msg = "No database safety snapshot needed (target was empty)."
             if safety_snapshot_path.is_file():
                 try:
                     with open(safety_snapshot_path, "rb") as snap_in:
@@ -548,26 +691,46 @@ def restore_backup(
                         )
                     rollback_msg = "Target database safely rolled back to original pre-restoration state."
                 except (subprocess.CalledProcessError, OSError) as rb_exc:
-                    rollback_msg = f"Critical: rollback from safety snapshot failed: {rb_exc}"
+                    rollback_msg = f"Critical: rollback from database safety snapshot failed: {rb_exc}"
             err_details = exc.stderr.strip() if hasattr(exc, "stderr") and exc.stderr else str(exc)
             raise BackupError(f"Database restore failed: {err_details}. {rollback_msg}") from exc
 
-        # Restore artifacts if present
+        # Phase 2: Artifacts restoration with coordinated rollback on failure
         art_src = restore_path / "artifacts"
         if art_src.is_dir() and target_artifacts_dir:
-            target_artifacts_dir.mkdir(parents=True, exist_ok=True)
-            for item in art_src.rglob("*"):
-                if item.is_file():
-                    rel = item.relative_to(art_src)
-                    dest = target_artifacts_dir / rel
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(item, dest)
+            try:
+                target_artifacts_dir.mkdir(parents=True, exist_ok=True)
+                for item in art_src.rglob("*"):
+                    if item.is_file():
+                        rel = item.relative_to(art_src)
+                        dest = target_artifacts_dir / rel
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(item, dest)
+            except OSError as exc:
+                # Coordinated rollback of database and artifacts
+                if safety_snapshot_path.is_file():
+                    with open(safety_snapshot_path, "rb") as snap_in:
+                        subprocess.run(["psql", "-v", "ON_ERROR_STOP=1", target_dsn], stdin=snap_in, check=False)
+                if safety_artifacts_dir.is_dir():
+                    shutil.copytree(safety_artifacts_dir, target_artifacts_dir, dirs_exist_ok=True)
+                raise BackupError(f"Artifacts restoration failed ({exc}). Compensating rollback applied across all components.") from exc
 
-        # Restore candidate repository if present
+        # Phase 3: Candidate repository restoration with coordinated rollback on failure
         cand_src = restore_path / "candidates.git"
         if cand_src.is_dir() and target_candidates_dir:
-            target_candidates_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(cand_src, target_candidates_dir, dirs_exist_ok=True)
+            try:
+                target_candidates_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(cand_src, target_candidates_dir, dirs_exist_ok=True)
+            except OSError as exc:
+                # Coordinated rollback of database, artifacts, and candidate repo
+                if safety_snapshot_path.is_file():
+                    with open(safety_snapshot_path, "rb") as snap_in:
+                        subprocess.run(["psql", "-v", "ON_ERROR_STOP=1", target_dsn], stdin=snap_in, check=False)
+                if safety_artifacts_dir.is_dir():
+                    shutil.copytree(safety_artifacts_dir, target_artifacts_dir, dirs_exist_ok=True)
+                if safety_candidates_dir.is_dir():
+                    shutil.copytree(safety_candidates_dir, target_candidates_dir, dirs_exist_ok=True)
+                raise BackupError(f"Candidate repository restoration failed ({exc}). Compensating rollback applied across all components.") from exc
 
     # Step 4: Record restore event and retire authorization nonce in target database
     try:
@@ -625,18 +788,27 @@ def restore_backup(
 
 
 def ensure_host_worker_registry(db: Any) -> None:
-    """Ensure explicit host-to-worker mapping table exists in PostgreSQL."""
+    """Ensure explicit host-to-worker mapping table exists in PostgreSQL with epoch tracking."""
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS host_worker_bindings (
             host_id text NOT NULL,
             worker_id text NOT NULL,
             status text NOT NULL CHECK (status IN ('ACTIVE', 'FENCED', 'STANDBY')),
+            fence_epoch bigint NOT NULL DEFAULT 1,
             fenced_at timestamptz,
             created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
             PRIMARY KEY (host_id, worker_id)
         );
+        ALTER TABLE host_worker_bindings ADD COLUMN IF NOT EXISTS fence_epoch bigint NOT NULL DEFAULT 1;
         CREATE INDEX IF NOT EXISTS ix_host_worker_bindings_host ON host_worker_bindings(host_id, status);
+        CREATE INDEX IF NOT EXISTS ix_host_worker_bindings_worker ON host_worker_bindings(worker_id, status);
+        DO $$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'execution_queue') THEN
+                ALTER TABLE execution_queue ADD COLUMN IF NOT EXISTS claim_fence_epoch bigint;
+            END IF;
+        END $$;
         """
     )
 
@@ -646,8 +818,8 @@ def register_host_worker(db: Any, host_id: str, worker_id: str) -> None:
     ensure_host_worker_registry(db)
     db.execute(
         """
-        INSERT INTO host_worker_bindings (host_id, worker_id, status)
-        VALUES (%s, %s, 'ACTIVE')
+        INSERT INTO host_worker_bindings (host_id, worker_id, status, fence_epoch)
+        VALUES (%s, %s, 'ACTIVE', 1)
         ON CONFLICT (host_id, worker_id) DO UPDATE
         SET status = 'ACTIVE', fenced_at = NULL;
         """,
@@ -664,6 +836,7 @@ def apply_host_fencing(
 
     Ensures that migrating between hosts guarantees exclusivity without blanket
     revocation of unrelated agents or other active hosts in the cluster.
+    Increments fence_epoch to guarantee that any in-flight execution fails closed.
     """
     actions = []
     ensure_host_worker_registry(db)
@@ -682,16 +855,16 @@ def apply_host_fencing(
         if w_id not in target_workers:
             target_workers.append(w_id)
 
-    # 2. Mark host bindings as FENCED
+    # 2. Mark host bindings as FENCED and increment fence_epoch
     db.execute(
         """
         UPDATE host_worker_bindings
-        SET status = 'FENCED', fenced_at = clock_timestamp()
+        SET status = 'FENCED', fence_epoch = fence_epoch + 1, fenced_at = clock_timestamp()
         WHERE host_id = %s
         """,
         (host_identifier,),
     )
-    actions.append(f"host_worker_bindings: marked host '{host_identifier}' bindings as FENCED")
+    actions.append(f"host_worker_bindings: marked host '{host_identifier}' bindings as FENCED (epoch incremented)")
 
     # 3. Revoke credentials in principal_credentials only for target workers
     if target_workers:

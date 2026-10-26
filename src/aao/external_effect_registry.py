@@ -36,21 +36,26 @@ def propose(*, execution_id: str, worker_id: str, lease_token: str,
         if principal_id != worker_id:
             raise EffectConflict("Credential does not match execution worker")
 
-        # Check host-worker binding and cutover fencing status (Finding A-07)
+        # Check host-worker binding and cutover fencing status (Finding A-07 / A-14)
         has_table = db.execute(
             "SELECT to_regclass('public.host_worker_bindings')"
         ).fetchone()[0]
+        host_row = None
         if has_table:
             host_row = db.execute(
                 """
-                SELECT host_id, status FROM host_worker_bindings
+                SELECT host_id, status, fence_epoch FROM host_worker_bindings
                 WHERE worker_id = %s
                 ORDER BY created_at DESC LIMIT 1
                 FOR SHARE
                 """,
                 (worker_id,),
             ).fetchone()
-            if host_row and host_row[1] == "FENCED":
+            if not host_row:
+                raise EffectConflict(
+                    f"Worker '{worker_id}' has no registered host binding; effect proposal rejected under fail-closed fencing."
+                )
+            if host_row[1] != "ACTIVE":
                 raise EffectConflict(
                     f"Worker '{worker_id}' is bound to fenced host '{host_row[0]}'. "
                     "Authority has been revoked via cutover fencing."
@@ -66,6 +71,19 @@ def propose(*, execution_id: str, worker_id: str, lease_token: str,
         ).fetchone()
         if not execution:
             raise EffectConflict("Unknown execution")
+
+        if has_table and host_row:
+            has_epoch_col = db.execute(
+                "SELECT 1 FROM information_schema.columns WHERE table_name='execution_queue' AND column_name='claim_fence_epoch'"
+            ).fetchone() is not None
+            if has_epoch_col:
+                epoch_row = db.execute(
+                    "SELECT claim_fence_epoch FROM execution_queue WHERE id=%s", (execution_id,)
+                ).fetchone()
+                if epoch_row and epoch_row[0] is not None and host_row[2] != epoch_row[0]:
+                    raise EffectConflict(
+                        f"Host fencing epoch changed during task execution (claimed: {epoch_row[0]}, current: {host_row[2]}); lease invalidated."
+                    )
         (status, project_id, owner, current_token, expires_at, project_state,
          claimed_generation, current_generation) = execution
         if (status != "RUNNING" or owner != worker_id or str(current_token) != lease_token

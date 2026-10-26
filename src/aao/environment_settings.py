@@ -30,12 +30,19 @@ def load_local_env() -> Path | None:
 
 
 class Settings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
     environment: str = "development"
     database_url: str | None = None
     test_database_url: str | None = None
     test_db_disposable: bool = False
     sandbox_queue_enabled: bool = False
+    static_dir: str | None = None
+    self_dev_repository: str | None = None
+    candidate_repository: str | None = None
+    ceo_session_allowed_origins: str | None = None
+    agent_provider: str = "fixture"
+    conversation_provider: str = "dummy"
+    conversation_recovery_enabled: bool = False
 
     @field_validator("environment")
     @classmethod
@@ -60,6 +67,13 @@ def current_settings() -> Settings:
         test_database_url=os.getenv("AAO_TEST_POSTGRES_URL") or None,
         test_db_disposable=os.getenv("AAO_TEST_DB_DISPOSABLE") == "yes",
         sandbox_queue_enabled=os.getenv("AAO_SANDBOX_QUEUE_ENABLED", "false").lower() == "true",
+        static_dir=os.getenv("AAO_STATIC_DIR") or None,
+        self_dev_repository=os.getenv("AAO_SELF_DEV_REPOSITORY") or None,
+        candidate_repository=os.getenv("AAO_CANDIDATE_REPOSITORY") or None,
+        ceo_session_allowed_origins=os.getenv("AAO_CEO_SESSION_ALLOWED_ORIGINS") or None,
+        agent_provider=os.getenv("AAO_AGENT_PROVIDER", "fixture"),
+        conversation_provider=os.getenv("AAO_CONVERSATION_PROVIDER", "dummy"),
+        conversation_recovery_enabled=os.getenv("AAO_CONVERSATION_RECOVERY_ENABLED", "false").lower() == "true",
     )
 
 

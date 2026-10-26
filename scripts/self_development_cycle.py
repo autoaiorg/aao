@@ -24,6 +24,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 API = os.environ.get("AAO_API", "http://127.0.0.1:8001")
 TOKENS = {"implementer": "aao-self-development-agent.token", "auditor": "aao-auditor.token",

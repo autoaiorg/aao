@@ -18,30 +18,60 @@ never rerun an applied migration. The scripts are one-shot, not a general
 schema-repair or rollback tool. If an interrupted migration leaves ambiguous
 state, stop and inspect the database rather than rerunning it blindly.
 
+## Unified Schema Migration Engine (Single Source of Truth)
+
+AAO now incorporates a unified, atomic, and lock-protected migration subsystem
+at `src/aao/migrator.py` (CLI entrypoints: `aao-migrate` or `python scripts/migrate.py`).
+Manual shell loops are deprecated; both CI, host bootstrap, and day-to-day operations
+consume this identical engine.
+
+### Migration Management:
 ```sh
+# Install dependencies
 python -m pip install -e '.[postgres]'
-for migration in db/postgres/001_foundation.sql \
-  db/postgres/002_dev_identity.sql \
-  db/postgres/003_execution.sql \
-  db/postgres/004_execution_guards.sql \
-  db/postgres/005_principal_credentials.sql \
-  db/postgres/006_unified_execution_identity.sql \
-  db/postgres/007_fence_leases_across_project_state_changes.sql \
-  db/postgres/008_content_addressed_evidence.sql \
-  db/postgres/009_prevent_evidence_truncation.sql \
-  db/postgres/010_capability_registry.sql \
-  db/postgres/011_sha_bound_reviews_and_veto.sql \
-  db/postgres/012_patch_proposals.sql \
-  db/postgres/013_work_description.sql \
-  db/postgres/014_execution_retry.sql \
-  db/postgres/015_organization_profiles.sql \
-  db/postgres/016_project_conversations.sql \
-  db/postgres/017_ceo_browser_sessions.sql; do
-  psql "$AAO_POSTGRES_URL" -v ON_ERROR_STOP=1 -f "$migration"
-done
-export AAO_CEO_TOKEN='locally-generated-secret'
-uvicorn aao.work_management_api:app --host 127.0.0.1 --port 8001
+
+# Check migration status (applied vs pending)
+python scripts/migrate.py --status
+
+# Apply pending migrations (001 to 030) with advisory locks and integrity verification
+python scripts/migrate.py --apply
+
+# Verify that all migrations in db/postgres/ are applied with intact SHA-256 checksums
+python scripts/migrate.py --verify
 ```
+
+### Full Migration Catalog (001 to 030):
+The current canonical catalog comprises 30 versioned migrations in `db/postgres/`:
+- `001_foundation`: Core tables (`schema_migrations`, `mandates`, `projects`, `principals`, `events`).
+- `002_dev_identity`: Relaxed UUID identities to text development identities.
+- `003_execution`: Execution queue and status lifecycle.
+- `004_execution_guards`: Constraints preventing unauthorized state transitions.
+- `005_principal_credentials`: Credential registry storing SHA-256 token digests.
+- `006_unified_execution_identity`: Consolidates legacy worker identities into `principal_credentials`.
+- `007_fence_leases_across_project_state_changes`: Project state triggers and fence generation numbers.
+- `008_content_addressed_evidence`: Content-addressed SHA-256 evidence artifact storage.
+- `009_prevent_evidence_truncation`: Guards ensuring complete immutable evidence recording.
+- `010_capability_registry`: Versioned, project-local capability definitions and contracts.
+- `011_sha_bound_reviews_and_veto`: SHA-bound reviews and independent auditor veto mechanisms.
+- `012_patch_proposals`: Code patch proposals, base SHA binding, and validation records.
+- `013_work_description`: Structured work item description and task criteria.
+- `014_execution_retry`: Partial index `ux_execution_queue_active_work` supporting execution retries.
+- `015_organization_profiles`: Canonical organizational units and member profiles (`/v1/organization`).
+- `016_project_conversations`: CEO conversation session and turn tracking.
+- `017_ceo_browser_sessions`: HTTP-only `__Host-aao_ceo_session` cookies and CSRF digests.
+- `018_conversation_provider_metadata`: Metadata recording model and provider details per conversation.
+- `019_project_conversation_turns`: Structured turn messages and assistant responses.
+- `020_persistent_work_groups`: Multi-task persistent work group hierarchy.
+- `021_conversation_turn_leases`: Turn lease timeout and heartbeat leases.
+- `022_work_item_assignments`: Work item assignment to specific agent principals.
+- `023_work_group_consolidations`: Aggregation and consolidation of work group child tasks.
+- `024_work_group_partial_reports`: Intermediate progress reporting for complex task trees.
+- `025_work_item_due_dates`: Scheduling, deadlines, and target completion timestamps.
+- `026_capability_feedback_proposals`: Feedback submission on registered capabilities.
+- `027_capability_feedback_review`: Review and dispositioning of capability feedback proposals.
+- `028_capability_feedback_version_link`: Version linking between feedback proposals and capability revisions.
+- `029_organization_profile_competencies`: Agent skills, competencies, and specialization tags.
+- `030_conversation_work_group_results`: Grounding conversation outcomes to persisted work group executions.
 
 For an existing database, apply only migrations absent from
 `schema_migrations`, preserving the same order. The LIVE organization

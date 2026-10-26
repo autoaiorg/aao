@@ -1404,9 +1404,9 @@ def require_group_work_assignee(db, work_id: str, principal: str) -> None:
     if not row or row[0] is None:
         return
     if row[1] is None:
-        raise HTTPException(409, "Group child must be assigned before admission or execution")
+        raise HTTPException(409, "Group child must be assigned before it can be operated")
     if str(row[1]) != str(principal):
-        raise HTTPException(403, "Only the assigned agent may admit or stage this group child")
+        raise HTTPException(403, "Only the assigned agent may operate on this group child")
 
 
 @app.post("/v1/projects/{project_id}/work", status_code=201)
@@ -2773,11 +2773,12 @@ def evaluate_capabilities(
             raise HTTPException(409, "Capability evaluation requires an active project")
         require_grant(db, principal, project_id, "work.create")
         task = db.execute(
-            "SELECT 1 FROM work_items WHERE id=%s AND project_id=%s FOR SHARE",
+            "SELECT 1 FROM work_items WHERE id=%s AND project_id=%s FOR UPDATE",
             (payload.task_id, project_id),
         ).fetchone()
         if not task:
             raise HTTPException(404, "Task not found in this project")
+        require_group_work_assignee(db, payload.task_id, principal)
         if recommendation in {"reuse", "adapt"}:
             capability = db.execute(
                 "SELECT status FROM capability_versions WHERE project_id=%s "

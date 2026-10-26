@@ -98,7 +98,9 @@ validation, review, and PR lifecycle; no UI-side state transition is canonical.
   not executable authorization.
 - `POST /v1/projects/{project_id}/capability-evaluations`: persist one
   reuse/adapt/build comparison for a task. The task and selected version must
-  belong to the project. Evaluation is a recorded recommendation only.
+  belong to the project. For a persisted work-group child, only its currently
+  assigned agent may record the evaluation; ordinary tasks retain the existing
+  `work.create` grant contract. Evaluation is a recorded recommendation only.
 - `POST /v1/work/{work_id}/stage-repository-check`: stage only the fixed
   `core-unit` repository-check job. Requires `work.admit` and
   `execution.claim`, an active project, READY work, a registered supported

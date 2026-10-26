@@ -2276,6 +2276,82 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
     os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
     reason="Explicit disposable PostgreSQL database required",
 )
+def test_group_child_capability_evaluation_is_restricted_to_assignee(monkeypatch):
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "group-evaluation-ceo")
+    ceo = {"X-CEO-Token": "group-evaluation-ceo"}
+    with TestClient(app) as client:
+        assigned_id = "group-evaluation-assigned-" + str(uuid4())
+        other_id = "group-evaluation-other-" + str(uuid4())
+        assigned = {"X-Agent-Token": client.post(
+            "/v1/principals/credentials", headers=ceo,
+            json={"principal_id": assigned_id, "kind": "AGENT"},
+        ).json()["token"]}
+        other = {"X-Agent-Token": client.post(
+            "/v1/principals/credentials", headers=ceo,
+            json={"principal_id": other_id, "kind": "AGENT"},
+        ).json()["token"]}
+        mandate = client.post("/v1/mandates", headers=ceo, json={
+            "title": "Group evaluation " + str(uuid4()), "objective": "Test task attribution",
+        }).json()["id"]
+        assert client.post(f"/v1/mandates/{mandate}/confirm", headers=ceo).status_code == 200
+        project = client.post("/v1/projects", headers=ceo, json={
+            "name": "Group evaluation", "mandate_id": mandate,
+        }).json()["id"]
+        for capability in ("work.create", "work.admit", "execution.claim"):
+            assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
+                "principal_id": assigned_id, "capability": capability,
+            }).status_code == 201
+        assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
+            "principal_id": other_id, "capability": "work.create",
+        }).status_code == 201
+        conversation = client.post(f"/v1/projects/{project}/conversations", headers=ceo, json={
+            "title": "Group evaluation conversation",
+        }).json()["id"]
+        group = client.post(
+            f"/v1/projects/{project}/conversations/{conversation}/work-groups",
+            headers=ceo, json={
+                "idempotency_key": str(uuid4()), "title": "Deliver one task",
+                "description": "A parent container", "acceptance_criteria": ["Done"],
+                "tasks": [{"key": "child", "title": "Assigned task",
+                           "acceptance_criteria": ["Evidence exists"],
+                           "assigned_principal_id": assigned_id}],
+            },
+        )
+        assert group.status_code == 201, group.text
+        task_id = group.json()["tasks"][0]["id"]
+        evaluation = {
+            "task_id": task_id,
+            "options": [{"choice": choice, "fit": score, "security": score,
+                         "cost": score, "time": score, "tokens": score,
+                         "maintenance": score}
+                        for choice, score in (("reuse", 1), ("adapt", 2), ("build", 3))],
+            "rationale": "Build is selected for the test case.",
+            "evidence": ["work-item acceptance criteria"],
+        }
+        endpoint = f"/v1/projects/{project}/capability-evaluations"
+        denied = client.post(endpoint, headers=other, json=evaluation)
+        assert denied.status_code == 403, denied.text
+        allowed = client.post(endpoint, headers=assigned, json=evaluation)
+        assert allowed.status_code == 201, allowed.text
+        assert allowed.json()["recommendation"] == "build"
+        with connect_postgres() as db:
+            events = db.execute(
+                "SELECT details->>'principal_id' FROM events "
+                "WHERE subject_id=%s AND kind='capability.evaluated'",
+                (task_id,),
+            ).fetchall()
+        assert events == [(assigned_id,)]
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or
+    os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="Explicit disposable PostgreSQL database required",
+)
 def test_work_group_consolidation_is_ceo_confirmed_idempotent_and_evidence_bound(monkeypatch):
     from aao.postgresql_connection import connect_postgres
     from aao.work_management_api import app

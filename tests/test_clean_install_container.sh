@@ -184,7 +184,7 @@ assert_true "Destructive restore over active DB without valid ceo token or isola
 
 # Scenario C: Host fencing revokes active agent tokens and records event
 assert_true "Host fencing executes cleanly" \
-  /opt/aao/venv/bin/python /opt/aao/current/scripts/aao_ops.py fence-host --host-id "test-container"
+  /opt/aao/venv/bin/python /opt/aao/current/scripts/aao_ops.py fence-host
 
 # Scenario D: Invalid CEO token rejected by API
 INVALID_AUTH_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-CEO-Token: invalid-token-12345" http://127.0.0.1:8001/v1/mandates)

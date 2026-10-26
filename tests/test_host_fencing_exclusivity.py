@@ -27,7 +27,7 @@ def test_apply_host_fencing_targeted_queries():
     """Unit test: verify SQL execution targets only specific workers without blanket updates."""
     mock_db = MagicMock()
     mock_db.execute.return_value.fetchall.return_value = [("worker-host-a",)]
-    actions = apply_host_fencing(mock_db, host_identifier="host-a", worker_ids=["worker-host-a"])
+    actions = apply_host_fencing(mock_db, host_identifier="host-a")
 
     assert any("worker-host-a" in a for a in actions)
     # Check that update targeted ANY(%s) with target_workers, not WHERE kind = 'AGENT'
@@ -514,7 +514,8 @@ def test_fencing_audit_event_recorded(clean_postgres):
     """Verify that an explicit host.fenced audit event is recorded in the events table."""
     with connect_postgres() as db:
         _setup_dual_host_environment(db)
-        apply_host_fencing(db, host_identifier="node-01.dc1", worker_ids=["worker-host-a"])
+        actions = apply_host_fencing(db, host_identifier="host-a")
+        assert any("worker-host-a" in action for action in actions)
 
         event = db.execute(
             "SELECT kind, details FROM events WHERE kind = 'host.fenced' ORDER BY created_at DESC LIMIT 1"
@@ -522,5 +523,5 @@ def test_fencing_audit_event_recorded(clean_postgres):
         assert event is not None
         assert event[0] == "host.fenced"
         details = event[1] if isinstance(event[1], dict) else json.loads(event[1])
-        assert details["host"] == "node-01.dc1"
+        assert details["host"] == "host-a"
         assert "worker-host-a" in details["fenced_workers"]

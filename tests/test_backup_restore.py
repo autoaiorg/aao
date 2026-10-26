@@ -170,7 +170,7 @@ def test_restore_rejects_target_as_its_own_isolation_database(tmp_path):
 def test_apply_host_fencing_targeted():
     mock_db = MagicMock()
     mock_db.execute.return_value.fetchall.return_value = [("worker-node-1",)]
-    actions = apply_host_fencing(mock_db, host_identifier="node-1", worker_ids=["worker-node-1"])
+    actions = apply_host_fencing(mock_db, host_identifier="node-1")
     assert any("worker-node-1" in a for a in actions)
     assert any("recorded host.fenced audit event" in a for a in actions)
 

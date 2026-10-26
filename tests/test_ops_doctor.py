@@ -6,10 +6,13 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from aao.ops import (
     check_api_health,
     check_governance_guardrails,
     check_governance_identities,
+    main,
     run_doctor,
 )
 
@@ -120,3 +123,48 @@ def test_valid_key_in_replaceable_parent_directory_remains_unverified(tmp_path, 
     assert result.status == "WARN"
     assert "INSTALLED_UNVERIFIED" in result.message
     assert "parent directory is not private" in result.message
+
+
+def test_host_worker_cli_defaults_to_protected_identity(monkeypatch):
+    from aao import backup
+
+    monkeypatch.setattr("aao.ops.current_host_id", lambda: "protected-host-id")
+    db_context = MagicMock()
+    monkeypatch.setattr("aao.ops.connect_postgres", lambda: db_context)
+    register = MagicMock()
+    monkeypatch.setattr(backup, "register_host_worker", register)
+
+    assert main(["register-host-worker", "--worker-id", "agent-1"]) == 0
+    register.assert_called_once_with(
+        db_context.__enter__.return_value,
+        host_id="protected-host-id",
+        worker_id="agent-1",
+    )
+
+
+def test_host_worker_cli_rejects_identity_override(monkeypatch):
+    monkeypatch.setattr("aao.ops.current_host_id", lambda: "protected-host-id")
+    connect = MagicMock()
+    monkeypatch.setattr("aao.ops.connect_postgres", connect)
+
+    assert main([
+        "register-host-worker", "--worker-id", "agent-1", "--host-id", "other-host",
+    ]) == 1
+    connect.assert_not_called()
+
+
+def test_fence_host_cli_uses_protected_identity_and_rejects_worker_override(monkeypatch):
+    from aao import backup
+
+    monkeypatch.setattr("aao.ops.current_host_id", lambda: "protected-host-id")
+    monkeypatch.setattr("aao.ops.shutil.which", lambda _name: None)
+    db_context = MagicMock()
+    monkeypatch.setattr("aao.ops.connect_postgres", lambda: db_context)
+    fence = MagicMock(return_value=[])
+    monkeypatch.setattr(backup, "apply_host_fencing", fence)
+
+    assert main(["fence-host"]) == 0
+    fence.assert_called_once_with(db_context.__enter__.return_value, host_identifier="protected-host-id")
+
+    with pytest.raises(SystemExit):
+        main(["fence-host", "--worker-ids", "unbound-worker"])

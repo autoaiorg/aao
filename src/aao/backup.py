@@ -986,7 +986,6 @@ def register_host_worker(db: Any, host_id: str, worker_id: str) -> None:
 def apply_host_fencing(
     db: Any,
     host_identifier: str = "current-host",
-    worker_ids: list[str] | None = None,
 ) -> list[str]:
     """Apply targeted host fencing: revoke worker leases, tokens and claims for a specific host.
 
@@ -998,7 +997,7 @@ def apply_host_fencing(
     ensure_host_worker_registry(db)
 
     # 1. Identify all workers explicitly bound to this host
-    target_workers = list(worker_ids) if worker_ids else []
+    target_workers: list[str] = []
     rows = db.execute(
         """
         SELECT worker_id FROM host_worker_bindings

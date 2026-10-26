@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from aao.host_identity import HostIdentityError, current_host_id
 from aao.migrator import check_status as check_migration_status
 from aao.migrator import default_migrations_dir
 from aao.postgresql_connection import connect_postgres
@@ -438,12 +439,11 @@ def main(argv: list[str] | None = None) -> int:
     # register-host-worker
     p_reg = subparsers.add_parser("register-host-worker", help="Explicitly bind a worker identity to a host node")
     p_reg.add_argument("--worker-id", required=True)
-    p_reg.add_argument("--host-id", default=os.uname().nodename)
+    p_reg.add_argument("--host-id", help="Must match this host's protected /etc/aao/host-id")
 
     # fence-host
     p_fence = subparsers.add_parser("fence-host", help="Apply targeted host fencing: revoke worker leases and credentials")
-    p_fence.add_argument("--host-id", default=os.uname().nodename, help="Host identifier to record in fencing audit")
-    p_fence.add_argument("--worker-ids", nargs="*", default=None, help="Specific worker IDs to fence on this host")
+    p_fence.add_argument("--host-id", help="Must match this host's protected /etc/aao/host-id")
 
     args = parser.parse_args(argv)
 
@@ -508,9 +508,12 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "register-host-worker":
         from aao.backup import register_host_worker
         try:
+            local_host_id = current_host_id()
+            if args.host_id is not None and args.host_id != local_host_id:
+                raise HostIdentityError("Worker registration is restricted to the protected local host identity")
             with connect_postgres() as db:
-                register_host_worker(db, host_id=args.host_id, worker_id=args.worker_id)
-            print(f"PASS: Worker '{args.worker_id}' bound to host '{args.host_id}'.")
+                register_host_worker(db, host_id=local_host_id, worker_id=args.worker_id)
+            print(f"PASS: Worker '{args.worker_id}' bound to host '{local_host_id}'.")
             return 0
         except (RuntimeError, OSError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
@@ -518,7 +521,14 @@ def main(argv: list[str] | None = None) -> int:
 
     elif args.command == "fence-host":
         from aao.backup import apply_host_fencing
-        print(f"Applying targeted host fencing for '{args.host_id}'...")
+        try:
+            local_host_id = current_host_id()
+            if args.host_id is not None and args.host_id != local_host_id:
+                raise HostIdentityError("Host fencing must run on the host identified by protected /etc/aao/host-id")
+        except HostIdentityError as exc:
+            print(f"FENCING ERROR: {exc}", file=sys.stderr)
+            return 1
+        print(f"Applying targeted host fencing for '{local_host_id}'...")
 
         # If systemd is available, stop and mask background workers
         if shutil.which("systemctl"):
@@ -529,10 +539,10 @@ def main(argv: list[str] | None = None) -> int:
 
         try:
             with connect_postgres() as db:
-                actions = apply_host_fencing(db, host_identifier=args.host_id, worker_ids=args.worker_ids)
+                actions = apply_host_fencing(db, host_identifier=local_host_id)
                 for a in actions:
                     print(f"  [+] {a}")
-            print(f"PASS: Host '{args.host_id}' successfully fenced from cluster.")
+            print(f"PASS: Host '{local_host_id}' successfully fenced from cluster.")
             return 0
         except (RuntimeError, OSError) as exc:
             print(f"FENCING ERROR: {exc}", file=sys.stderr)

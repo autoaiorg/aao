@@ -2981,6 +2981,43 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
                                json={"principal_id": pid, "capability": "code.publish"}).status_code == 201
         with pytest.raises(PublishError, match="cannot publish its own work"):
             push_candidate(work, token, store=store, push=push)
+
+        # RST-7: changing the persisted execution candidate after approval must not let the old
+        # review authorize a different SHA. Inject candidate drift in PostgreSQL and prove that
+        # publication fails before producing the external push effect.
+        from aao.postgresql_connection import connect_postgres
+        with connect_postgres() as db:
+            approved_sha = db.execute(
+                "SELECT candidate_sha FROM reviews WHERE work_id=%s AND decision='APPROVE' "
+                "ORDER BY created_at DESC LIMIT 1",
+                (work,),
+            ).fetchone()
+            assert approved_sha == (candidate_sha,)
+            execution = db.execute(
+                "SELECT id,result_json FROM execution_queue WHERE work_id=%s AND status='SUCCEEDED' "
+                "AND result_json->>'candidate_sha'=%s ORDER BY created_at DESC LIMIT 1 FOR UPDATE",
+                (work, candidate_sha),
+            ).fetchone()
+            assert execution is not None
+            execution_id, original_result = execution
+            changed_sha = "f" * 40
+            assert changed_sha != candidate_sha
+            db.execute(
+                "UPDATE execution_queue SET result_json=jsonb_set(result_json,'{candidate_sha}',to_jsonb(%s::text),true) "
+                "WHERE id=%s",
+                (changed_sha, execution_id),
+            )
+        pushed_during_drift = []
+        try:
+            with pytest.raises(PublishError, match="approved SHA has no succeeded execution with a proposal"):
+                push_candidate(work, pusher, store=store,
+                               push=lambda sha, branch: pushed_during_drift.append((sha, branch)))
+            assert pushed_during_drift == []
+        finally:
+            with connect_postgres() as db:
+                db.execute("UPDATE execution_queue SET result_json=%s::jsonb WHERE id=%s",
+                           (json.dumps(original_result), execution_id))
+
         with pytest.raises(PublishError, match="has not been pushed"):
             open_pull_request(work, publisher, open_pr=open_pr)
         pushed = push_candidate(work, pusher, store=store, push=push)

@@ -83,10 +83,12 @@ def test_agent_worker_reads_task_instructions_and_persists_proposal(monkeypatch)
     monkeypatch.setenv("AAO_CANDIDATE_REPOSITORY", "/candidates.git")
     monkeypatch.setenv("AAO_AGENT_BACKEND", "fixture")
     captured = {}
+    previous_failure = None
     class DB:
-        def execute(self, *_args):
+        def execute(self, sql, *_args):
             class Q:
-                def fetchone(self): return ("from DB", "task desc", ["criterion"], "agent-1")
+                def fetchone(self):
+                    return previous_failure if "execution_queue previous" in sql else ("from DB", "task desc", ["criterion"], "agent-1")
             return Q()
     @contextmanager
     def tx(): yield DB()
@@ -133,6 +135,15 @@ def test_agent_worker_reads_task_instructions_and_persists_proposal(monkeypatch)
         "backend": "fixture", "provider": "fixture", "model": None, "backend_version": "fixture-v1"}
     # A capability without model_profile keeps the previous behaviour: the environment picks the backend.
     assert completed[0][3]["backend_source"] == "environment"
+    assert "retry_context" not in completed[0][3]
+    # A new worker invocation reads persisted failure evidence, not process-local retry memory.
+    previous_failure = ("old-attempt", {"error": "candidate checks failed", "candidate_sha": "d" * 40,
+                                        "check": {"stdout": "test_regression: expected 2, got 1"}})
+    completed.clear()
+    assert worker.run_one("agent-1", "credential", project_id="project-1", seconds=400)["status"] == "SUCCEEDED"
+    assert "test_regression: expected 2, got 1" in captured["instructions"]
+    assert "from DB" in captured["instructions"] and "criterion" in captured["instructions"]
+    assert completed[0][3]["retry_context"]["execution_id"] == "old-attempt"
 
 
 def test_agent_worker_empty_diff_fails_without_proposal(monkeypatch):
@@ -182,6 +193,8 @@ def test_agent_worker_runs_the_backend_and_model_of_the_staged_capability(monkey
             queries.append(params)
             class Q:
                 def fetchone(self):
+                    if "execution_queue previous" in sql:
+                        return None
                     return (profile,) if "model_profile" in sql else ("task", "", [], "agent-1")
             return Q()
     @contextmanager

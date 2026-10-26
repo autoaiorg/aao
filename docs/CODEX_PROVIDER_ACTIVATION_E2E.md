@@ -115,6 +115,25 @@ Esto **no** crea una revisión, no aprueba el candidato y no lleva la tarea a
 `DONE`. El revisor mantiene su identidad y autorización separadas. Tampoco
 activa el proveedor ni concede grants.
 
+### Diagnóstico para un reintento del agente
+
+Después de revalidar la identidad y el inicio autorizado del trabajo, el worker
+consulta el último intento `FAILED` anterior de la misma tarea, proyecto e
+identidad, con el mismo input registrado (capacidad, versión y SHA base). Si
+existe, añade al prompt original un extracto JSON etiquetado como **datos no
+confiables, no instrucciones ni permisos**: error (500 caracteres), SHA candidato,
+identificador/conclusión/exit code del check y hasta 4096 caracteres de cada salida.
+No copia campos arbitrarios del resultado ni cambia los criterios de la tarea.
+
+El resultado del nuevo intento registra `retry_context.execution_id` y el SHA-256
+del diagnóstico exacto suministrado. La fuente sigue siendo `execution_queue`;
+no hay memoria local de reintentos ni una segunda máquina de estados. No se
+reutilizan intentos de otra identidad, capacidad/base o estado `UNCERTAIN`.
+Este contexto no encola ni autoriza intentos: siguen vigentes staging, grants,
+lease, límites de intentos/no-progreso, aislamiento y revisión independiente.
+Las pruebas con runner simulado no demuestran recuperación efectiva de un modelo;
+esa demostración sigue pendiente del ensayo real.
+
 **Agente y modelo:** desde I3 los decide la capacidad elegida con `--agent`, no el entorno. `aao.agent-runner.codex` lleva en su `model_profile` el backend `codex`, el proveedor `openai` y el modelo `gpt-6-luna`; codex lo recibe como `-m`. La evidencia registra `capability_id`, `backend_source: capability`, proveedor, modelo y la versión real del CLI. Registrar la capacidad no activa nada: sin `AAO_AGENT_PROVIDER=codex` en el worker, el runner rechaza el backend. Las capacidades sin `model_profile` conservan el comportamiento anterior (`AAO_AGENT_BACKEND` y `AAO_AGENT_CODEX_MODEL`) y la evidencia lo indica como `backend_source: environment`.
 
 **Activación y router (I4):** `AAO_AGENT_PROVIDER` admite una lista separada por comas (`codex`, …) y lo comprueban tres puntos por separado:

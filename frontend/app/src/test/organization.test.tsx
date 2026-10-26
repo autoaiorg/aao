@@ -29,6 +29,30 @@ describe('Phase F3: OrganizationView and Agent Structure', () => {
     ).toBeInTheDocument();
   });
 
+  it('does not infer availability from an empty assignment list', () => {
+    const unknownAgent: AgentIdentity = {
+      ...DEMO_AGENTS[0],
+      id: 'unknown-agent',
+      name: 'Agente sin actividad observada',
+      status: 'UNKNOWN',
+      heartbeatStatus: 'UNKNOWN',
+      currentAssignments: [],
+    };
+    const liveState: DataState<OrganizationStructure> = {
+      kind: 'ready', origin: 'live', fetchedAt: new Date().toISOString(),
+      data: { ...DEMO_ORG_STRUCTURE, agents: [unknownAgent] },
+    };
+
+    const { rerender } = render(<OrganizationView orgState={liveState} />);
+    fireEvent.click(screen.getByRole('tab', { name: /Plantilla y Agentes/i }));
+    expect(screen.getByText(/Sin asignación activa observada · estado UNKNOWN/i)).toBeInTheDocument();
+    expect(screen.queryByText('Sin asignación activa (Disponible)')).not.toBeInTheDocument();
+
+    rerender(<AgentDetailDrawer agent={unknownAgent} onClose={() => {}} />);
+    expect(screen.getByText(/Esto no confirma disponibilidad; estado: UNKNOWN; latido: UNKNOWN/i)).toBeInTheDocument();
+    expect(screen.queryByText(/IDLE/)).not.toBeInTheDocument();
+  });
+
   it('renders all metrics and organizational units in ready state', () => {
     render(<OrganizationView orgState={readyState} />);
 

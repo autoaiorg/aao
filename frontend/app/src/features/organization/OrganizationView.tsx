@@ -678,7 +678,7 @@ export const OrganizationView: React.FC<OrganizationViewProps> = ({
                         </div>
                       ) : (
                         <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                          Sin asignación activa (Disponible)
+                          Sin asignación activa observada · estado {agent.status}
                         </div>
                       )}
                     </div>

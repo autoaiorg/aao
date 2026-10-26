@@ -1,0 +1,760 @@
+
+[1;36m=== [VM VALIDATION] Starting Clean Ubuntu 24.04 VM Validation for AAO Bootstrap[0m
+
+[1;36m=== [VM VALIDATION] Target Revision: 7618096a5c963e40cb141bc39ca9d01df53b724f[0m
+
+[1;36m=== [VM VALIDATION] CEO User:        alessbarb[0m
+
+[1;36m=== [VM VALIDATION] Timestamp:       2026-10-26T18:57:32Z[0m
+
+[1;36m=== [VM VALIDATION] 1. Checking QEMU and KVM hardware virtualization...[0m
+
+[1;36m=== [VM VALIDATION] KVM hardware acceleration is available.[0m
+
+[1;36m=== [VM VALIDATION] 2. Verifying Ubuntu 24.04 Noble cloud image provenance and SHA-256 digest...[0m
+
+[1;36m=== [VM VALIDATION] Fetching official Ubuntu SHA256SUMS from https://cloud-images.ubuntu.com/minimal/releases/noble/release/SHA256SUMS...[0m
+
+[1;36m=== [VM VALIDATION] Official SHA-256: b3296484e362ba2e713489a5de6225c719d9500962bde25d15f2f21e512c7658[0m
+
+[1;36m=== [VM VALIDATION] Downloading cloud image from https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img...[0m
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0  0  247M    0  480k    0     0  1436k      0  0:02:56 --:--:--  0:02:56 1437k  5  247M    5 14.1M    0     0  10.3M      0  0:00:24  0:00:01  0:00:23 10.3M 16  247M   16 40.4M    0     0  17.3M      0  0:00:14  0:00:02  0:00:12 17.3M 25  247M   25 64.0M    0     0  19.1M      0  0:00:12  0:00:03  0:00:09 19.1M 42  247M   42  105M    0     0  24.1M      0  0:00:10  0:00:04  0:00:06 24.1M 54  247M   54  134M    0     0  25.1M      0  0:00:09  0:00:05  0:00:04 26.7M 69  247M   69  173M    0     0  27.4M      0  0:00:09  0:00:06  0:00:03 32.1M 84  247M   84  209M    0     0  28.5M      0  0:00:08  0:00:07  0:00:01 33.7M 95  247M   95  237M    0     0  28.4M      0  0:00:08  0:00:08 --:--:-- 34.7M100  247M  100  247M    0     0  28.9M      0  0:00:08  0:00:08 --:--:-- 33.7M
+
+[1;36m=== [VM VALIDATION] Verifying base image SHA-256 integrity...[0m
+
+[1;36m=== [VM VALIDATION] Base image integrity verified: b3296484e362ba2e713489a5de6225c719d9500962bde25d15f2f21e512c7658[0m
+
+[1;36m=== [VM VALIDATION] 3. Creating copy-on-write overlay disk...[0m
+Formatting '/tmp/aao-codex-vm-validation.DIrIlN/vm-disk.qcow2', fmt=qcow2 cluster_size=65536 extended_l2=off compression_type=zlib size=21474836480 backing_file=/tmp/aao-codex-vm-validation.DIrIlN/ubuntu-24.04-minimal-cloudimg-amd64.img backing_fmt=qcow2 lazy_refcounts=off refcount_bits=16
+
+[1;36m=== [VM VALIDATION] 4. Generating cloud-init metadata and user-data for CEO user 'alessbarb'...[0m
+
+[1;36m=== [VM VALIDATION] 5. Launching clean Ubuntu 24.04 VM (PID 1 systemd) on port 22222...[0m
+
+[1;36m=== [VM VALIDATION] VM launched with PID 3318857. Waiting for SSH...[0m
+
+[1;36m=== [VM VALIDATION] SSH port reachable. Waiting for cloud-init to finish provisioning...[0m
+
+[1;36m=== [VM VALIDATION] cloud-init completed: status: done[0m
+
+[1;36m=== [VM VALIDATION] 6. Synchronizing AAO repository into clean VM as verified plain git clone...[0m
+sending incremental file list
+repo.bundle
+
+sent 8,594,724 bytes  received 35 bytes  17,189,518.00 bytes/sec
+total size is 8,704,899  speedup is 1.01
+Cloning into '/home/alessbarb/aao-repo'...
+Note: switching to '7618096a5c963e40cb141bc39ca9d01df53b724f'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+
+[1;36m=== [VM VALIDATION] 7. Executing AAO Integral Bootstrap in clean VM (including governance & React build)...[0m
+
+[1;34m== [AAO BOOTSTRAP] Starting AAO Bootstrap (APPLY=1, CEO_USER=alessbarb, REV=7618096a5c963e40cb141bc39ca9d01df53b724f)...[0m
+
+[1;34m== [AAO BOOTSTRAP] Step 0: Executing Host Preflight...[0m
+== [PREFLIGHT] Checking root privileges...
+== [PREFLIGHT] Checking Linux OS distribution...
+== [PREFLIGHT] OS detected: Ubuntu 24.04.5 LTS (compatible)
+== [PREFLIGHT] Checking CPU architecture...
+== [PREFLIGHT] Architecture: x86_64
+== [PREFLIGHT] Checking memory...
+== [PREFLIGHT] Memory verified: 3915MB
+== [PREFLIGHT] Checking available disk space on / ...
+== [PREFLIGHT] Disk space verified: 17109MB available
+== [PREFLIGHT] Detecting existing installation state...
+== [PREFLIGHT] Mode: FRESH INSTALLATION (clean machine detected)
+== [PREFLIGHT] Checking port availability...
+INFO: Port 5432 (PostgreSQL) is currently listening.
+== [PREFLIGHT] Host preflight passed successfully.
+
+[1;34m== [AAO BOOTSTRAP] Step 1: Setting up role and product identities...[0m
+== [IDENTITIES] Applying governance identity separation for CEO_USER='alessbarb'...
+# preflight
+# preflight OK
+# docker group members (not modified): 
++ groupadd --system aao-ledger-read
++ groupadd --system aao-events
++ useradd --create-home --home-dir /home/aao-pm --shell /bin/bash --user-group aao-pm
++ chmod 0700 /home/aao-pm
++ useradd --create-home --home-dir /home/aao-impl-codex --shell /bin/bash --user-group aao-impl-codex
++ chmod 0700 /home/aao-impl-codex
++ useradd --create-home --home-dir /home/aao-impl-claude --shell /bin/bash --user-group aao-impl-claude
++ chmod 0700 /home/aao-impl-claude
++ useradd --create-home --home-dir /home/aao-impl-ag --shell /bin/bash --user-group aao-impl-ag
++ chmod 0700 /home/aao-impl-ag
++ useradd --create-home --home-dir /home/aao-auditor --shell /usr/sbin/nologin --user-group aao-auditor
++ chmod 0700 /home/aao-auditor
++ useradd --create-home --home-dir /home/aao-auditor-alt --shell /usr/sbin/nologin --user-group aao-auditor-alt
++ chmod 0700 /home/aao-auditor-alt
++ useradd --create-home --home-dir /home/aao-integrator --shell /usr/sbin/nologin --user-group aao-integrator
++ chmod 0700 /home/aao-integrator
++ useradd --create-home --home-dir /home/aao-supervisor --shell /usr/sbin/nologin --user-group aao-supervisor
++ chmod 0700 /home/aao-supervisor
++ useradd --create-home --home-dir /home/aao-notifier --shell /usr/sbin/nologin --user-group aao-notifier
++ chmod 0700 /home/aao-notifier
++ useradd --create-home --home-dir /home/aao-trust --shell /usr/sbin/nologin --user-group aao-trust
++ chmod 0700 /home/aao-trust
++ usermod -aG aao-events aao-notifier
++ usermod -aG aao-ledger-read aao-integrator
++ usermod -aG aao-ledger-read aao-supervisor
++ install -d -o aao-auditor -g aao-ledger-read -m 0750 /var/lib/aao-auditor
++ install -d -o aao-auditor -g aao-auditor -m 0700 /var/lib/aao-auditor/keys
++ install -d -o aao-auditor -g aao-ledger-read -m 0750 /var/lib/aao-auditor/ledger
++ install -d -o aao-auditor-alt -g aao-ledger-read -m 0750 /var/lib/aao-auditor-alt
++ install -d -o aao-auditor-alt -g aao-auditor-alt -m 0700 /var/lib/aao-auditor-alt/keys
++ install -d -o aao-auditor-alt -g aao-ledger-read -m 0750 /var/lib/aao-auditor-alt/ledger
++ install -d -o aao-supervisor -g aao-events -m 0750 /var/lib/aao-supervisor
++ install -d -o aao-supervisor -g aao-events -m 0750 /var/lib/aao-supervisor/events
++ install -d -o aao-trust -g aao-trust -m 0755 /srv/aao
++ install -d -o aao-trust -g aao-trust -m 0755 /srv/aao/trust
++ install -d -o aao-trust -g aao-trust -m 0755 /srv/aao/trust/keys
++ install -d -o aao-trust -g aao-trust -m 0755 /srv/aao/frozen
++ install -d -o aao-trust -g aao-trust -m 0755 /srv/aao/frozen/aao-auditor
++ install -d -o aao-trust -g aao-trust -m 0755 /srv/aao/frozen/aao-auditor-alt
++ install -d -o aao-trust -g aao-trust -m 0755 /srv/aao/frozen/aao-integrator
++ install -d -o aao-trust -g aao-trust -m 0755 /srv/aao/frozen/aao-supervisor
++ generated /var/lib/aao-auditor/keys/auditor-ed25519.pem as aao-auditor
++ published /srv/aao/trust/keys/aao-auditor-ed25519.pub
++ generated /var/lib/aao-auditor-alt/keys/auditor-ed25519.pem as aao-auditor-alt
++ published /srv/aao/trust/keys/aao-auditor-alt-ed25519.pub
++ wrote /etc/sudoers.d/aao-launch
+
+Next steps (manual, one time):
+  1. Log in each agent CLI as its own user, e.g.  sudo -u aao-impl-codex -i codex login
+     Never copy the CEO's GitHub token (~/.config/gh) into an agent account.
+  2. Clone the repository inside each agent home (not a shared working copy).
+  3. Leave PostgreSQL running from the CEO account; agents reach it over
+     TCP at 127.0.0.1:54329 and never use the docker socket.
+  4. Run scripts/verify_identity_separation.sh as every role and attach the output to the F2 evidence.
+  Rollback:  sudo scripts/identity_separation.sh --revert   (lock, keep data)
+             sudo scripts/identity_separation.sh --purge    (archive + verify, then remove everything)
+  After --revert, re-installing requires --purge first (--apply refuses locked accounts).
+== [IDENTITIES] Ensuring product service account 'aao-api'...
+== [IDENTITIES] Created service user 'aao-api' (locked, nologin).
+== [IDENTITIES] Setting directory permissions...
+== [IDENTITIES] Verifying governance and product identity compliance...
+== [IDENTITIES] Identities provisioned and verified compliant with governance P1.
+
+[1;34m== [AAO BOOTSTRAP] Step 1.1: Ensuring governance infrastructure (trust root, ledgers, events)...[0m
+
+[1;34m== [AAO BOOTSTRAP] Verifying host governance configuration (dry-run preflight without production keys)...[0m
+== preflight
+rev=7618096a5c963e40cb141bc39ca9d01df53b724f ceo=alessbarb src=/home/alessbarb/aao-repo apply=0 log=/tmp/tmp.2lTWOPmxf6
+== identities (P1)
+# preflight
+# preflight OK
+# docker group members (not modified): 
+# DRY RUN: no changes will be made.
++ chmod 0700 /home/aao-pm
++ chmod 0700 /home/aao-impl-codex
++ chmod 0700 /home/aao-impl-claude
++ chmod 0700 /home/aao-impl-ag
++ chmod 0700 /home/aao-auditor
++ chmod 0700 /home/aao-auditor-alt
++ chmod 0700 /home/aao-integrator
++ chmod 0700 /home/aao-supervisor
++ chmod 0700 /home/aao-notifier
++ chmod 0700 /home/aao-trust
++ usermod -aG aao-events aao-notifier
++ usermod -aG aao-ledger-read aao-integrator
++ usermod -aG aao-ledger-read aao-supervisor
++ install -d -o aao-auditor -g aao-ledger-read -m 0750 /var/lib/aao-auditor
++ install -d -o aao-auditor -g aao-auditor -m 0700 /var/lib/aao-auditor/keys
++ install -d -o aao-auditor -g aao-ledger-read -m 0750 /var/lib/aao-auditor/ledger
++ install -d -o aao-auditor-alt -g aao-ledger-read -m 0750 /var/lib/aao-auditor-alt
++ install -d -o aao-auditor-alt -g aao-auditor-alt -m 0700 /var/lib/aao-auditor-alt/keys
++ install -d -o aao-auditor-alt -g aao-ledger-read -m 0750 /var/lib/aao-auditor-alt/ledger
++ install -d -o aao-supervisor -g aao-events -m 0750 /var/lib/aao-supervisor
++ install -d -o aao-supervisor -g aao-events -m 0750 /var/lib/aao-supervisor/events
++ install -d -o aao-trust -g aao-trust -m 0755 /srv/aao
++ install -d -o aao-trust -g aao-trust -m 0755 /srv/aao/trust
++ install -d -o aao-trust -g aao-trust -m 0755 /srv/aao/trust/keys
++ install -d -o aao-trust -g aao-trust -m 0755 /srv/aao/frozen
++ install -d -o aao-trust -g aao-trust -m 0755 /srv/aao/frozen/aao-auditor
++ install -d -o aao-trust -g aao-trust -m 0755 /srv/aao/frozen/aao-auditor-alt
++ install -d -o aao-trust -g aao-trust -m 0755 /srv/aao/frozen/aao-integrator
++ install -d -o aao-trust -g aao-trust -m 0755 /srv/aao/frozen/aao-supervisor
++ (would generate /var/lib/aao-auditor/keys/auditor-ed25519.pem as aao-auditor if absent and publish /srv/aao/trust/keys/aao-auditor-ed25519.pub)
++ (would generate /var/lib/aao-auditor-alt/keys/auditor-ed25519.pem as aao-auditor-alt if absent and publish /srv/aao/trust/keys/aao-auditor-alt-ed25519.pub)
++ (would write /etc/sudoers.d/aao-launch: alessbarb ALL=(aao-pm,aao-impl-codex,aao-impl-claude,aao-impl-ag) ALL)
+
+Next steps (manual, one time):
+  1. Log in each agent CLI as its own user, e.g.  sudo -u aao-impl-codex -i codex login
+     Never copy the CEO's GitHub token (~/.config/gh) into an agent account.
+  2. Clone the repository inside each agent home (not a shared working copy).
+  3. Leave PostgreSQL running from the CEO account; agents reach it over
+     TCP at 127.0.0.1:54329 and never use the docker socket.
+  4. Run scripts/verify_identity_separation.sh as every role and attach the output to the F2 evidence.
+  Rollback:  sudo scripts/identity_separation.sh --revert   (lock, keep data)
+             sudo scripts/identity_separation.sh --purge    (archive + verify, then remove everything)
+  After --revert, re-installing requires --purge first (--apply refuses locked accounts).
+== app-keys
+MISSING aao-integrator key (/home/aao-integrator/.config/aao/aao-integrator.pem)
+MISSING aao-auditor key (/home/aao-auditor/.config/aao/aao-auditor.pem)
+MISSING aao-auditor-alt key (/home/aao-auditor-alt/.config/aao/aao-auditor-alt.pem)
+MISSING aao-supervisor key (/home/aao-supervisor/.config/aao/aao-supervisor.pem)
+MISSING aao-notifier key (/home/aao-notifier/.config/aao/aao-notifier.pem)
+MISSING aao-pm key (/home/aao-pm/.config/aao/aao-pm.pem)
+MISSING aao-impl-claude key (/home/aao-impl-claude/.config/aao/aao-impl-claude.pem)
+MISSING aao-impl-codex key (/home/aao-impl-codex/.config/aao/aao-impl-codex.pem)
+MISSING aao-impl-agy key (/home/aao-impl-ag/.config/aao/aao-impl-agy.pem)
+new  aao-integrator metadata (app_id 5447984) for aao-integrator
+new  aao-auditor metadata (app_id 5448107) for aao-auditor
+new  aao-auditor-alt metadata (app_id 5448148) for aao-auditor-alt
+new  aao-supervisor metadata (app_id 5448178) for aao-supervisor
+new  aao-notifier metadata (app_id 5448204) for aao-notifier
+new  aao-pm metadata (app_id 5448234) for aao-pm
+new  aao-impl-claude metadata (app_id 5448259) for aao-impl-claude
+new  aao-impl-codex metadata (app_id 5448303) for aao-impl-codex
+new  aao-impl-agy metadata (app_id 5448323) for aao-impl-ag
+== p2-verify (9/9 required)
+DRY: install -d -o root -g root -m 0755 /opt/aao-p2 /opt/aao-p2/github-apps
+DRY: install -o root -g root -m 0755 /home/alessbarb/aao-repo/scripts/github_apps/verify_app_auth.py /opt/aao-p2/
+DRY: install -o root -g root -m 0644 /home/alessbarb/aao-repo/deploy/github-apps/aao-github-apps-registry.json /opt/aao-p2/
+DRY: install -o root -g root -m 0644 /home/alessbarb/aao-repo/docs/proposals/github-apps/aao-auditor-alt.json /opt/aao-p2/github-apps/
+DRY: install -o root -g root -m 0644 /home/alessbarb/aao-repo/docs/proposals/github-apps/aao-auditor.json /opt/aao-p2/github-apps/
+DRY: install -o root -g root -m 0644 /home/alessbarb/aao-repo/docs/proposals/github-apps/aao-impl-agy.json /opt/aao-p2/github-apps/
+DRY: install -o root -g root -m 0644 /home/alessbarb/aao-repo/docs/proposals/github-apps/aao-impl-claude.json /opt/aao-p2/github-apps/
+DRY: install -o root -g root -m 0644 /home/alessbarb/aao-repo/docs/proposals/github-apps/aao-impl-codex.json /opt/aao-p2/github-apps/
+DRY: install -o root -g root -m 0644 /home/alessbarb/aao-repo/docs/proposals/github-apps/aao-integrator.json /opt/aao-p2/github-apps/
+DRY: install -o root -g root -m 0644 /home/alessbarb/aao-repo/docs/proposals/github-apps/aao-notifier.json /opt/aao-p2/github-apps/
+DRY: install -o root -g root -m 0644 /home/alessbarb/aao-repo/docs/proposals/github-apps/aao-pm.json /opt/aao-p2/github-apps/
+DRY: install -o root -g root -m 0644 /home/alessbarb/aao-repo/docs/proposals/github-apps/aao-probe-noworkflows.json /opt/aao-p2/github-apps/
+DRY: install -o root -g root -m 0644 /home/alessbarb/aao-repo/docs/proposals/github-apps/aao-supervisor.json /opt/aao-p2/github-apps/
+== antigravity
+TODO no /usr/local/bin/agy: rerun with --agy <path> --agy-sha256 <hex>
+DRY: install -d -o root -g root -m 0755 /opt/aao-audit
+DRY: install -o root -g root -m 0755 /home/alessbarb/aao-repo/scripts/audit/run_agy_audit.sh /home/alessbarb/aao-repo/scripts/audit/run_codex_audit.sh /opt/aao-audit/
+DRY: install -o root -g root -m 0644 /home/alessbarb/aao-repo/docs/audit-prompts/p2p3-dictamen.md /opt/aao-audit/
+DRY: install -o root -g root -m 0644 /home/alessbarb/aao-repo/docs/audit-prompts/p2p3-trial.md /opt/aao-audit/
+DRY: install -o root -g root -m 0644 /home/alessbarb/aao-repo/docs/audit-prompts/r1-chain.md /opt/aao-audit/
+DRY: runuser -u aao-auditor-alt -- env -i HOME=/home/aao-auditor-alt PATH=/usr/bin:/bin /usr/bin/python3 -I -c $'\nimport json, os\np = os.path.expanduser("~/.gemini/antigravity-cli/settings.json")\nos.makedirs(os.path.dirname(p), mode=0o700, exist_ok=True)\nd = json.load(open(p)) if os.path.exists(p) else {}\nd.setdefault("permissions", {})["allow"] = ["command(git diff)", "command(git show)", "command(git log)",\n                                            "command(git ls-files)", "command(git grep)"]\nfd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)\nos.write(fd, (json.dumps(d, indent=1) + "\\n").encode()); os.close(fd)'
+TODO agy login (interactive, once):
+     sudo -u aao-auditor-alt -H env -i HOME=/home/aao-auditor-alt PATH=/usr/bin:/bin:/usr/local/bin /usr/local/bin/agy
+     Join the printed URL into ONE line before opening it.
+== done (apply=0). Log: /tmp/tmp.2lTWOPmxf6
+
+[1;34m== [AAO BOOTSTRAP] Verifying governance identity separation across core roles...[0m
+# identity: uid=1001(aao-pm) gid=1001(aao-pm) groups=1001(aao-pm)
+PASS     no passwordless sudo
+PASS     no privileged group membership
+PASS     docker socket (not present on host)
+PASS     enter CEO home
+PASS     list CEO home
+PASS     write trust registry
+PASS     write trust keys
+PASS     write frozen checkouts
+PASS     write /srv/aao/frozen/aao-auditor-alt
+PASS     write /srv/aao/frozen/aao-auditor
+PASS     write /srv/aao/frozen/aao-integrator
+PASS     write /srv/aao/frozen/aao-supervisor
+PASS     enter /var/lib/aao-auditor
+PASS     enter /var/lib/aao-auditor-alt
+PASS     enter /var/lib/aao-supervisor
+PASS     ptrace_scope=1
+PASS     enter /home/aao-auditor
+PASS     enter /home/aao-auditor-alt
+PASS     enter /home/aao-impl-ag
+PASS     enter /home/aao-impl-claude
+PASS     enter /home/aao-impl-codex
+PASS     enter /home/aao-integrator
+PASS     enter /home/aao-notifier
+PASS     enter /home/aao-supervisor
+PASS     enter /home/aao-trust
+# all checks PASSED for aao-pm
+# identity: uid=1004(aao-impl-ag) gid=1004(aao-impl-ag) groups=1004(aao-impl-ag)
+PASS     no passwordless sudo
+PASS     no privileged group membership
+PASS     docker socket (not present on host)
+PASS     enter CEO home
+PASS     list CEO home
+PASS     write trust registry
+PASS     write trust keys
+PASS     write frozen checkouts
+PASS     write /srv/aao/frozen/aao-auditor-alt
+PASS     write /srv/aao/frozen/aao-auditor
+PASS     write /srv/aao/frozen/aao-integrator
+PASS     write /srv/aao/frozen/aao-supervisor
+PASS     enter /var/lib/aao-auditor
+PASS     enter /var/lib/aao-auditor-alt
+PASS     enter /var/lib/aao-supervisor
+PASS     ptrace_scope=1
+PASS     enter /home/aao-auditor
+PASS     enter /home/aao-auditor-alt
+PASS     enter /home/aao-impl-claude
+PASS     enter /home/aao-impl-codex
+PASS     enter /home/aao-integrator
+PASS     enter /home/aao-notifier
+PASS     enter /home/aao-pm
+PASS     enter /home/aao-supervisor
+PASS     enter /home/aao-trust
+# all checks PASSED for aao-impl-ag
+# identity: uid=1005(aao-auditor) gid=1005(aao-auditor) groups=1005(aao-auditor)
+PASS     no passwordless sudo
+PASS     no privileged group membership
+PASS     docker socket (not present on host)
+PASS     enter CEO home
+PASS     list CEO home
+PASS     write trust registry
+PASS     write trust keys
+PASS     write frozen checkouts
+PASS     write /srv/aao/frozen/aao-auditor-alt
+PASS     write /srv/aao/frozen/aao-auditor
+PASS     write /srv/aao/frozen/aao-integrator
+PASS     write /srv/aao/frozen/aao-supervisor
+PASS     enter /var/lib/aao-auditor-alt
+PASS     enter /var/lib/aao-supervisor
+PASS     ptrace_scope=1
+PASS     enter /home/aao-auditor-alt
+PASS     enter /home/aao-impl-ag
+PASS     enter /home/aao-impl-claude
+PASS     enter /home/aao-impl-codex
+PASS     enter /home/aao-integrator
+PASS     enter /home/aao-notifier
+PASS     enter /home/aao-pm
+PASS     enter /home/aao-supervisor
+PASS     enter /home/aao-trust
+# all checks PASSED for aao-auditor
+# identity: uid=1008(aao-supervisor) gid=1008(aao-supervisor) groups=1008(aao-supervisor),991(aao-ledger-read)
+PASS     no passwordless sudo
+PASS     no privileged group membership
+PASS     docker socket (not present on host)
+PASS     enter CEO home
+PASS     list CEO home
+PASS     write trust registry
+PASS     write trust keys
+PASS     write frozen checkouts
+PASS     write /srv/aao/frozen/aao-auditor-alt
+PASS     write /srv/aao/frozen/aao-auditor
+PASS     write /srv/aao/frozen/aao-integrator
+PASS     write /srv/aao/frozen/aao-supervisor
+PASS     enter aao-auditor keys dir
+PASS     write aao-auditor ledger
+PASS     enter aao-auditor-alt keys dir
+PASS     write aao-auditor-alt ledger
+PASS     ptrace_scope=1
+PASS     enter /home/aao-auditor
+PASS     enter /home/aao-auditor-alt
+PASS     enter /home/aao-impl-ag
+PASS     enter /home/aao-impl-claude
+PASS     enter /home/aao-impl-codex
+PASS     enter /home/aao-integrator
+PASS     enter /home/aao-notifier
+PASS     enter /home/aao-pm
+PASS     enter /home/aao-trust
+# all checks PASSED for aao-supervisor
+# identity: uid=1007(aao-integrator) gid=1007(aao-integrator) groups=1007(aao-integrator),991(aao-ledger-read)
+PASS     no passwordless sudo
+PASS     no privileged group membership
+PASS     docker socket (not present on host)
+PASS     enter CEO home
+PASS     list CEO home
+PASS     write trust registry
+PASS     write trust keys
+PASS     write frozen checkouts
+PASS     write /srv/aao/frozen/aao-auditor-alt
+PASS     write /srv/aao/frozen/aao-auditor
+PASS     write /srv/aao/frozen/aao-integrator
+PASS     write /srv/aao/frozen/aao-supervisor
+PASS     enter aao-auditor keys dir
+PASS     write aao-auditor ledger
+PASS     enter aao-auditor-alt keys dir
+PASS     write aao-auditor-alt ledger
+PASS     enter /var/lib/aao-supervisor
+PASS     ptrace_scope=1
+PASS     enter /home/aao-auditor
+PASS     enter /home/aao-auditor-alt
+PASS     enter /home/aao-impl-ag
+PASS     enter /home/aao-impl-claude
+PASS     enter /home/aao-impl-codex
+PASS     enter /home/aao-notifier
+PASS     enter /home/aao-pm
+PASS     enter /home/aao-supervisor
+PASS     enter /home/aao-trust
+# all checks PASSED for aao-integrator
+
+[1;34m== [AAO BOOTSTRAP] Governance identity separation verified compliant.[0m
+
+[1;34m== [AAO BOOTSTRAP] Step 2: Installing system packages and Python runtime...[0m
+== [DEPENDENCIES] Updating apt package index...
+== [DEPENDENCIES] Installing core system packages...
+debconf: delaying package configuration, since apt-utils is not installed
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 29565 files and directories currently installed.)
+Preparing to unpack .../ca-certificates_20260816ubuntu0.24.04.1_all.deb ...
+Unpacking ca-certificates (20260816ubuntu0.24.04.1) over (20260601~24.04.1) ...
+Selecting previously unselected package libssl-dev:amd64.
+Preparing to unpack .../libssl-dev_3.0.13-0ubuntu3.16_amd64.deb ...
+Unpacking libssl-dev:amd64 (3.0.13-0ubuntu3.16) ...
+Selecting previously unselected package libpq-dev.
+Preparing to unpack .../libpq-dev_16.15-0ubuntu0.24.04.1_amd64.deb ...
+Unpacking libpq-dev (16.15-0ubuntu0.24.04.1) ...
+Setting up ca-certificates (20260816ubuntu0.24.04.1) ...
+Updating certificates in /etc/ssl/certs...
+rehash: warning: skipping ca-certificates.crt,it does not contain exactly one certificate or CRL
+4 added, 5 removed; done.
+Setting up libssl-dev:amd64 (3.0.13-0ubuntu3.16) ...
+Setting up libpq-dev (16.15-0ubuntu0.24.04.1) ...
+Processing triggers for ca-certificates (20260816ubuntu0.24.04.1) ...
+Updating certificates in /etc/ssl/certs...
+0 added, 0 removed; done.
+Running hooks in /etc/ca-certificates/update.d...
+done.
+== [DEPENDENCIES] Verifying Node.js and npm...
+== [DEPENDENCIES] Configuring NodeSource repository with verified GPG keyring...
+debconf: delaying package configuration, since apt-utils is not installed
+Selecting previously unselected package nodejs.
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 29738 files and directories currently installed.)
+Preparing to unpack .../nodejs_22.23.4-1nodesource1_amd64.deb ...
+Unpacking nodejs (22.23.4-1nodesource1) ...
+Setting up nodejs (22.23.4-1nodesource1) ...
+== [DEPENDENCIES] Installed Node.js v22.23.4 and npm 10.9.9
+== [DEPENDENCIES] Preparing isolated application directory layout...
+== [DEPENDENCIES] Setting up base Python virtual environment in /opt/aao/base_venv...
+== [DEPENDENCIES] Dependencies installed successfully.
+
+[1;34m== [AAO BOOTSTRAP] Step 3: Staging immutable versioned release to /opt/aao/releases/release-20261026190126_7618096a...[0m
+
+[1;34m== [AAO BOOTSTRAP] Creating release-isolated Python virtual environment in /opt/aao/releases/release-20261026190126_7618096a/venv...[0m
+
+[1;34m== [AAO BOOTSTRAP] Installing dependencies and AAO package into /opt/aao/releases/release-20261026190126_7618096a/venv...[0m
+
+[1;34m== [AAO BOOTSTRAP] Preserving existing non-symlink /opt/aao/repo to /opt/aao/repo.legacy_20261026190140...[0m
+
+[1;34m== [AAO BOOTSTRAP] Maintaining release history (protecting active and previous releases)...[0m
+
+[1;34m== [AAO BOOTSTRAP] Step 4: Provisioning native PostgreSQL 16...[0m
+== [POSTGRES] Ensuring PostgreSQL service is running...
+Synchronizing state of postgresql.service with SysV service script with /usr/lib/systemd/systemd-sysv-install.
+Executing: /usr/lib/systemd/systemd-sysv-install enable postgresql
+== [POSTGRES] Generating or reading application database password...
+== [POSTGRES] Generated new database password in /etc/aao/aao-db.secret
+== [POSTGRES] Configuring PostgreSQL role and database without SQL password interpolation...
+DO
+== [POSTGRES] Setting application database password via secure encrypted channel...
+Enter new password for user "aao_app": 
+Enter it again: 
+== [POSTGRES] Creating database 'aao_prod'...
+GRANT
+GRANT
+== [POSTGRES] Verifying PostgreSQL connection for aao_app...
+== [POSTGRES] PostgreSQL provisioned and verified successfully.
+
+[1;34m== [AAO BOOTSTRAP] Step 5: Applying database migrations (001 to 031)...[0m
+Successfully applied 31 migrations:
+  [+] 001_foundation
+  [+] 002_dev_identity
+  [+] 003_execution
+  [+] 004_execution_guards
+  [+] 005_principal_credentials
+  [+] 006_unified_execution_identity
+  [+] 007_fence_leases_across_project_state_changes
+  [+] 008_content_addressed_evidence
+  [+] 009_prevent_evidence_truncation
+  [+] 010_capability_registry
+  [+] 011_sha_bound_reviews_and_veto
+  [+] 012_patch_proposals
+  [+] 013_work_description
+  [+] 014_execution_retry
+  [+] 015_organization_profiles
+  [+] 016_project_conversations
+  [+] 017_ceo_browser_sessions
+  [+] 018_conversation_provider_metadata
+  [+] 019_project_conversation_turns
+  [+] 020_persistent_work_groups
+  [+] 021_conversation_turn_leases
+  [+] 022_work_item_assignments
+  [+] 023_work_group_consolidations
+  [+] 024_work_group_partial_reports
+  [+] 025_work_item_due_dates
+  [+] 026_capability_feedback_proposals
+  [+] 027_capability_feedback_review
+  [+] 028_capability_feedback_version_link
+  [+] 029_organization_profile_competencies
+  [+] 030_conversation_work_group_results
+  [+] 031_host_worker_fencing
+PASS: All 31 migrations applied (31 verified by recorded SHA-256).
+
+[1;34m== [AAO BOOTSTRAP] Step 6: Compiling and publishing Control Center React SPA...[0m
+== [FRONTEND] Compiling Control Center from /opt/aao/current/frontend/app...
+== [FRONTEND] Installing npm dependencies cleanly...
+npm warn deprecated whatwg-encoding@3.1.1: Use @exodus/bytes instead for a more spec-conformant and faster implementation
+
+added 160 packages in 8s
+
+24 packages are looking for funding
+  run `npm fund` for details
+npm notice
+npm notice New major version of npm available! 10.9.9 -> 12.2.1
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.1
+npm notice To update run: npm install -g npm@12.2.1
+npm notice
+== [FRONTEND] Running production build (tsc && vite build)...
+
+> aao-control-center-app@1.0.0 build
+> tsc && vite build
+
+vite v6.4.5 building for production...
+transforming...
+node_modules/zod/v4/core/util.js (400:0): A comment
+
+"// Wrapped in a `@__PURE__` IIFE: esbuild never tree-shakes a top-level initializer that contains a member access on `Number`, so the bare object literal survived into every bundle."
+
+in "node_modules/zod/v4/core/util.js" contains an annotation that Rollup cannot interpret due to the position of the comment. The comment will be removed to avoid issues.
+node_modules/zod/v4/core/regexes.js (74:0): A comment
+
+"/** Anchors a pattern source. The interpolation lives here rather than at the call site because
+ * esbuild will not drop a `@__PURE__` call whose own argument interpolates a variable, but it
+ * will drop `anchor(dateSource)`. Keeping it inline pinned `date` into every bundle. */"
+
+in "node_modules/zod/v4/core/regexes.js" contains an annotation that Rollup cannot interpret due to the position of the comment. The comment will be removed to avoid issues.
+✓ 225 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                               0.73 kB │ gzip:   0.47 kB
+dist/assets/index-Bnch7or1.css                4.97 kB │ gzip:   1.68 kB
+dist/assets/VirtualOfficeView-kQ9hDC8d.css   10.20 kB │ gzip:   2.11 kB
+dist/assets/index-DJz4zk9X.js               545.72 kB │ gzip: 150.88 kB
+dist/assets/VirtualOfficeView-CSRflad-.js   656.37 kB │ gzip: 164.23 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 4.36s
+== [FRONTEND] Publishing build to /opt/aao/frontend/dist atomically...
+== [FRONTEND] Control Center compiled and published successfully to /opt/aao/frontend/dist.
+
+[1;34m== [AAO BOOTSTRAP] Step 7: Configuring service environment files in /etc/aao/...[0m
+== [SECRETS] Reading or generating database password...
+== [SECRETS] Configuring /etc/aao/aao-api.env...
+== [SECRETS] Generated /etc/aao/aao-api.env
+== [SECRETS] Provisioned CEO token for 'alessbarb' at /etc/aao/aao-ceo.token
+== [SECRETS] Configuring /etc/aao/aao-worker.env...
+== [SECRETS] Generated /etc/aao/aao-worker.env
+== [SECRETS] Secrets configured with strict least-privilege permissions.
+
+[1;34m== [AAO BOOTSTRAP] Step 8: Initializing technical state...[0m
+Initialized organizational units: unit:org-engineering
+PROPOSED: Mandate drafted with ID 7a882c8f-de37-4f9a-b63e-24310c8600ad. Status: DRAFT (PENDING CEO confirmation).
+NOTICE: No active project. Requires CEO confirmation before project activation.
+
+[1;34m== [AAO BOOTSTRAP] Step 9: Deploying systemd services...[0m
+Created symlink /etc/systemd/system/multi-user.target.wants/aao-api.service → /etc/systemd/system/aao-api.service.
+
+[1;34m== [AAO BOOTSTRAP] Integrator timer confirmed masked (OFF).[0m
+
+[1;34m== [AAO BOOTSTRAP] Step 10: Running system doctor diagnostics...[0m
+Running AAO Doctor diagnostics...
+
+  [ PASS ] PostgreSQL Connection: PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) on x86_64-pc-linux-gnu
+  [ PASS ] Schema Migrations: All 31 migrations applied with verified checksums.
+  [ PASS ] API Service: Responsive at http://127.0.0.1:8001 (/health and /ready OK)
+  [ PASS ] Control Center Bundle: Production build verified at /opt/aao/releases/release-20261026190126_7618096a/frontend/app/dist
+  [ PASS ] Governance Guardrails: LOCKED_UNAUTHORIZED: Integrator is OFF (masked). RA remain PENDING. R2 locked.
+  [ WARN ] Governance Infrastructure: STAGED_PENDING_KEYS: no App keys are present; this diagnostic does not attest identity ACLs, ledgers, events, or a trust root.
+
+Diagnostic Summary:
+  Total Checks: 6
+  Pass:         5
+  Warnings:     1
+  Failures:     0
+
+Result: OPERATIONAL WITH WARNINGS — Review actionable notes above.
+
+[1;34m== [AAO BOOTSTRAP] AAO Integral Bootstrap Completed Successfully.[0m
+
+[1;34m== [AAO BOOTSTRAP] Active Release:    release-20261026190126_7618096a (/opt/aao/current)[0m
+
+[1;34m== [AAO BOOTSTRAP] Control Center UI: http://127.0.0.1:8001/[0m
+
+[1;34m== [AAO BOOTSTRAP] API Status:        http://127.0.0.1:8001/ready[0m
+
+[1;36m=== [VM VALIDATION] 8. Running diagnostic verification in clean VM...[0m
+Running AAO Doctor diagnostics...
+
+  [ PASS ] PostgreSQL Connection: PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) on x86_64-pc-linux-gnu
+  [ PASS ] Schema Migrations: All 31 migrations applied with verified checksums.
+  [ PASS ] API Service: Responsive at http://127.0.0.1:8001 (/health and /ready OK)
+  [ PASS ] Control Center Bundle: Production build verified at /opt/aao/releases/release-20261026190126_7618096a/frontend/app/dist
+  [ PASS ] Governance Guardrails: LOCKED_UNAUTHORIZED: Integrator is OFF (masked). RA remain PENDING. R2 locked.
+  [ WARN ] Governance Infrastructure: STAGED_PENDING_KEYS: no App keys are present; this diagnostic does not attest identity ACLs, ledgers, events, or a trust root.
+
+Diagnostic Summary:
+  Total Checks: 6
+  Pass:         5
+  Warnings:     1
+  Failures:     0
+
+Result: OPERATIONAL WITH WARNINGS — Review actionable notes above.
+
+[1;36m=== [VM VALIDATION] 9. Verifying direct component endpoints and services in VM...[0m
+active
+active
+{"service":"postgres-dev","autonomous_execution":false}{"status":"ready","database":"available"}    <title>AAO Control Center — Centro de Mando del CEO</title>
+masked
+
+[1;36m=== [VM VALIDATION] 10. Rebooting VM to test persistence across machine reboots (AC-03)...[0m
+
+[1;36m=== [VM VALIDATION] VM rebooted successfully. Waiting for post-reboot services to become ready...[0m
+
+[1;36m=== [VM VALIDATION] Post-reboot services active. Running diagnostic verification...[0m
+Running AAO Doctor diagnostics...
+
+  [ PASS ] PostgreSQL Connection: PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1) on x86_64-pc-linux-gnu
+  [ PASS ] Schema Migrations: All 31 migrations applied with verified checksums.
+  [ PASS ] API Service: Responsive at http://127.0.0.1:8001 (/health and /ready OK)
+  [ PASS ] Control Center Bundle: Production build verified at /opt/aao/releases/release-20261026190126_7618096a/frontend/app/dist
+  [ PASS ] Governance Guardrails: LOCKED_UNAUTHORIZED: Integrator is OFF (masked). RA remain PENDING. R2 locked.
+  [ WARN ] Governance Infrastructure: STAGED_PENDING_KEYS: no App keys are present; this diagnostic does not attest identity ACLs, ledgers, events, or a trust root.
+
+Diagnostic Summary:
+  Total Checks: 6
+  Pass:         5
+  Warnings:     1
+  Failures:     0
+
+Result: OPERATIONAL WITH WARNINGS — Review actionable notes above.
+{"status":"ready","database":"available"}
+[1;36m=== [VM VALIDATION] 11. Running PostgreSQL tests against a dedicated disposable database inside the VM...[0m
+NOTICE:  database "aao_test_bootstrap_validation" does not exist, skipping
+Successfully applied 31 migrations:
+  [+] 001_foundation
+  [+] 002_dev_identity
+  [+] 003_execution
+  [+] 004_execution_guards
+  [+] 005_principal_credentials
+  [+] 006_unified_execution_identity
+  [+] 007_fence_leases_across_project_state_changes
+  [+] 008_content_addressed_evidence
+  [+] 009_prevent_evidence_truncation
+  [+] 010_capability_registry
+  [+] 011_sha_bound_reviews_and_veto
+  [+] 012_patch_proposals
+  [+] 013_work_description
+  [+] 014_execution_retry
+  [+] 015_organization_profiles
+  [+] 016_project_conversations
+  [+] 017_ceo_browser_sessions
+  [+] 018_conversation_provider_metadata
+  [+] 019_project_conversation_turns
+  [+] 020_persistent_work_groups
+  [+] 021_conversation_turn_leases
+  [+] 022_work_item_assignments
+  [+] 023_work_group_consolidations
+  [+] 024_work_group_partial_reports
+  [+] 025_work_item_due_dates
+  [+] 026_capability_feedback_proposals
+  [+] 027_capability_feedback_review
+  [+] 028_capability_feedback_version_link
+  [+] 029_organization_profile_competencies
+  [+] 030_conversation_work_group_results
+  [+] 031_host_worker_fencing
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.7.0
+rootdir: /opt/aao/releases/release-20261026190126_7618096a
+configfile: pyproject.toml
+plugins: anyio-4.15.1
+collected 52 items
+
+tests/test_migrator.py .......                                           [ 13%]
+tests/test_ops_doctor.py .......                                         [ 26%]
+tests/test_host_fencing_exclusivity.py ...........                       [ 48%]
+tests/test_adversarial_remediation.py ...............                    [ 76%]
+tests/test_backup_restore.py ............                                [100%]
+
+============================== 52 passed in 5.10s ==============================
+
+[1;36m=== [VM VALIDATION] 12. Running fixture-only self-development lifecycle test (no remote PR or merge)...[0m
+NOTICE:  database "aao_test_cycle" does not exist, skipping
+Successfully applied 31 migrations:
+  [+] 001_foundation
+  [+] 002_dev_identity
+  [+] 003_execution
+  [+] 004_execution_guards
+  [+] 005_principal_credentials
+  [+] 006_unified_execution_identity
+  [+] 007_fence_leases_across_project_state_changes
+  [+] 008_content_addressed_evidence
+  [+] 009_prevent_evidence_truncation
+  [+] 010_capability_registry
+  [+] 011_sha_bound_reviews_and_veto
+  [+] 012_patch_proposals
+  [+] 013_work_description
+  [+] 014_execution_retry
+  [+] 015_organization_profiles
+  [+] 016_project_conversations
+  [+] 017_ceo_browser_sessions
+  [+] 018_conversation_provider_metadata
+  [+] 019_project_conversation_turns
+  [+] 020_persistent_work_groups
+  [+] 021_conversation_turn_leases
+  [+] 022_work_item_assignments
+  [+] 023_work_group_consolidations
+  [+] 024_work_group_partial_reports
+  [+] 025_work_item_due_dates
+  [+] 026_capability_feedback_proposals
+  [+] 027_capability_feedback_review
+  [+] 028_capability_feedback_version_link
+  [+] 029_organization_profile_competencies
+  [+] 030_conversation_work_group_results
+  [+] 031_host_worker_fencing
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.7.0 -- /opt/aao/releases/release-20261026190126_7618096a/venv/bin/python3
+cachedir: .pytest_cache
+rootdir: /home/alessbarb/aao-repo
+configfile: pyproject.toml
+plugins: anyio-4.15.1
+collecting ... collected 30 items / 29 deselected / 1 selected
+
+aao-repo/tests/test_project_workflow_integration.py::test_self_development_cycle_from_task_to_merged_pr_and_done Note: switching to '7618096a5c963e40cb141bc39ca9d01df53b724f'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+
+PASSED
+
+=============================== warnings summary ===============================
+../../opt/aao/releases/release-20261026190126_7618096a/venv/lib/python3.12/site-packages/fastapi/testclient.py:1
+  /opt/aao/releases/release-20261026190126_7618096a/venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================= 1 passed, 29 deselected, 1 warning in 15.11s =================
+
+[1;36m=== [VM VALIDATION] CLEAN VM VALIDATION COMPLETED SUCCESSFULLY.[0m
+
+[1;36m=== [VM VALIDATION] Tested Git Revision: 7618096a5c963e40cb141bc39ca9d01df53b724f[0m
+
+[1;36m=== [VM VALIDATION] Log transcript stored at: /home/alessbarb/workspace/repos/active/aao/.worktrees/codex-bootstrap-hardening/tests/evidence/vm_validation_7618096_20261026T185732Z.log[0m
+
+[1;36m=== [VM VALIDATION] Cleaning up VM (PID 3318857)...[0m

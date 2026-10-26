@@ -60,7 +60,9 @@ describe('office persistent project conversation', () => {
       listProjectWorkGroups: vi.fn().mockResolvedValue(ready([
         {
           id: 'group-current', conversation_id: 'conversation-1', parent_work_id: 'parent-1', title: 'Proyecto acordado',
-          parent_status: 'INBOX', source_sha256: resultSha, consolidation_ready: false, consolidation: null, partial_reports: [],
+          parent_status: 'INBOX', source_sha256: resultSha, consolidation_ready: false,
+          consolidation: { id: 'consolidation-1', summary: 'La revisión CEO concluye que el alcance está completo.', source_sha256: resultSha, idempotency_key: 'key-1', created_by: 'ceo', created_at: '2026-10-25T11:00:00Z' },
+          partial_reports: [{ id: 'partial-1', report_kind: 'PARTIAL', summary: 'Dos tareas completadas; una espera revisión.', source_sha256: resultSha, idempotency_key: 'key-2', created_by: 'ceo', created_at: '2026-10-25T10:30:00Z' }],
           children: [{ work_id: 'work-current', status: 'DONE', assigned_principal_id: 'agent-1', evidence: [],
             executions: [{ id: 'execution-current', status: 'SUCCEEDED', worker_id: 'agent-1', result_sha256: resultSha }], reviews: [] }],
         },
@@ -76,6 +78,10 @@ describe('office persistent project conversation', () => {
     expect(screen.getByText(/Se actualiza cada 15 segundos mientras este hilo está abierto/)).toBeInTheDocument();
     expect(screen.getByText(/work-current · DONE/)).toBeInTheDocument();
     expect(screen.getByText(new RegExp(`Última ejecución execution-current: SUCCEEDED · resultado SHA-256 ${resultSha}`))).toBeInTheDocument();
+    expect(screen.getByText('Informe parcial CEO')).toBeInTheDocument();
+    expect(screen.getByText('Dos tareas completadas; una espera revisión.')).toBeInTheDocument();
+    expect(screen.getByText(/Consolidación CEO registrada/)).toBeInTheDocument();
+    expect(screen.getByText('La revisión CEO concluye que el alcance está completo.')).toBeInTheDocument();
     expect(screen.queryByText('No pertenece a este hilo')).not.toBeInTheDocument();
     expect(screen.queryByText(/execution result body/i)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Abrir tarea work-current · DONE' }));

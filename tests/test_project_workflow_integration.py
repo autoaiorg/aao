@@ -571,9 +571,11 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         assert group_executions == 0
 
         provider_calls = 0
-        def successful_provider(_messages):
+        provider_prompts = []
+        def successful_provider(messages):
             nonlocal provider_calls
             provider_calls += 1
+            provider_prompts.append(messages)
             yield "Conversación persistida."
         monkeypatch.setattr(conversation_provider, "stream_reply", successful_provider)
         turn = {
@@ -583,6 +585,15 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         turn_url = f"/v1/projects/{project}/conversations/{conversation_id}/turns"
         first_turn = client.post(turn_url, headers=ceo, json=turn)
         assert first_turn.status_code == 200
+        snapshot_message = next(
+            item["content"] for item in provider_prompts[0]
+            if item["role"] == "system" and item["content"].startswith("Canonical project work snapshot")
+        )
+        assert "Deliver the reviewed plan" in snapshot_message
+        assert "Research evidence" in snapshot_message
+        assert str(research_id) in snapshot_message
+        assert "latest_execution" in snapshot_message
+        assert "result_json" not in snapshot_message and '"patch"' not in snapshot_message
         # SSE data is JSON-escaped by json.dumps (including non-ASCII text).
         assert '"delta": "Conversaci\\u00f3n persistida."' in first_turn.text
         replayed_turn = client.post(turn_url, headers=ceo, json=turn)

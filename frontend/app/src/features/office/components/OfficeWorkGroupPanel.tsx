@@ -107,10 +107,25 @@ export const OfficeWorkGroupPanel: React.FC<OfficeWorkGroupPanelProps> = ({ proj
           const assignmentLocked = ['IN_REVIEW', 'VERIFIED', 'DONE'].includes(child.status) || hasActiveExecution;
           const selectedAssignee = assigneeChoices[child.work_id] ?? child.assigned_principal_id ?? '';
           const canSaveAssignment = !!selectedAssignee && selectedAssignee !== child.assigned_principal_id && !assignmentLocked;
+          const attentionReviews = child.reviews.filter((review) => review.decision === 'REJECT');
           return <li key={child.work_id} className="office-work-group__child">
             <span>{child.work_id}</span><strong>{child.status}</strong>
             <span>{child.executions.length} ejecuciones · {child.reviews.length} revisiones · {Array.isArray(child.evidence) ? child.evidence.length : child.evidence ? 1 : 0} evidencias</span>
             <span>Responsable: {currentAssignment?.display_name || child.assigned_principal_id || 'Sin asignar'}</span>
+            <div className="office-work-group__outcomes" aria-label={`Resultados observados de ${child.work_id}`}>
+              {child.status !== 'DONE' && <p className="office-work-group__outcome-note">Trabajo aún no completado: {child.status}. La consolidación final sigue bloqueada.</p>}
+              {child.executions.map((execution) => <p key={execution.id}>
+                Ejecución {execution.id.slice(0, 8)} · {execution.status}
+                {execution.worker_id ? ` · actor ${execution.worker_id}` : ''}
+                {execution.result_sha256 ? ` · resultado SHA-256 ${execution.result_sha256.slice(0, 12)}` : ' · sin resultado persistido'}
+              </p>)}
+              {child.reviews.map((review) => <p key={review.id} className={review.decision === 'REJECT' ? 'office-work-group__outcome-note' : undefined}>
+                Revisión {review.id.slice(0, 8)} · {review.decision}
+                {review.candidate_sha ? ` · candidato ${review.candidate_sha.slice(0, 12)}` : ''}
+                {review.decision === 'REJECT' ? ' · requiere atención' : ''}
+              </p>)}
+              {attentionReviews.length > 0 && <p role="status">Hay revisiones rechazadas en el estado persistido; examina el tablero antes de consolidar.</p>}
+            </div>
             {!group.consolidation && <div className="office-work-group__assignment">
               <label className="office-form-field">
                 <span>{child.assigned_principal_id ? 'Cambiar responsable' : 'Asignar responsable'}</span>

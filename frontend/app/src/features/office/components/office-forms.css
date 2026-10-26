@@ -256,6 +256,27 @@
   border-bottom: 1px solid var(--border-subtle);
 }
 
+.office-work-group__outcomes {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 4px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--border-subtle);
+  background: var(--bg-muted, #f8fafc);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.office-work-group__outcomes p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.office-work-group__outcome-note {
+  color: var(--status-warning-text, #92400e);
+  font-weight: 600;
+}
+
 .office-work-group__assignment {
   display: flex;
   grid-column: 1 / -1;

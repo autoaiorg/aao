@@ -4,6 +4,16 @@ An execution whose lease expires is quarantined in `UNCERTAIN`.
 `execution_reconciliation.reconcile()` allows two dispositions only:
 `MARK_FAILED` or `RETRY_CONFIRMED_SAFE`. It never invokes a worker or tool.
 
+The quarantine transition is a database operation, not a recovery policy. The
+opt-in `scripts/run_execution_lease_recovery_worker.py` invokes it once by
+default, or polls it with `--watch`; run it under a service identity that has
+the same PostgreSQL access as the existing queue service. It only marks expired
+leases `UNCERTAIN` and writes the existing journal/event/escalation records. It
+does not retry or reassign work. The worker is not installed or enabled by this
+change; deployment must explicitly add and operate it. A PostgreSQL outage
+returns a failure in one-shot mode, and watch mode reports only the exception
+type (not connection details) before continuing to poll.
+
 Migration `007_fence_leases_across_project_state_changes` binds each newly
 claimed lease to the project's state generation. Any actual state transition,
 including pause followed by resume, invalidates the prior lease for completion

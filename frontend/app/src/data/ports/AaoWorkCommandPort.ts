@@ -12,7 +12,16 @@ export interface CreatedWorkRequest {
   status: 'INBOX';
 }
 
+export type WorkPriority = 'NORMAL' | 'HIGH';
+
+export interface SetWorkPriorityResult {
+  work_id: string;
+  priority: WorkPriority;
+  changed: boolean;
+}
+
 /** CEO direction is persisted as an unadmitted canonical work item. */
 export interface AaoWorkCommandPort {
   createCEOWorkRequest(projectId: string, input: CEOWorkRequest): Promise<DataState<CreatedWorkRequest>>;
+  setWorkPriority(workId: string, priority: WorkPriority): Promise<DataState<SetWorkPriorityResult>>;
 }

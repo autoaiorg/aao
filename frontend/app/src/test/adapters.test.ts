@@ -45,6 +45,24 @@ describe('HttpAaoLiveAdapter Contract & Error Handling', () => {
     }
   });
 
+  it('projects persisted priority from the LIVE work board without inferring missing values', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce({
+      status: 200,
+      ok: true,
+      json: async () => [
+        { id: 'work-high', title: 'High priority', status: 'READY', priority: 'HIGH' },
+        { id: 'work-unknown', title: 'No priority', status: 'READY' },
+      ],
+    } as Response);
+    const adapter = new HttpAaoLiveAdapter({ getToken: () => 'ceo-token', getAuthRole: () => 'CEO', requireAuth: true });
+    const result = await adapter.getProjectBoard('project-1');
+    expect(result.kind).toBe('ready');
+    if (result.kind === 'ready') {
+      expect(result.data.items.find((item) => item.id === 'work-high')?.priority).toBe('HIGH');
+      expect(result.data.items.find((item) => item.id === 'work-unknown')?.priority).toBeUndefined();
+    }
+  });
+
   it('handles 401 unauthorized: triggers onUnauthorized and returns forbidden', async () => {
     const onUnauthorized = vi.fn();
     vi.spyOn(global, 'fetch').mockResolvedValueOnce({
@@ -428,6 +446,26 @@ describe('HttpAaoLiveAdapter organization projection', () => {
       method: 'POST',
       headers: expect.objectContaining({ 'X-CEO-Token': 'ceo-token', 'Content-Type': 'application/json' }),
       body: JSON.stringify(input),
+    }));
+  });
+
+  it('changes persisted work priority only through the CEO endpoint', async () => {
+    const fetch = vi.spyOn(global, 'fetch');
+    const agent = new HttpAaoLiveAdapter({ getToken: () => 'agent-token', getAuthRole: () => 'AGENT' });
+    expect((await agent.setWorkPriority('00000000-0000-4000-8000-000000000001', 'HIGH')).kind).toBe('forbidden');
+    expect(fetch).not.toHaveBeenCalled();
+
+    fetch.mockResolvedValueOnce({
+      status: 200, ok: true,
+      json: async () => ({ work_id: '00000000-0000-4000-8000-000000000001', priority: 'HIGH', changed: true }),
+    } as Response);
+    const ceo = new HttpAaoLiveAdapter({ getToken: () => 'ceo-token', getAuthRole: () => 'CEO', requireAuth: true });
+    const result = await ceo.setWorkPriority('00000000-0000-4000-8000-000000000001', 'HIGH');
+    expect(result.kind).toBe('ready');
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('/v1/work/00000000-0000-4000-8000-000000000001/priority'), expect.objectContaining({
+      method: 'PUT',
+      headers: expect.objectContaining({ 'X-CEO-Token': 'ceo-token', 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ priority: 'HIGH' }),
     }));
   });
 

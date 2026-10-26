@@ -10,8 +10,8 @@ describe('KanbanView Six Canonical Lifecycle States', () => {
     totalCount: 3,
     unrecognizedItems: [],
     stages: {
-      INBOX: [{ id: 'task-1', title: 'Tarea Entrada', status: 'INBOX' }],
-      READY: [{ id: 'task-2', title: 'Tarea Preparada', status: 'READY' }],
+      INBOX: [{ id: 'task-1', title: 'Tarea Entrada', status: 'INBOX', priority: 'NORMAL' }],
+      READY: [{ id: 'task-2', title: 'Tarea Preparada', status: 'READY', priority: 'NORMAL' }],
       IN_PROGRESS: [{ id: 'task-3', title: 'Tarea En Curso', status: 'IN_PROGRESS' }],
       IN_REVIEW: [],
       VERIFIED: [],
@@ -85,5 +85,41 @@ describe('KanbanView Six Canonical Lifecycle States', () => {
     );
 
     expect(screen.getByText('Seleccione un proyecto específico')).toBeInTheDocument();
+  });
+
+  it('exposes priority changes only when the caller provides CEO LIVE capability', () => {
+    const savePriority = vi.fn().mockResolvedValue({ kind: 'ready', origin: 'live', data: {} });
+    render(<KanbanView boardState={boardState} selectedProjectId="test-proj" onRefresh={() => {}}
+      canManagePriority onSetPriority={savePriority} />);
+    fireEvent.click(screen.getByText('Tarea Entrada'));
+    expect(screen.getByLabelText('Cambiar prioridad')).toBeInTheDocument();
+  });
+
+  it('persists a selected priority through the injected backend command', async () => {
+    const savePriority = vi.fn().mockResolvedValue({ kind: 'ready', origin: 'live', data: {} });
+    render(<KanbanView boardState={boardState} selectedProjectId="test-proj" onRefresh={() => {}}
+      canManagePriority onSetPriority={savePriority} />);
+    fireEvent.click(screen.getByText('Tarea Entrada'));
+    fireEvent.change(screen.getByLabelText('Cambiar prioridad'), { target: { value: 'HIGH' } });
+    expect(savePriority).toHaveBeenCalledWith('task-1', 'HIGH');
+    expect(await screen.findByText('Prioridad guardada en AAO.')).toBeInTheDocument();
+  });
+
+  it('keeps priority controls absent without CEO capability', () => {
+    render(<KanbanView boardState={boardState} selectedProjectId="test-proj" onRefresh={() => {}} />);
+    fireEvent.click(screen.getByText('Tarea Entrada'));
+    expect(screen.queryByLabelText('Cambiar prioridad')).not.toBeInTheDocument();
+  });
+
+  it('disables priority mutation if the LIVE projection has no persisted value', () => {
+    const missingPriorityBoard = { ...mockBoard, stages: { ...mockBoard.stages,
+      INBOX: [{ id: 'task-missing', title: 'Prioridad no disponible', status: 'INBOX' }],
+    } };
+    render(<KanbanView boardState={{ ...boardState, data: missingPriorityBoard }} selectedProjectId="test-proj"
+      onRefresh={() => {}} canManagePriority onSetPriority={vi.fn()} />);
+    fireEvent.click(screen.getByText('Prioridad no disponible'));
+    const priorityRegion = within(screen.getByRole('region', { name: 'Prioridad del trabajo' }));
+    expect(priorityRegion.getByText('No disponible', { selector: 'strong' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Cambiar prioridad')).toBeDisabled();
   });
 });

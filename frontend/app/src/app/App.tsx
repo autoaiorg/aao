@@ -5,6 +5,7 @@ import { useAuth } from '../auth/AuthContext';
 import { HttpAaoLiveAdapter } from '../data/adapters/live/HttpAaoLiveAdapter';
 import { MockAaoDemoAdapter } from '../data/adapters/demo/MockAaoDemoAdapter';
 import type { AaoReadPort } from '../data/ports/AaoReadPort';
+import type { WorkPriority } from '../data/ports/AaoWorkCommandPort';
 
 import { AppShell } from '../components/layout/AppShell';
 import type { ActiveNavKey } from '../components/layout/SideNavigation';
@@ -355,6 +356,17 @@ export const App: React.FC = () => {
             focusWorkId={focusWorkId}
             onFocusWorkConsumed={() => setFocusWorkId(null)}
             onRefresh={handleRefresh}
+            canManagePriority={origin === 'live' && isAuthenticated && role === 'CEO'}
+            onSetPriority={async (workId, priority: WorkPriority) => {
+              if (origin !== 'live' || role !== 'CEO' || !(port instanceof HttpAaoLiveAdapter)) {
+                return { kind: 'forbidden', reason: 'El cambio de prioridad solo está disponible en sesión CEO LIVE.' };
+              }
+              const result = await port.setWorkPriority(workId, priority);
+              if (result.kind === 'ready') {
+                await queryClient.invalidateQueries({ queryKey: ['board', origin, selectedProjectId, isAuthenticated, sessionId] });
+              }
+              return result;
+            }}
           />
         )}
 

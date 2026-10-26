@@ -6,6 +6,8 @@ import { Badge } from '../../components/ui/Card';
 import { parseRunSummary, type RunExecutionSummary } from '../ronin/modelProfile';
 import { ExecutionTimeline } from '../ronin/components/ExecutionTimeline';
 import { RoutingDecisionCard } from '../ronin/components/RoutingDecisionCard';
+import type { WorkPriority } from '../../data/ports/AaoWorkCommandPort';
+import type { DataState } from '../../domain/models';
 
 /** Reads the fields the backend records for an agent run; re-exports pure parser for backwards compatibility. */
 export function runSummary(result: unknown): RunExecutionSummary {
@@ -22,13 +24,19 @@ export interface TaskDetailDrawerProps {
   task: TaskItem | null;
   onClose: () => void;
   triggerElement?: HTMLElement | null;
+  canManagePriority?: boolean;
+  onSetPriority?: (workId: string, priority: WorkPriority) => Promise<DataState<unknown>>;
 }
 
 export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
   task,
   onClose,
   triggerElement,
+  canManagePriority = false,
+  onSetPriority,
 }) => {
+  const [priorityBusy, setPriorityBusy] = React.useState(false);
+  const [priorityMessage, setPriorityMessage] = React.useState<string | null>(null);
   const closeButtonRef = React.useRef<HTMLButtonElement | null>(null);
   const previouslyFocusedElement = React.useRef<HTMLElement | null>(null);
 
@@ -54,7 +62,29 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [task, triggerElement, handleClose]);
 
+  React.useEffect(() => {
+    setPriorityMessage(null);
+  }, [task?.id]);
+
   if (!task) return null;
+
+  const handlePriorityChange = async (priority: WorkPriority) => {
+    if (!canManagePriority || !onSetPriority || !task || priorityBusy || priority === task.priority) return;
+    setPriorityBusy(true);
+    setPriorityMessage(null);
+    try {
+      const result = await onSetPriority(task.id, priority);
+      if (result.kind !== 'ready') {
+        setPriorityMessage(result.kind === 'forbidden' ? result.reason : 'No se pudo guardar la prioridad. Reintenta.');
+      } else {
+        setPriorityMessage('Prioridad guardada en AAO.');
+      }
+    } catch {
+      setPriorityMessage('No se pudo guardar la prioridad. Reintenta.');
+    } finally {
+      setPriorityBusy(false);
+    }
+  };
 
   return (
     <div
@@ -116,6 +146,30 @@ export const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
             ✕
           </button>
         </div>
+
+        <section aria-label="Prioridad del trabajo" style={{ display: 'grid', gap: '8px' }}>
+          <h3 style={{ fontSize: '14px', fontWeight: 600 }}>Prioridad</h3>
+          <p style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+            Estado persistido en AAO: <strong>{task.priority === 'HIGH' ? 'Alta' : task.priority === 'NORMAL' ? 'Normal' : 'No disponible'}</strong>
+          </p>
+          {canManagePriority && onSetPriority && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+              <label htmlFor="task-priority">Cambiar prioridad</label>
+              <select
+                id="task-priority"
+                value={task.priority ?? ''}
+                disabled={priorityBusy || task.priority === undefined}
+                onChange={(event) => void handlePriorityChange(event.target.value as WorkPriority)}
+              >
+                {task.priority === undefined && <option value="" disabled>No disponible</option>}
+                <option value="NORMAL">Normal</option>
+                <option value="HIGH">Alta</option>
+              </select>
+              {priorityBusy && <span role="status">Guardando…</span>}
+            </div>
+          )}
+          {priorityMessage && <p role="status" style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>{priorityMessage}</p>}
+        </section>
 
         {/* Criterios de Aceptación */}
         <div>

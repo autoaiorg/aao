@@ -1141,6 +1141,31 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
     );
   }
 
+  async getLatestWorkGroupProposal(
+    projectId: string,
+    conversationId: string,
+  ): Promise<DataState<ConversationWorkGroupProposal | null>> {
+    if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede recuperar una propuesta de tareas.' };
+    return this.request(
+      `/v1/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/work-group-proposals/latest`,
+      z.object({
+        proposal: z.object({
+          title: z.string(), description: z.string(), acceptance_criteria: z.array(z.string()),
+          due_date: z.string().date().nullable().optional(),
+          tasks: z.array(z.object({
+            key: z.string(), title: z.string(), description: z.string(),
+            acceptance_criteria: z.array(z.string()), due_date: z.string().date().nullable().optional(),
+            depends_on: z.array(z.string()), required_competencies: z.array(z.string()).default([]),
+            assigned_principal_id: z.string().nullable().optional(),
+          })),
+        }),
+        based_on_message_ids: z.array(z.string().uuid()),
+        provider: z.string(), model: z.string(), endpoint: z.string().optional(),
+        persisted_as_work: z.literal(false), is_current: z.boolean(),
+      }).nullable(),
+    );
+  }
+
   async listProjectWorkGroups(projectId: string): Promise<DataState<ProjectWorkGroup[]>> {
     const isCeo = this.getAuthRole() === 'CEO';
     const endpoint = isCeo

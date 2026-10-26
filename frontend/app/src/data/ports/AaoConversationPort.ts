@@ -80,7 +80,9 @@ export interface ConversationWorkGroupProposal {
   based_on_message_ids: string[];
   provider: string;
   model: string;
+  endpoint?: string;
   persisted_as_work: false;
+  is_current?: boolean;
 }
 
 export interface WorkGroupConsolidation {
@@ -176,6 +178,10 @@ export interface AaoConversationPort {
     projectId: string,
     conversationId: string,
   ): Promise<DataState<ConversationWorkGroupProposal>>;
+  getLatestWorkGroupProposal(
+    projectId: string,
+    conversationId: string,
+  ): Promise<DataState<ConversationWorkGroupProposal | null>>;
   listProjectWorkGroups(projectId: string): Promise<DataState<ProjectWorkGroup[]>>;
   assignWorkGroupChild(workId: string, principalId: string): Promise<DataState<{ work_id: string; principal_id: string; assigned_by: string; grants_created: false }>>;
   confirmWorkGroupConsolidation(

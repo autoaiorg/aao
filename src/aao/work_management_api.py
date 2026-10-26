@@ -2984,6 +2984,7 @@ def propose_conversation_work_group(
         audit(db, conversation_id, "conversation.work_group.proposed", {
             "project_id": project_id,
             "message_ids": [str(row[0]) for row in history],
+            "proposal": proposal.model_dump(mode="json"),
             "provider": provider,
             "model": model,
             "endpoint": endpoint,
@@ -2999,6 +3000,54 @@ def propose_conversation_work_group(
         "model": model,
         "endpoint": endpoint,
         "persisted_as_work": False,
+    }
+
+
+@app.get("/v1/projects/{project_id}/conversations/{conversation_id}/work-group-proposals/latest")
+def latest_conversation_work_group_proposal(
+    project_id: str,
+    conversation_id: str,
+    _: str = Depends(require_ceo),
+):
+    """Recover the latest model draft from the append-only event log.
+
+    A draft is current only while its exact source transcript remains current. This
+    projection never creates work or turns a proposal into an authorization.
+    """
+    with tx() as db:
+        conversation = db.execute(
+            "SELECT 1 FROM project_conversations WHERE id=%s AND project_id=%s",
+            (conversation_id, project_id),
+        ).fetchone()
+        if not conversation:
+            raise HTTPException(404, "Conversation not found")
+        row = db.execute(
+            "SELECT details FROM events WHERE subject_id=%s "
+            "AND kind='conversation.work_group.proposed' "
+            "ORDER BY created_at DESC,id DESC LIMIT 1",
+            (conversation_id,),
+        ).fetchone()
+        if not row:
+            return None
+        details = row[0] if isinstance(row[0], dict) else {}
+        proposal = details.get("proposal")
+        source_ids = details.get("message_ids")
+        if not isinstance(proposal, dict) or not isinstance(source_ids, list):
+            # Historical proposal events predate durable draft snapshots. Do not
+            # turn an incomplete event into a malformed API response.
+            return None
+        current_ids = [str(item[0]) for item in db.execute(
+            "SELECT id FROM project_conversation_messages WHERE conversation_id=%s "
+            "ORDER BY created_at,id", (conversation_id,),
+        ).fetchall()]
+    return {
+        "proposal": proposal,
+        "based_on_message_ids": source_ids,
+        "provider": details.get("provider"),
+        "model": details.get("model"),
+        "endpoint": details.get("endpoint"),
+        "persisted_as_work": False,
+        "is_current": source_ids == current_ids,
     }
 
 

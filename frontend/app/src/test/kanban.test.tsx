@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { KanbanView } from '../features/kanban/KanbanView';
 import type { ProjectBoard, DataState } from '../domain/models';
 
@@ -63,6 +63,16 @@ describe('KanbanView Six Canonical Lifecycle States', () => {
     // Detail drawer should open with title and security note
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     expect(screen.getByText(/Frontera de Seguridad/i)).toBeInTheDocument();
+  });
+
+  it('opens a task from a matching persisted work event', () => {
+    const consumed = vi.fn();
+    render(<KanbanView boardState={boardState} selectedProjectId="test-proj" onRefresh={() => {}}
+      focusWorkId="task-2" onFocusWorkConsumed={consumed} />);
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(within(screen.getByRole('dialog')).getByText('Tarea Preparada')).toBeInTheDocument();
+    expect(consumed).toHaveBeenCalled();
   });
 
   it('prompts user to select a project if none is active', () => {

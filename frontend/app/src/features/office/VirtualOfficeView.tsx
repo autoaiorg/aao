@@ -304,7 +304,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
           projects={projects}
           port={activityReadPort}
           sessionId={conversationSessionId}
-          onOpenBoard={(projectId) => onNavigate?.('kanban', projectId)}
+          onOpenBoard={(projectId, workId) => onNavigate?.('kanban', projectId, workId)}
         />
       )}
 

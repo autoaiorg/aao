@@ -33,8 +33,10 @@ describe('office persisted activity panel', () => {
     expect(screen.getByText('work-123')).toBeInTheDocument();
     expect(screen.queryByText('must-not-render')).not.toBeInTheDocument();
     expect(getActivity).toHaveBeenCalledWith('project-a');
+    fireEvent.click(screen.getByRole('button', { name: /Trabajo · work\.requested/ }));
+    expect(onOpenBoard).toHaveBeenCalledWith('project-a', 'work-123');
     fireEvent.click(screen.getByRole('button', { name: /Ejecución · execution\.claimed/ }));
-    expect(onOpenBoard).toHaveBeenCalledWith('project-a');
+    expect(onOpenBoard).toHaveBeenLastCalledWith('project-a', undefined);
     expect(screen.getByText(/no una señal de presencia del agente/)).toBeInTheDocument();
   });
 

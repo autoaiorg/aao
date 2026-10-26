@@ -10,7 +10,7 @@ interface OfficeActivityPanelProps {
   projects: DataState<ProjectSummary[]>;
   port: Pick<AaoReadPort, 'getProjectActivity'>;
   sessionId: string;
-  onOpenBoard: (projectId: string) => void;
+  onOpenBoard: (projectId: string, workId?: string) => void;
 }
 
 function describeActivity(event: ActivityEvent): string {
@@ -61,7 +61,7 @@ export const OfficeActivityPanel: React.FC<OfficeActivityPanelProps> = ({ projec
           : <ol className="office-activity__list" aria-label="Actividad persistida del proyecto">
             {events.slice(0, 20).map((event) => (
               <li key={event.id}>
-                <button type="button" className="office-activity__event" onClick={() => onOpenBoard(projectId)}>
+                <button type="button" className="office-activity__event" onClick={() => onOpenBoard(projectId, event.kind.startsWith('work.') ? event.subject_id : undefined)}>
                   <span className="office-activity__kind">{describeActivity(event)} · {event.kind}</span>
                   <code>{event.subject_id}</code>
                   <time dateTime={event.created_at}>{new Date(event.created_at).toLocaleString('es-ES')}</time>

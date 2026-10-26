@@ -5,7 +5,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 from pathlib import Path
-from threading import Event
+from threading import Barrier, Event
 from uuid import uuid4
 
 import pytest
@@ -3844,3 +3844,99 @@ def test_ceo_priority_change_is_persisted_and_controls_next_agent_claim(monkeypa
             f"/v1/work/{work_ids[1]}/priority", headers=ceo, json={"priority": "NORMAL"},
         )
         assert active_change.status_code == 409
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="PostgreSQL integration requires an explicitly disposable test database",
+)
+def test_concurrent_replay_of_work_group_request_creates_one_persisted_effect(monkeypatch):
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "concurrent-group-ceo")
+    ceo = {"X-CEO-Token": "concurrent-group-ceo"}
+    with TestClient(app) as client:
+        mandate = client.post("/v1/mandates", headers=ceo, json={
+            "title": "Concurrent group " + str(uuid4()), "objective": "Persist one canonical group",
+        }).json()["id"]
+        assert client.post(f"/v1/mandates/{mandate}/confirm", headers=ceo).status_code == 200
+        project = client.post("/v1/projects", headers=ceo, json={
+            "name": "Concurrent idempotency", "mandate_id": mandate,
+        }).json()["id"]
+        conversation = client.post(f"/v1/projects/{project}/conversations", headers=ceo, json={
+            "title": "Concurrent idempotency thread",
+        }).json()["id"]
+        url = f"/v1/projects/{project}/conversations/{conversation}/work-groups"
+        payload = {
+            "idempotency_key": str(uuid4()),
+            "title": "One canonical outcome",
+            "description": "Concurrent duplicate delivery must not duplicate persisted work.",
+            "acceptance_criteria": ["One parent and one child are persisted"],
+            "tasks": [{
+                "key": "deliver", "title": "Deliver outcome",
+                "description": "Create one canonical child task",
+                "acceptance_criteria": ["Outcome recorded"],
+            }],
+        }
+        start = Barrier(2)
+
+        def submit_duplicate():
+            start.wait(timeout=5)
+            return client.post(url, headers=ceo, json=payload)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            responses = list(pool.map(lambda _: submit_duplicate(), range(2)))
+
+        assert [response.status_code for response in responses] == [201, 201]
+        bodies = [response.json() for response in responses]
+        assert sorted(body["created"] for body in bodies) == [False, True]
+        assert len({body["id"] for body in bodies}) == 1
+        assert len({body["parent_work_id"] for body in bodies}) == 1
+        assert len({tuple(task["id"] for task in body["tasks"]) for body in bodies}) == 1
+        group_id = bodies[0]["id"]
+        parent_id = bodies[0]["parent_work_id"]
+        child_id = bodies[0]["tasks"][0]["id"]
+
+        with connect_postgres() as db:
+            groups = db.execute(
+                "SELECT count(*),count(DISTINCT id),count(DISTINCT parent_work_id) "
+                "FROM work_groups WHERE conversation_id=%s AND idempotency_key=%s",
+                (conversation, payload["idempotency_key"]),
+            ).fetchone()
+            work_rows = db.execute(
+                "SELECT count(*),count(*) FILTER (WHERE status <> 'INBOX') "
+                "FROM work_items WHERE id=%s OR parent_work_id=%s",
+                (parent_id, parent_id),
+            ).fetchone()
+            child_rows = db.execute(
+                "SELECT count(*) FROM work_items WHERE id=%s AND parent_work_id=%s",
+                (child_id, parent_id),
+            ).fetchone()[0]
+            queue_rows = db.execute(
+                "SELECT count(*) FROM execution_queue WHERE work_id=%s OR work_id=%s",
+                (parent_id, child_id),
+            ).fetchone()[0]
+            protocol_rows = db.execute(
+                "SELECT count(*) FROM protocol_instances "
+                "WHERE subject_type='work_group' AND subject_id=%s "
+                "AND protocol_id='planning-assignment' AND protocol_version='1.0.0'",
+                (group_id,),
+            ).fetchone()[0]
+            protocol_events = db.execute(
+                "SELECT count(*) FROM events WHERE subject_id=%s AND kind='protocol.started'",
+                (group_id,),
+            ).fetchone()[0]
+            group_events = db.execute(
+                "SELECT count(*) FROM events WHERE subject_id=%s AND kind='work.group_created'",
+                (parent_id,),
+            ).fetchone()[0]
+
+        assert groups == (1, 1, 1)
+        assert work_rows == (2, 0)
+        assert child_rows == 1
+        assert queue_rows == 0
+        assert protocol_rows == 1
+        assert protocol_events == 1
+        assert group_events == 1

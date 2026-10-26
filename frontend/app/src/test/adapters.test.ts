@@ -149,6 +149,24 @@ describe('HttpAaoLiveAdapter Contract & Error Handling', () => {
     }
   });
 
+  it('submits an explicit capability feedback review as CEO and blocks AGENT review locally', async () => {
+    const fetch = vi.spyOn(global, 'fetch').mockResolvedValueOnce({
+      status: 200, ok: true,
+      json: async () => ({ id: '123e4567-e89b-42d3-a456-426614174000', status: 'accepted', reviewed_by: 'ceo', reviewed_at: '2026-10-26T00:00:00Z', applied: false }),
+    } as Response);
+    const ceo = new HttpAaoLiveAdapter({ getToken: () => 'ceo-token', getAuthRole: () => 'CEO' });
+    const result = await ceo.reviewCapabilityFeedback('project-1', '123e4567-e89b-42d3-a456-426614174000', 'accepted');
+    expect(result.kind).toBe('ready');
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('/v1/projects/project-1/capability-feedback/123e4567-e89b-42d3-a456-426614174000/review'), expect.objectContaining({
+      method: 'POST', credentials: 'include', body: JSON.stringify({ status: 'accepted' }),
+    }));
+
+    fetch.mockClear();
+    const agent = new HttpAaoLiveAdapter({ getToken: () => 'agent-token', getAuthRole: () => 'AGENT' });
+    expect((await agent.reviewCapabilityFeedback('project-1', 'proposal-1', 'rejected')).kind).toBe('forbidden');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('does not call the corporate index endpoint for an AGENT session', async () => {
     const fetch = vi.spyOn(global, 'fetch');
     const adapter = new HttpAaoLiveAdapter({ getToken: () => 'agent-token', getAuthRole: () => 'AGENT' });

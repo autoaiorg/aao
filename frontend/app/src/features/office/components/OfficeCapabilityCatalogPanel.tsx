@@ -34,6 +34,8 @@ export const OfficeCapabilityCatalogPanel: React.FC<OfficeCapabilityCatalogPanel
   const [selectedCapability, setSelectedCapability] = useState('');
   const [submitState, setSubmitState] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
+  const [reviewState, setReviewState] = useState<string | null>(null);
   const projectId = activeProjects.some((project) => project.id === requestedProjectId)
     ? requestedProjectId : activeProjects[0]?.id || '';
   const capabilitiesQuery = useQuery({
@@ -72,6 +74,22 @@ export const OfficeCapabilityCatalogPanel: React.FC<OfficeCapabilityCatalogPanel
     } else {
       setSubmitState(result.kind === 'error' ? `${result.code}: ${result.message}`
         : result.kind === 'forbidden' ? result.reason : 'No se pudo guardar la propuesta.');
+    }
+  };
+
+  const reviewFeedback = async (proposalId: string, status: 'accepted' | 'rejected') => {
+    if (!feedbackPort) return;
+    setReviewingId(proposalId);
+    setReviewState(null);
+    const result = await feedbackPort.reviewCapabilityFeedback(projectId, proposalId, status);
+    setReviewingId(null);
+    if (result.kind === 'ready') {
+      setReviewState(status === 'accepted' ? 'Propuesta aceptada; no aplicada a ninguna capacidad.' : 'Propuesta rechazada; no aplicada a ninguna capacidad.');
+      await feedbackQuery.refetch();
+    } else {
+      setReviewState(result.kind === 'error' ? `${result.code}: ${result.message}`
+        : result.kind === 'forbidden' ? result.reason : 'No se pudo guardar la revisión.');
+      await feedbackQuery.refetch();
     }
   };
 
@@ -134,10 +152,16 @@ export const OfficeCapabilityCatalogPanel: React.FC<OfficeCapabilityCatalogPanel
           {submitState && <p role="status">{submitState}</p>}
         </form>}
         {feedbackQuery.isLoading && <p role="status">Consultando propuestas guardadas…</p>}
+        {reviewState && <p role="status">{reviewState}</p>}
         {feedbackQuery.data && <DataStatePanel state={feedbackQuery.data} renderReady={(items) => items.length ? (
           <ul className="office-capability-catalog__list">{items.map((item) => <li key={item.id} className="office-capability-catalog__item">
             <strong>{item.capability_id} · {item.version} · {item.status}</strong>
             <p>{item.correction}</p><small>{item.evidence.length} referencias · guardada por {item.created_by} · aplicada: no</small>
+            {item.reviewed_by && <small>Revisada por {item.reviewed_by}{item.reviewed_at ? ` · ${new Date(item.reviewed_at).toLocaleString()}` : ''}</small>}
+            {item.status === 'proposed' && <div className="office-capability-feedback__actions">
+              <button type="button" disabled={!!reviewingId} onClick={() => void reviewFeedback(item.id, 'accepted')}>{reviewingId === item.id ? 'Guardando…' : 'Aceptar propuesta'}</button>
+              <button type="button" disabled={!!reviewingId} onClick={() => void reviewFeedback(item.id, 'rejected')}>Rechazar propuesta</button>
+            </div>}
           </li>)}</ul>
         ) : <p>No hay correcciones propuestas en este proyecto.</p>} />}
       </section>}

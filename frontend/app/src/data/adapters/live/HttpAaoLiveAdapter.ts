@@ -664,7 +664,8 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
     return this.request(`/v1/projects/${encodeURIComponent(projectId)}/capability-feedback`, z.array(z.object({
       id: z.string().uuid(), capability_id: z.string(), version: z.string(), work_id: z.string().uuid().nullable(),
       correction: z.string(), evidence: z.array(z.string()), status: z.enum(['proposed', 'accepted', 'rejected']),
-      created_by: z.string(), created_at: z.string(), applied: z.literal(false),
+      created_by: z.string(), created_at: z.string(), reviewed_by: z.string().nullable(),
+      reviewed_at: z.string().nullable(), applied: z.literal(false),
     })));
   }
 
@@ -674,6 +675,14 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
       id: z.string().uuid(), project_id: z.string().uuid(), capability_id: z.string(), version: z.string(),
       work_id: z.string().uuid().nullable(), status: z.literal('proposed'), applied: z.literal(false),
     }), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+  }
+
+  async reviewCapabilityFeedback(projectId: string, proposalId: string, status: 'accepted' | 'rejected'): Promise<DataState<Pick<CapabilityFeedbackProposal, 'id' | 'status' | 'reviewed_by' | 'reviewed_at' | 'applied'>>> {
+    if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede revisar propuestas de corrección.' };
+    return this.request(`/v1/projects/${encodeURIComponent(projectId)}/capability-feedback/${encodeURIComponent(proposalId)}/review`, z.object({
+      id: z.string().uuid(), status: z.enum(['accepted', 'rejected']), reviewed_by: z.string(),
+      reviewed_at: z.string(), applied: z.literal(false),
+    }), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) });
   }
 
   async getProjectEvaluations(projectId: string): Promise<DataState<EvaluationSummary[]>> {

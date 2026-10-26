@@ -10,6 +10,8 @@ export interface CapabilityFeedbackProposal {
   status: 'proposed' | 'accepted' | 'rejected';
   created_by: string;
   created_at: string;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
   applied: false;
 }
 
@@ -24,4 +26,5 @@ export interface CapabilityFeedbackInput {
 export interface AaoCapabilityFeedbackPort {
   listCapabilityFeedback(projectId: string): Promise<DataState<CapabilityFeedbackProposal[]>>;
   proposeCapabilityFeedback(projectId: string, input: CapabilityFeedbackInput): Promise<DataState<Pick<CapabilityFeedbackProposal, 'id' | 'capability_id' | 'version' | 'work_id' | 'status' | 'applied'>>>;
+  reviewCapabilityFeedback(projectId: string, proposalId: string, status: 'accepted' | 'rejected'): Promise<DataState<Pick<CapabilityFeedbackProposal, 'id' | 'status' | 'reviewed_by' | 'reviewed_at' | 'applied'>>>;
 }

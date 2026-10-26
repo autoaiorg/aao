@@ -555,3 +555,10 @@
     grid-row: 2;
   }
 }
+
+.office-capability-feedback__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}

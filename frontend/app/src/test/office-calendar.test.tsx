@@ -19,27 +19,34 @@ function renderCalendar(getProjectBoard: AaoReadPort['getProjectBoard'], onOpenW
 }
 
 describe('LIVE office work calendar', () => {
-  it('projects persisted due dates from the canonical board, orders them and opens the canonical work item', async () => {
+  it('projects persisted due dates in the selected month and opens the canonical work item', async () => {
+    const now = new Date();
+    const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const nextMonthKey = `${nextMonth.getFullYear()}-${String(nextMonth.getMonth() + 1).padStart(2, '0')}`;
     const board: ProjectBoard = {
-      projectId: 'project-a', totalCount: 3, stages: {} as ProjectBoard['stages'], unrecognizedItems: [], items: [
-        { id: 'later', title: 'Más tarde', status: 'INBOX', dueDate: '2026-12-10' },
+      projectId: 'project-a', totalCount: 4, stages: {} as ProjectBoard['stages'], unrecognizedItems: [], items: [
+        { id: 'later', title: 'Más tarde', status: 'INBOX', dueDate: `${nextMonthKey}-10` },
         { id: 'undated', title: 'Sin fecha', status: 'INBOX' },
-        { id: 'soon', title: 'Próximo', status: 'INBOX', dueDate: '2026-11-01' },
+        { id: 'soon', title: 'Próximo', status: 'INBOX', dueDate: `${thisMonth}-10` },
+        { id: 'also-soon', title: 'Otro trabajo', status: 'DONE', dueDate: `${thisMonth}-10` },
       ],
     };
     const getBoard = vi.fn().mockResolvedValue(ready(board));
     const onOpenWork = renderCalendar(getBoard);
 
     const soon = await screen.findByRole('button', { name: /Próximo/ });
-    const datedList = screen.getByRole('list', { name: 'Trabajos con fecha objetivo' });
-    expect(Array.from(datedList.querySelectorAll('.office-calendar__item-title')).map((item) => item.textContent))
-      .toEqual(['Próximo', 'Más tarde']);
+    expect(screen.getByRole('table', { name: /Calendario de/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Otro trabajo/ })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Sin fecha/ })).not.toBeInTheDocument();
     expect(getBoard).toHaveBeenCalledWith('project-a');
     fireEvent.click(soon);
     expect(onOpenWork).toHaveBeenCalledWith('project-a', 'soon');
     expect(screen.getByText(/No programa ni inicia ejecuciones/)).toBeInTheDocument();
     expect(screen.queryByText('Sin fecha')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Mes siguiente' }));
+    expect(await screen.findByRole('button', { name: /Más tarde/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Próximo/ })).not.toBeInTheDocument();
   });
 
   it('has an explicit empty state when the project has no dated work', async () => {

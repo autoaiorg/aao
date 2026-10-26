@@ -11,6 +11,7 @@ export interface ProjectConversation {
 export interface ProjectConversationMessage {
   id: string;
   sender: 'CEO' | 'AAO';
+  message_kind?: 'CHAT' | 'WORK_GROUP_RESULT';
   body: string;
   related_work_id: string | null;
   work_status: string | null;

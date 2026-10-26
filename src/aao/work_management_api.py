@@ -1826,12 +1826,13 @@ def create_work_group_consolidation(
     }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     with tx() as db:
         group = db.execute(
-            "SELECT parent_work_id FROM work_groups WHERE id=%s AND project_id=%s FOR UPDATE",
+            "SELECT parent_work_id,conversation_id FROM work_groups WHERE id=%s AND project_id=%s FOR UPDATE",
             (group_id, project_id),
         ).fetchone()
         if not group:
             raise HTTPException(404, "Work group not found")
         parent_work_id = str(group[0])
+        conversation_id = str(group[1])
         existing = db.execute(
             "SELECT id,project_id,work_group_id,parent_work_id,summary,source_sha256,"
             "source_snapshot,idempotency_key,created_by,created_at,request_sha256 "
@@ -1864,6 +1865,22 @@ def create_work_group_consolidation(
             (str(uuid4()), project_id, group_id, parent_work_id, payload.summary,
              source_sha256, json.dumps(snapshot), payload.idempotency_key, request_sha256),
         ).fetchone()
+        # Keep the original CEO-AAO thread as the durable user-facing record.
+        # This is a system notification of a CEO-confirmed summary, not a model reply.
+        message_body = (
+            f"Resultado del grupo de trabajo: {payload.summary}\n\n"
+            f"Consolidación confirmada por CEO. Snapshot de origen SHA-256: {source_sha256}. "
+            "Esta notificación registra la consolidación persistida; no añade una verificación independiente."
+        )
+        db.execute(
+            "INSERT INTO project_conversation_messages(id,conversation_id,sender,body,related_work_id,message_kind) "
+            "VALUES (%s,%s,'AAO',%s,%s,'WORK_GROUP_RESULT')",
+            (str(uuid4()), conversation_id, message_body, parent_work_id),
+        )
+        db.execute(
+            "UPDATE project_conversations SET updated_at=clock_timestamp() WHERE id=%s",
+            (conversation_id,),
+        )
         audit(db, parent_work_id, "work.group_consolidated", {
             "project_id": project_id, "work_group_id": group_id,
             "consolidation_id": str(row[0]), "source_sha256": source_sha256,
@@ -2083,7 +2100,7 @@ def list_project_conversation_messages(
             "SELECT m.id,m.sender,m.body,m.related_work_id,m.created_at,w.status,"
             "q.id,q.status,q.result_json->>'backend',q.result_json->>'provider',"
             "q.result_json->>'model',m.provider,m.model,t.state,t.error_code,t.idempotency_key,"
-            "t.lease_expires_at "
+            "t.lease_expires_at,m.message_kind "
             "FROM project_conversation_messages m "
             "LEFT JOIN work_items w ON w.id=m.related_work_id "
             "LEFT JOIN project_conversation_turns t ON t.user_message_id=m.id "
@@ -2101,7 +2118,7 @@ def list_project_conversation_messages(
                               if row[6] else None), "provider": row[11], "model": row[12],
          "turn_status": row[13], "turn_error_code": row[14],
          "turn_idempotency_key": str(row[15]) if row[15] else None,
-         "turn_lease_expires_at": row[16]}
+         "turn_lease_expires_at": row[16], "message_kind": row[17]}
         for row in rows
     ]
 

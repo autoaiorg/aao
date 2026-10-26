@@ -2378,6 +2378,16 @@ def test_work_group_consolidation_is_ceo_confirmed_idempotent_and_evidence_bound
         assert "must-not-leak" not in saved.text
         replay = client.post(endpoint, headers=ceo, json=payload)
         assert replay.status_code == 201 and replay.json()["created"] is False
+        messages_url = f"/v1/projects/{project}/conversations/{conversation}/messages"
+        messages = client.get(messages_url, headers=ceo)
+        assert messages.status_code == 200, messages.text
+        results = [message for message in messages.json() if message.get("message_kind") == "WORK_GROUP_RESULT"]
+        assert len(results) == 1
+        assert results[0]["sender"] == "AAO"
+        assert results[0]["related_work_id"] == group["parent_work_id"]
+        assert payload["summary"] in results[0]["body"]
+        assert payload["expected_source_sha256"] in results[0]["body"]
+        assert results[0]["provider"] is None and results[0]["model"] is None
         after_final = {
             "idempotency_key": str(uuid4()),
             "expected_source_sha256": listed["source_sha256"],
@@ -2394,8 +2404,14 @@ def test_work_group_consolidation_is_ceo_confirmed_idempotent_and_evidence_bound
                 "SELECT details FROM events WHERE subject_id=%s AND kind='work.group_consolidated'",
                 (group["parent_work_id"],),
             ).fetchall()
+            result_message_count = db.execute(
+                "SELECT count(*) FROM project_conversation_messages "
+                "WHERE conversation_id=%s AND message_kind='WORK_GROUP_RESULT'",
+                (conversation,),
+            ).fetchone()[0]
         assert parent_status == "INBOX"
         assert len(events) == 1 and events[0][0]["work_status_changed"] is False
+        assert result_message_count == 1
         assert client.post(endpoint, headers=ceo, json={**payload, "summary": "different"}).status_code == 409
 
 

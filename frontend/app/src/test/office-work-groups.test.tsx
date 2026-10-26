@@ -16,7 +16,7 @@ const group: ProjectWorkGroup = {
   title: 'Resultados del proyecto', parent_status: 'INBOX', source_sha256: 'a'.repeat(64),
   consolidation_ready: false,
   children: [{
-    work_id: '44444444-4444-4444-8444-444444444444', status: 'IN_PROGRESS', assigned_principal_id: null, evidence: [],
+    work_id: '44444444-4444-4444-8444-444444444444', status: 'IN_PROGRESS', assigned_principal_id: null, evidence: [], dependencies: [],
     executions: [{ id: '55555555-5555-4555-8555-555555555555', status: 'RUNNING', worker_id: 'agent-a', result_sha256: null }], reviews: [],
   }],
   consolidation: null,
@@ -48,6 +48,18 @@ describe('office work group consolidation', () => {
     expect(screen.getByText(/Ejecución 55555555 · RUNNING · actor agent-a · sin resultado persistido/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Confirmar consolidación' })).toBeDisabled();
     expect(port.confirmWorkGroupConsolidation).not.toHaveBeenCalled();
+  });
+
+  it('shows dependency status from the backend projection', async () => {
+    const dependent = {
+      ...group,
+      children: [{
+        ...group.children[0],
+        dependencies: [{ work_id: '99999999-9999-4999-8999-999999999999', status: 'IN_REVIEW' }],
+      }],
+    };
+    setup([dependent]);
+    expect(await screen.findByText(/Prerequisito 99999999 · IN_REVIEW/)).toBeInTheDocument();
   });
 
   it('refreshes the canonical group projection while the office view remains open', async () => {

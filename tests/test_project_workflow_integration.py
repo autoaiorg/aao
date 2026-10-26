@@ -147,6 +147,15 @@ def test_work_group_admission_waits_for_prerequisites_and_rejects_parent(monkeyp
             })
             assert assigned.status_code == 200, assigned.text
 
+        projected = client.get(f"/v1/projects/{project}/work-groups", headers=ceo)
+        assert projected.status_code == 200, projected.text
+        projected_children = {
+            child["work_id"]: child for child in projected.json()[0]["children"]
+        }
+        assert projected_children[ids["Dependent"]]["dependencies"] == [{
+            "work_id": ids["Prerequisite"], "status": "INBOX",
+        }]
+
         # An unresolved prerequisite blocks the dependent child without changing
         # its canonical INBOX state; an independent sibling remains admissible.
         blocked = client.post(f"/v1/work/{ids['Dependent']}/admit", headers=worker)
@@ -163,8 +172,20 @@ def test_work_group_admission_waits_for_prerequisites_and_rejects_parent(monkeyp
         assert state == "INBOX"
         still_blocked = client.post(f"/v1/work/{ids['Dependent']}/admit", headers=worker)
         assert still_blocked.status_code == 409
+        projected = client.get(f"/v1/projects/{project}/work-groups", headers=ceo)
+        dependency = next(
+            child for child in projected.json()[0]["children"]
+            if child["work_id"] == ids["Dependent"]
+        )["dependencies"][0]
+        assert dependency == {"work_id": ids["Prerequisite"], "status": "IN_REVIEW"}
         with connect_postgres() as db:
             db.execute("UPDATE work_items SET status='DONE' WHERE id=%s", (ids["Prerequisite"],))
+        projected = client.get(f"/v1/projects/{project}/work-groups", headers=ceo)
+        dependency = next(
+            child for child in projected.json()[0]["children"]
+            if child["work_id"] == ids["Dependent"]
+        )["dependencies"][0]
+        assert dependency == {"work_id": ids["Prerequisite"], "status": "DONE"}
         admitted = client.post(f"/v1/work/{ids['Dependent']}/admit", headers=worker)
         assert admitted.status_code == 200, admitted.text
         assert admitted.json()["status"] == "READY"

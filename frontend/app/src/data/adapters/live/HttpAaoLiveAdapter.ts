@@ -1125,6 +1125,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
     const evidence = z.unknown();
     const child = z.object({
       work_id: z.string().uuid(), status: z.string(), assigned_principal_id: z.string().nullable(), evidence,
+      dependencies: z.array(z.object({ work_id: z.string().uuid(), status: z.string() })).default([]),
       executions: z.array(z.object({
         id: z.string().uuid(), status: z.string(), worker_id: z.string().nullable(),
         result_sha256: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
@@ -1173,6 +1174,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
     const evidence = z.unknown();
     const child = z.object({
       work_id: z.string().uuid(), status: z.string(), assigned_principal_id: z.string().nullable(), evidence,
+      dependencies: z.array(z.object({ work_id: z.string().uuid(), status: z.string() })).default([]),
       executions: z.array(z.object({
         id: z.string().uuid(), status: z.string(), worker_id: z.string().nullable(),
         result_sha256: z.string().regex(/^[0-9a-f]{64}$/).nullable(),

@@ -142,7 +142,7 @@ def test_response_persistence_is_fenced_and_rolls_back_on_lease_loss(monkeypatch
 
     calls = []
     turn = {"turn_id": "turn-1", "conversation_id": "conversation-1",
-            "user_message_id": "message-1", "lease_owner": "owner-1"}
+            "idempotency_key": "key-1", "user_message_id": "message-1", "lease_owner": "owner-1"}
     config = recovery.RecoveryConfiguration("openai-compatible", "model-1")
 
     class SuccessfulDB:
@@ -206,7 +206,7 @@ def test_provider_failure_is_persisted_only_by_current_lease_owner(monkeypatch):
 
     monkeypatch.setattr(recovery, "tx", fake_tx)
     turn = {"turn_id": "turn-1", "conversation_id": "conversation-1",
-            "user_message_id": "message-1", "lease_owner": "owner-1"}
+            "idempotency_key": "key-1", "user_message_id": "message-1", "lease_owner": "owner-1"}
     assert recovery._fail_turn(turn, "PROVIDER_UNAVAILABLE")
     update, audit = calls
     assert "state='FAILED'" in update[0]

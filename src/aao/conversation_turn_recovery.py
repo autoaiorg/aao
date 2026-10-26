@@ -241,6 +241,7 @@ def _finish_turn(turn: dict, answer: str, config: RecoveryConfiguration) -> bool
                    (turn["conversation_id"],))
         _audit(db, turn["conversation_id"], "conversation.turn.completed", {
             "user_message_id": turn["user_message_id"], "assistant_message_id": response_id,
+            "idempotency_key": turn["idempotency_key"],
             "provider": config.provider, "model": config.model, "endpoint": config.endpoint,
             "recovered_by": "backend_worker",
         })
@@ -259,6 +260,7 @@ def _fail_turn(turn: dict, error_code: str) -> bool:
             return False
         _audit(db, turn["conversation_id"], "conversation.turn.failed", {
             "turn_id": turn["turn_id"], "user_message_id": turn["user_message_id"],
+            "idempotency_key": turn["idempotency_key"],
             "error_code": error_code, "recovered_by": "backend_worker",
         })
     return True

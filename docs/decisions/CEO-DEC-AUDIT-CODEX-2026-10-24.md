@@ -10,7 +10,7 @@ auditor_sustituto: codex
 
 ## Hechos
 
-- El 2026-10-24, a las 21:44 UTC, `run_agy_audit.sh` falló con `RESOURCE_EXHAUSTED (429): Individual quota reached … Resets in 145h41m`, unos 6 días. No hubo dictamen. Registro: `~/aao-session-20261024T214441Z/session.log` del CEO.
+- El 2026-10-24, a las 21:44 UTC, `run_agy_audit.sh` falló con `RESOURCE_EXHAUSTED (429): Individual quota reached … Resets in 145h41m`, unos 6 días. No hubo dictamen. Registro: `~/.local/state/aao/sessions/2026/10/aao-session-20261024T214441Z/session.log` del CEO.
 - El CEO no autoriza gasto ni esperar una semana.
 - El PM comprobó que **no hay alternativa independiente sin coste en este host**:
   - Gemini CLI necesita Node 20 o superior;

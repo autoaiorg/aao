@@ -17,7 +17,15 @@
 #       Collect the detached A-13 token-expiry result.
 set -euo pipefail
 [[ $EUID != 0 ]] || { echo 'run as the CEO, not root (sudo is used per step)' >&2; exit 2; }
-OUT=$HOME/aao-session-$(date -u +%Y%m%dT%H%M%SZ); (umask 077; mkdir -p "$OUT")
+SESSION_STATE_HOME=${XDG_STATE_HOME:-$HOME/.local/state}
+[[ $SESSION_STATE_HOME == /* ]] || { echo 'XDG_STATE_HOME must be an absolute path' >&2; exit 2; }
+SESSION_ROOT=${AAO_SESSION_ROOT:-$SESSION_STATE_HOME/aao/sessions}
+[[ $SESSION_ROOT == /* ]] || { echo 'AAO_SESSION_ROOT must be an absolute path' >&2; exit 2; }
+SESSION_MONTH=$(date -u +%Y/%m)
+SESSION_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+(umask 077; mkdir -p -- "$SESSION_ROOT/$SESSION_MONTH")
+chmod 700 -- "$SESSION_ROOT"
+OUT=$(umask 077; mktemp -d "$SESSION_ROOT/$SESSION_MONTH/$SESSION_STAMP-XXXXXXXX")
 # Never read code from a working copy: its .git is agent-writable (hooks, config, replace objects). Every file this
 # session installs or runs comes from a private clean clone of the public repository, by exact SHA.
 SRC=$OUT/src

@@ -35,6 +35,7 @@ export const App: React.FC = () => {
   const [origin, setOrigin] = useState<DataOrigin>('live');
   const [activeNav, setActiveNav] = useState<ActiveNavKey>('dashboard');
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [focusWorkId, setFocusWorkId] = useState<string | null>(null);
   const [detailedProjectId, setDetailedProjectId] = useState<string | null>(null);
   const [staleTimeSeconds, setStaleTimeSeconds] = useState<number>(15);
 
@@ -351,6 +352,8 @@ export const App: React.FC = () => {
             boardState={boardQuery.data || { kind: 'empty', origin, fetchedAt: '' }}
             selectedProjectId={selectedProjectId}
             projectName={selectedProject?.name}
+            focusWorkId={focusWorkId}
+            onFocusWorkConsumed={() => setFocusWorkId(null)}
             onRefresh={handleRefresh}
           />
         )}
@@ -456,8 +459,9 @@ export const App: React.FC = () => {
                     return result;
                   }
                 : undefined}
-              onNavigate={(target, projectId) => {
+              onNavigate={(target, projectId, workId) => {
                 if (projectId) setSelectedProjectId(projectId);
+                if (target === 'kanban') setFocusWorkId(workId || null);
                 if (target === 'organization') setActiveNav('organization');
                 else if (target === 'kanban') setActiveNav('kanban');
                 else if (target === 'projects') setActiveNav('projects');

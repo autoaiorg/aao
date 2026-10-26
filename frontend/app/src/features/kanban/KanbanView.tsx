@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import type { ProjectBoard, TaskItem, BoardStage, DataState } from '../../domain/models';
 import { BOARD_STAGES, BOARD_STAGE_LABELS } from '../../domain/models';
 import { Card } from '../../components/ui/Card';
@@ -11,6 +11,8 @@ export interface KanbanViewProps {
   selectedProjectId: string | null;
   projectName?: string;
   onRefresh: () => void;
+  focusWorkId?: string | null;
+  onFocusWorkConsumed?: () => void;
 }
 
 export const KanbanView: React.FC<KanbanViewProps> = ({
@@ -18,8 +20,18 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
   selectedProjectId,
   projectName,
   onRefresh,
+  focusWorkId,
+  onFocusWorkConsumed,
 }) => {
   const [selectedTask, setSelectedTask] = useState<TaskItem | null>(null);
+
+  useEffect(() => {
+    if (!focusWorkId || boardState.kind !== 'ready') return;
+    const tasks = [...Object.values(boardState.data.stages).flat(), ...(boardState.data.unrecognizedItems || [])];
+    const task = tasks.find((item) => item.id === focusWorkId);
+    if (task) setSelectedTask(task);
+    onFocusWorkConsumed?.();
+  }, [focusWorkId, boardState, onFocusWorkConsumed]);
 
   const stageBorderColors: Record<BoardStage, string> = {
     INBOX: 'var(--stage-inbox)',

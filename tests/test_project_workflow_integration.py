@@ -3940,3 +3940,104 @@ def test_concurrent_replay_of_work_group_request_creates_one_persisted_effect(mo
         assert protocol_rows == 1
         assert protocol_events == 1
         assert group_events == 1
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="PostgreSQL integration requires an explicitly disposable test database",
+)
+def test_concurrent_replay_of_group_consolidation_creates_one_persisted_result(monkeypatch):
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "concurrent-consolidation-ceo")
+    ceo = {"X-CEO-Token": "concurrent-consolidation-ceo"}
+    with TestClient(app) as client:
+        mandate = client.post("/v1/mandates", headers=ceo, json={
+            "title": "Concurrent consolidation " + str(uuid4()),
+            "objective": "Persist exactly one final work-group result",
+        }).json()["id"]
+        assert client.post(f"/v1/mandates/{mandate}/confirm", headers=ceo).status_code == 200
+        project = client.post("/v1/projects", headers=ceo, json={
+            "name": "Concurrent consolidation", "mandate_id": mandate,
+        }).json()["id"]
+        conversation = client.post(f"/v1/projects/{project}/conversations", headers=ceo, json={
+            "title": "Concurrent consolidation thread",
+        }).json()["id"]
+        group_response = client.post(
+            f"/v1/projects/{project}/conversations/{conversation}/work-groups",
+            headers=ceo, json={
+                "idempotency_key": str(uuid4()), "title": "One consolidated outcome",
+                "description": "Parent is a non-executable container",
+                "acceptance_criteria": ["Child result is reviewed and consolidated"],
+                "tasks": [{
+                    "key": "deliver", "title": "Deliver outcome",
+                    "acceptance_criteria": ["Evidence is available"],
+                }],
+            },
+        )
+        assert group_response.status_code == 201, group_response.text
+        group = group_response.json()
+        child = group["tasks"][0]
+        with connect_postgres() as db:
+            db.execute(
+                "UPDATE work_items SET status='DONE',evidence=%s::jsonb WHERE id=%s",
+                (json.dumps([f"artifact://{child['id']}/result"]), child["id"]),
+            )
+            db.execute(
+                "INSERT INTO execution_queue(id,work_id,project_id,status,worker_id,input_json,result_json) "
+                "VALUES (%s,%s,%s,'SUCCEEDED','authorized-test-agent',%s::jsonb,%s::jsonb)",
+                (str(uuid4()), child["id"], project,
+                 json.dumps({"type": "aao.inert.v1"}),
+                 json.dumps({"completed": True, "result_sha256": "a" * 64})),
+            )
+            db.execute(
+                "INSERT INTO reviews(id,work_id,reviewer_id,decision,candidate_sha,evidence) "
+                "VALUES (%s,%s,'independent-test-auditor','APPROVE',%s,%s::jsonb)",
+                (str(uuid4()), child["id"], "a" * 40,
+                 json.dumps([f"review://{child['id']}"])),
+            )
+
+        listed = client.get(f"/v1/projects/{project}/work-groups", headers=ceo).json()[0]
+        assert listed["consolidation_ready"] is True
+        url = f"/v1/projects/{project}/work-groups/{group['id']}/consolidation"
+        payload = {
+            "idempotency_key": str(uuid4()),
+            "expected_source_sha256": listed["source_sha256"],
+            "summary": "CEO consolidated the reviewed outcome exactly once.",
+        }
+        start = Barrier(2)
+
+        def submit_duplicate():
+            start.wait(timeout=5)
+            return client.post(url, headers=ceo, json=payload)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            responses = list(pool.map(lambda _: submit_duplicate(), range(2)))
+
+        assert [response.status_code for response in responses] == [201, 201]
+        bodies = [response.json() for response in responses]
+        assert sorted(body["created"] for body in bodies) == [False, True]
+        assert len({body["id"] for body in bodies}) == 1
+        assert len({body["source_sha256"] for body in bodies}) == 1
+        with connect_postgres() as db:
+            consolidation_rows = db.execute(
+                "SELECT count(*),count(DISTINCT id),count(DISTINCT idempotency_key) "
+                "FROM work_group_consolidations WHERE work_group_id=%s",
+                (group["id"],),
+            ).fetchone()
+            result_events = db.execute(
+                "SELECT count(*) FROM events WHERE subject_id=%s AND kind='work.group_consolidated'",
+                (group["parent_work_id"],),
+            ).fetchone()[0]
+            result_messages = db.execute(
+                "SELECT count(*) FROM project_conversation_messages "
+                "WHERE conversation_id=%s AND message_kind='WORK_GROUP_RESULT' "
+                "AND related_work_id=%s",
+                (conversation, group["parent_work_id"]),
+            ).fetchone()[0]
+
+        assert consolidation_rows == (1, 1, 1)
+        assert result_events == 1
+        assert result_messages == 1

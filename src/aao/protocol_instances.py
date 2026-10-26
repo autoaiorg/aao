@@ -10,6 +10,7 @@ PROTOCOL_VERSIONS = {
     "intake-classification": "1.0.0",
     "planning-assignment": "1.0.0",
     "implementation": "1.0.0",
+    "review-acceptance": "1.0.0",
 }
 
 

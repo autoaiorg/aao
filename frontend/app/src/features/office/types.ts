@@ -92,6 +92,8 @@ export interface VirtualOfficeViewProps {
   projects?: DataState<ProjectSummary[]>;
   canCreateWorkRequest?: boolean;
   conversationPort?: AaoConversationPort;
+  workGroupPort?: AaoConversationPort;
+  isCeoSession?: boolean;
   capabilityReadPort?: Pick<AaoReadPort, 'getProjectCapabilities'>;
   capabilityFeedbackPort?: AaoCapabilityFeedbackPort;
   activityReadPort?: Pick<AaoReadPort, 'getProjectActivity'>;

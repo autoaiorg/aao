@@ -223,6 +223,14 @@ Los perfiles/unidades persistidos y la edición CEO ya están construidos (#134/
 - No se ha inspeccionado ni verificado en ejecución un entorno PostgreSQL local; el diferencial se basa en rutas, código y CI. No se ejercitaron credenciales ni llamadas a modelo de Agents Office.
 - **Siguiente owner:** PM/backend concreta contrato mínimo para asignar hijos a identidades reales con permisos canónicos y enlazar resultados; frontend consume solo ese contrato. CEO interviene solo si aparece una decisión estratégica o riesgo reservado.
 
+### F3 — asignación CEO a identidad autorizada (construcción incremental)
+
+- **Cambio propuesto en esta rama `feat/f3-authoritative-assignment`:** migración `022_work_item_assignments.sql` persiste una asignación explícita por hijo. `PUT /v1/work/{id}/assignment` es CEO-only, acepta solo identidades AGENT habilitadas con grants preexistentes `work.admit` y `execution.claim`, registra evento y declara `grants_created: false`. No crea autoridad ni permite asignar padres, trabajos revisados/finalizados o ejecuciones activas/inciertas.
+- **Ejecución:** admisión, progreso, staging y claim filtran los hijos por principal asignado; el board incluye `assigned_principal_id`. La asignación no sustituye los checks de grant del motor ni la autenticación de ejecución. Se conserva la restricción de no re-asignar durante una ejecución activa/incierta.
+- **Pruebas añadidas:** integración PostgreSQL cubre escritura CEO, prohibición a AGENT, proyección, grants inalterados, denegación de otro agente, claim del asignado y fencing de finalización/reasignación.
+- **Evidencia local:** `compileall`, Ruff y `git diff --check` pasan. La prueba focalizada local reportó 20 skips porque no hay configuración de PostgreSQL desechable; por tanto, esto no acredita la integración hasta que CI la ejecute.
+- **Límites pendientes:** aún no hay control UI de asignación visible en la oficina/Control Center; tampoco consolidación durable del padre enlazada a resultados/evidencia. No se dibujan equipos ejecutores ni se sintetizan resultados.
+
 
 ### Incremento posterior: LIVE fail-closed (`fix/office-live-organization-fail-closed`)
 

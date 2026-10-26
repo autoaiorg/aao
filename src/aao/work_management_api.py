@@ -2375,6 +2375,132 @@ def coordinator_list_assignable_agents(
         return _list_assignable_agents(db, project_id)
 
 
+@app.post("/v1/agent/projects/{project_id}/work-groups/{group_id}/assign-unassigned")
+def coordinator_assign_unassigned_group_work(
+    project_id: str,
+    group_id: str,
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_worker)],
+):
+    """Route unassigned children of a CEO-confirmed group using existing work.assign."""
+    with tx() as db:
+        require_grant(db, principal, project_id, "work.assign")
+        project_state = db.execute(
+            "SELECT state FROM projects WHERE id=%s FOR SHARE", (project_id,),
+        ).fetchone()
+        if not project_state:
+            raise HTTPException(404, "Project not found")
+        if project_state[0] != "ACTIVE":
+            raise HTTPException(409, "Project is not active")
+        group = db.execute(
+            "SELECT g.parent_work_id,w.status FROM work_groups g "
+            "JOIN work_items w ON w.id=g.parent_work_id AND w.project_id=g.project_id "
+            "WHERE g.id=%s AND g.project_id=%s FOR UPDATE OF g,w",
+            (group_id, project_id),
+        ).fetchone()
+        if not group:
+            raise HTTPException(404, "Work group not found")
+        if group[1] in {"VERIFIED", "DONE"}:
+            raise HTTPException(409, "Completed work groups cannot receive new assignments")
+
+        # Lock active identities and their two execution grants for the duration
+        # of assignment. Revocation/disable cannot race the route decision.
+        candidate_rows = db.execute(
+            "SELECT c.principal_id FROM principal_credentials c "
+            "JOIN project_grants ga ON ga.principal_id=c.principal_id AND ga.project_id=%s "
+            "AND ga.capability='work.admit' AND (ga.expires_at IS NULL OR ga.expires_at>clock_timestamp()) "
+            "JOIN project_grants gc ON gc.principal_id=c.principal_id AND gc.project_id=%s "
+            "AND gc.capability='execution.claim' AND (gc.expires_at IS NULL OR gc.expires_at>clock_timestamp()) "
+            "WHERE c.kind='AGENT' AND c.enabled ORDER BY c.principal_id "
+            "FOR SHARE OF c,ga,gc",
+            (project_id, project_id),
+        ).fetchall()
+        candidate_ids = [row[0] for row in candidate_rows if row[0] != str(principal)]
+        profile_rows = db.execute(
+            "SELECT principal_id,COALESCE(display_name,principal_id),competencies "
+            "FROM organization_profiles WHERE enabled AND principal_id=ANY(%s) "
+            "ORDER BY principal_id FOR SHARE",
+            (candidate_ids,),
+        ).fetchall() if candidate_ids else []
+        profiles = {
+            row[0]: {"principal_id": row[0], "display_name": row[1], "competencies": row[2] or []}
+            for row in profile_rows
+        }
+        eligible = [
+            profiles.get(principal_id, {
+                "principal_id": principal_id, "display_name": principal_id, "competencies": [],
+            })
+            for principal_id in candidate_ids
+        ]
+        load = {agent["principal_id"]: 0 for agent in eligible}
+        if load:
+            rows = db.execute(
+                "SELECT a.principal_id,count(*) FROM work_item_assignments a "
+                "JOIN work_items w ON w.id=a.work_id AND w.project_id=a.project_id "
+                "WHERE a.project_id=%s AND a.principal_id=ANY(%s) "
+                "AND w.status IN ('INBOX','READY','IN_PROGRESS','IN_REVIEW') "
+                "GROUP BY a.principal_id",
+                (project_id, list(load)),
+            ).fetchall()
+            load.update({principal_id: count for principal_id, count in rows})
+
+        children = db.execute(
+            "SELECT w.id::text,w.status,w.required_competencies,a.principal_id "
+            "FROM work_items w LEFT JOIN work_item_assignments a "
+            "ON a.project_id=w.project_id AND a.work_id=w.id "
+            "WHERE w.project_id=%s AND w.parent_work_id=%s "
+            "ORDER BY w.id FOR UPDATE OF w",
+            (project_id, group[0]),
+        ).fetchall()
+        assigned = []
+        skipped = []
+        for work_id, status, required_competencies, current_assignee in children:
+            if current_assignee:
+                skipped.append({"work_id": work_id, "reason": "ALREADY_ASSIGNED"})
+                continue
+            if status != "INBOX":
+                skipped.append({"work_id": work_id, "reason": "NOT_UNASSIGNED_INBOX"})
+                continue
+            required = {value.casefold() for value in (required_competencies or [])}
+            if not required:
+                skipped.append({"work_id": work_id, "reason": "REQUIRED_COMPETENCIES_MISSING"})
+                continue
+            candidates = [
+                agent for agent in eligible
+                if required.issubset({value.casefold() for value in agent["competencies"]})
+            ]
+            if not candidates:
+                skipped.append({"work_id": work_id, "reason": "NO_COMPETENT_AUTHORIZED_AGENT"})
+                continue
+            chosen = min(candidates, key=lambda agent: (load[agent["principal_id"]], agent["principal_id"]))
+            assignee = chosen["principal_id"]
+            inserted = db.execute(
+                "INSERT INTO work_item_assignments(project_id,work_id,principal_id,assigned_by) "
+                "VALUES (%s,%s,%s,%s) ON CONFLICT(work_id) DO NOTHING RETURNING principal_id",
+                (project_id, work_id, assignee, str(principal)),
+            ).fetchone()
+            if not inserted:
+                skipped.append({"work_id": work_id, "reason": "ALREADY_ASSIGNED"})
+                continue
+            audit(db, work_id, "work.assigned", {
+                "project_id": project_id,
+                "work_group_id": group_id,
+                "principal_id": assignee,
+                "previous_principal_id": None,
+                "assigned_by": str(principal),
+                "grants_created": False,
+                "routing": "competency_and_pending_load",
+            })
+            load[assignee] += 1
+            assigned.append({
+                "work_id": work_id,
+                "principal_id": assignee,
+                "assigned_by": str(principal),
+                "grants_created": False,
+            })
+    return {"project_id": project_id, "group_id": group_id,
+            "assigned": assigned, "skipped": skipped}
+
+
 def _list_assignable_agents(db, project_id: str):
     if not db.execute("SELECT 1 FROM projects WHERE id=%s", (project_id,)).fetchone():
         raise HTTPException(404, "Project not found")

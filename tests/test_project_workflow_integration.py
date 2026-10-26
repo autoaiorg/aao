@@ -970,6 +970,120 @@ def test_group_assignment_routes_execution_without_creating_grants(monkeypatch):
     os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
     reason="PostgreSQL integration requires an explicitly disposable test database",
 )
+def test_pm_assigns_confirmed_group_by_competency_and_existing_grants(monkeypatch):
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "assignment-sweep-ceo")
+    ceo = {"X-CEO-Token": "assignment-sweep-ceo"}
+    with TestClient(app) as client:
+        mandate = client.post("/v1/mandates", headers=ceo, json={
+            "title": "Assignment sweep " + str(uuid4()), "objective": "Route confirmed child work",
+        }).json()["id"]
+        assert client.post(f"/v1/mandates/{mandate}/confirm", headers=ceo).status_code == 200
+        project = client.post("/v1/projects", headers=ceo, json={
+            "name": "PM assignment sweep", "mandate_id": mandate,
+        }).json()["id"]
+        conversation = client.post(f"/v1/projects/{project}/conversations", headers=ceo, json={
+            "title": "Assignment sweep thread",
+        }).json()["id"]
+
+        principals = {
+            name: "aao-sweep-" + name + "-" + uuid4().hex[:8]
+            for name in ("pm", "agent-a", "agent-b", "ineligible", "ungranted")
+        }
+        headers = {}
+        for name, principal_id in principals.items():
+            credential = client.post("/v1/principals/credentials", headers=ceo, json={
+                "principal_id": principal_id, "kind": "AGENT",
+            })
+            assert credential.status_code == 201, credential.text
+            headers[name] = {"X-Agent-Token": credential.json()["token"]}
+        for name in ("agent-a", "agent-b", "ineligible"):
+            for capability in ("work.admit", "execution.claim"):
+                assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
+                    "principal_id": principals[name], "capability": capability,
+                }).status_code == 201
+        with connect_postgres() as db:
+            for name, competency in (
+                ("pm", "backend"), ("agent-a", "backend"),
+                ("agent-b", "backend"), ("ineligible", "design"),
+                ("ungranted", "backend"),
+            ):
+                db.execute(
+                    "INSERT INTO organization_profiles(principal_id,display_name,role_title,competencies) "
+                    "VALUES (%s,%s,'Agent',%s)",
+                    (principals[name], name, [competency]),
+                )
+        group = client.post(
+            f"/v1/projects/{project}/conversations/{conversation}/work-groups",
+            headers=ceo, json={
+                "idempotency_key": str(uuid4()), "title": "Confirmed plan",
+                "description": "CEO confirmed; PM handles ordinary assignment",
+                "acceptance_criteria": ["All competent children are assigned"],
+                "tasks": [
+                    {"key": "first", "title": "Backend one", "acceptance_criteria": ["Done"],
+                     "required_competencies": ["backend"]},
+                    {"key": "second", "title": "Backend two", "acceptance_criteria": ["Done"],
+                     "required_competencies": ["BACKEND"]},
+                    {"key": "unclassified", "title": "No routing contract", "acceptance_criteria": ["Done"]},
+                ],
+            },
+        )
+        assert group.status_code == 201, group.text
+        route = f"/v1/agent/projects/{project}/work-groups/{group.json()['id']}/assign-unassigned"
+        assert client.post(route, headers=headers["pm"]).status_code == 403
+        assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
+            "principal_id": principals["pm"], "capability": "work.assign",
+        }).status_code == 201
+        assert client.post(f"/v1/projects/{project}/state", headers=ceo,
+                           json={"action": "pause"}).status_code == 200
+        paused = client.post(route, headers=headers["pm"])
+        assert paused.status_code == 409 and "not active" in paused.text.lower()
+        assert client.post(f"/v1/projects/{project}/state", headers=ceo,
+                           json={"action": "resume"}).status_code == 200
+        assigned = client.post(route, headers=headers["pm"])
+        assert assigned.status_code == 200, assigned.text
+        body = assigned.json()
+        assert {row["principal_id"] for row in body["assigned"]} == {
+            principals["agent-a"], principals["agent-b"],
+        }
+        assert all(row["assigned_by"] == principals["pm"] for row in body["assigned"])
+        assert {
+            (row["work_id"], row["reason"]) for row in body["skipped"]
+        } == {
+            (task["id"], "REQUIRED_COMPETENCIES_MISSING")
+            for task in group.json()["tasks"] if not task["required_competencies"]
+        }
+        assert all(row["principal_id"] != principals["pm"] for row in body["assigned"])
+
+        replay = client.post(route, headers=headers["pm"])
+        assert replay.status_code == 200, replay.text
+        assert replay.json()["assigned"] == []
+        with connect_postgres() as db:
+            rows = db.execute(
+                "SELECT a.work_id,a.principal_id,a.assigned_by FROM work_item_assignments a "
+                "WHERE a.work_id=ANY(%s) ORDER BY a.work_id",
+                ([task["id"] for task in group.json()["tasks"]],),
+            ).fetchall()
+            events = db.execute(
+                "SELECT count(*) FROM events WHERE subject_id=ANY(%s) AND kind='work.assigned' "
+                "AND details->>'assigned_by'=%s",
+                ([task["id"] for task in group.json()["tasks"]], principals["pm"]),
+            ).fetchone()[0]
+            grant_count = db.execute(
+                "SELECT count(*) FROM project_grants WHERE project_id=%s AND principal_id=%s",
+                (project, principals["pm"]),
+            ).fetchone()[0]
+        assert len(rows) == 2 and events == 2 and grant_count == 1
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or
+    os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="PostgreSQL integration requires an explicitly disposable test database",
+)
 def test_ceo_work_request_creates_only_audited_inbox_item(monkeypatch):
     from aao.postgresql_connection import connect_postgres
     from aao.work_management_api import app

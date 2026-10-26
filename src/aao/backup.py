@@ -7,13 +7,13 @@ no destructive operations on real data are allowed without isolated pre-verifica
 
 from __future__ import annotations
 
+import base64
 import hashlib
-import hmac
 import json
 import logging
 import os
-import secrets
 import shutil
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -243,22 +243,26 @@ class AuthorizationAuthorityError(BackupError):
 def get_authorization_store_dir() -> Path:
     """Return the protected directory used by the persistent authorization authority.
 
-    Guarantees that authorization consumption records persist independently of the
-    restored destination database (Finding A-10).
+    Requires an explicitly provisioned host-local directory. A temporary directory
+    is not a durable replay authority and must never be used as a fallback.
     """
     custom = os.environ.get("AAO_AUTH_STORE_DIR")
     if custom:
         p = Path(custom)
         p.mkdir(parents=True, exist_ok=True, mode=0o700)
-        return p
-    default_dir = Path("/var/lib/aao/authorizations")
+    else:
+        p = Path("/var/lib/aao/authorizations")
     try:
-        default_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        return default_dir
-    except OSError:
-        fallback = Path(tempfile.gettempdir()) / "aao-authorizations"
-        fallback.mkdir(parents=True, exist_ok=True, mode=0o700)
-        return fallback
+        info = p.lstat()
+    except OSError as exc:
+        raise OSError(f"Authorization authority store unavailable: {p}: {exc}") from exc
+    if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+        raise OSError(f"Authorization authority store must be a real directory: {p}")
+    if info.st_uid != os.geteuid():
+        raise OSError(f"Authorization authority store must be owned by uid {os.geteuid()}: {p}")
+    if info.st_mode & 0o077:
+        raise OSError(f"Authorization authority store permissions must be 0700 or stricter: {p}")
+    return p
 
 
 def consume_authorization_nonce_host(nonce: str, metadata: dict[str, Any]) -> tuple[bool, str]:
@@ -269,13 +273,30 @@ def consume_authorization_nonce_host(nonce: str, metadata: dict[str, Any]) -> tu
     2. Protection against database replacement or deletion.
     3. Audit ledger persistence even if subsequent restore steps fail.
     """
-    store_dir = get_authorization_store_dir()
+    if (
+        not isinstance(nonce, str)
+        or not nonce
+        or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for c in nonce)
+    ):
+        return False, "Authorization nonce has invalid characters."
+    try:
+        store_dir = get_authorization_store_dir()
+    except OSError as exc:
+        return False, f"Authorization authority store unavailable: {exc}"
     consumed_dir = store_dir / "consumed_nonces"
     consumed_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    consumed_info = consumed_dir.lstat()
+    if (not stat.S_ISDIR(consumed_info.st_mode) or stat.S_ISLNK(consumed_info.st_mode)
+            or consumed_info.st_uid != os.geteuid() or consumed_info.st_mode & 0o077):
+        return False, "Consumed nonce directory is not a protected real directory."
     nonce_file = consumed_dir / f"{nonce}.consumed"
 
     try:
-        fd = os.open(str(nonce_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        fd = os.open(
+            nonce_file,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
     except FileExistsError:
         return False, (
             f"Authorization nonce '{nonce}' has already been consumed (replay denied by persistent "
@@ -287,18 +308,43 @@ def consume_authorization_nonce_host(nonce: str, metadata: dict[str, Any]) -> tu
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
     except OSError as exc:
         return False, f"Failed to persist consumed authorization record: {exc}"
+
+    try:
+        dir_fd = os.open(consumed_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError as exc:
+        return False, f"Failed to durably persist nonce reservation: {exc}"
 
     ledger_file = store_dir / "authorization_consumption_audit.jsonl"
     try:
         import fcntl
-        with open(ledger_file, "a", encoding="utf-8") as lf:
-            fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
-            lf.write(json.dumps(metadata) + "\n")
-            fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
-    except OSError:
-        pass
+        ledger_fd = os.open(
+            ledger_file,
+            os.O_CREAT | os.O_APPEND | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            ledger_info = os.fstat(ledger_fd)
+            if (not stat.S_ISREG(ledger_info.st_mode) or ledger_info.st_uid != os.geteuid()
+                    or ledger_info.st_mode & 0o077):
+                return False, "Authorization audit ledger is not a protected regular file."
+            fcntl.flock(ledger_fd, fcntl.LOCK_EX)
+            with os.fdopen(os.dup(ledger_fd), "a", encoding="utf-8") as lf:
+                lf.write(json.dumps(metadata) + "\n")
+                lf.flush()
+                os.fsync(lf.fileno())
+            fcntl.flock(ledger_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(ledger_fd)
+    except OSError as exc:
+        return False, f"Nonce reserved but consumption audit could not be persisted: {exc}"
 
     return True, f"Nonce '{nonce}' atomically consumed in persistent host authority store."
 
@@ -306,7 +352,7 @@ def consume_authorization_nonce_host(nonce: str, metadata: dict[str, Any]) -> tu
 def create_restore_authorization(
     backup_path: Path,
     target_database: str,
-    signing_key: str,
+    signing_key: str | Path,
     authority_id: str = "ceo-restore-authority",
     valid_minutes: int = 60,
     nonce: str | None = None,
@@ -323,19 +369,31 @@ def create_restore_authorization(
     now = datetime.now(UTC)
     expires = now + timedelta(minutes=valid_minutes)
     auth_nonce = nonce or str(uuid4())
-    action = "database.destructive_restore"
-    message = f"{action}:{authority_id}:{backup_sha}:{target_database}:{auth_nonce}:{expires.isoformat()}"
-    signature = hmac.new(signing_key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
-    return {
-        "action": action,
+    unsigned_payload = {
+        "version": 1,
+        "action": "database.destructive_restore",
         "authority_id": authority_id,
         "backup_sha256": backup_sha,
         "target_database": target_database,
         "authorized_at_utc": now.isoformat(),
         "expires_at_utc": expires.isoformat(),
         "authorization_nonce": auth_nonce,
-        "ceo_signature": signature,
     }
+    message = json.dumps(unsigned_payload, sort_keys=True, separators=(",", ":"))
+    signing_path = Path(signing_key)
+    info = signing_path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+            or info.st_mode & 0o077):
+        raise BackupError("Restore signing key must be a private regular file owned by the issuer with mode 0600 or stricter")
+    try:
+        signed = subprocess.run(
+            ["openssl", "dgst", "-sha256", "-sign", str(signing_path)],
+            input=message.encode("utf-8"), capture_output=True, check=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise BackupError("Restore signing key could not issue authorization") from exc
+    signature = base64.b64encode(signed.stdout).decode("ascii")
+    return {**unsigned_payload, "ceo_signature": signature}
 
 
 def verify_destructive_restore_authorization(
@@ -392,6 +450,9 @@ def verify_destructive_restore_authorization(
     if not isinstance(payload, dict):
         return False, "Authorization payload must be a JSON object dictionary.", None
 
+    if payload.get("version") != 1:
+        return False, "Unsupported restore authorization artifact version.", None
+
     # Check 1: Action scope
     if payload.get("action") != "database.destructive_restore":
         return False, f"Unauthorized action '{payload.get('action')}'. Must be 'database.destructive_restore'.", None
@@ -430,32 +491,34 @@ def verify_destructive_restore_authorization(
     authority_id = payload.get("authority_id", "ceo-restore-authority")
 
     # Resolve dedicated verification key (separated from API bearer token)
-    canonical_key = verification_key or ceo_token or os.environ.get("AAO_RESTORE_AUTHORITY_KEY") or os.environ.get("AAO_CEO_AUTH_KEY")
-    if not canonical_key and Path("/etc/aao/governance/ceo_restore_authority.key").is_file():
-        try:
-            canonical_key = Path("/etc/aao/governance/ceo_restore_authority.key").read_text(encoding="utf-8").strip()
-        except OSError:
-            pass
-    if not canonical_key:
-        # Fall back to canonical token if configured for backward compatibility
-        canonical_key = os.environ.get("AAO_CEO_TOKEN")
-        if not canonical_key and Path("/etc/aao/aao-ceo.token").is_file():
-            try:
-                canonical_key = Path("/etc/aao/aao-ceo.token").read_text(encoding="utf-8").strip()
-            except OSError:
-                pass
-
+    canonical_key = verification_key or os.environ.get("AAO_RESTORE_AUTHORITY_PUBLIC_KEY")
+    if not canonical_key and Path("/etc/aao/governance/ceo_restore_authority.pub").is_file():
+        canonical_key = "/etc/aao/governance/ceo_restore_authority.pub"
     if not canonical_key:
         return False, "Cannot verify authorization: authority verification key not configured on host.", None
 
-    # Support structured format with authority_id and legacy format
-    expected_msg_v2 = f"database.destructive_restore:{authority_id}:{actual_hash}:{target_database}:{nonce}:{exp_str}"
-    expected_msg_v1 = f"database.destructive_restore:{actual_hash}:{target_database}:{nonce}:{exp_str}"
-    expected_sig_v2 = hmac.new(canonical_key.encode("utf-8"), expected_msg_v2.encode("utf-8"), hashlib.sha256).hexdigest()
-    expected_sig_v1 = hmac.new(canonical_key.encode("utf-8"), expected_msg_v1.encode("utf-8"), hashlib.sha256).hexdigest()
-
-    actual_sig = payload.get("ceo_signature", "")
-    sig_valid = secrets.compare_digest(actual_sig, expected_sig_v2) or secrets.compare_digest(actual_sig, expected_sig_v1)
+    expected_authority = os.environ.get("AAO_RESTORE_AUTHORITY_ID", "ceo-restore-authority")
+    if authority_id != expected_authority:
+        return False, "Authorization issuer identity does not match the configured authority.", None
+    signed_payload = {key: value for key, value in payload.items() if key != "ceo_signature"}
+    expected_msg = json.dumps(signed_payload, sort_keys=True, separators=(",", ":"))
+    try:
+        signature = base64.b64decode(payload.get("ceo_signature", ""), validate=True)
+        key_path = Path(canonical_key)
+        key_info = key_path.lstat()
+        if not stat.S_ISREG(key_info.st_mode) or key_info.st_mode & 0o022:
+            raise OSError("Configured public verification key is not a regular protected file")
+        with tempfile.TemporaryDirectory(prefix="aao-restore-verify-") as tmp:
+            signature_path = Path(tmp) / "signature.bin"
+            signature_path.write_bytes(signature)
+            signature_path.chmod(0o600)
+            verified = subprocess.run(
+                ["openssl", "dgst", "-sha256", "-verify", str(key_path), "-signature", str(signature_path)],
+                input=expected_msg.encode("utf-8"), capture_output=True, timeout=5, check=False,
+            )
+        sig_valid = verified.returncode == 0
+    except (OSError, ValueError, subprocess.SubprocessError):
+        sig_valid = False
     if not sig_valid:
         return False, "CEO authority cryptographic signature verification failed.", None
 

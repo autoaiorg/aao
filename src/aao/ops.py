@@ -147,11 +147,10 @@ def check_governance_guardrails() -> DiagnosticCheck:
 
 def check_governance_identities(app_keys_override: list[Path] | None = None) -> DiagnosticCheck:
     """Verify governance role identities and distinguish the 6 governance states:
-    - INSTALLED_VERIFIED: All 9 keys present, valid PEM headers, 0600/0400 permissions, correct ownership, active roles.
-    - INSTALLED_UNVERIFIED: Keys present but corrupt PEM format, improper permissions (!= 0600/0400), or wrong ownership.
-    - STAGED_PENDING_KEYS: Identities, filesystem ACLs, ledgers, events verified; keys pending CEO deployment.
+    - INSTALLED_UNVERIFIED: local key parse and filesystem checks only; GitHub identity/authentication not proven.
+    - STAGED_PENDING_KEYS: no App keys present; no other infrastructure claim is made.
     - DEGRADED: Partial keys present (between 1 and 8 of 9 keys deployed).
-    - FAILED: Missing required governance identities on host, unauthorized unmasked integrator, or corrupted trust root.
+    - FAILED: Missing required governance identities on host or unauthorized unmasked integrator.
     """
     import pwd
     import stat
@@ -179,48 +178,69 @@ def check_governance_identities(app_keys_override: list[Path] | None = None) -> 
 
     # Check GitHub App keys status
     default_app_keys = [
-        Path("/home/aao-integrator/.config/aao/aao-integrator.pem"),
-        Path("/home/aao-auditor/.config/aao/aao-auditor.pem"),
-        Path("/home/aao-auditor-alt/.config/aao/aao-auditor-alt.pem"),
-        Path("/home/aao-supervisor/.config/aao/aao-supervisor.pem"),
-        Path("/home/aao-notifier/.config/aao/aao-notifier.pem"),
-        Path("/home/aao-pm/.config/aao/aao-pm.pem"),
-        Path("/home/aao-impl-claude/.config/aao/aao-impl-claude.pem"),
-        Path("/home/aao-impl-codex/.config/aao/aao-impl-codex.pem"),
-        Path("/home/aao-impl-ag/.config/aao/aao-impl-agy.pem"),
+        ("aao-integrator", Path("/home/aao-integrator/.config/aao/aao-integrator.pem")),
+        ("aao-auditor", Path("/home/aao-auditor/.config/aao/aao-auditor.pem")),
+        ("aao-auditor-alt", Path("/home/aao-auditor-alt/.config/aao/aao-auditor-alt.pem")),
+        ("aao-supervisor", Path("/home/aao-supervisor/.config/aao/aao-supervisor.pem")),
+        ("aao-notifier", Path("/home/aao-notifier/.config/aao/aao-notifier.pem")),
+        ("aao-pm", Path("/home/aao-pm/.config/aao/aao-pm.pem")),
+        ("aao-impl-claude", Path("/home/aao-impl-claude/.config/aao/aao-impl-claude.pem")),
+        ("aao-impl-codex", Path("/home/aao-impl-codex/.config/aao/aao-impl-codex.pem")),
+        ("aao-impl-ag", Path("/home/aao-impl-ag/.config/aao/aao-impl-agy.pem")),
     ]
-    app_keys = app_keys_override if app_keys_override is not None else default_app_keys
-    present_keys = [k for k in app_keys if k.is_file()]
+    app_key_specs = (
+        [(None, Path(k)) for k in app_keys_override]
+        if app_keys_override is not None else default_app_keys
+    )
+    present_keys = [(owner, key) for owner, key in app_key_specs if key.exists() or key.is_symlink()]
 
     if len(present_keys) == 0:
         return DiagnosticCheck(
             "Governance Infrastructure",
-            "PASS",
-            "STAGED_PENDING_KEYS: Identities, filesystem ACLs, ledgers, and events verified. GitHub App keys and trust root pending CEO deployment keys.",
+            "WARN",
+            "STAGED_PENDING_KEYS: no App keys are present; this diagnostic does not attest identity ACLs, ledgers, events, or a trust root.",
         )
-    elif len(present_keys) < len(app_keys):
+    elif len(present_keys) < len(app_key_specs):
         return DiagnosticCheck(
             "Governance Infrastructure",
             "WARN",
-            f"DEGRADED: Partial keys present ({len(present_keys)}/{len(app_keys)} GitHub App keys deployed).",
+            f"DEGRADED: Partial keys present ({len(present_keys)}/{len(app_key_specs)} GitHub App keys deployed).",
         )
 
-    # All 9 keys are present -> verify cryptographic PEM headers, strict permissions, and ownership
+    # All expected paths exist -> parse keys and check local file boundaries. This
+    # is not proof that GitHub recognizes the App, that the key is unrevoked, or
+    # that an installation token can be issued.
     unverified_reasons = []
-    for key_path in present_keys:
+    for expected_owner, key_path in present_keys:
         try:
-            st = key_path.stat()
+            st = key_path.lstat()
+            if not stat.S_ISREG(st.st_mode):
+                unverified_reasons.append(f"{key_path.name}: not a regular, non-symlink key file")
+                continue
             file_mode = stat.S_IMODE(st.st_mode)
             if file_mode not in (0o600, 0o400):
                 unverified_reasons.append(
                     f"{key_path.name}: insecure permissions 0{oct(file_mode)[2:]} (expected 0600 or 0400)"
                 )
-
-            content = key_path.read_text(encoding="utf-8", errors="ignore")
-            if not ("BEGIN RSA PRIVATE KEY" in content or "BEGIN PRIVATE KEY" in content) or "END " not in content:
-                unverified_reasons.append(
-                    f"{key_path.name}: invalid or corrupt PEM cryptographic header"
+            if expected_owner:
+                try:
+                    expected_uid = pwd.getpwnam(expected_owner).pw_uid
+                except KeyError:
+                    expected_uid = None
+                if expected_uid is None or st.st_uid != expected_uid:
+                    unverified_reasons.append(f"{key_path.name}: owner does not match role {expected_owner}")
+            try:
+                parsed = subprocess.run(
+                    ["openssl", "pkey", "-in", str(key_path), "-noout"],
+                    capture_output=True, check=False, timeout=5,
                 )
+            except (OSError, subprocess.TimeoutExpired):
+                unverified_reasons.append(
+                    f"{key_path.name}: could not run bounded OpenSSL key parser"
+                )
+            else:
+                if parsed.returncode != 0:
+                    unverified_reasons.append(f"{key_path.name}: cryptographic key parse failed")
         except OSError as exc:
             unverified_reasons.append(f"{key_path.name}: read error ({exc})")
 
@@ -228,13 +248,13 @@ def check_governance_identities(app_keys_override: list[Path] | None = None) -> 
         return DiagnosticCheck(
             "Governance Infrastructure",
             "WARN",
-            f"INSTALLED_UNVERIFIED: Keys present but integrity checks failed: {'; '.join(unverified_reasons)}.",
+            f"INSTALLED_UNVERIFIED: Local key checks failed: {'; '.join(unverified_reasons)}.",
         )
 
     return DiagnosticCheck(
         "Governance Infrastructure",
-        "PASS",
-        f"INSTALLED_VERIFIED: All {len(app_keys)}/{len(app_keys)} GitHub App keys verified with valid PEM headers, strict permissions, and operational roles.",
+        "WARN",
+        f"INSTALLED_UNVERIFIED: {len(present_keys)}/{len(app_key_specs)} keys parsed with local permission/ownership checks; GitHub App identity, revocation, and live authentication were not verified.",
     )
 
 
@@ -376,10 +396,11 @@ def main(argv: list[str] | None = None) -> int:
                            help="Verify restoration into an isolated destination before touching target")
 
     # authorize-restore
-    p_auth = subparsers.add_parser("authorize-restore", help="Generate structured cryptographic CEO authorization for restore")
+    p_auth = subparsers.add_parser("authorize-restore", help="Issue a restore authorization using an issuer-only signing key")
     p_auth.add_argument("archive", type=Path)
     p_auth.add_argument("--target-database", default="aao_prod")
-    p_auth.add_argument("--ceo-token", default=None)
+    p_auth.add_argument("--signing-key-file", type=Path, required=True,
+                        help="Issuer private key; never install this key on an executor host")
     p_auth.add_argument("--output", type=Path, default=None)
 
     # register-host-worker
@@ -441,16 +462,11 @@ def main(argv: list[str] | None = None) -> int:
         import json
 
         from aao.backup import create_restore_authorization
-        token = args.ceo_token or os.environ.get("AAO_CEO_TOKEN")
-        if not token and Path("/etc/aao/aao-ceo.token").is_file():
-            try:
-                token = Path("/etc/aao/aao-ceo.token").read_text(encoding="utf-8").strip()
-            except OSError:
-                pass
-        if not token:
-            print("ERROR: CEO token required via --ceo-token, AAO_CEO_TOKEN or /etc/aao/aao-ceo.token", file=sys.stderr)
+        try:
+            auth = create_restore_authorization(args.archive, args.target_database, args.signing_key_file)
+        except (RuntimeError, OSError) as exc:
+            print(f"ERROR: Restore authorization could not be issued: {exc}", file=sys.stderr)
             return 1
-        auth = create_restore_authorization(args.archive, args.target_database, token)
         auth_json = json.dumps(auth, indent=2)
         if args.output:
             args.output.write_text(auth_json, encoding="utf-8")

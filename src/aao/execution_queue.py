@@ -44,27 +44,32 @@ def claim(worker_id: str, *, agent_credential: str, project_id: str,
         has_table = db.execute(
             "SELECT to_regclass('public.host_worker_bindings')"
         ).fetchone()[0]
+        if not has_table:
+            raise ExecutionConflict("Host fencing registry unavailable; execution rejected")
+        has_epoch_col = db.execute(
+            "SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='execution_queue' AND column_name='claim_fence_epoch'"
+        ).fetchone() is not None
+        if not has_epoch_col:
+            raise ExecutionConflict("Execution fencing epoch schema unavailable; execution rejected")
         host_fence_epoch = None
         if has_table:
-            host_row = db.execute(
+            host_rows = db.execute(
                 """
                 SELECT host_id, status, fence_epoch FROM host_worker_bindings
                 WHERE worker_id = %s
-                ORDER BY created_at DESC LIMIT 1
+                ORDER BY created_at DESC
                 FOR SHARE
                 """,
                 (worker_id,),
-            ).fetchone()
-            if not host_row:
+            ).fetchall()
+            active_rows = [row for row in host_rows if row[1] == "ACTIVE"]
+            if len(active_rows) != 1:
                 raise ExecutionConflict(
-                    f"Worker '{worker_id}' has no registered host binding; execution rejected under fail-closed fencing."
+                    f"Worker '{worker_id}' must have exactly one active host binding; execution rejected."
                 )
-            if host_row[1] != "ACTIVE":
-                raise ExecutionConflict(
-                    f"Worker '{worker_id}' is bound to fenced host '{host_row[0]}'. "
-                    "Authority revoked via cutover fencing."
-                )
-            host_fence_epoch = host_row[2]
+            host_fence_epoch = active_rows[0][2]
+            if host_fence_epoch is None:
+                raise ExecutionConflict("Host fencing epoch is missing; execution rejected")
 
         grant = db.execute(
             "SELECT 1 FROM project_grants WHERE principal_id=%s AND project_id=%s "
@@ -114,12 +119,6 @@ def claim(worker_id: str, *, agent_credential: str, project_id: str,
             if input_data["check_id"] != "core-unit":
                 raise ExecutionConflict("Repository check is not allow-listed")
         token = str(uuid4())
-        has_epoch_col = False
-        if has_table:
-            has_epoch_col = db.execute(
-                "SELECT 1 FROM information_schema.columns WHERE table_name='execution_queue' AND column_name='claim_fence_epoch'"
-            ).fetchone() is not None
-
         if has_epoch_col:
             expiry = db.execute(
                 "UPDATE execution_queue SET status='RUNNING',lease_token=%s,"
@@ -151,27 +150,32 @@ def complete(execution_id: str, token: str, worker_id: str, result: dict,
         has_table = db.execute(
             "SELECT to_regclass('public.host_worker_bindings')"
         ).fetchone()[0]
+        if not has_table:
+            raise ExecutionConflict("Host fencing registry unavailable; completion rejected")
+        has_epoch_col = db.execute(
+            "SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='execution_queue' AND column_name='claim_fence_epoch'"
+        ).fetchone() is not None
+        if not has_epoch_col:
+            raise ExecutionConflict("Execution fencing epoch schema unavailable; completion rejected")
         host_fence_epoch = None
         if has_table:
-            host_row = db.execute(
+            host_rows = db.execute(
                 """
                 SELECT host_id, status, fence_epoch FROM host_worker_bindings
                 WHERE worker_id = %s
-                ORDER BY created_at DESC LIMIT 1
+                ORDER BY created_at DESC
                 FOR SHARE
                 """,
                 (worker_id,),
-            ).fetchone()
-            if not host_row:
+            ).fetchall()
+            active_rows = [row for row in host_rows if row[1] == "ACTIVE"]
+            if len(active_rows) != 1:
                 raise ExecutionConflict(
-                    f"Worker '{worker_id}' has no registered host binding; execution rejected under fail-closed fencing."
+                    f"Worker '{worker_id}' must have exactly one active host binding; completion rejected."
                 )
-            if host_row[1] != "ACTIVE":
-                raise ExecutionConflict(
-                    f"Worker '{worker_id}' is bound to fenced host '{host_row[0]}'. "
-                    "Authority revoked via cutover fencing."
-                )
-            host_fence_epoch = host_row[2]
+            host_fence_epoch = active_rows[0][2]
+            if host_fence_epoch is None:
+                raise ExecutionConflict("Host fencing epoch is missing; completion rejected")
 
         execution = db.execute(
             "SELECT project_id,project_state_generation FROM execution_queue "
@@ -182,17 +186,11 @@ def complete(execution_id: str, token: str, worker_id: str, result: dict,
             raise ExecutionConflict("Execution not found")
 
         if has_table and host_fence_epoch is not None:
-            has_epoch_col = db.execute(
-                "SELECT 1 FROM information_schema.columns WHERE table_name='execution_queue' AND column_name='claim_fence_epoch'"
-            ).fetchone() is not None
-            if has_epoch_col:
-                epoch_row = db.execute(
-                    "SELECT claim_fence_epoch FROM execution_queue WHERE id=%s", (execution_id,)
-                ).fetchone()
-                if epoch_row and epoch_row[0] is not None and host_fence_epoch != epoch_row[0]:
-                    raise ExecutionConflict(
-                        f"Host fencing epoch changed during task execution (claimed: {epoch_row[0]}, current: {host_fence_epoch}); lease invalidated."
-                    )
+            epoch_row = db.execute(
+                "SELECT claim_fence_epoch FROM execution_queue WHERE id=%s", (execution_id,)
+            ).fetchone()
+            if not epoch_row or epoch_row[0] is None or host_fence_epoch != epoch_row[0]:
+                raise ExecutionConflict("Host fencing epoch is missing or changed; lease invalidated")
         assignment = db.execute(
             "SELECT w.parent_work_id,a.principal_id FROM execution_queue q "
             "JOIN work_items w ON w.id=q.work_id "

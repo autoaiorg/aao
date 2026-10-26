@@ -1,6 +1,7 @@
 """Tests for AAO backup, verification, isolated restoration, and host fencing."""
 
 import json
+import os
 import tarfile
 from unittest.mock import MagicMock, patch
 
@@ -14,6 +15,39 @@ from aao.backup import (
     restore_backup,
     verify_backup,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolated_authorization_store(tmp_path, monkeypatch):
+    """Every test gets its own protected replay store; never use /tmp fallback."""
+    monkeypatch.setenv("AAO_AUTH_STORE_DIR", str(tmp_path / "authorization-store"))
+
+
+def test_nonce_store_rejects_symlink_and_insecure_directory(tmp_path, monkeypatch):
+    from aao.backup import consume_authorization_nonce_host
+
+    real = tmp_path / "real-store"
+    real.mkdir(mode=0o700)
+    link = tmp_path / "linked-store"
+    link.symlink_to(real, target_is_directory=True)
+    monkeypatch.setenv("AAO_AUTH_STORE_DIR", str(link))
+    ok, reason = consume_authorization_nonce_host("nonce-1", {"nonce": "nonce-1"})
+    assert not ok and "real directory" in reason
+
+    insecure = tmp_path / "insecure-store"
+    insecure.mkdir(mode=0o755)
+    insecure.chmod(0o755)
+    monkeypatch.setenv("AAO_AUTH_STORE_DIR", str(insecure))
+    ok, reason = consume_authorization_nonce_host("nonce-2", {"nonce": "nonce-2"})
+    assert not ok and "permissions" in reason
+
+
+def test_nonce_rejects_path_traversal(tmp_path, monkeypatch):
+    from aao.backup import consume_authorization_nonce_host
+
+    monkeypatch.setenv("AAO_AUTH_STORE_DIR", str(tmp_path / "authority"))
+    ok, reason = consume_authorization_nonce_host("../outside", {"nonce": "../outside"})
+    assert not ok and "invalid characters" in reason
 
 
 def test_compute_file_sha256(tmp_path):
@@ -122,12 +156,16 @@ def test_apply_host_fencing_targeted():
     assert any("recorded host.fenced audit event" in a for a in actions)
 
 
-def test_restore_requires_ceo_authorization_on_non_empty_database(tmp_path, monkeypatch):
+def test_restore_requires_ceo_authorization_on_non_empty_database(tmp_path, monkeypatch, restore_test_signing_key):
     dump_file = tmp_path / "db.sql"
     dump_file.write_text("SELECT 1;", encoding="utf-8")
     archive = tmp_path / "dummy.tar.gz"
     with tarfile.open(archive, "w:gz") as tar:
         tar.add(dump_file, arcname="db.sql")
+
+    from aao.backup import create_restore_authorization
+    bad_auth = create_restore_authorization(archive, "wrong_db", restore_test_signing_key)
+    valid_auth = create_restore_authorization(archive, "db", restore_test_signing_key)
 
     monkeypatch.setenv("AAO_CEO_TOKEN", "valid-ceo-token-1234")
 
@@ -176,8 +214,6 @@ def test_restore_requires_ceo_authorization_on_non_empty_database(tmp_path, monk
             )
 
         # 4. Fail if pre_verified_isolated is True but authorization is invalid
-        from aao.backup import create_restore_authorization
-        bad_auth = create_restore_authorization(archive, "wrong_db", "valid-ceo-token-1234")
         with pytest.raises(BackupError, match="Destructive restore over active non-empty database denied"):
             restore_backup(
                 archive,
@@ -189,7 +225,6 @@ def test_restore_requires_ceo_authorization_on_non_empty_database(tmp_path, monk
             )
 
         # 5. Succeed if pre_verified_isolated is True and valid authorization is provided
-        valid_auth = create_restore_authorization(archive, "db", "valid-ceo-token-1234")
         manifest = restore_backup(
             archive,
             "postgresql://user:pass@localhost/db",
@@ -201,14 +236,18 @@ def test_restore_requires_ceo_authorization_on_non_empty_database(tmp_path, monk
         assert manifest == mock_manifest
 
 
-def test_restore_rolls_back_on_partial_failure(tmp_path, monkeypatch):
+def test_restore_rolls_back_on_partial_failure(tmp_path, monkeypatch, restore_test_signing_key):
     """Prove that if psql fails during restore, destination is rolled back to safety snapshot."""
     import subprocess
+    real_run = subprocess.run
     dump_file = tmp_path / "db.sql"
     dump_file.write_text("SELECT 1;", encoding="utf-8")
     archive = tmp_path / "dummy.tar.gz"
     with tarfile.open(archive, "w:gz") as tar:
         tar.add(dump_file, arcname="db.sql")
+
+    from aao.backup import create_restore_authorization
+    valid_auth = create_restore_authorization(archive, "db", restore_test_signing_key)
 
     monkeypatch.setenv("AAO_CEO_TOKEN", "valid-ceo-token-1234")
 
@@ -235,6 +274,8 @@ def test_restore_rolls_back_on_partial_failure(tmp_path, monkeypatch):
         call_count = 0
         def fake_run(cmd, *args, **kwargs):
             nonlocal call_count
+            if cmd[0] == "openssl":
+                return real_run(cmd, *args, **kwargs)
             call_count += 1
             if cmd[0] == "pg_dump":
                 return MagicMock(returncode=0)
@@ -248,8 +289,6 @@ def test_restore_rolls_back_on_partial_failure(tmp_path, monkeypatch):
 
         mock_run.side_effect = fake_run
 
-        from aao.backup import create_restore_authorization
-        valid_auth = create_restore_authorization(archive, "db", "valid-ceo-token-1234")
         with pytest.raises(BackupError, match="safely rolled back to original pre-restoration state"):
             restore_backup(
                 archive,
@@ -261,7 +300,7 @@ def test_restore_rolls_back_on_partial_failure(tmp_path, monkeypatch):
             )
 
 
-def test_structured_restore_authorization_verification(tmp_path, monkeypatch):
+def test_structured_restore_authorization_verification(tmp_path, monkeypatch, restore_test_signing_key):
     """Test full matrix of structured CEO authorization controls (Finding A-08)."""
     dump_file = tmp_path / "db.sql"
     dump_file.write_text("SELECT 1;", encoding="utf-8")
@@ -279,25 +318,29 @@ def test_structured_restore_authorization_verification(tmp_path, monkeypatch):
     from aao.backup import create_restore_authorization, verify_destructive_restore_authorization
 
     # 1. Valid authorization artifact
-    valid_auth = create_restore_authorization(archive, "aao_prod", ceo_key, valid_minutes=60)
+    valid_auth = create_restore_authorization(archive, "aao_prod", restore_test_signing_key, valid_minutes=60)
+    with pytest.raises(BackupError, match="private regular file"):
+        create_restore_authorization(
+            archive, "aao_prod", os.environ["AAO_RESTORE_AUTHORITY_PUBLIC_KEY"]
+        )
     ok, msg, nonce = verify_destructive_restore_authorization(None, archive, "aao_prod", valid_auth, ceo_key)
     assert ok is True
     assert nonce is not None
 
     # 2. Reject mismatched backup archive
-    bad_hash_auth = create_restore_authorization(other_archive, "aao_prod", ceo_key)
+    bad_hash_auth = create_restore_authorization(other_archive, "aao_prod", restore_test_signing_key)
     ok, msg, _ = verify_destructive_restore_authorization(None, archive, "aao_prod", bad_hash_auth, ceo_key)
     assert ok is False
     assert "backup hash mismatch" in msg
 
     # 3. Reject mismatched target database
-    bad_db_auth = create_restore_authorization(archive, "other_db", ceo_key)
+    bad_db_auth = create_restore_authorization(archive, "other_db", restore_test_signing_key)
     ok, msg, _ = verify_destructive_restore_authorization(None, archive, "aao_prod", bad_db_auth, ceo_key)
     assert ok is False
     assert "target database mismatch" in msg
 
     # 4. Reject expired authorization
-    expired_auth = create_restore_authorization(archive, "aao_prod", ceo_key, valid_minutes=-5)
+    expired_auth = create_restore_authorization(archive, "aao_prod", restore_test_signing_key, valid_minutes=-5)
     ok, msg, _ = verify_destructive_restore_authorization(None, archive, "aao_prod", expired_auth, ceo_key)
     assert ok is False
     assert "expired" in msg
@@ -306,6 +349,20 @@ def test_structured_restore_authorization_verification(tmp_path, monkeypatch):
     tampered_auth = dict(valid_auth)
     tampered_auth["ceo_signature"] = "tampered_signature"
     ok, msg, _ = verify_destructive_restore_authorization(None, archive, "aao_prod", tampered_auth, ceo_key)
+    assert ok is False
+    assert "signature verification failed" in msg
+
+    # An independently generated executor key cannot issue artifacts trusted by
+    # the configured authority's public verification key.
+    import subprocess
+    executor_key = tmp_path / "executor-private.pem"
+    subprocess.run(
+        ["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", str(executor_key)],
+        check=True, capture_output=True, timeout=10,
+    )
+    executor_key.chmod(0o600)
+    forged = create_restore_authorization(archive, "aao_prod", executor_key)
+    ok, msg, _ = verify_destructive_restore_authorization(None, archive, "aao_prod", forged, ceo_key)
     assert ok is False
     assert "signature verification failed" in msg
 
@@ -324,7 +381,7 @@ def test_structured_restore_authorization_verification(tmp_path, monkeypatch):
     assert "Separation of duties violation" in msg
 
     # 8. Prove atomic reservation succeeds when nonce is fresh
-    fresh_auth = create_restore_authorization(archive, "aao_prod", ceo_key, valid_minutes=60)
+    fresh_auth = create_restore_authorization(archive, "aao_prod", restore_test_signing_key, valid_minutes=60)
     mock_fresh_db = MagicMock()
     mock_fresh_cursor = MagicMock()
     mock_fresh_cursor.rowcount = 1

@@ -176,7 +176,7 @@ Los perfiles/unidades persistidos y la edición CEO ya están construidos (#134/
 
 ### F3/F4 — alcance a continuación
 
-- **F3 (estado actualizado):** PR #161 persiste padre/hijos y DAG; #162 bloquea admisión hasta que prerrequisitos estén en `DONE`; #167 persiste la asignación CEO sin crear grants; #171 persiste una única consolidación CEO por grupo ligada a un hash de snapshot de resultados, ejecuciones, revisiones y evidencia. El contrato exige hijos `DONE`, rechaza hashes obsoletos y replay distinto, y mantiene el padre como contenedor en `INBOX`. Siguiente: conectar el recurso a Oficina Virtual y representar progreso/confirmación desde datos reales; no dibujar equipo ejecutor ni síntesis ficticia.
+- **F3 (estado actualizado):** PR #161 persiste padre/hijos y DAG; #162 bloquea admisión hasta que prerrequisitos estén en `DONE`; #167 persiste la asignación CEO sin crear grants; #171 persiste la consolidación CEO ligada a hashes fuente; #173 conecta grupos/consolidación a Oficina Virtual. El contrato exige todos los hijos `DONE`, rechaza hashes obsoletos/replay distinto y mantiene el padre como contenedor `INBOX`. Siguiente: ensayo funcional con datos reales; después tratar resultados parciales/conflictos y asignación visible por hijo. No dibujar equipo ejecutor ni síntesis ficticia.
 - **F4:** no se ha identificado contrato durable para rutinas/calendario, base de conocimiento corporativa, skills/briefs versionados ni aprendizaje revisado. Primero inventariar datos/capacidades persistentes existentes y sus propietarios; implementar solo el mínimo backend útil, luego lectura UI. No ejecutar temporizadores ni mantener conocimiento operativo solo en navegador.
 
 ### Seguimiento de construcción (rama `feat/agents-office-aa-integration`)
@@ -229,7 +229,13 @@ Los perfiles/unidades persistidos y la edición CEO ya están construidos (#134/
 - **Ejecución:** admisión, progreso, staging y claim filtran los hijos por principal asignado; el board incluye `assigned_principal_id`. La asignación no sustituye los checks de grant del motor ni la autenticación de ejecución. Se conserva la restricción de no re-asignar durante una ejecución activa/incierta.
 - **Pruebas añadidas:** integración PostgreSQL cubre escritura CEO, prohibición a AGENT, proyección, grants inalterados, denegación de otro agente, claim del asignado y fencing de finalización/reasignación.
 - **Evidencia:** CI de PR #167 run `40248236640` aplicó la migración y pasó los jobs `test` y `frontend`; suite PostgreSQL `658 passed, 1 skipped`; Ruff, TypeScript y Vitest pasaron. La ejecución local sin base desechable reportó skips y no se cuenta como evidencia de integración.
-- **Límites pendientes:** aún no hay control UI de asignación ni proyección UI de la consolidación en la oficina/Control Center. La consolidación inicial requiere todos los hijos `DONE`; no contempla resultados parciales/conflictos. No se dibujan equipos ejecutores ni se sintetizan resultados.
+- **Límites pendientes:** aún no hay control UI de asignación por hijo en Oficina Virtual/Control Center. La consolidación inicial requiere todos los hijos `DONE`; no contempla resultados parciales/conflictos. No se dibujan equipos ejecutores ni se sintetizan resultados automáticamente.
+
+### F3 — proyección LIVE y confirmación UI de consolidación (integrada)
+
+- **Cambio integrado en PR #173, squash SHA `0fe318796d0baaf7058854775f9628dac774f8f8`:** la oficina consume `GET /v1/projects/{project_id}/work-groups`, muestra grupos/hijos y estado real, cantidad de ejecuciones/revisiones/evidencias y prefijo del hash fuente. La sesión CEO puede persistir manualmente una síntesis únicamente cuando el contrato indica que todos los hijos están `DONE`; la confirmación envía idempotency key y hash actualmente mostrado. Un conflicto 409 vuelve a consultar el estado. LIVE lista solo backend; DEMO no inventa grupos operativos.
+- **Pruebas:** Vitest verifica que solo CEO llama rutas y que la UI presenta hijos incompletos sin permitir consolidar; al estar listo, envía el hash mostrado y síntesis. Build/TypeScript y Vitest locales: `164 passed`. CI PR: runs `40250544903` y `40250549093` en head `9bed51d822150962cd8f09055975f39d5eb4f85d`, frontend/test SUCCESS. CI post-merge `main` pendiente en esta anotación. [PR #173](https://github.com/autoaiorg/aao/pull/173), [CI](https://github.com/autoaiorg/aao/actions/runs/40250549093).
+- **Límite:** no se ha realizado aún prueba interactiva con una sesión CEO y resultados reales en el entorno local; el panel no asigna hijos y no cubre consolidación parcial/conflictos.
 
 ### F3 — consolidación CEO durable (integrada; proyección UI pendiente)
 

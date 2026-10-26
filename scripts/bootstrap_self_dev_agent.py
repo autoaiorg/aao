@@ -98,7 +98,7 @@ def write_private_token(path: Path, token: str) -> None:
 
 
 def ensure_mandated_project(base_url: str, ceo_token: str) -> tuple[dict, dict]:
-    """Idempotently verify/register only the confirmed AAO self-development scope."""
+    """Verify the separately confirmed AAO self-development scope."""
     mandates = request_json(base_url, "/v1/mandates", ceo_token=ceo_token)
     if not isinstance(mandates, list):
         raise BootstrapError("mandate inventory response is invalid")
@@ -116,23 +116,15 @@ def ensure_mandated_project(base_url: str, ceo_token: str) -> tuple[dict, dict]:
             for row in mandates
         ):
             raise BootstrapError("project name is already bound to a different mandate")
-        mandate = request_json(
-            base_url, "/v1/mandates", method="POST", ceo_token=ceo_token,
-            body={"title": MANDATE_TITLE, "objective": MANDATE_OBJECTIVE},
+        raise BootstrapError(
+            "separately CEO-confirmed mandate is required; bootstrap will not create or confirm one"
         )
-        if not isinstance(mandate, dict) or not mandate.get("id"):
-            raise BootstrapError("mandate creation response is invalid")
 
     mandate_id = mandate["id"]
-    if mandate.get("status") == "DRAFT":
-        mandate = request_json(
-            base_url, f"/v1/mandates/{mandate_id}/confirm", method="POST",
-            ceo_token=ceo_token,
+    if mandate.get("status") != "CONFIRMED":
+        raise BootstrapError(
+            "CEO mandate is not confirmed; bootstrap will not confirm it"
         )
-        if mandate.get("status") != "CONFIRMED":
-            raise BootstrapError("CEO mandate confirmation did not complete")
-    elif mandate.get("status") != "CONFIRMED":
-        raise BootstrapError("CEO mandate is not in a confirmable state")
 
     inventory = request_json(base_url, "/v1/mandates", ceo_token=ceo_token)
     record = next((row for row in inventory if row.get("id") == mandate_id), None)

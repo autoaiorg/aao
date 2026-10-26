@@ -22,34 +22,49 @@ def mandate_record(*, project=None, include_project_event=False):
     }
 
 
-def test_bootstrap_registers_and_confirms_mandate_and_project_idempotently(monkeypatch):
-    project = {"id": "project-1", "name": bootstrap.PROJECT_NAME, "state": "ACTIVE"}
-    record = mandate_record(project=project, include_project_event=True)
+def test_bootstrap_requires_preexisting_confirmed_mandate_without_writes(monkeypatch):
     calls = []
-    inventories = iter(([], [mandate_record()], [record]))
 
-    def fake_request(_base_url, path, *, method="GET", ceo_token=None, body=None, **_):
-        calls.append((method, path, body))
+    def no_mandates(_base_url, path, *, method="GET", ceo_token=None, **_):
+        calls.append((method, path))
         assert ceo_token == "local-ceo-secret"
-        if method == "GET":
-            return next(inventories)
-        if path == "/v1/mandates":
-            return {"id": "mandate-1", "status": "DRAFT"}
-        if path == "/v1/mandates/mandate-1/confirm":
-            return {"id": "mandate-1", "status": "CONFIRMED"}
-        if path == "/v1/projects":
-            return {"id": "project-1", "state": "ACTIVE"}
-        raise AssertionError(f"Unexpected bootstrap request: {method} {path}")
+        assert method == "GET"
+        assert path == "/v1/mandates"
+        return []
 
-    monkeypatch.setattr(bootstrap, "request_json", fake_request)
-    mandate, actual_project = bootstrap.ensure_mandated_project(
-        "http://127.0.0.1:8001", "local-ceo-secret",
-    )
-    assert mandate["id"] == "mandate-1"
-    assert actual_project == project
-    assert [call[1] for call in calls if call[0] == "POST"] == [
-        "/v1/mandates", "/v1/mandates/mandate-1/confirm", "/v1/projects",
-    ]
+    monkeypatch.setattr(bootstrap, "request_json", no_mandates)
+    try:
+        bootstrap.ensure_mandated_project(
+            "http://127.0.0.1:8001", "local-ceo-secret",
+        )
+    except bootstrap.BootstrapError as exc:
+        assert "will not create or confirm" in str(exc)
+    else:
+        raise AssertionError("bootstrap must not create or confirm a mandate")
+    assert calls == [("GET", "/v1/mandates")]
+
+
+def test_bootstrap_refuses_draft_mandate_without_confirmation_write(monkeypatch):
+    draft = mandate_record()
+    draft["status"] = "DRAFT"
+    calls = []
+
+    def draft_inventory(_base_url, path, *, method="GET", ceo_token=None, **_):
+        calls.append((method, path))
+        assert method == "GET"
+        assert path == "/v1/mandates"
+        return [draft]
+
+    monkeypatch.setattr(bootstrap, "request_json", draft_inventory)
+    try:
+        bootstrap.ensure_mandated_project(
+            "http://127.0.0.1:8001", "local-ceo-secret",
+        )
+    except bootstrap.BootstrapError as exc:
+        assert "will not confirm it" in str(exc)
+    else:
+        raise AssertionError("bootstrap must not confirm a draft mandate")
+    assert calls == [("GET", "/v1/mandates")]
 
 
 def test_bootstrap_reuses_verified_existing_project_without_writes(monkeypatch):

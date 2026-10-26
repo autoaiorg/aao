@@ -384,7 +384,7 @@ export const AgentDetailDrawer: React.FC<AgentDetailDrawerProps> = ({
                 color: 'var(--text-secondary)',
               }}
             >
-              Sin tareas asignadas en este momento. Agente en estado disponible / IDLE.
+              No se observan asignaciones. Esto no confirma disponibilidad; estado: {agent.status}; latido: {agent.heartbeatStatus}.
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>

@@ -3700,6 +3700,34 @@ def test_product_acceptance_closes_group_only_after_current_consolidation(monkey
         assert client.post(endpoint, headers=ceo, json=rejected_criteria).status_code == 409
         stale_snapshot = {**payload, "expected_source_sha256": "0" * 64}
         assert client.post(endpoint, headers=ceo, json=stale_snapshot).status_code == 409
+        # A valid consolidation is invalidated if child evidence changes before
+        # product acceptance. The stale consolidated snapshot must not close the
+        # parent even when the caller supplies the now-current source SHA.
+        original_evidence = ["artifact://pilot/result"]
+        changed_evidence = ["artifact://pilot/result", "artifact://pilot/amended"]
+        with connect_postgres() as db:
+            db.execute(
+                "UPDATE work_items SET evidence=%s::jsonb WHERE id=%s",
+                (json.dumps(changed_evidence), child_id),
+            )
+        drifted = client.get(f"/v1/projects/{project}/work-groups", headers=ceo).json()[0]
+        assert drifted["source_sha256"] != payload["expected_source_sha256"]
+        drift_rejected = client.post(
+            endpoint, headers=ceo,
+            json={**payload, "expected_source_sha256": drifted["source_sha256"]},
+        )
+        assert drift_rejected.status_code == 409
+        assert "current evidence-bound consolidation" in drift_rejected.json()["detail"]
+        assert client.get(
+            f"/v1/projects/{project}/work-groups", headers=ceo,
+        ).json()[0]["parent_status"] == "INBOX"
+        # Restore the exact test input so the positive acceptance path below
+        # continues to validate the consolidated source snapshot.
+        with connect_postgres() as db:
+            db.execute(
+                "UPDATE work_items SET evidence=%s::jsonb WHERE id=%s",
+                (json.dumps(original_evidence), child_id),
+            )
         accepted = client.post(endpoint, headers=ceo, json=payload)
         assert accepted.status_code == 201, accepted.text
         assert accepted.json()["created"] is True

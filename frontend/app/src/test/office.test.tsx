@@ -66,6 +66,14 @@ describe('Phase F4: VirtualOfficeView & 3D Office Experience', () => {
     expect(screen.queryByRole('heading', { name: 'Índice corporativo de fuentes' })).not.toBeInTheDocument();
   });
 
+  it('never connects persistent routines in DEMO even when a live port is supplied', () => {
+    const listRoutines = vi.fn();
+    render(<VirtualOfficeView organization={readyDemoState} conversationSessionId="demo-session"
+      routinePort={{ listRoutines, createRoutine: vi.fn(), setRoutineEnabled: vi.fn() }} isCeoSession />);
+    expect(screen.queryByRole('heading', { name: 'Rutinas persistentes' })).not.toBeInTheDocument();
+    expect(listRoutines).not.toHaveBeenCalled();
+  });
+
   it('toggles between 3D viewport and 2D accessible blueprint map', () => {
     render(<VirtualOfficeView organization={readyDemoState} />);
 

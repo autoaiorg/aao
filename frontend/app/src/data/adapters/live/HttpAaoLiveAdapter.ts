@@ -12,6 +12,7 @@
  * - P1 (Finding 3): Elimination of silent conversion to INBOX; preserves exact raw status and routes unrecognized items to unrecognizedItems.
  */
 
+import type { AaoRoutinePort, ProjectRoutine, RoutineInput } from '../../ports/AaoRoutinePort';
 import type { AaoReadPort } from '../../ports/AaoReadPort';
 import type { AaoOrganizationCommandPort, OrganizationProfileCommand, OrganizationUnitCommand } from '../../ports/AaoOrganizationCommandPort';
 import type { AaoWorkCommandPort, CEOWorkRequest, CreatedWorkRequest, WorkPriority, SetWorkPriorityResult } from '../../ports/AaoWorkCommandPort';
@@ -61,7 +62,7 @@ export interface HttpLiveAdapterConfig {
   requireAuth?: boolean;
 }
 
-export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPort, AaoWorkCommandPort, AaoConversationPort {
+export class HttpAaoLiveAdapter implements AaoRoutinePort, AaoReadPort, AaoOrganizationCommandPort, AaoWorkCommandPort, AaoConversationPort {
   private baseUrl: string;
   private timeoutMs: number;
   private getToken: () => string | null;
@@ -916,6 +917,32 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
     });
+  }
+
+  async listRoutines(projectId: string): Promise<DataState<ProjectRoutine[]>> {
+    return this.request(`/v1/projects/${encodeURIComponent(projectId)}/routines`, z.array(z.object({
+      id: z.string().uuid(),
+      template: z.object({ title: z.string(), description: z.string(), acceptance_criteria: z.array(z.string()) }),
+      interval_seconds: z.number().int().min(60).max(31536000),
+      next_run_at: z.string().datetime({ offset: true }), enabled: z.boolean(), authorized_by: z.string(),
+      created_at: z.string().datetime({ offset: true }), execution_authorized: z.literal(false),
+    })));
+  }
+
+  async createRoutine(projectId: string, input: RoutineInput): Promise<DataState<{ id: string; created: boolean }>> {
+    if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo el CEO puede autorizar rutinas.' };
+    return this.request(`/v1/projects/${encodeURIComponent(projectId)}/routines`,
+      z.object({ id: z.string().uuid(), created: z.boolean() }), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
+      });
+  }
+
+  async setRoutineEnabled(projectId: string, routineId: string, enabled: boolean): Promise<DataState<{ id: string; enabled: boolean }>> {
+    if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo el CEO puede pausar o reanudar rutinas.' };
+    return this.request(`/v1/projects/${encodeURIComponent(projectId)}/routines/${encodeURIComponent(routineId)}`,
+      z.object({ id: z.string().uuid(), enabled: z.boolean() }), {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }),
+      });
   }
 
   async createCEOWorkRequest(projectId: string, input: CEOWorkRequest): Promise<DataState<CreatedWorkRequest>> {

@@ -650,6 +650,16 @@ def test_ceo_work_request_creates_only_audited_inbox_item(monkeypatch):
                 "SELECT kind,details FROM events WHERE subject_id=%s AND kind='work.requested'",
                 (work_id,),
             ).fetchone()
+            protocol_instance = db.execute(
+                "SELECT id,protocol_id,protocol_version,subject_type,subject_id,"
+                "request_sha256,started_by FROM protocol_instances "
+                "WHERE subject_type='work_item' AND subject_id=%s",
+                (work_id,),
+            ).fetchone()
+            protocol_event = db.execute(
+                "SELECT details FROM events WHERE subject_id=%s AND kind='protocol.started'",
+                (work_id,),
+            ).fetchone()
             execution_count = db.execute(
                 "SELECT count(*) FROM execution_queue WHERE work_id=%s", (work_id,),
             ).fetchone()[0]
@@ -661,6 +671,15 @@ def test_ceo_work_request_creates_only_audited_inbox_item(monkeypatch):
         assert event[0] == "work.requested"
         assert event[1]["actor"] == "ceo"
         assert event[1]["admitted"] is False
+        assert protocol_instance is not None
+        assert (
+            protocol_instance[1], protocol_instance[2], protocol_instance[3],
+            str(protocol_instance[4]),
+        ) == ("intake-classification", "1.0.0", "work_item", work_id)
+        assert len(protocol_instance[5]) == 64
+        assert protocol_instance[6] == "ceo"
+        assert protocol_event[0]["protocol_instance_id"] == str(protocol_instance[0])
+        assert protocol_event[0]["protocol_version"] == "1.0.0"
         assert execution_count == 0
         assert grant_count == 0
 
@@ -794,6 +813,10 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
                 "SELECT details FROM events WHERE subject_id=%s "
                 "AND kind='conversation.message.work_requested'", (message.json()["id"],),
             ).fetchone()
+            message_protocols = db.execute(
+                "SELECT protocol_id,protocol_version,started_by FROM protocol_instances "
+                "WHERE subject_type='work_item' AND subject_id=%s", (work_id,),
+            ).fetchall()
         assert counts == (1, 0, 0)
 
         # The conversation projection exposes only current work/execution
@@ -822,6 +845,7 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         assert work_audit[0]["source_message_id"] == message.json()["id"]
         assert work_audit[0]["admitted"] is False
         assert link_audit[0]["work_id"] == work_id
+        assert message_protocols == [("intake-classification", "1.0.0", "ceo")]
 
         # Task structuring references the complete persisted thread, not an
         # individual message; only CEO confirmation creates canonical INBOX work.
@@ -845,11 +869,16 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
                 "SELECT kind,details FROM events WHERE subject_id=%s AND kind='work.requested_from_conversation'",
                 (thread_work_id,),
             ).fetchone()
+            thread_protocol = db.execute(
+                "SELECT protocol_id,protocol_version FROM protocol_instances "
+                "WHERE subject_type='work_item' AND subject_id=%s", (thread_work_id,),
+            ).fetchone()
         assert (str(thread_work[0]), *thread_work[1:]) == (
             project, "ceo", "INBOX", "CEO-reviewed outcome of the discussion",
         )
         assert thread_audit[1]["conversation_id"] == conversation_id
         assert thread_audit[1]["admitted"] is False
+        assert thread_protocol == ("intake-classification", "1.0.0")
 
         # CEO-confirmed thread breakdown persists a parent, parallel children,
         # and a dependency DAG without admitting or queuing any work.

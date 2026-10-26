@@ -42,8 +42,23 @@ describe('office work group consolidation', () => {
     const port = setup([group]);
     expect(await screen.findByText('IN_PROGRESS')).toBeInTheDocument();
     expect(screen.getByText(/1 ejecuciones · 0 revisiones/)).toBeInTheDocument();
+    expect(screen.getByText(/Trabajo aún no completado: IN_PROGRESS/)).toBeInTheDocument();
+    expect(screen.getByText(/Ejecución 55555555 · RUNNING · actor agent-a · sin resultado persistido/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Confirmar consolidación' })).toBeDisabled();
     expect(port.confirmWorkGroupConsolidation).not.toHaveBeenCalled();
+  });
+
+  it('surfaces failed execution and rejected review without treating the child as completed', async () => {
+    const partialGroup = { ...group, children: [{
+      ...group.children[0],
+      executions: [{ ...group.children[0].executions[0], status: 'FAILED', result_sha256: 'b'.repeat(64) }],
+      reviews: [{ id: '66666666-6666-4666-8666-666666666666', decision: 'REJECT', candidate_sha: 'c'.repeat(40), evidence: [] }],
+    }] };
+    setup([partialGroup]);
+    expect(await screen.findByText(/Ejecución 55555555 · FAILED · actor agent-a · resultado SHA-256 bbbbbbbbbbbb/)).toBeInTheDocument();
+    expect(screen.getByText(/Revisión 66666666 · REJECT · candidato cccccccccccc · requiere atención/)).toBeInTheDocument();
+    expect(screen.getByText(/Hay revisiones rechazadas en el estado persistido/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Confirmar consolidación' })).toBeDisabled();
   });
 
   it('submits CEO summary against the currently displayed source hash', async () => {

@@ -941,8 +941,11 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
   }
 
   async listAssignableAgents(projectId: string): Promise<DataState<AssignableAgent[]>> {
-    if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede asignar trabajo.' };
-    return this.request(`/v1/projects/${encodeURIComponent(projectId)}/assignable-agents`, z.array(z.object({
+    const isCeo = this.getAuthRole() === 'CEO';
+    const endpoint = isCeo
+      ? `/v1/projects/${encodeURIComponent(projectId)}/assignable-agents`
+      : `/v1/agent/projects/${encodeURIComponent(projectId)}/assignable-agents`;
+    return this.request(endpoint, z.array(z.object({
       principal_id: z.string(), display_name: z.string(), competencies: z.array(z.string()),
     })), { method: 'GET' });
   }
@@ -1123,7 +1126,10 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
   }
 
   async listProjectWorkGroups(projectId: string): Promise<DataState<ProjectWorkGroup[]>> {
-    if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede consultar equipos de trabajo.' };
+    const isCeo = this.getAuthRole() === 'CEO';
+    const endpoint = isCeo
+      ? `/v1/projects/${encodeURIComponent(projectId)}/work-groups`
+      : `/v1/agent/projects/${encodeURIComponent(projectId)}/work-groups`;
     const evidence = z.unknown();
     const child = z.object({
       work_id: z.string().uuid(), status: z.string(), assigned_principal_id: z.string().nullable(),
@@ -1141,7 +1147,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
       })),
     });
     return this.request(
-      `/v1/projects/${encodeURIComponent(projectId)}/work-groups`,
+      endpoint,
       z.array(z.object({
         id: z.string().uuid(), conversation_id: z.string().uuid(), parent_work_id: z.string().uuid(),
         title: z.string(), parent_status: z.string(), acceptance_criteria: z.array(z.string()),
@@ -1168,9 +1174,12 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
   }
 
   async assignWorkGroupChild(workId: string, principalId: string): Promise<DataState<{ work_id: string; principal_id: string; assigned_by: string; grants_created: false }>> {
-    if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede asignar trabajos.' };
-    return this.request(`/v1/work/${encodeURIComponent(workId)}/assignment`, z.object({
-      work_id: z.string().uuid(), principal_id: z.string(), assigned_by: z.literal('ceo'), grants_created: z.literal(false),
+    const isCeo = this.getAuthRole() === 'CEO';
+    const endpoint = isCeo
+      ? `/v1/work/${encodeURIComponent(workId)}/assignment`
+      : `/v1/agent/work/${encodeURIComponent(workId)}/assignment`;
+    return this.request(endpoint, z.object({
+      work_id: z.string().uuid(), principal_id: z.string(), assigned_by: z.string(), grants_created: z.literal(false),
     }), {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ principal_id: principalId }),

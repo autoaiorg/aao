@@ -9,10 +9,11 @@ interface OfficeWorkGroupPanelProps {
   projects: DataState<ProjectSummary[]>;
   port: AaoConversationPort;
   sessionId: string;
+  isCeoSession?: boolean;
   onOpenBoard: (projectId: string) => void;
 }
 
-export const OfficeWorkGroupPanel: React.FC<OfficeWorkGroupPanelProps> = ({ projects, port, sessionId, onOpenBoard }) => {
+export const OfficeWorkGroupPanel: React.FC<OfficeWorkGroupPanelProps> = ({ projects, port, sessionId, isCeoSession = false, onOpenBoard }) => {
   const queryClient = useQueryClient();
   const activeProjects = useMemo(() => projects.kind === 'ready'
     ? projects.data.filter((project) => (project.status || 'ACTIVE') === 'ACTIVE')
@@ -128,7 +129,9 @@ export const OfficeWorkGroupPanel: React.FC<OfficeWorkGroupPanelProps> = ({ proj
     <div className="office-form-panel__header">
       <div>
         <h3 id="office-work-groups-heading">Equipos de trabajo y resultados</h3>
-        <p>Estado y evidencia desde AAO; se actualiza cada 15 segundos mientras esta vista está abierta. La síntesis requiere confirmación explícita del CEO y no admite ni ejecuta tareas.</p>
+        <p>{isCeoSession
+          ? 'Estado y evidencia desde AAO; se actualiza cada 15 segundos. La aprobación de producto permanece separada de la asignación y la ejecución.'
+          : 'Estado y evidencia desde AAO; se actualiza cada 15 segundos. Las operaciones disponibles dependen de los grants efectivos de esta identidad.'}</p>
       </div>
     </div>
     <label className="office-form-field">
@@ -141,6 +144,9 @@ export const OfficeWorkGroupPanel: React.FC<OfficeWorkGroupPanelProps> = ({ proj
     {groupsQuery.isLoading && <p role="status">Cargando grupos desde AAO…</p>}
     {groupsQuery.data && groupsQuery.data.kind !== 'ready' && <p role="alert">
       {groupsQuery.data.kind === 'error' ? `${groupsQuery.data.code}: ${groupsQuery.data.message}` : groupsQuery.data.kind === 'forbidden' || groupsQuery.data.kind === 'unavailable' ? groupsQuery.data.reason : 'No hay datos de grupos disponibles.'}
+    </p>}
+    {agentsQuery.data && agentsQuery.data.kind !== 'ready' && <p role="alert">
+      {agentsQuery.data.kind === 'error' ? `${agentsQuery.data.code}: ${agentsQuery.data.message}` : agentsQuery.data.kind === 'forbidden' || agentsQuery.data.kind === 'unavailable' ? agentsQuery.data.reason : 'No hay identidades asignables disponibles.'}
     </p>}
     {groupsQuery.data?.kind === 'ready' && groups.length === 0 && <p>No hay grupos persistidos en este proyecto.</p>}
     {groups.map((group) => <article className="office-work-group" key={group.id}>
@@ -201,7 +207,7 @@ export const OfficeWorkGroupPanel: React.FC<OfficeWorkGroupPanelProps> = ({ proj
         <strong>{report.report_kind === 'CONFLICT_REVIEW' ? 'Revisión de conflicto declarada por CEO' : 'Informe parcial CEO'} · NO FINAL</strong>
         <p>{report.summary}</p><small>Snapshot {report.source_sha256.slice(0, 16)}{report.source_sha256 === group.source_sha256 ? ' · coincide con el estado actual' : ' · snapshot anterior, no refleja necesariamente el estado actual'} · {new Date(report.created_at).toLocaleString()}</small>
       </div>)}
-      {!group.consolidation && <form onSubmit={(event) => { event.preventDefault(); void reportPartial(group.id, group.source_sha256); }}>
+      {isCeoSession && !group.consolidation && <form onSubmit={(event) => { event.preventDefault(); void reportPartial(group.id, group.source_sha256); }}>
         <label className="office-form-field">
           <span>Registrar observación no final</span>
           <select className="office-form-control" value={reportKinds[group.id] || 'PARTIAL'} onChange={(event) => setReportKinds((current) => ({ ...current, [group.id]: event.target.value as 'PARTIAL' | 'CONFLICT_REVIEW' }))}>
@@ -215,7 +221,7 @@ export const OfficeWorkGroupPanel: React.FC<OfficeWorkGroupPanelProps> = ({ proj
         <strong>Consolidación guardada · {group.consolidation.created_by}</strong>
         <p>{group.consolidation.summary}</p>
         <small>Snapshot {group.consolidation.source_sha256.slice(0, 16)} · {new Date(group.consolidation.created_at).toLocaleString()}</small>
-      </div> : <form onSubmit={(event) => { event.preventDefault(); void confirm(group.id, group.source_sha256); }}>
+      </div> : isCeoSession ? <form onSubmit={(event) => { event.preventDefault(); void confirm(group.id, group.source_sha256); }}>
         <label className="office-form-field">
           <span>Síntesis CEO (persistente)</span>
           <textarea className="office-form-control office-form-control--textarea" rows={3} maxLength={20000} required value={summaries[group.id] || ''} onChange={(event) => setSummaries((current) => ({ ...current, [group.id]: event.target.value }))} disabled={!group.consolidation_ready || pendingGroup === group.id} placeholder={group.consolidation_ready ? 'Resume los resultados revisados…' : 'Disponible cuando todos los trabajos hijos estén DONE.'} />
@@ -223,12 +229,12 @@ export const OfficeWorkGroupPanel: React.FC<OfficeWorkGroupPanelProps> = ({ proj
         <Button type="submit" disabled={!group.consolidation_ready || !summaries[group.id]?.trim() || pendingGroup === group.id}>
           {pendingGroup === group.id ? 'Guardando…' : 'Confirmar consolidación'}
         </Button>
-      </form>}
+      </form> : null}
       {group.acceptance ? <div className="office-work-group__saved">
         <strong>Aceptación de producto · {group.acceptance.created_by}</strong>
         <p>{group.acceptance.acceptance_statement}</p>
         <small>Snapshot {group.acceptance.source_sha256.slice(0, 16)} · criterios: {group.acceptance.accepted_criteria.join(' · ')} · {new Date(group.acceptance.created_at).toLocaleString()}</small>
-      </div> : group.consolidation && <form onSubmit={(event) => { event.preventDefault(); void accept(group); }}>
+      </div> : isCeoSession && group.consolidation && <form onSubmit={(event) => { event.preventDefault(); void accept(group); }}>
         <label className="office-form-field">
           <span>Aceptación de producto CEO</span>
           <small>Criterios confirmados: {group.acceptance_criteria.join(' · ')}</small>

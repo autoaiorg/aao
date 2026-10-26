@@ -21,6 +21,8 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
   projects = { kind: 'unavailable', reason: 'Lista de proyectos no disponible.', retryable: true },
   canCreateWorkRequest = false,
   conversationPort,
+  workGroupPort,
+  isCeoSession = false,
   capabilityReadPort,
   capabilityFeedbackPort,
   activityReadPort,
@@ -300,17 +302,21 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
       )}
 
       {conversationPort && conversationSessionId && !isDemo && (
+        <OfficeConversationPanel
+          projects={projects}
+          port={conversationPort}
+          sessionId={conversationSessionId}
+          onOpenBoard={(projectId, workId) => onNavigate?.('kanban', projectId, workId)}
+        />
+      )}
+
+      {(workGroupPort || conversationPort) && conversationSessionId && !isDemo && (
         <>
-          <OfficeConversationPanel
-            projects={projects}
-            port={conversationPort}
-            sessionId={conversationSessionId}
-            onOpenBoard={(projectId, workId) => onNavigate?.('kanban', projectId, workId)}
-          />
           <OfficeWorkGroupPanel
             projects={projects}
-            port={conversationPort}
+            port={workGroupPort || conversationPort!}
             sessionId={conversationSessionId}
+            isCeoSession={isCeoSession}
             onOpenBoard={(projectId) => onNavigate?.('kanban', projectId)}
           />
         </>

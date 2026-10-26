@@ -448,6 +448,8 @@ export const App: React.FC = () => {
                 retryable: true,
               }}
               canCreateWorkRequest={origin === 'live' && role === 'CEO' && port instanceof HttpAaoLiveAdapter}
+              workGroupPort={origin === 'live' && isAuthenticated && port instanceof HttpAaoLiveAdapter ? port : undefined}
+              isCeoSession={role === 'CEO'}
               capabilityReadPort={origin === 'live' ? port : undefined}
               capabilityFeedbackPort={origin === 'live' && role === 'CEO' && port instanceof HttpAaoLiveAdapter ? port : undefined}
               activityReadPort={origin === 'live' ? port : undefined}

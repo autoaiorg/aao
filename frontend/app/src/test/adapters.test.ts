@@ -492,14 +492,18 @@ describe('HttpAaoLiveAdapter organization projection', () => {
   it('reads and confirms durable work-group consolidations only in a CEO session', async () => {
     const fetch = vi.spyOn(global, 'fetch');
     const agent = new HttpAaoLiveAdapter({ getToken: () => 'agent-token', getAuthRole: () => 'AGENT' });
-    expect((await agent.listProjectWorkGroups('p')).kind).toBe('forbidden');
+    fetch.mockResolvedValueOnce({ status: 200, ok: true, json: async () => [] } as Response);
+    expect((await agent.listProjectWorkGroups('p')).kind).toBe('ready');
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('/v1/agent/projects/p/work-groups'), expect.objectContaining({
+      headers: expect.objectContaining({ 'X-Agent-Token': 'agent-token' }),
+    }));
     expect((await agent.confirmWorkGroupConsolidation('p', 'g', {
       idempotency_key: '00000000-0000-4000-8000-000000000051', expected_source_sha256: 'a'.repeat(64), summary: 'CEO reviewed',
     })).kind).toBe('forbidden');
     expect((await agent.createWorkGroupPartialReport('p', 'g', {
       idempotency_key: '00000000-0000-4000-8000-000000000051', expected_source_sha256: 'a'.repeat(64), report_kind: 'PARTIAL', summary: 'Not final',
     })).kind).toBe('forbidden');
-    expect(fetch).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(1);
 
     fetch.mockResolvedValueOnce({ status: 200, ok: true, json: async () => [] } as Response);
     fetch.mockResolvedValueOnce({ status: 201, ok: true, json: async () => ({
@@ -514,10 +518,10 @@ describe('HttpAaoLiveAdapter organization projection', () => {
     expect((await ceo.confirmWorkGroupConsolidation('project/1', 'group/1', {
       idempotency_key: '00000000-0000-4000-8000-000000000051', expected_source_sha256: 'a'.repeat(64), summary: 'CEO reviewed',
     })).kind).toBe('ready');
-    expect(fetch).toHaveBeenNthCalledWith(1, expect.stringContaining('/v1/projects/project%2F1/work-groups'), expect.objectContaining({
+    expect(fetch).toHaveBeenNthCalledWith(2, expect.stringContaining('/v1/projects/project%2F1/work-groups'), expect.objectContaining({
       headers: expect.objectContaining({ 'X-CEO-Token': 'ceo-token' }),
     }));
-    expect(fetch).toHaveBeenNthCalledWith(2, expect.stringContaining('/v1/projects/project%2F1/work-groups/group%2F1/consolidation'), expect.objectContaining({
+    expect(fetch).toHaveBeenNthCalledWith(3, expect.stringContaining('/v1/projects/project%2F1/work-groups/group%2F1/consolidation'), expect.objectContaining({
       method: 'POST', headers: expect.objectContaining({ 'X-CEO-Token': 'ceo-token', 'Content-Type': 'application/json' }),
     }));
   });
@@ -565,11 +569,17 @@ describe('HttpAaoLiveAdapter organization projection', () => {
     expect(fetch).toHaveBeenCalledWith(expect.stringContaining('/v1/projects/project%2F1/work-groups/group%2F1/partial-reports'), expect.objectContaining({ method: 'POST' }));
   });
 
-  it('assigns a work-group child only in a CEO session and uses the canonical assignment route', async () => {
+  it('assigns a work-group child through the authorized CEO or PM route', async () => {
     const fetch = vi.spyOn(global, 'fetch');
     const agent = new HttpAaoLiveAdapter({ getToken: () => 'agent-token', getAuthRole: () => 'AGENT' });
-    expect((await agent.assignWorkGroupChild('work-id', 'agent-id')).kind).toBe('forbidden');
-    expect(fetch).not.toHaveBeenCalled();
+    fetch.mockResolvedValueOnce({ status: 200, ok: true, json: async () => ({
+      work_id: '00000000-0000-4000-8000-000000000061', principal_id: 'agent-a', assigned_by: 'aao-pm', grants_created: false,
+    }) } as Response);
+    expect((await agent.assignWorkGroupChild('00000000-0000-4000-8000-000000000061', 'agent-a')).kind).toBe('ready');
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('/v1/agent/work/00000000-0000-4000-8000-000000000061/assignment'), expect.objectContaining({
+      method: 'PUT', headers: expect.objectContaining({ 'X-Agent-Token': 'agent-token', 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ principal_id: 'agent-a' }),
+    }));
 
     fetch.mockResolvedValueOnce({ status: 200, ok: true, json: async () => ({
       work_id: '00000000-0000-4000-8000-000000000061', principal_id: 'agent-a', assigned_by: 'ceo', grants_created: false,

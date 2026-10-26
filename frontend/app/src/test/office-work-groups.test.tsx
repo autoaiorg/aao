@@ -23,7 +23,7 @@ const group: ProjectWorkGroup = {
   partial_reports: [],
 };
 
-function setup(groups: ProjectWorkGroup[]) {
+function setup(groups: ProjectWorkGroup[], isCeoSession = true) {
   const port = {
     listAssignableAgents: vi.fn().mockResolvedValue(ready([
       { principal_id: 'agent-a', display_name: 'Agente A' },
@@ -40,7 +40,7 @@ function setup(groups: ProjectWorkGroup[]) {
     createWorkGroupPartialReport: vi.fn().mockResolvedValue(ready({ id: '77777777-7777-4777-8777-777777777777', report_kind: 'PARTIAL', summary: 'Informe CEO', source_sha256: 'a'.repeat(64), idempotency_key: '88888888-8888-4888-8888-888888888888', created_by: 'ceo', created_at: '2026-10-26T00:00:00Z', created: true, final: false as const })),
   } as unknown as AaoConversationPort;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(<QueryClientProvider client={client}><OfficeWorkGroupPanel projects={projects} port={port} sessionId="session-a" onOpenBoard={vi.fn()} /></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><OfficeWorkGroupPanel projects={projects} port={port} sessionId="session-a" isCeoSession={isCeoSession} onOpenBoard={vi.fn()} /></QueryClientProvider>);
   return port;
 }
 
@@ -150,6 +150,19 @@ describe('office work group consolidation', () => {
     await waitFor(() => expect(port.assignWorkGroupChild).toHaveBeenCalledWith(group.children[0].work_id, 'agent-a'));
     expect(await screen.findByText(/No se han creado grants/)).toBeInTheDocument();
     expect(port.listAssignableAgents).toHaveBeenCalledWith('project-active');
+  });
+
+  it('lets a PM use assignment without exposing CEO-only report, consolidation, or acceptance controls', async () => {
+    const assignableGroup = { ...group, children: [{ ...group.children[0], executions: [] }] };
+    const port = setup([assignableGroup], false);
+    await screen.findByText('IN_PROGRESS');
+    expect(screen.getByLabelText('Asignar responsable')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Registrar observación no final')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Síntesis CEO (persistente)')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Aceptación de producto CEO')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Asignar responsable'), { target: { value: 'agent-b' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Asignar' }));
+    await waitFor(() => expect(port.assignWorkGroupChild).toHaveBeenCalledWith(group.children[0].work_id, 'agent-b'));
   });
 
   it('records an explicitly non-final CEO report against the displayed source hash', async () => {

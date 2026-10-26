@@ -116,8 +116,54 @@ def test_restore_refuses_destructive_target_overwrite(tmp_path):
 
 def test_apply_host_fencing_revokes_claims_and_leases():
     mock_db = MagicMock()
-    actions = apply_host_fencing(mock_db)
-    assert len(actions) == 2
+    actions = apply_host_fencing(mock_db, host_identifier="node-1")
+    assert len(actions) == 4
+    assert any("revoked active agent credentials" in a for a in actions)
     assert any("revoked in-flight tasks" in a for a in actions)
     assert any("expired active leases" in a for a in actions)
-    assert mock_db.execute.call_count == 2
+    assert any("recorded host.fenced audit event" in a for a in actions)
+    assert mock_db.execute.call_count == 4
+
+
+def test_restore_requires_ceo_authorization_on_non_empty_database(tmp_path):
+    archive = tmp_path / "dummy.tar.gz"
+    with tarfile.open(archive, "w:gz"):
+        pass
+
+    with patch("aao.backup.verify_backup") as mock_verify, \
+         patch("psycopg.connect") as mock_connect:
+        mock_manifest = MagicMock(database_dump_file="db.sql")
+        mock_verify.return_value = mock_manifest
+
+        mock_conn = MagicMock()
+        mock_connect.return_value.__enter__.return_value = mock_conn
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+        mock_cursor.fetchone.return_value = [10]  # 10 tables exist
+
+        # Fail if allow_non_empty_target is False
+        with pytest.raises(BackupError, match="Refusing destructive restore"):
+            restore_backup(archive, "postgresql://user:pass@localhost/db", allow_non_empty_target=False)
+
+        # Fail if allow_non_empty_target is True but authorized_by_ceo is False
+        with pytest.raises(BackupError, match="requires explicit CEO authorization"):
+            restore_backup(archive, "postgresql://user:pass@localhost/db", allow_non_empty_target=True, authorized_by_ceo=False)
+
+
+def test_backup_includes_candidate_repository(tmp_path, monkeypatch):
+    cand_repo = tmp_path / "candidates.git"
+    cand_repo.mkdir()
+    (cand_repo / "HEAD").write_text("ref: refs/heads/main", encoding="utf-8")
+    monkeypatch.setenv("AAO_CANDIDATE_REPOSITORY", str(cand_repo))
+
+    out_dir = tmp_path / "backups"
+    with patch("aao.backup.connect_postgres") as mock_conn, \
+         patch("aao.backup.get_git_revision", return_value="deadbeef1234"), \
+         patch("subprocess.run") as mock_run:
+        mock_conn.return_value.__enter__.return_value.execute.return_value.fetchone.return_value = ["030_version"]
+        mock_run.return_value = MagicMock(returncode=0)
+        from aao.backup import create_backup
+        bundle = create_backup(out_dir, database_url="postgresql://user:pass@localhost/db")
+
+        manifest = verify_backup(bundle)
+        assert any("candidates.git/HEAD" in a for a in manifest.artifacts_included)

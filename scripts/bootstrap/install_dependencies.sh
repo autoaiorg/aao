@@ -22,6 +22,7 @@ apt-get install -y -qq \
   acl \
   bubblewrap \
   curl \
+  gnupg \
   ca-certificates \
   systemd \
   libpq-dev \
@@ -39,8 +40,13 @@ if command -v node >/dev/null 2>&1; then
 fi
 
 if (( NEED_NODE )); then
-  say "Installing Node.js 24 LTS via NodeSource..."
-  curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
+  say "Configuring NodeSource repository with verified GPG keyring..."
+  mkdir -p /etc/apt/keyrings
+  if [[ ! -f /etc/apt/keyrings/nodesource.gpg ]]; then
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+  fi
+  echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
+  apt-get update -qq
   apt-get install -y -qq nodejs
   say "Installed Node.js $(node -v) and npm $(npm -v)"
 fi

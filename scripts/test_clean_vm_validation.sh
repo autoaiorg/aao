@@ -132,11 +132,11 @@ rsync -avz -e "ssh $SSH_OPTS" \
   --exclude "__pycache__" \
   "$REPO_DIR/" alessbarb@127.0.0.1:/home/alessbarb/aao-repo/
 
-say "7. Executing AAO Integral Bootstrap in clean VM..."
-ssh $SSH_OPTS alessbarb@127.0.0.1 "sudo bash /home/alessbarb/aao-repo/scripts/bootstrap/aao_bootstrap.sh --apply --skip-frontend --ceo-user alessbarb"
+say "7. Executing AAO Integral Bootstrap in clean VM (including full frontend build)..."
+ssh $SSH_OPTS alessbarb@127.0.0.1 "sudo bash /home/alessbarb/aao-repo/scripts/bootstrap/aao_bootstrap.sh --apply --ceo-user alessbarb"
 
 say "8. Running diagnostic verification in clean VM..."
-ssh $SSH_OPTS alessbarb@127.0.0.1 "sudo /opt/aao/venv/bin/python /opt/aao/repo/scripts/aao_ops.py doctor"
+ssh $SSH_OPTS alessbarb@127.0.0.1 "sudo /opt/aao/venv/bin/aao-ops doctor"
 
 say "9. Testing full acceptance suite inside clean VM..."
 ssh $SSH_OPTS alessbarb@127.0.0.1 "sudo bash /home/alessbarb/aao-repo/tests/test_clean_install_container.sh /home/alessbarb/aao-repo"
@@ -150,7 +150,7 @@ while ! nc -z 127.0.0.1 "$SSH_PORT" 2>/dev/null; do
 done
 
 say "VM rebooted successfully. Verifying post-reboot health..."
-ssh $SSH_OPTS alessbarb@127.0.0.1 "sudo /opt/aao/venv/bin/python /opt/aao/repo/scripts/aao_ops.py verify"
+ssh $SSH_OPTS alessbarb@127.0.0.1 "sudo /opt/aao/venv/bin/aao-ops verify"
 
 say "CLEAN VM VALIDATION COMPLETED SUCCESSFULLY (AC-01 through AC-18 verified)."
 exit 0

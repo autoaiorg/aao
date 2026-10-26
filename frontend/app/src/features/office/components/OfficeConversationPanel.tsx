@@ -72,6 +72,12 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
     queryKey: ['office-conversation-messages', sessionId, projectId, conversationId],
     queryFn: () => port.listConversationMessages(projectId, conversationId),
     enabled: !!projectId && !!conversationId,
+    // If a browser stream is interrupted, reconcile the durable turn while it is pending.
+    // Stop polling as soon as the backend persists COMPLETED or FAILED.
+    refetchInterval: (query) => {
+      const state = query.state.data as DataState<ProjectConversationMessage[]> | undefined;
+      return state?.kind === 'ready' && state.data.some((item) => item.turn_status === 'PENDING') ? 2_000 : false;
+    },
   });
   const messages = messagesQuery.data?.kind === 'ready' ? messagesQuery.data.data : [];
   const workGroupsQuery = useQuery({

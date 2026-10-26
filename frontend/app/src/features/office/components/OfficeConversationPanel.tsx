@@ -374,8 +374,14 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
               </section>
               <form onSubmit={sendMessage} style={{ display: 'grid', gap: 8 }}>
                 <label className="office-form-field">Mensaje CEO
-                  <textarea className="office-form-control office-form-control--textarea" aria-label="Mensaje CEO" required maxLength={10000} rows={3} value={draft} onChange={(event) => { setDraft(event.target.value); setTurnIdempotencyKey(''); }} disabled={sendingTurn} />
+                  <textarea className="office-form-control office-form-control--textarea" aria-label="Mensaje CEO" aria-describedby="office-conversation-send-hint" required maxLength={10000} rows={3} value={draft} onChange={(event) => { setDraft(event.target.value); setTurnIdempotencyKey(''); }} onKeyDown={(event) => {
+                    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                      event.preventDefault();
+                      event.currentTarget.form?.requestSubmit();
+                    }
+                  }} disabled={sendingTurn} />
                 </label>
+                <small id="office-conversation-send-hint">Enter para enviar · Shift+Enter para salto de línea</small>
                 <div><Button type="submit" disabled={!draft.trim() || sendingTurn}>{sendingTurn ? 'AAO está respondiendo…' : 'Enviar a AAO'}</Button></div>
               </form>
               <form onSubmit={(event) => void submitWorkGroup(event)} className="office-conversation-work-request-form">

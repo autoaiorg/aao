@@ -20,6 +20,33 @@ function setup(port: AaoConversationPort, onOpenBoard = vi.fn()) {
 }
 
 describe('office persistent project conversation', () => {
+  it('sends on Enter, preserves Shift+Enter and does not submit during IME composition', async () => {
+    const port: AaoConversationPort = {
+      listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
+      listAssignableAgents: vi.fn().mockResolvedValue(ready([])),
+      listConversationMessages: vi.fn().mockResolvedValue(ready([message])),
+      createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(),
+      streamCEOConversationTurn: vi.fn().mockResolvedValue(ready({ message_id: 'response-2' })),
+      createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(),
+      createWorkGroupFromConversation: vi.fn(), proposeWorkGroupFromConversation: vi.fn(),
+      listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), assignWorkGroupChild: vi.fn(),
+      confirmWorkGroupConsolidation: vi.fn(), createWorkGroupPartialReport: vi.fn(),
+    };
+    setup(port);
+    await screen.findByText('Preparar el plan');
+    const composer = screen.getByLabelText('Mensaje CEO');
+    fireEvent.change(composer, { target: { value: 'Pregunta rápida' } });
+
+    fireEvent.keyDown(composer, { key: 'Enter', shiftKey: true });
+    fireEvent.keyDown(composer, { key: 'Enter', isComposing: true });
+    expect(port.streamCEOConversationTurn).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(composer, { key: 'Enter' });
+    await waitFor(() => expect(port.streamCEOConversationTurn).toHaveBeenCalledWith(
+      'project-active', 'conversation-1', 'Pregunta rápida', expect.any(String), expect.any(Function),
+    ));
+  });
+
   it('acknowledges a CEO turn before the first provider delta, then replaces the placeholder with streamed text', async () => {
     let emitDelta: ((delta: string) => void) | undefined;
     let finishTurn: ((result: DataState<{ message_id: string }>) => void) | undefined;

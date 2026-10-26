@@ -1965,6 +1965,21 @@ def test_postgres_review_is_separate_from_author_and_required_for_done(monkeypat
         assert lease and lease["execution_id"] == execution_id
         assert client.post(f"/v1/work/{w}/progress", headers=worker).json()["status"] == "IN_PROGRESS"
         assert client.post(f"/v1/work/{w}/progress", headers=worker).json()["status"] == "IN_REVIEW"
+        from aao.postgresql_connection import connect_postgres
+        with connect_postgres() as db:
+            review_protocol = db.execute(
+                "SELECT id,protocol_version,started_by FROM protocol_instances "
+                "WHERE protocol_id='review-acceptance' AND subject_type='work_item' AND subject_id=%s",
+                (w,),
+            ).fetchone()
+            started_events = db.execute(
+                "SELECT details FROM events WHERE subject_id=%s AND kind='protocol.started' "
+                "AND details->>'protocol_id'='review-acceptance'",
+                (w,),
+            ).fetchall()
+        assert review_protocol is not None
+        assert review_protocol[1:] == ("1.0.0", agent_id)
+        assert len(started_events) == 1
         assert client.post(f"/v1/work/{w}/reviews", headers=auditor, json={
             "decision": "APPROVE", "candidate_sha": "a" * 40,
             "evidence": ["sha256:" + "a" * 64],
@@ -2004,7 +2019,22 @@ def test_postgres_review_is_separate_from_author_and_required_for_done(monkeypat
         })
         assert rejected.status_code == 201, rejected.text
         assert rejected.json()["status"] == "IN_PROGRESS"
+        with connect_postgres() as db:
+            review_event = db.execute(
+                "SELECT details FROM events WHERE subject_id=%s AND kind='work.reviewed' "
+                "ORDER BY created_at DESC LIMIT 1", (w,),
+            ).fetchone()[0]
+        assert review_event["protocol_instance_id"] == str(review_protocol[0])
         assert client.post(f"/v1/work/{w}/progress", headers=worker).json()["status"] == "IN_REVIEW"
+        with connect_postgres() as db:
+            assert db.execute(
+                "SELECT count(*) FROM protocol_instances WHERE protocol_id='review-acceptance' "
+                "AND subject_type='work_item' AND subject_id=%s", (w,),
+            ).fetchone()[0] == 1
+            assert db.execute(
+                "SELECT count(*) FROM events WHERE subject_id=%s AND kind='protocol.started' "
+                "AND details->>'protocol_id'='review-acceptance'", (w,),
+            ).fetchone()[0] == 1
         veto = client.post(f"/v1/work/{w}/reviews", headers=auditor, json={
             "decision": "VETO", "candidate_sha": candidate_sha,
             "evidence": [evidence_ref],
@@ -3360,3 +3390,12 @@ def test_product_acceptance_closes_group_only_after_current_consolidation(monkey
         assert event[0]["actor"] == "ceo"
         assert event[0]["independent_review"] is False
         assert event[0]["integration_performed"] is False
+        with connect_postgres() as db:
+            acceptance_protocol = db.execute(
+                "SELECT id,protocol_version,started_by FROM protocol_instances "
+                "WHERE protocol_id='review-acceptance' AND subject_type='work_group' AND subject_id=%s",
+                (group["parent_work_id"],),
+            ).fetchone()
+        assert acceptance_protocol is not None
+        assert acceptance_protocol[1:] == ("1.0.0", "ceo")
+        assert event[0]["protocol_instance_id"] == str(acceptance_protocol[0])

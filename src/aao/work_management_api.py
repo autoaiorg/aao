@@ -1964,7 +1964,7 @@ def accept_work_group_result(
     project_id: str,
     group_id: str,
     payload: WorkGroupAcceptanceRequest,
-    _: str = Depends(require_ceo),
+    principal: str = Depends(require_ceo),
 ):
     """Record explicit CEO product acceptance after evidence-backed consolidation.
 
@@ -2071,6 +2071,19 @@ def accept_work_group_result(
             "actor": "ceo", "parent_status": "DONE",
             "independent_review": False, "integration_performed": False,
         }
+        details["protocol_instance_id"] = start_work_protocol(
+            db,
+            protocol_id="review-acceptance",
+            work_id=parent_work_id,
+            subject_type="work_group",
+            started_by=str(principal),
+            request={
+                "work_group_id": group_id,
+                "source_sha256": source_sha256,
+                "accepted_criteria": payload.accepted_criteria,
+                "acceptance_statement": payload.acceptance_statement,
+            },
+        )
         audit(db, parent_work_id, "work.group_accepted", details)
         row = db.execute(
             "SELECT created_at FROM events WHERE subject_id=%s AND kind='work.group_accepted' "
@@ -3474,8 +3487,27 @@ def progress(work_id: str, principal: str = Depends(require_worker)):
                 "Completion disabled until independent approval verification exists",
             )
         next_state = transition[status]
+        if next_state == "IN_REVIEW":
+            start_work_protocol(
+                db,
+                protocol_id="review-acceptance",
+                work_id=work_id,
+                started_by=str(principal),
+                request={"work_id": work_id, "project_id": str(project_id)},
+            )
         db.execute("UPDATE work_items SET status=%s WHERE id=%s", (next_state, work_id))
-        audit(db, work_id, "work.progressed", {"from": status, "to": next_state})
+        protocol_instance_id = None
+        if next_state == "IN_REVIEW":
+            protocol_instance_id = db.execute(
+                "SELECT id FROM protocol_instances WHERE protocol_id='review-acceptance' "
+                "AND subject_type='work_item' AND subject_id=%s",
+                (work_id,),
+            ).fetchone()[0]
+        audit(db, work_id, "work.progressed", {
+            "from": status, "to": next_state,
+            **({"protocol_instance_id": str(protocol_instance_id)}
+               if protocol_instance_id else {}),
+        })
     return {"id": work_id, "status": next_state}
 
 
@@ -3723,6 +3755,11 @@ def review(work_id: str, payload: ReviewRequest, principal: str = Depends(requir
         )
         if not review_decision.allowed:
             raise HTTPException(409, review_decision.reason)
+        protocol_row = db.execute(
+            "SELECT id FROM protocol_instances WHERE protocol_id='review-acceptance' "
+            "AND subject_type='work_item' AND subject_id=%s",
+            (work_id,),
+        ).fetchone()
         rid = str(uuid4())
         db.execute(
             "INSERT INTO reviews(id,work_id,reviewer_id,decision,evidence,candidate_sha) "
@@ -3742,6 +3779,7 @@ def review(work_id: str, payload: ReviewRequest, principal: str = Depends(requir
             "review_id": rid, "decision": payload.decision, "reviewer": principal,
             "candidate_sha": payload.candidate_sha,
             "verified_evidence": verified_evidence,
+            **({"protocol_instance_id": str(protocol_row[0])} if protocol_row else {}),
         })
     return {"review_id": rid, "status": next_state, "candidate_sha": payload.candidate_sha}
 

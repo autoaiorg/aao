@@ -445,6 +445,7 @@ export const App: React.FC = () => {
                 retryable: true,
               }}
               canCreateWorkRequest={origin === 'live' && role === 'CEO' && port instanceof HttpAaoLiveAdapter}
+              capabilityReadPort={origin === 'live' ? port : undefined}
               conversationPort={origin === 'live' && role === 'CEO' && port instanceof HttpAaoLiveAdapter ? port : undefined}
               conversationSessionId={sessionId}
               onCreateWorkRequest={port instanceof HttpAaoLiveAdapter

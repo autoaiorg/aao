@@ -22,6 +22,8 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
+from aao.host_identity import HostIdentityError, current_host_id
+
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -81,6 +83,31 @@ def _approved_candidate(db, work_id: str, credential: str, kind_of_step: str) ->
         raise PublishError(str(exc.detail)) from exc
     if principal == author_id:
         raise PublishError("the implementing agent cannot publish its own work")
+    # A GitHub publisher is also an external-effect worker. Require the same
+    # explicit host binding used by execution workers and hold its row lock
+    # until the enclosing transaction records/reconciles the remote effect.
+    # This makes an already-committed fence win, and makes an in-flight fence
+    # wait for this transaction. GitHub itself does not consume a fencing token,
+    # so this is not a claim of fencing across a DB/network partition.
+    registry = db.execute("SELECT to_regclass('public.host_worker_bindings')").fetchone()
+    if not registry or registry[0] is None:
+        raise PublishError("host fencing registry unavailable; publication rejected")
+    try:
+        local_host_id = current_host_id()
+    except HostIdentityError as exc:
+        raise PublishError("trusted local host identity unavailable; publication rejected") from exc
+    bindings = db.execute(
+        "SELECT host_id,status,fence_epoch FROM host_worker_bindings "
+        "WHERE worker_id=%s ORDER BY created_at DESC FOR SHARE", (str(principal),)
+    ).fetchall()
+    active = [row for row in bindings if row[1] == "ACTIVE"]
+    if len(active) != 1:
+        raise PublishError("publisher must have exactly one active host binding")
+    host_id, _status, fence_epoch = active[0]
+    if host_id != local_host_id:
+        raise PublishError("publisher binding belongs to a different host")
+    if not isinstance(fence_epoch, int) or fence_epoch < 1:
+        raise PublishError("publisher host fencing epoch is invalid")
     review = db.execute("SELECT id,candidate_sha FROM reviews WHERE work_id=%s AND decision='APPROVE' "
                         "ORDER BY created_at DESC LIMIT 1", (work_id,)).fetchone()
     if not review:

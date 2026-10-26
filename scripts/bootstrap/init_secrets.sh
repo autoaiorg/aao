@@ -9,6 +9,8 @@ die() { echo "FAIL [SECRETS]: $*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || die "Run as root."
 
 mkdir -p /etc/aao
+getent group aao-host-id-read >/dev/null || die "aao-host-id-read group is missing; run identity bootstrap first."
+chown root:aao-host-id-read /etc/aao
 chmod 0750 /etc/aao
 
 DB_SECRET_FILE="/etc/aao/aao-db.secret"
@@ -88,9 +90,9 @@ fi
 if id aao-impl-ag >/dev/null 2>&1; then
   chown root:aao-impl-ag "$WORKER_ENV_FILE"
   chmod 0640 "$WORKER_ENV_FILE"
-  chown root:aao-impl-ag "$HOST_ID_FILE"
+  chown root:aao-host-id-read "$HOST_ID_FILE"
   chmod 0440 "$HOST_ID_FILE"
-  chown root:aao-impl-ag /etc/aao
+  chown root:aao-host-id-read /etc/aao
 else
   chmod 0600 "$WORKER_ENV_FILE"
   chmod 0600 "$HOST_ID_FILE"

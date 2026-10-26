@@ -19,11 +19,16 @@ schema-repair or rollback tool. If an interrupted migration leaves ambiguous
 state, stop and inspect the database rather than rerunning it blindly.
 
 Migration 031 installs the fencing schema but intentionally does not bind an
-agent identity to a host. Before enabling a worker, an operator must register
-its exact principal and host with `aao-ops register-host-worker --worker-id
-<principal-id> --host-id <host-id>`. Claims fail closed until that explicit
-binding exists. Fence the old host before registering the worker on a new host;
-the unique active-binding constraint refuses an un-fenced reassignment.
+agent identity to a host. Before enabling a worker or W2 GitHub publisher, an
+operator must register its exact principal and host with
+`aao-ops register-host-worker --worker-id <principal-id> --host-id <host-id>`.
+Claims, effect proposals and W2 remote publication fail closed until that
+explicit binding exists. Fence the old host before registering the identity on
+a new host; the unique active-binding constraint refuses an un-fenced
+reassignment. The publisher holds its binding row lock for the duration of the
+remote call and ledger commit; GitHub does not consume AAO's fencing epoch, so
+this serializes against AAO fencing but cannot guarantee cancellation of an
+already-issued remote request after a network partition.
 
 ## Unified Schema Migration Engine (Single Source of Truth)
 

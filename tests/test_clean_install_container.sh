@@ -123,8 +123,18 @@ if command -v systemctl >/dev/null 2>&1 && systemctl is-system-running >/dev/nul
     bash -c '[[ "$(stat -c "%a %U:%G" /run/aao-worker-self-dev)" == "700 aao-impl-ag:aao-impl-ag" ]]'
 fi
 
-assert_true "host identity is root-owned and readable only by the worker group" \
-  test "$HOST_ID_PERMS" = "440 root:aao-impl-ag"
+assert_true "host identity is root-owned and readable only by the dedicated publisher/worker group" \
+  test "$HOST_ID_PERMS" = "440 root:aao-host-id-read"
+for role in aao-pm aao-impl-codex aao-impl-ag; do
+  assert_true "$role can read the host identity required for fencing" \
+    runuser -u "$role" -- test -r /etc/aao/host-id
+done
+for role in aao-api aao-integrator aao-supervisor; do
+  assert_true "$role cannot read the host identity" \
+    bash -c "! runuser -u '$role' -- test -r /etc/aao/host-id"
+done
+assert_true "publisher host-id group cannot read API secrets" \
+  bash -c "! runuser -u aao-pm -- test -r /etc/aao/aao-api.env"
 
 assert_true "aao-api cannot access /var/lib/aao-auditor" \
   bash -c "! runuser -u aao-api -- ls /var/lib/aao-auditor >/dev/null 2>&1"

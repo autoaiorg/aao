@@ -2392,6 +2392,28 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
                                json={"principal_id": pid, "capability": "code.publish"}).status_code == 201
         with pytest.raises(PublishError, match="cannot publish its own work"):
             push_candidate(work, token, store=store, push=push)
+        with pytest.raises(PublishError, match="exactly one active host binding"):
+            push_candidate(work, pusher, store=store, push=push)
+        with pytest.raises(PublishError, match="exactly one active host binding"):
+            open_pull_request(work, publisher, open_pr=open_pr)
+        from aao.backup import register_host_worker
+        from aao.postgresql_connection import connect_postgres
+        with connect_postgres() as db:
+            register_host_worker(db, "integration-test-host", pusher_id)
+            register_host_worker(db, "integration-test-host", publisher_id)
+        with connect_postgres() as db:
+            db.execute("UPDATE host_worker_bindings SET host_id='other-host' WHERE worker_id=%s", (pusher_id,))
+        with pytest.raises(PublishError, match="different host"):
+            push_candidate(work, pusher, store=store, push=push)
+        with connect_postgres() as db:
+            db.execute("UPDATE host_worker_bindings SET host_id='integration-test-host' WHERE worker_id=%s",
+                       (pusher_id,))
+            db.execute("UPDATE host_worker_bindings SET status='FENCED',fence_epoch=fence_epoch+1 "
+                       "WHERE worker_id=%s", (publisher_id,))
+        with pytest.raises(PublishError, match="exactly one active host binding"):
+            open_pull_request(work, publisher, open_pr=open_pr)
+        with connect_postgres() as db:
+            register_host_worker(db, "integration-test-host", publisher_id)
         with pytest.raises(PublishError, match="has not been pushed"):
             open_pull_request(work, publisher, open_pr=open_pr)
         pushed = push_candidate(work, pusher, store=store, push=push)

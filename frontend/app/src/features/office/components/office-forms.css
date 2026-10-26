@@ -497,3 +497,61 @@
   gap: 0.25rem;
   overflow-wrap: anywhere;
 }
+
+.office-calendar__project {
+  max-width: 420px;
+  margin: 12px 0 16px;
+}
+
+.office-calendar__list {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.office-calendar__item {
+  display: grid;
+  grid-template-columns: minmax(110px, 150px) minmax(180px, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.office-calendar__item:hover {
+  border-color: var(--border-strong);
+}
+
+.office-calendar__item-title {
+  font-weight: 600;
+}
+
+.office-calendar__status,
+.office-calendar__overdue {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+.office-calendar__overdue {
+  color: var(--status-danger-text);
+  font-weight: 600;
+}
+
+@media (max-width: 640px) {
+  .office-calendar__item {
+    grid-template-columns: 1fr auto;
+  }
+
+  .office-calendar__item-title {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}

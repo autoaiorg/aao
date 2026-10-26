@@ -97,6 +97,7 @@ export interface ProjectWorkGroup {
   children: Array<{
     work_id: string;
     status: string;
+    assigned_principal_id: string | null;
     evidence: unknown;
     executions: Array<{ id: string; status: string; worker_id: string | null; result_sha256: string | null }>;
     reviews: Array<{ id: string; decision: string; candidate_sha: string | null; evidence: unknown }>;
@@ -146,6 +147,7 @@ export interface AaoConversationPort {
     conversationId: string,
   ): Promise<DataState<ConversationWorkGroupProposal>>;
   listProjectWorkGroups(projectId: string): Promise<DataState<ProjectWorkGroup[]>>;
+  assignWorkGroupChild(workId: string, principalId: string): Promise<DataState<{ work_id: string; principal_id: string; assigned_by: string; grants_created: false }>>;
   confirmWorkGroupConsolidation(
     projectId: string,
     groupId: string,

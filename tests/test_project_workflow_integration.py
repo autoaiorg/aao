@@ -223,6 +223,9 @@ def test_group_assignment_routes_execution_without_creating_grants(monkeypatch):
             "work_id": work_id, "principal_id": worker_ids[0],
             "assigned_by": "ceo", "grants_created": False,
         }
+        projected_group = client.get(f"/v1/projects/{project}/work-groups", headers=ceo).json()[0]
+        assert projected_group["children"][0]["assigned_principal_id"] == worker_ids[0]
+        assert projected_group["source_sha256"]
         board = client.get(f"/v1/projects/{project}/board", headers=ceo).json()
         child = next(item for item in board if item["id"] == work_id)
         assert child["assigned_principal_id"] == worker_ids[0]

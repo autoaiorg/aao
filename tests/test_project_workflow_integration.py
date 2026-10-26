@@ -197,6 +197,7 @@ def test_work_group_admission_waits_for_prerequisites_and_rejects_parent(monkeyp
     reason="PostgreSQL integration requires an explicitly disposable test database",
 )
 def test_agent_dispatches_only_its_assigned_and_pre_evaluated_work(monkeypatch):
+    from aao.postgresql_connection import connect_postgres
     from aao.work_management_api import app
 
     monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
@@ -252,6 +253,24 @@ def test_agent_dispatches_only_its_assigned_and_pre_evaluated_work(monkeypatch):
         assert blocked.status_code == 202, blocked.text
         assert blocked.json()["status"] == "BLOCKED"
         assert blocked.json()["work_id"] == work_id
+        with connect_postgres() as db:
+            blocker_events = db.execute(
+                "SELECT details FROM events WHERE subject_id=%s AND kind='work.dispatch_blocked'",
+                (work_id,),
+            ).fetchall()
+        assert len(blocker_events) == 1
+        assert blocker_events[0][0]["principal_id"] == agent_ids[0]
+        assert blocker_events[0][0]["reason"] == blocked.json()["reason"]
+        # Repeated worker polling preserves the canonical event log without spam.
+        repeated = client.post("/v1/agent/dispatch-next", headers=workers[0], json={
+            "project_id": project, "principal_id": agent_ids[0], "base_sha": base_sha,
+        })
+        assert repeated.json() == blocked.json()
+        with connect_postgres() as db:
+            assert db.execute(
+                "SELECT count(*) FROM events WHERE subject_id=%s AND kind='work.dispatch_blocked'",
+                (work_id,),
+            ).fetchone()[0] == 1
         assert client.post("/v1/agent/dispatch-next", headers=workers[1], json={
             "project_id": project, "principal_id": agent_ids[1], "base_sha": base_sha,
         }).json()["status"] == "IDLE"

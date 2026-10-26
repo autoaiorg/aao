@@ -570,6 +570,39 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         assert group_state == (4, 0)
         assert group_executions == 0
 
+        # The assistant context may summarize only relationally persisted
+        # validation, independent review, and reconciled publication facts.
+        outcome_agent = "conversation-outcome-agent-" + str(uuid4())
+        outcome_credential = client.post("/v1/principals/credentials", headers=ceo, json={
+            "principal_id": outcome_agent, "kind": "AGENT",
+        })
+        assert outcome_credential.status_code == 201, outcome_credential.text
+        proposal_id, validation_id, review_id = str(uuid4()), str(uuid4()), str(uuid4())
+        candidate_sha = "b" * 40
+        with connect_postgres() as db:
+            db.execute(
+                "INSERT INTO patch_proposals(id,work_id,project_id,proposer_id,base_sha,"
+                "patch_sha256,patch_bytes,changed_paths) VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb)",
+                (proposal_id, research_id, project, outcome_agent, "a" * 40, "c" * 64,
+                 b"test-only patch", "[]"),
+            )
+            db.execute(
+                "INSERT INTO patch_proposal_validations(id,proposal_id,validator_id,base_sha,"
+                "patch_sha256,candidate_tree) VALUES (%s,%s,%s,%s,%s,%s)",
+                (validation_id, proposal_id, outcome_agent, "a" * 40, "c" * 64, candidate_sha),
+            )
+            db.execute(
+                "INSERT INTO reviews(id,work_id,reviewer_id,decision,evidence,candidate_sha) "
+                "VALUES (%s,%s,%s,'APPROVE','[]'::jsonb,%s)",
+                (review_id, research_id, outcome_agent, candidate_sha),
+            )
+            db.execute("UPDATE work_items SET status='DONE' WHERE id=%s", (research_id,))
+            db.execute(
+                "INSERT INTO events(id,subject_id,kind,details) VALUES (%s,%s,'work.completed',%s::jsonb)",
+                (str(uuid4()), research_id,
+                 json.dumps({"pr_number": 321, "merge_commit_sha": "d" * 40})),
+            )
+
         provider_calls = 0
         provider_prompts = []
         def successful_provider(messages):
@@ -593,6 +626,10 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         assert "Research evidence" in snapshot_message
         assert str(research_id) in snapshot_message
         assert "latest_execution" in snapshot_message
+        assert '"latest_review"' in snapshot_message and '"decision": "APPROVE"' in snapshot_message
+        assert '"validated_in_disposable_clone": true' in snapshot_message
+        assert '"state": "MERGED"' in snapshot_message and '"pr_number": 321' in snapshot_message
+        assert candidate_sha in snapshot_message and "private payload" not in snapshot_message
         assert "result_json" not in snapshot_message and '"patch"' not in snapshot_message
         # SSE data is JSON-escaped by json.dumps (including non-ASCII text).
         assert '"delta": "Conversaci\\u00f3n persistida."' in first_turn.text

@@ -2155,21 +2155,81 @@ def stream_project_conversation_turn(
             " JOIN linked_work parent ON child.parent_work_id=parent.id "
             " WHERE child.project_id=%s) "
             "SELECT w.id,w.title,w.status,a.principal_id,q.id,q.status,"
-            "q.result_json->>'backend',q.result_json->>'provider',q.result_json->>'model' "
+            "q.result_json->>'backend',q.result_json->>'provider',q.result_json->>'model',"
+            "r.id,r.decision,r.reviewer_id,r.candidate_sha,"
+            "v.id,v.validator_id,v.candidate_tree,"
+            "e.kind,e.details "
             "FROM linked_work w "
             "LEFT JOIN work_item_assignments a ON a.project_id=%s AND a.work_id=w.id "
             "LEFT JOIN LATERAL (SELECT id,status,result_json FROM execution_queue "
             " WHERE work_id=w.id ORDER BY created_at DESC,id DESC LIMIT 1) q ON TRUE "
+            "LEFT JOIN LATERAL (SELECT id,decision,reviewer_id,candidate_sha FROM reviews "
+            " WHERE work_id=w.id ORDER BY created_at DESC,id DESC LIMIT 1) r ON TRUE "
+            "LEFT JOIN LATERAL (SELECT v.id,v.validator_id,v.candidate_tree "
+            " FROM patch_proposal_validations v JOIN patch_proposals p ON p.id=v.proposal_id "
+            " WHERE p.work_id=w.id ORDER BY v.created_at DESC,v.id DESC LIMIT 1) v ON TRUE "
+            "LEFT JOIN LATERAL (SELECT kind,details FROM events "
+            " WHERE subject_id=w.id AND kind IN ('work.pr_opened','work.pr_closed',"
+            " 'work.completed','work.resolved_outside_cycle') "
+            " ORDER BY created_at DESC,id DESC LIMIT 1) e ON TRUE "
             "ORDER BY w.id DESC LIMIT 50",
             (project_id, conversation_id, project_id, conversation_id, project_id, project_id),
         ).fetchall()
-        return [{
-            "work_id": str(row[0]), "title": row[1], "status": row[2],
-            "assigned_principal_id": row[3],
-            "latest_execution": ({"id": str(row[4]), "status": row[5],
-                                  "backend": row[6], "provider": row[7], "model": row[8]}
-                                 if row[4] else None),
-        } for row in rows]
+        work = []
+        for row in rows:
+            verified_outcomes = {}
+            if row[9]:
+                verified_outcomes["latest_review"] = {
+                    "decision": row[10], "reviewer_id": row[11],
+                    "candidate_sha": row[12],
+                }
+            if row[13]:
+                verified_outcomes["latest_patch_validation"] = {
+                    "validator_id": row[14], "candidate_tree": row[15],
+                    "validated_in_disposable_clone": True,
+                }
+            if row[16]:
+                details = row[17] if isinstance(row[17], dict) else {}
+                kind = row[16]
+                raw_pr_number = details.get("pr_number")
+                pr_number = (raw_pr_number if isinstance(raw_pr_number, int)
+                             and not isinstance(raw_pr_number, bool) and raw_pr_number > 0 else None)
+                if kind == "work.completed":
+                    raw_merge_sha = details.get("merge_commit_sha")
+                    merge_sha = (raw_merge_sha if isinstance(raw_merge_sha, str)
+                                 and len(raw_merge_sha) == 40
+                                 and all(char in "0123456789abcdef" for char in raw_merge_sha) else None)
+                    verified_outcomes["publication"] = {
+                        "state": "MERGED",
+                        "merge_commit_sha": merge_sha,
+                        "pr_number": pr_number,
+                    }
+                elif kind == "work.pr_opened":
+                    raw_candidate_sha = details.get("candidate_sha")
+                    candidate_sha = (raw_candidate_sha if isinstance(raw_candidate_sha, str)
+                                     and len(raw_candidate_sha) == 40
+                                     and all(char in "0123456789abcdef" for char in raw_candidate_sha)
+                                     else None)
+                    verified_outcomes["publication"] = {
+                        "state": "OPEN",
+                        "pr_number": pr_number,
+                        "candidate_sha": candidate_sha,
+                    }
+                elif kind == "work.pr_closed":
+                    verified_outcomes["publication"] = {
+                        "state": "CLOSED_UNMERGED", "pr_number": pr_number,
+                    }
+                else:
+                    verified_outcomes["resolution"] = "RESOLVED_OUTSIDE_CYCLE"
+            work.append({
+                "work_id": str(row[0]), "title": row[1], "status": row[2],
+                "assigned_principal_id": row[3],
+                "latest_execution": ({"id": str(row[4]), "status": row[5],
+                                      "backend": row[6], "provider": row[7], "model": row[8]}
+                                     if row[4] else None),
+                "verified_outcomes": verified_outcomes,
+            })
+        return work
 
     request_hash = hashlib.sha256(payload.body.encode("utf-8")).hexdigest()
     provider = os.getenv("AAO_CONVERSATION_PROVIDER", "openai-compatible")
@@ -2319,7 +2379,9 @@ def stream_project_conversation_turn(
                     "You are AAO, the user's organizational assistant. Converse clearly and helpfully. "
                     "The next system message contains a bounded snapshot read from AAO's canonical PostgreSQL work and execution records. "
                     "Use it to answer factual questions about linked work, but distinguish status/provenance from substantive results. "
-                    "Do not claim to have inspected execution payloads or verified deliverables; those payloads are intentionally not included. "
+                    "The verified_outcomes fields are limited to validation, review and reconciliation records; explain their scope precisely. "
+                    "They do not establish that a deliverable is correct beyond the stated evidence. "
+                    "Do not claim to have inspected execution payloads or verified deliverables from raw worker output; those payloads are intentionally not included. "
                     "Conversation does not authorize or execute work. When useful, help the CEO turn decisions into "
                     "explicit project tasks with clear outcomes and acceptance criteria; the CEO must submit those "
                     "tasks separately for review/admission."

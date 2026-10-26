@@ -7,6 +7,7 @@ die() { echo -e "\n\033[1;31mFAIL: $*\033[0m" >&2; exit 1; }
 
 TEST_ROOT=$(mktemp -d /tmp/aao-test-deploy-XXXXXX)
 trap 'rm -rf "$TEST_ROOT"' EXIT
+source "$(cd "$(dirname "$0")/.." && pwd)/scripts/bootstrap/release_state.sh"
 
 RELEASES_DIR="$TEST_ROOT/opt/aao/releases"
 mkdir -p "$RELEASES_DIR"
@@ -84,36 +85,37 @@ prune_releases_test
 
 say "PASS: Release pruning strictly protects current and previous targets."
 
-# 3. Test rollback on failed step
+# 3. Test rollback on failed step. The active release at deployment start is
+# the rollback target even when /previous points to a still older release.
 say "Test 3: Demonstrating rollback on bootstrap step error..."
 # Create mock venvs in release-01 and release-05
-mkdir -p "$RELEASES_DIR/release-01/venv/bin" "$RELEASES_DIR/release-05/venv/bin"
+mkdir -p "$RELEASES_DIR/release-01/venv/bin" "$RELEASES_DIR/release-05/venv/bin" "$RELEASES_DIR/release-06/venv/bin"
 echo "#!/bin/sh" > "$RELEASES_DIR/release-01/venv/bin/python"
 chmod +x "$RELEASES_DIR/release-01/venv/bin/python"
 echo "#!/bin/sh" > "$RELEASES_DIR/release-05/venv/bin/python"
 chmod +x "$RELEASES_DIR/release-05/venv/bin/python"
+echo "#!/bin/sh" > "$RELEASES_DIR/release-06/venv/bin/python"
+chmod +x "$RELEASES_DIR/release-06/venv/bin/python"
 
 # Initially pointing to release-05
 ln -sfn "$RELEASES_DIR/release-05" "$TEST_ROOT/opt/aao/current"
 ln -sfn "$RELEASES_DIR/release-05/venv" "$TEST_ROOT/opt/aao/venv"
 ln -sfn "$RELEASES_DIR/release-01" "$TEST_ROOT/opt/aao/previous"
+ln -sfn "$TEST_ROOT/opt/aao/current" "$TEST_ROOT/opt/aao/repo"
+ROLLBACK_RELEASE=$(aao_capture_active_release "$TEST_ROOT/opt/aao/current")
+
+# Simulate a new release switch followed by a later bootstrap failure.
+ln -sfn "$RELEASES_DIR/release-06" "$TEST_ROOT/opt/aao/current"
+ln -sfn "$RELEASES_DIR/release-06/venv" "$TEST_ROOT/opt/aao/venv"
 
 # Step fails: simulate rollback_release logic
 rollback_test() {
   local rollback_errors=()
-  if [[ -L "$TEST_ROOT/opt/aao/previous" && -e "$TEST_ROOT/opt/aao/previous" ]]; then
-    local prev_dir
-    prev_dir=$(readlink -f "$TEST_ROOT/opt/aao/previous" || true)
+  if [[ -n "$ROLLBACK_RELEASE" && -d "$ROLLBACK_RELEASE" ]]; then
+    local prev_dir="$ROLLBACK_RELEASE"
     if [[ -d "$prev_dir" ]]; then
-      # 1. Revert current & repo symlinks
-      ln -sfn "$prev_dir" "$TEST_ROOT/opt/aao/current.tmp"
-      mv -Tf "$TEST_ROOT/opt/aao/current.tmp" "$TEST_ROOT/opt/aao/current"
-      ln -sfn "$TEST_ROOT/opt/aao/current" "$TEST_ROOT/opt/aao/repo"
-
-      # 2. Revert Python virtual environment
-      if [[ -d "$prev_dir/venv" ]]; then
-        ln -sfn "$prev_dir/venv" "$TEST_ROOT/opt/aao/venv.tmp"
-        mv -Tf "$TEST_ROOT/opt/aao/venv.tmp" "$TEST_ROOT/opt/aao/venv"
+      if ! aao_restore_release_links "$TEST_ROOT/opt/aao" "$prev_dir"; then
+        rollback_errors+=("release link restoration failed")
       fi
 
       # 3. Simulate runtime check
@@ -134,8 +136,8 @@ rollback_test
 ACTUAL_CURRENT=$(readlink -f "$TEST_ROOT/opt/aao/current")
 ACTUAL_REPO=$(readlink -f "$TEST_ROOT/opt/aao/repo")
 ACTUAL_VENV=$(readlink -f "$TEST_ROOT/opt/aao/venv")
-EXPECTED_PREV=$(readlink -f "$RELEASES_DIR/release-01")
-EXPECTED_VENV=$(readlink -f "$RELEASES_DIR/release-01/venv")
+EXPECTED_PREV=$(readlink -f "$RELEASES_DIR/release-05")
+EXPECTED_VENV=$(readlink -f "$RELEASES_DIR/release-05/venv")
 
 [[ "$ACTUAL_CURRENT" == "$EXPECTED_PREV" ]] || die "Current did not roll back to previous ($ACTUAL_CURRENT != $EXPECTED_PREV)"
 [[ "$ACTUAL_REPO" == "$EXPECTED_PREV" ]] || die "Repo symlink did not roll back ($ACTUAL_REPO != $EXPECTED_PREV)"

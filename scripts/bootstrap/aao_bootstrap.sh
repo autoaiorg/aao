@@ -21,6 +21,7 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_DIR=$(cd "$SCRIPT_DIR/../.." && pwd)
+source "$SCRIPT_DIR/release_state.sh"
 
 say() { echo -e "\n\033[1;34m== [AAO BOOTSTRAP] $*\033[0m"; }
 die() { echo -e "\n\033[1;31mFAIL [AAO BOOTSTRAP]: $*\033[0m" >&2; exit 1; }
@@ -82,29 +83,27 @@ if (( ! APPLY )); then
   exit 0
 fi
 
+# Capture the currently active release before any deployment changes. The
+# `previous` link is history from the last successful deployment, not the
+# rollback target for this deployment (it may be one release older).
+ROLLBACK_RELEASE=""
+ROLLBACK_RELEASE=$(aao_capture_active_release /opt/aao/current || true)
+
 # Define safe rollback handler with cross-system consistency
 rollback_release() {
   local exit_code=$?
   say "CRITICAL: Bootstrap step failed with exit code $exit_code!"
-  if [[ -L /opt/aao/previous && -e /opt/aao/previous ]]; then
-    local prev_dir
-    prev_dir=$(readlink -f /opt/aao/previous || true)
+  if [[ -n "$ROLLBACK_RELEASE" && -d "$ROLLBACK_RELEASE" ]]; then
+    local prev_dir="$ROLLBACK_RELEASE"
     if [[ -d "$prev_dir" ]]; then
       say "Initiating safe rollback of active release to previous known-good state ($prev_dir)..."
       local rollback_errors=()
 
-      # 1. Revert release directory symlinks
-      ln -sfn "$prev_dir" /opt/aao/current.tmp
-      mv -Tf /opt/aao/current.tmp /opt/aao/current
-      if [[ -L /opt/aao/repo ]]; then
-        ln -sfn /opt/aao/current /opt/aao/repo
-      fi
-
-      # 2. Revert Python virtual environment
-      if [[ -d "$prev_dir/venv" ]]; then
-        say "Restoring previous release's exact Python virtual environment ($prev_dir/venv)..."
-        ln -sfn "$prev_dir/venv" /opt/aao/venv.tmp
-        mv -Tf /opt/aao/venv.tmp /opt/aao/venv
+      # 1. Revert release directory and Python virtual-environment links.
+      if ! aao_restore_release_links /opt/aao "$prev_dir"; then
+        rollback_errors+=("Failed to restore active release links")
+      elif [[ -d "$prev_dir/venv" ]]; then
+        say "Restored previous active release and its exact Python virtual environment ($prev_dir/venv)."
       elif [[ -x /opt/aao/venv/bin/pip ]]; then
         say "Re-installing previous release into Python venv..."
         if ! /opt/aao/venv/bin/pip install --quiet -e "$prev_dir[postgres]"; then
@@ -264,14 +263,6 @@ say "Installing dependencies and AAO package into $RELEASE_DIR/venv..."
 ln -sfn "$RELEASE_DIR/venv" /opt/aao/venv.tmp
 mv -Tf /opt/aao/venv.tmp /opt/aao/venv
 
-# Record previous release before atomic switch
-if [[ -L /opt/aao/current && -d /opt/aao/current ]]; then
-  PREV_TARGET=$(readlink /opt/aao/current || true)
-  if [[ -n "$PREV_TARGET" && "$PREV_TARGET" != "$RELEASE_DIR" ]]; then
-    ln -sfn "$PREV_TARGET" /opt/aao/previous
-  fi
-fi
-
 # Atomically update /opt/aao/current and backward-compatible /opt/aao/repo
 ln -sfn "$RELEASE_DIR" /opt/aao/current.tmp
 mv -Tf /opt/aao/current.tmp /opt/aao/current
@@ -390,6 +381,13 @@ sleep 2
 # Running doctor: MUST succeed (exit 0). If it fails, fail closed!
 if ! /opt/aao/venv/bin/python /opt/aao/current/scripts/aao_ops.py doctor; then
   die "System doctor diagnostics failed. Aborting bootstrap and reverting active release."
+fi
+
+# Publish the rollback pointer only after the new release passes diagnostics.
+# Failed deployments retain the prior history pointer unchanged.
+if [[ -n "$ROLLBACK_RELEASE" && "$ROLLBACK_RELEASE" != "$RELEASE_DIR" ]]; then
+  ln -s -- "$ROLLBACK_RELEASE" /opt/aao/previous.tmp
+  mv -Tf -- /opt/aao/previous.tmp /opt/aao/previous
 fi
 
 # Successful completion: clear rollback trap

@@ -10,8 +10,9 @@ EVIDENCE_DIR="$REPO_DIR/tests/evidence"
 mkdir -p "$EVIDENCE_DIR"
 LOG_FILE="$EVIDENCE_DIR/vm_validation_transcript.log"
 
+rm -f "$LOG_FILE"
 # Tee output to console and transcript log
-exec > >(tee -a "$LOG_FILE") 2>&1
+exec > >(tee "$LOG_FILE") 2>&1
 
 say() { echo -e "\n\033[1;36m=== [VM VALIDATION] $*\033[0m"; }
 die() { echo -e "\n\033[1;31mFAIL [VM VALIDATION]: $*\033[0m" >&2; exit 1; }
@@ -225,15 +226,29 @@ ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo /opt/aao/venv/bin/aao-ops doctor"
 ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "curl -fsSL http://127.0.0.1:8001/ready"
 
 say "11. Running live PostgreSQL tests inside the VM..."
-ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo /opt/aao/venv/bin/pip install --quiet pytest"
+ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo /opt/aao/venv/bin/pip install --quiet pytest httpx2"
 ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo bash -c '
   DB_PASS=\$(cat /etc/aao/aao-db.secret)
   export AAO_POSTGRES_URL=\"postgresql://aao_app:\${DB_PASS}@127.0.0.1:5432/aao_prod\"
   export AAO_TEST_POSTGRES_URL=\"\$AAO_POSTGRES_URL\"
-  /opt/aao/venv/bin/pytest /opt/aao/current/tests/test_migrator.py /opt/aao/current/tests/test_ops_doctor.py
+  export AAO_ENV=\"test\"
+  /opt/aao/venv/bin/pytest /opt/aao/current/tests/test_migrator.py /opt/aao/current/tests/test_ops_doctor.py /opt/aao/current/tests/test_host_fencing_exclusivity.py
 '"
 
-say "CLEAN VM VALIDATION COMPLETED SUCCESSFULLY (AC-01 through AC-18 verified)."
+say "12. Running complete self-development cycle from task admission to merged PR and DONE (AC-15)..."
+ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo bash -c '
+  git config --global --add safe.directory \"*\"
+  DB_PASS=\$(cat /etc/aao/aao-db.secret)
+  sudo -u postgres psql -c \"DROP DATABASE IF EXISTS aao_test_cycle;\"
+  sudo -u postgres psql -c \"CREATE DATABASE aao_test_cycle OWNER aao_app;\"
+  export AAO_TEST_POSTGRES_URL=\"postgresql://aao_app:\${DB_PASS}@127.0.0.1:5432/aao_test_cycle\"
+  export AAO_TEST_DB_DISPOSABLE=\"yes\"
+  export AAO_ENV=\"test\"
+  /opt/aao/venv/bin/python /opt/aao/current/scripts/migrate.py --apply --dsn \"\$AAO_TEST_POSTGRES_URL\"
+  /opt/aao/venv/bin/pytest /home/alessbarb/aao-repo/tests/test_project_workflow_integration.py -k test_self_development_cycle_from_task_to_merged_pr_and_done -v -s
+'"
+
+say "CLEAN VM VALIDATION COMPLETED SUCCESSFULLY."
 say "Tested Git Revision: $CURRENT_SHA"
 say "Log transcript stored at: $LOG_FILE"
 exit 0

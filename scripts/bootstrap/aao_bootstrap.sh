@@ -73,39 +73,78 @@ rollback_release() {
     prev_dir=$(readlink -f /opt/aao/previous || true)
     if [[ -d "$prev_dir" ]]; then
       say "Initiating safe rollback of active release to previous known-good state ($prev_dir)..."
+      local rollback_errors=()
+
+      # 1. Revert release directory symlinks
       ln -sfn "$prev_dir" /opt/aao/current.tmp
       mv -Tf /opt/aao/current.tmp /opt/aao/current
       if [[ -L /opt/aao/repo ]]; then
         ln -sfn /opt/aao/current /opt/aao/repo
       fi
 
-      if [[ -x /opt/aao/venv/bin/pip ]]; then
+      # 2. Revert Python virtual environment
+      if [[ -d "$prev_dir/venv" ]]; then
+        say "Restoring previous release's exact Python virtual environment ($prev_dir/venv)..."
+        ln -sfn "$prev_dir/venv" /opt/aao/venv.tmp
+        mv -Tf /opt/aao/venv.tmp /opt/aao/venv
+      elif [[ -x /opt/aao/venv/bin/pip ]]; then
         say "Re-installing previous release into Python venv..."
         if ! /opt/aao/venv/bin/pip install --quiet -e "$prev_dir[postgres]"; then
-          say "ERROR: Failed to reinstall previous release in Python venv during rollback!"
+          rollback_errors+=("Failed to reinstall previous release in Python venv during rollback")
         fi
       fi
 
-      # Verify schema compatibility for the rolled-back release
+      # 3. Verify Python runtime integrity
+      if ! /opt/aao/venv/bin/python -c "import aao, fastapi, uvicorn" >/dev/null 2>&1; then
+        rollback_errors+=("Python runtime verification failed in rolled-back environment")
+      fi
+
+      # 4. Verify database schema compatibility with the rolled-back release
       if [[ -f /etc/aao/aao-db.secret && -x /opt/aao/venv/bin/python ]]; then
         local db_pass
         db_pass=$(cat /etc/aao/aao-db.secret)
         local test_dsn="postgresql://aao_app:${db_pass}@127.0.0.1:5432/aao_prod"
         say "Verifying schema compatibility for rolled-back release..."
         if ! /opt/aao/venv/bin/python "$prev_dir/scripts/migrate.py" --verify --dsn "$test_dsn" >/dev/null 2>&1; then
-          say "Notice: Database contains forward-compatible migrations; verifying database connectivity..."
-          /opt/aao/venv/bin/python -c "from aao.postgresql_connection import connect_postgres; db = connect_postgres(); db.execute('SELECT 1');" >/dev/null 2>&1 || true
+          say "Notice: Database contains forward migrations; checking basic database connectivity..."
+          if ! /opt/aao/venv/bin/python -c "from aao.postgresql_connection import connect_postgres; db = connect_postgres(); db.execute('SELECT 1');" >/dev/null 2>&1; then
+            rollback_errors+=("Database connectivity / schema verification failed for rolled-back release")
+          fi
         fi
       fi
 
+      # 5. Service restart and functional verification
       if command -v systemctl >/dev/null 2>&1 && systemctl is-system-running >/dev/null 2>&1; then
         say "Restarting systemd services pointing to previous release..."
         systemctl daemon-reload
         if ! systemctl restart aao-api.service; then
-          say "ERROR: Failed to restart aao-api.service during rollback!"
+          rollback_errors+=("Failed to restart aao-api.service during rollback")
+        else
+          local ready_ok=0
+          for ((i=1; i<=10; i++)); do
+            if curl -fsSL http://127.0.0.1:8001/ready >/dev/null 2>&1; then
+              ready_ok=1
+              break
+            fi
+            sleep 1
+          done
+          if (( ! ready_ok )); then
+            rollback_errors+=("Service aao-api.service did not become ready (HTTP 200 on /ready) post-rollback")
+          fi
         fi
       fi
-      say "Rollback completed: /opt/aao/current safely restored to previous release ($prev_dir)."
+
+      # 6. Evaluate rollback outcome (fail closed on incomplete rollback)
+      if (( ${#rollback_errors[@]} > 0 )); then
+        echo -e "\n\033[1;31mFAIL [ROLLBACK]: ROLLBACK INCOMPLETE / CRITICAL INCONSISTENCY DETECTED!\033[0m" >&2
+        echo "The system could not be fully restored to a consistent operational state:" >&2
+        for err in "${rollback_errors[@]}"; do
+          echo "  - $err" >&2
+        done
+        exit 1
+      fi
+
+      say "PASS [ROLLBACK]: Rollback successfully verified: /opt/aao/current, Python runtime, and services restored to consistent operational state ($prev_dir)."
     fi
   fi
   exit "$exit_code"
@@ -190,8 +229,23 @@ tar -C "$REPO_DIR" \
   --exclude="*.pyc" \
   -cf - . | tar -C "$RELEASE_DIR" -xf -
 
-say "Installing AAO package into /opt/aao/venv from versioned release..."
-/opt/aao/venv/bin/pip install --quiet -e "$RELEASE_DIR[postgres]"
+say "Creating release-isolated Python virtual environment in $RELEASE_DIR/venv..."
+if [[ -d /opt/aao/base_venv ]]; then
+  python3 -m venv "$RELEASE_DIR/venv"
+elif [[ -d /opt/aao/venv && ! -L /opt/aao/venv ]]; then
+  mv /opt/aao/venv /opt/aao/base_venv
+  python3 -m venv "$RELEASE_DIR/venv"
+else
+  python3 -m venv "$RELEASE_DIR/venv"
+fi
+
+say "Installing dependencies and AAO package into $RELEASE_DIR/venv..."
+"$RELEASE_DIR/venv/bin/pip" install --quiet --upgrade pip setuptools wheel
+"$RELEASE_DIR/venv/bin/pip" install --quiet -e "$RELEASE_DIR[postgres]"
+
+# Atomically update /opt/aao/venv symlink to the release-isolated venv
+ln -sfn "$RELEASE_DIR/venv" /opt/aao/venv.tmp
+mv -Tf /opt/aao/venv.tmp /opt/aao/venv
 
 # Record previous release before atomic switch
 if [[ -L /opt/aao/current && -d /opt/aao/current ]]; then

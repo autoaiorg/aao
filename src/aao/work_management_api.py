@@ -2080,7 +2080,8 @@ def list_project_conversation_messages(
         rows = db.execute(
             "SELECT m.id,m.sender,m.body,m.related_work_id,m.created_at,w.status,"
             "q.id,q.status,q.result_json->>'backend',q.result_json->>'provider',"
-            "q.result_json->>'model',m.provider,m.model,t.state,t.error_code,t.idempotency_key "
+            "q.result_json->>'model',m.provider,m.model,t.state,t.error_code,t.idempotency_key,"
+            "t.lease_expires_at "
             "FROM project_conversation_messages m "
             "LEFT JOIN work_items w ON w.id=m.related_work_id "
             "LEFT JOIN project_conversation_turns t ON t.user_message_id=m.id "
@@ -2097,7 +2098,8 @@ def list_project_conversation_messages(
                                "backend": row[8], "provider": row[9], "model": row[10]}
                               if row[6] else None), "provider": row[11], "model": row[12],
          "turn_status": row[13], "turn_error_code": row[14],
-         "turn_idempotency_key": str(row[15]) if row[15] else None}
+         "turn_idempotency_key": str(row[15]) if row[15] else None,
+         "turn_lease_expires_at": row[16]}
         for row in rows
     ]
 

@@ -464,7 +464,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"PASS: Backup verified. Revision: {manifest.git_revision}, DB hash: {manifest.database_dump_sha256[:12]}")
         return 0
     elif args.command == "restore":
-        from aao.backup import restore_backup, verify_restore_isolated
+        from aao.backup import restore_backup
         if not args.target_dsn:
             print(
                 "ERROR: Target DSN must be provided via --target-dsn, "
@@ -473,11 +473,6 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
-        if args.verify_isolated_dsn:
-            print(f"Executing pre-restoration dry run in isolated destination: {args.verify_isolated_dsn}...")
-            verify_restore_isolated(args.archive, args.verify_isolated_dsn)
-            print("PASS: Pre-restoration dry run in isolated environment completed successfully.")
-
         try:
             manifest = restore_backup(
                 args.archive,
@@ -485,7 +480,6 @@ def main(argv: list[str] | None = None) -> int:
                 allow_non_empty_target=args.allow_non_empty,
                 restore_authorization=args.auth_file,
                 ceo_token=args.ceo_token,
-                pre_verified_isolated=bool(args.verify_isolated_dsn),
                 isolated_dsn=args.verify_isolated_dsn,
             )
             print(f"PASS: Restored backup from revision {manifest.git_revision}")

@@ -153,6 +153,20 @@ def test_restore_refuses_destructive_target_overwrite(tmp_path):
             restore_backup(archive, "postgresql://user:pass@localhost/live_prod", allow_non_empty_target=False)
 
 
+def test_restore_rejects_target_as_its_own_isolation_database(tmp_path):
+    archive = tmp_path / "dummy.tar.gz"
+    archive.write_bytes(b"unused")
+    with patch("aao.backup.verify_backup"), pytest.raises(
+        BackupError, match="different database from the restore target"
+    ):
+        restore_backup(
+            archive,
+            "postgresql://user:pass@localhost/live_prod",
+            allow_non_empty_target=True,
+            isolated_dsn="postgresql://user:pass@localhost/live_prod",
+        )
+
+
 def test_apply_host_fencing_targeted():
     mock_db = MagicMock()
     mock_db.execute.return_value.fetchall.return_value = [("worker-node-1",)]
@@ -175,6 +189,7 @@ def test_restore_requires_ceo_authorization_on_non_empty_database(tmp_path, monk
     monkeypatch.setenv("AAO_CEO_TOKEN", "valid-ceo-token-1234")
 
     with patch("aao.backup.verify_backup") as mock_verify, \
+         patch("aao.backup.verify_restore_isolated"), \
          patch("psycopg.connect") as mock_connect, \
          patch("subprocess.run") as mock_run:
         mock_manifest = MagicMock(database_dump_file="db.sql", git_revision="rev123", database_dump_sha256="sha123")
@@ -199,42 +214,50 @@ def test_restore_requires_ceo_authorization_on_non_empty_database(tmp_path, monk
         with pytest.raises(BackupError, match="Refusing destructive restore"):
             restore_backup(archive, "postgresql://user:pass@localhost/db", allow_non_empty_target=False)
 
+        # The former public boolean was an unsafe caller-controlled bypass.
+        with pytest.raises(TypeError, match="pre_verified_isolated"):
+            restore_backup(
+                archive,
+                "postgresql://user:pass@localhost/db",
+                allow_non_empty_target=True,
+                pre_verified_isolated=True,
+            )
+
         # 2. Fail if allow_non_empty_target is True but isolated pre-verification is missing
         with pytest.raises(BackupError, match="prior verification in an isolated destination"):
             restore_backup(
                 archive,
                 "postgresql://user:pass@localhost/db",
                 allow_non_empty_target=True,
-                pre_verified_isolated=False,
             )
 
-        # 3. Fail if pre_verified_isolated is True but authorization artifact is missing (token alone is not authorization)
+        # 3. An isolated dry run does not replace signed authorization.
         with pytest.raises(BackupError, match="Separation of duties violation"):
             restore_backup(
                 archive,
                 "postgresql://user:pass@localhost/db",
                 allow_non_empty_target=True,
-                pre_verified_isolated=True,
+                isolated_dsn="postgresql://user:pass@localhost/isolated",
                 ceo_token="valid-ceo-token-1234",
             )
 
-        # 4. Fail if pre_verified_isolated is True but authorization is invalid
+        # 4. Fail if isolated verification is complete but authorization is invalid.
         with pytest.raises(BackupError, match="Destructive restore over active non-empty database denied"):
             restore_backup(
                 archive,
                 "postgresql://user:pass@localhost/db",
                 allow_non_empty_target=True,
-                pre_verified_isolated=True,
+                isolated_dsn="postgresql://user:pass@localhost/isolated",
                 restore_authorization=bad_auth,
                 ceo_token="valid-ceo-token-1234",
             )
 
-        # 5. Succeed if pre_verified_isolated is True and valid authorization is provided
+        # 5. Succeed if isolated verification and valid authorization are provided.
         manifest = restore_backup(
             archive,
             "postgresql://user:pass@localhost/db",
             allow_non_empty_target=True,
-            pre_verified_isolated=True,
+            isolated_dsn="postgresql://user:pass@localhost/isolated",
             restore_authorization=valid_auth,
             ceo_token="valid-ceo-token-1234",
         )
@@ -257,6 +280,7 @@ def test_restore_rolls_back_on_partial_failure(tmp_path, monkeypatch, restore_te
     monkeypatch.setenv("AAO_CEO_TOKEN", "valid-ceo-token-1234")
 
     with patch("aao.backup.verify_backup") as mock_verify, \
+         patch("aao.backup.verify_restore_isolated"), \
          patch("psycopg.connect") as mock_connect, \
          patch("subprocess.run") as mock_run:
         mock_manifest = MagicMock(database_dump_file="db.sql", git_revision="rev123", database_dump_sha256="sha123")
@@ -299,7 +323,7 @@ def test_restore_rolls_back_on_partial_failure(tmp_path, monkeypatch, restore_te
                 archive,
                 "postgresql://user:pass@localhost/db",
                 allow_non_empty_target=True,
-                pre_verified_isolated=True,
+                isolated_dsn="postgresql://user:pass@localhost/isolated",
                 restore_authorization=valid_auth,
                 ceo_token="valid-ceo-token-1234",
             )

@@ -37,10 +37,11 @@ apt-get install -y -qq \
   git python3 python3-venv python3-pip openssl acl bubblewrap \
   curl ca-certificates postgresql-16 postgresql-client-16 rsync sudo >/dev/null 2>&1
 
+CEO_USER="${2:-alessbarb}"
 # Setup mock CEO user
-if ! id alessbarb >/dev/null 2>&1; then
-  useradd -m -s /bin/bash alessbarb
-  echo "alessbarb ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/ceo-test
+if ! id "$CEO_USER" >/dev/null 2>&1; then
+  useradd -m -s /bin/bash "$CEO_USER"
+  echo "$CEO_USER ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/ceo-test
   chmod 0440 /etc/sudoers.d/ceo-test
 fi
 
@@ -48,10 +49,10 @@ REPO_DIR="${1:-/repo}"
 [[ -d "$REPO_DIR" ]] || die "Repository directory $REPO_DIR not found"
 
 say "2. Testing AC-01: Fresh installation from scratch (including React build)..."
-bash "$REPO_DIR/scripts/bootstrap/aao_bootstrap.sh" --apply --ceo-user alessbarb
+bash "$REPO_DIR/scripts/bootstrap/aao_bootstrap.sh" --apply --ceo-user "$CEO_USER"
 
 say "3. Testing AC-02: Bootstrap idempotence (second run on configured host)..."
-OUTPUT_SECOND=$(bash "$REPO_DIR/scripts/bootstrap/aao_bootstrap.sh" --apply --ceo-user alessbarb 2>&1)
+OUTPUT_SECOND=$(bash "$REPO_DIR/scripts/bootstrap/aao_bootstrap.sh" --apply --ceo-user "$CEO_USER" 2>&1)
 assert_true "Second run exits 0" test $? -eq 0
 assert_true "Second run maintains schema" grep -q "Schema is up to date" <<<"$OUTPUT_SECOND"
 assert_true "Active release link exists" test -L /opt/aao/current
@@ -152,7 +153,7 @@ cp "$REPO_DIR/db/postgres/001_foundation.sql" /opt/aao/current/db/postgres/001_f
 # Scenario B: Destructive restore over live DB without CEO authorization is refused
 assert_true "Destructive restore over active DB without allow-non-empty is refused" \
   bash -c "! /opt/aao/venv/bin/python /opt/aao/current/scripts/aao_ops.py restore '$BACKUP_FILE' --target-dsn '$AAO_POSTGRES_URL' >/dev/null 2>&1"
-assert_true "Destructive restore over active DB without authorized-by-ceo is refused" \
+assert_true "Destructive restore over active DB without valid ceo token or isolated check is refused" \
   bash -c "! /opt/aao/venv/bin/python /opt/aao/current/scripts/aao_ops.py restore '$BACKUP_FILE' --target-dsn '$AAO_POSTGRES_URL' --allow-non-empty >/dev/null 2>&1"
 
 # Scenario C: Host fencing revokes active agent tokens and records event

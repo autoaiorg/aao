@@ -30,7 +30,7 @@ SKIP_DEPS=0
 SKIP_FRONTEND=0
 WITH_GOVERNANCE=0
 REV=""
-CEO_USER="${SUDO_USER:-$(logname 2>/dev/null || echo "alessbarb")}"
+CEO_USER="${CEO_USER:-${SUDO_USER:-$(logname 2>/dev/null || true)}}"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -47,6 +47,9 @@ done
 
 [[ $EUID -eq 0 ]] || die "aao_bootstrap.sh must be run as root (or via sudo)."
 
+[[ -n "$CEO_USER" ]] || die "--ceo-user <name> must be specified (could not safely determine from SUDO_USER or logname)."
+id "$CEO_USER" >/dev/null 2>&1 || die "Configured CEO user '$CEO_USER' does not exist on this host."
+
 say "Starting AAO Bootstrap (APPLY=$APPLY, CEO_USER=$CEO_USER)..."
 
 # ------------------------------------------------------------------------------
@@ -60,15 +63,31 @@ if (( ! APPLY )); then
   exit 0
 fi
 
-# Define safe rollback handler
+# Define safe rollback handler with cross-system consistency
 rollback_release() {
   local exit_code=$?
   say "WARN: Bootstrap step encountered an error (exit code $exit_code)!"
   if [[ -L /opt/aao/previous && -e /opt/aao/previous ]]; then
-    say "Initiating safe rollback of active release to previous known good state..."
-    ln -sfn "$(readlink /opt/aao/previous)" /opt/aao/current.tmp
-    mv -Tf /opt/aao/current.tmp /opt/aao/current
-    say "Rolled back /opt/aao/current to /opt/aao/previous."
+    local prev_dir
+    prev_dir=$(readlink -f /opt/aao/previous || true)
+    if [[ -d "$prev_dir" ]]; then
+      say "Initiating safe rollback of active release to previous known good state ($prev_dir)..."
+      ln -sfn "$prev_dir" /opt/aao/current.tmp
+      mv -Tf /opt/aao/current.tmp /opt/aao/current
+      if [[ -L /opt/aao/repo ]]; then
+        ln -sfn /opt/aao/current /opt/aao/repo
+      fi
+      if [[ -x /opt/aao/venv/bin/pip ]]; then
+        say "Re-pointing Python virtual environment to previous release..."
+        /opt/aao/venv/bin/pip install --quiet -e "$prev_dir[postgres]" || true
+      fi
+      if command -v systemctl >/dev/null 2>&1 && systemctl is-system-running >/dev/null 2>&1; then
+        say "Restarting systemd services with previous release..."
+        systemctl daemon-reload || true
+        systemctl restart aao-api.service || true
+      fi
+      say "Rolled back /opt/aao/current to /opt/aao/previous ($prev_dir)."
+    fi
   fi
   exit "$exit_code"
 }
@@ -130,12 +149,50 @@ fi
 # Atomically update /opt/aao/current and backward-compatible /opt/aao/repo
 ln -sfn "$RELEASE_DIR" /opt/aao/current.tmp
 mv -Tf /opt/aao/current.tmp /opt/aao/current
-rm -rf /opt/aao/repo
+
+# Preserve existing real /opt/aao/repo directory if present (never rm -rf real data)
+if [[ -e /opt/aao/repo && ! -L /opt/aao/repo ]]; then
+  LEGACY_BACKUP="/opt/aao/repo.legacy_$(date -u +%Y%m%d%H%M%S)"
+  say "Preserving existing non-symlink /opt/aao/repo to $LEGACY_BACKUP..."
+  mv /opt/aao/repo "$LEGACY_BACKUP"
+elif [[ -L /opt/aao/repo ]]; then
+  rm -f /opt/aao/repo
+fi
 ln -sfn /opt/aao/current /opt/aao/repo
 
-# Safely prune older releases, keeping the 3 most recent
-say "Maintaining release history (retaining 3 most recent)..."
-find /opt/aao/releases -maxdepth 1 -mindepth 1 -type d | sort -r | tail -n +4 | xargs rm -rf || true
+# Safely prune older releases, protecting current and previous
+prune_releases() {
+  local current_target=""
+  local previous_target=""
+  [[ -e /opt/aao/current ]] && current_target=$(readlink -f /opt/aao/current || true)
+  [[ -e /opt/aao/previous ]] && previous_target=$(readlink -f /opt/aao/previous || true)
+
+  say "Maintaining release history (protecting active and previous releases)..."
+  local count=0
+  while IFS= read -r rel; do
+    [[ -z "$rel" ]] && continue
+    count=$((count + 1))
+    local rel_real
+    rel_real=$(readlink -f "$rel" || true)
+
+    # Never delete releases actively pointed to by current or previous
+    if [[ -n "$current_target" && "$rel_real" == "$current_target" ]]; then
+      continue
+    fi
+    if [[ -n "$previous_target" && "$rel_real" == "$previous_target" ]]; then
+      continue
+    fi
+
+    # Retain the 3 most recent releases regardless
+    if (( count <= 3 )); then
+      continue
+    fi
+
+    say "Pruning unreferenced older release: $rel"
+    rm -rf "$rel"
+  done < <(find /opt/aao/releases -maxdepth 1 -mindepth 1 -type d | sort -r)
+}
+prune_releases
 
 # ------------------------------------------------------------------------------
 # STEP 4: PostgreSQL Native Datastore Provisioning
@@ -167,7 +224,7 @@ fi
 # STEP 7: Environment Configuration & Secret Distribution
 # ------------------------------------------------------------------------------
 say "Step 7: Configuring service environment files in /etc/aao/..."
-bash "$SCRIPT_DIR/init_secrets.sh"
+CEO_USER="$CEO_USER" bash "$SCRIPT_DIR/init_secrets.sh"
 
 # ------------------------------------------------------------------------------
 # STEP 8: Idempotent State Initialization (Respecting CEO Reserves)

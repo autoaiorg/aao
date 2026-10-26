@@ -145,6 +145,37 @@ def check_governance_guardrails() -> DiagnosticCheck:
     )
 
 
+def check_governance_identities() -> DiagnosticCheck:
+    """Verify that product and governance role identities exist and comply with P1."""
+    import pwd
+    required = ["aao-api", "aao-auditor", "aao-supervisor", "aao-integrator"]
+    missing = []
+    for u in required:
+        try:
+            pwd.getpwnam(u)
+        except KeyError:
+            missing.append(u)
+
+    if missing:
+        is_host_install = Path("/opt/aao").is_dir()
+        if is_host_install:
+            return DiagnosticCheck(
+                "Governance Identities",
+                "FAIL",
+                f"Missing required identities: {', '.join(missing)}. Action: run 'sudo scripts/bootstrap/init_identities.sh'.",
+            )
+        return DiagnosticCheck(
+            "Governance Identities",
+            "WARN",
+            f"Non-host environment missing identities: {', '.join(missing)}.",
+        )
+    return DiagnosticCheck(
+        "Governance Identities",
+        "PASS",
+        "Core governance roles (auditor, supervisor, integrator) and product user (aao-api) verified.",
+    )
+
+
 def run_doctor(api_url: str = "http://127.0.0.1:8001") -> list[DiagnosticCheck]:
     """Execute the full suite of diagnostic health checks."""
     checks = [
@@ -153,6 +184,7 @@ def run_doctor(api_url: str = "http://127.0.0.1:8001") -> list[DiagnosticCheck]:
         check_api_health(api_url),
         check_frontend_bundle(),
         check_governance_guardrails(),
+        check_governance_identities(),
     ]
     return checks
 
@@ -273,15 +305,18 @@ def main(argv: list[str] | None = None) -> int:
     p_restore.add_argument("archive", type=Path)
     p_restore.add_argument("--target-dsn", default=os.environ.get("AAO_POSTGRES_URL"))
     p_restore.add_argument("--allow-non-empty", action="store_true",
-                           help="Allow restoring over non-empty database (requires --authorized-by-ceo)")
-    p_restore.add_argument("--authorized-by-ceo", action="store_true",
-                           help="Explicit CEO authorization for destructive restore over existing database")
+                           help="Allow restoring over non-empty database (requires verifiable CEO authorization)")
+    p_restore.add_argument("--ceo-token", default=None,
+                           help="Explicit CEO credential token for verifiable authorization")
+    p_restore.add_argument("--ceo-decision-id", default=None,
+                           help="Specific CEO decision ID authorizing database restoration")
     p_restore.add_argument("--verify-isolated-dsn", default=None,
                            help="Verify restoration into an isolated destination before touching target")
 
     # fence-host
-    p_fence = subparsers.add_parser("fence-host", help="Apply host fencing: revoke worker leases, tokens and stop local worker units")
+    p_fence = subparsers.add_parser("fence-host", help="Apply targeted host fencing: revoke worker leases and credentials")
     p_fence.add_argument("--host-id", default=os.uname().nodename, help="Host identifier to record in fencing audit")
+    p_fence.add_argument("--worker-ids", nargs="*", default=None, help="Specific worker IDs to fence on this host")
 
     args = parser.parse_args(argv)
 
@@ -317,8 +352,10 @@ def main(argv: list[str] | None = None) -> int:
                 args.archive,
                 args.target_dsn,
                 allow_non_empty_target=args.allow_non_empty,
-                authorized_by_ceo=args.authorized_by_ceo,
+                ceo_token=args.ceo_token,
+                ceo_decision_id=args.ceo_decision_id,
                 pre_verified_isolated=bool(args.verify_isolated_dsn),
+                isolated_dsn=args.verify_isolated_dsn,
             )
             print(f"PASS: Restored backup from revision {manifest.git_revision}")
             return 0
@@ -328,7 +365,7 @@ def main(argv: list[str] | None = None) -> int:
 
     elif args.command == "fence-host":
         from aao.backup import apply_host_fencing
-        print(f"Applying host fencing for '{args.host_id}'...")
+        print(f"Applying targeted host fencing for '{args.host_id}'...")
 
         # If systemd is available, stop and mask background workers
         if shutil.which("systemctl"):
@@ -339,7 +376,7 @@ def main(argv: list[str] | None = None) -> int:
 
         try:
             with connect_postgres() as db:
-                actions = apply_host_fencing(db, host_identifier=args.host_id)
+                actions = apply_host_fencing(db, host_identifier=args.host_id, worker_ids=args.worker_ids)
                 for a in actions:
                     print(f"  [+] {a}")
             print(f"PASS: Host '{args.host_id}' successfully fenced from cluster.")

@@ -13,7 +13,8 @@
 # host review of P1.
 set -uo pipefail
 
-CEO_USER="${CEO_USER:-alessbarb}"
+CEO_USER="${CEO_USER:-${SUDO_USER:-$(logname 2>/dev/null || true)}}"
+[[ -n "$CEO_USER" ]] || { echo "FAIL: CEO_USER environment variable must be set" >&2; exit 1; }
 me=$(id -un)
 fails=0
 pass() { echo "PASS     $1"; }

@@ -39,6 +39,14 @@ AAO_SELF_DEV_REPOSITORY=/opt/aao/repo
 AAO_CEO_SESSION_ALLOWED_ORIGINS=http://127.0.0.1:8001
 EOF
   say "Generated $API_ENV_FILE"
+
+  CEO_USER="${CEO_USER:-${SUDO_USER:-$(logname 2>/dev/null || true)}}"
+  if [[ -n "$CEO_USER" ]] && id "$CEO_USER" >/dev/null 2>&1; then
+    echo -n "$CEO_TOKEN" > /etc/aao/aao-ceo.token
+    chown "$CEO_USER:$CEO_USER" /etc/aao/aao-ceo.token
+    chmod 0600 /etc/aao/aao-ceo.token
+    say "Provisioned CEO token for '$CEO_USER' at /etc/aao/aao-ceo.token"
+  fi
 fi
 
 # Ensure permissions: owned by root:aao-api with 0640 (readable only by aao-api and root)

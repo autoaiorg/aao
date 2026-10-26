@@ -181,10 +181,10 @@ describe('office persistent project conversation', () => {
     await waitFor(() => expect(port.createWorkGroupFromConversation).toHaveBeenCalledWith('project-active', 'conversation-1', {
       idempotency_key: expect.any(String),
       based_on_message_ids: ['message-1', 'message-2'],
-      title: 'Documentar hallazgos', description: 'A partir del hilo, documentar los hallazgos acordados.', acceptance_criteria: ['Hallazgos documentados', 'CEO puede revisarlos'],
+      title: 'Documentar hallazgos', description: 'A partir del hilo, documentar los hallazgos acordados.', acceptance_criteria: ['Hallazgos documentados', 'CEO puede revisarlos'], due_date: null,
       tasks: [
-        { key: 'task-1', title: 'Documentar hallazgos', description: 'Revisar fuentes', acceptance_criteria: ['Hallazgos documentados'], depends_on: [] },
-        { key: 'task-2', title: 'Revisar documentación', description: '', acceptance_criteria: ['CEO puede revisarlos'], depends_on: ['task-1'], assigned_principal_id: 'worker-1' },
+        { key: 'task-1', title: 'Documentar hallazgos', description: 'Revisar fuentes', acceptance_criteria: ['Hallazgos documentados'], due_date: null, depends_on: [] },
+        { key: 'task-2', title: 'Revisar documentación', description: '', acceptance_criteria: ['CEO puede revisarlos'], due_date: null, depends_on: ['task-1'], assigned_principal_id: 'worker-1' },
       ],
     }));
     expect(await screen.findByText(/no se ha admitido ni ejecutado/)).toBeInTheDocument();

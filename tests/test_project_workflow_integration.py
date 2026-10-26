@@ -272,6 +272,7 @@ def test_ceo_work_request_creates_only_audited_inbox_item(monkeypatch):
         "title": "CEO direction " + str(uuid4()),
         "description": "Persist the request without admitting execution.",
         "acceptance_criteria": ["Visible on the canonical project board"],
+        "due_date": "2026-11-15",
     }
     with TestClient(app) as client:
         agent_credential = client.post(
@@ -305,10 +306,11 @@ def test_ceo_work_request_creates_only_audited_inbox_item(monkeypatch):
         assert board.status_code == 200
         row = next(item for item in board.json() if item["id"] == work_id)
         assert row["status"] == "INBOX"
+        assert row["due_date"] == payload["due_date"]
         with connect_postgres() as db:
             author = db.execute(
-                "SELECT author_id FROM work_items WHERE id=%s", (work_id,),
-            ).fetchone()[0]
+                "SELECT author_id,due_date FROM work_items WHERE id=%s", (work_id,),
+            ).fetchone()
             event = db.execute(
                 "SELECT kind,details FROM events WHERE subject_id=%s AND kind='work.requested'",
                 (work_id,),
@@ -319,7 +321,8 @@ def test_ceo_work_request_creates_only_audited_inbox_item(monkeypatch):
             grant_count = db.execute(
                 "SELECT count(*) FROM project_grants WHERE project_id=%s", (project,),
             ).fetchone()[0]
-        assert author == "ceo"
+        assert author[0] == "ceo"
+        assert author[1].isoformat() == payload["due_date"]
         assert event[0] == "work.requested"
         assert event[1]["actor"] == "ceo"
         assert event[1]["admitted"] is False

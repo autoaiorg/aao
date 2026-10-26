@@ -54,6 +54,7 @@ export const WorkItemSchema = z.object({
   executions: z.array(ExecutionRecordSchema).optional(),
   author_id: z.string().optional(),
   created_at: z.string().optional(),
+  due_date: z.string().date().nullable().optional(),
 });
 
 export const ActivityEventSchema = z.object({

@@ -23,6 +23,7 @@ export const OfficeWorkRequestPanel: React.FC<OfficeWorkRequestPanelProps> = ({
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [criteria, setCriteria] = useState('');
+  const [dueDate, setDueDate] = useState('');
   const [result, setResult] = useState<DataState<CreatedWorkRequest> | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -35,6 +36,7 @@ export const OfficeWorkRequestPanel: React.FC<OfficeWorkRequestPanelProps> = ({
     try {
       setResult(await onCreate(projectId, {
         title: title.trim(), description: description.trim(), acceptance_criteria,
+        due_date: dueDate || null,
       }));
     } catch {
       setResult({ kind: 'error', code: 'REQUEST_FAILED', message: 'No se pudo enviar la solicitud.', retryable: true });
@@ -68,6 +70,9 @@ export const OfficeWorkRequestPanel: React.FC<OfficeWorkRequestPanelProps> = ({
           </label>
           <label className="office-form-field">Contexto (opcional)
             <textarea className="office-form-control office-form-control--textarea" aria-label="Contexto" maxLength={5000} rows={3} value={description} onChange={(event) => setDescription(event.target.value)} />
+          </label>
+          <label className="office-form-field">Fecha objetivo (opcional)
+            <input className="office-form-control" aria-label="Fecha objetivo" type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} />
           </label>
           <label className="office-form-field">Criterios de aceptación (uno por línea)
             <textarea className="office-form-control office-form-control--textarea" aria-label="Criterios de aceptación" required rows={3} value={criteria} onChange={(event) => setCriteria(event.target.value)} />

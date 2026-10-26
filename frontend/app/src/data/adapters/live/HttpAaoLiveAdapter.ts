@@ -524,6 +524,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
             ? itemObj.depends_on.filter((id): id is string => typeof id === 'string')
             : [],
           workGroupId: typeof itemObj.work_group_id === 'string' ? itemObj.work_group_id : null,
+          dueDate: typeof itemObj.due_date === 'string' ? itemObj.due_date : null,
           evidence: Array.isArray(itemObj.evidence) ? itemObj.evidence : [],
           executions: Array.isArray(itemObj.executions)
             ? (itemObj.executions as TaskItem['executions'])
@@ -1066,9 +1067,11 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
       z.object({
         proposal: z.object({
           title: z.string(), description: z.string(), acceptance_criteria: z.array(z.string()),
+          due_date: z.string().date().nullable().optional(),
           tasks: z.array(z.object({
             key: z.string(), title: z.string(), description: z.string(),
-            acceptance_criteria: z.array(z.string()), depends_on: z.array(z.string()),
+            acceptance_criteria: z.array(z.string()), due_date: z.string().date().nullable().optional(),
+            depends_on: z.array(z.string()),
           })),
         }),
         based_on_message_ids: z.array(z.string().uuid()),

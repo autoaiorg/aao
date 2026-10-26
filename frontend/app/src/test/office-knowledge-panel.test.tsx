@@ -12,7 +12,7 @@ describe('OfficeKnowledgePanel', () => {
   const index: DataState<KnowledgeSourceRecord[]> = {
     kind: 'ready', origin: 'live', fetchedAt: '2026-10-26T00:00:00Z',
     data: [
-      { workId: 'work-1', projectId: 'project-1', projectName: 'Proyecto real', title: 'Actualizar motor', status: 'DONE', evidenceReferences: ['sha256:work-evidence-ref'],
+      { workId: 'work-1', projectId: 'project-1', projectName: 'Proyecto real', title: 'Actualizar motor', status: 'DONE', evidenceReferences: ['sha256:work-evidence-ref', 'https://github.com/autoaiorg/aao/pull/190', 'javascript:alert(1)'],
         reviews: [{ id: 'review-1', reviewerId: 'auditor', decision: 'APPROVE', evidenceReferences: ['sha256:review-evidence-ref'], createdAt: '2026-10-26T00:00:00Z' }] },
       { workId: 'work-2', projectId: 'project-2', projectName: 'Otro proyecto', title: 'Revisar contratos', status: 'IN_REVIEW', evidenceReferences: [], reviews: [] },
     ],
@@ -27,9 +27,13 @@ describe('OfficeKnowledgePanel', () => {
     </QueryClientProvider>);
 
     expect(await screen.findByText('Actualizar motor')).toBeInTheDocument();
-    expect(screen.getByText(/1 referencias de trabajo · 1 revisiones · ID work-1/)).toBeInTheDocument();
-    fireEvent.click(screen.getByText(/Referencias canónicas \(2\)/));
+    expect(screen.getByText(/3 referencias de trabajo · 1 revisiones · ID work-1/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText(/Referencias canónicas \(4\)/));
     expect(screen.getByText('sha256:work-evidence-ref')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'https://github.com/autoaiorg/aao/pull/190' })).toHaveAttribute('href', 'https://github.com/autoaiorg/aao/pull/190');
+    expect(screen.getByRole('link', { name: 'https://github.com/autoaiorg/aao/pull/190' })).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(screen.getByText('javascript:alert(1)')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'javascript:alert(1)' })).not.toBeInTheDocument();
     expect(screen.getByText('sha256:review-evidence-ref')).toBeInTheDocument();
     expect(screen.queryByText('private patch data')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Actualizar motor/ }));

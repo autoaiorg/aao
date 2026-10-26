@@ -12,6 +12,15 @@ interface OfficeKnowledgePanelProps {
   onOpenBoard: (projectId: string, workId: string) => void;
 }
 
+const navigableEvidenceUrl = (reference: string): string | null => {
+  try {
+    const url = new URL(reference);
+    return url.protocol === 'https:' ? url.href : null;
+  } catch {
+    return null;
+  }
+};
+
 /** Read-only index over canonical project work/evidence; this is not a separate knowledge store. */
 export const OfficeKnowledgePanel: React.FC<OfficeKnowledgePanelProps> = ({ projects, port, sessionId, onOpenBoard }) => {
   const [search, setSearch] = useState('');
@@ -44,7 +53,12 @@ export const OfficeKnowledgePanel: React.FC<OfficeKnowledgePanelProps> = ({ proj
                 <small>{item.evidenceReferences.length} referencias de trabajo · {item.reviews.length} revisiones · ID {item.workId}</small>
                 {[...new Set([...item.evidenceReferences, ...item.reviews.flatMap((review) => review.evidenceReferences)])].length > 0 && <details>
                   <summary>Referencias canónicas ({[...new Set([...item.evidenceReferences, ...item.reviews.flatMap((review) => review.evidenceReferences)])].length})</summary>
-                  <ul className="office-knowledge__references">{[...new Set([...item.evidenceReferences, ...item.reviews.flatMap((review) => review.evidenceReferences)])].map((reference) => <li key={`${item.workId}-${reference}`}><code>{reference}</code></li>)}</ul>
+                  <ul className="office-knowledge__references">{[...new Set([...item.evidenceReferences, ...item.reviews.flatMap((review) => review.evidenceReferences)])].map((reference) => {
+                    const url = navigableEvidenceUrl(reference);
+                    return <li key={`${item.workId}-${reference}`}>{url
+                      ? <a href={url} target="_blank" rel="noopener noreferrer">{reference}</a>
+                      : <code>{reference}</code>}</li>;
+                  })}</ul>
                 </details>}
                 {item.reviews && item.reviews.length > 0 && (
                   <details>

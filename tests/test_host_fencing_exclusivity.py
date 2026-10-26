@@ -168,6 +168,54 @@ def test_execution_and_effect_routes_fail_closed_when_fencing_schema_is_missing(
             )
 
 
+def test_claim_complete_and_effect_proposal_reject_binding_for_another_host(monkeypatch):
+    """An agent token alone cannot use another host's active worker binding."""
+    from unittest.mock import patch
+
+    from aao.execution_queue import ExecutionConflict, claim, complete
+    from aao.external_effect_registry import EffectConflict, propose
+
+    monkeypatch.setenv("AAO_TEST_HOST_ID", "host-local")
+
+    def connected_module(module, error, action):
+        db = MagicMock()
+
+        def execute(query, params=None):
+            cursor = MagicMock()
+            query = str(query)
+            if "to_regclass" in query:
+                cursor.fetchone.return_value = ("public.host_worker_bindings",)
+            elif "information_schema.columns" in query:
+                cursor.fetchone.return_value = (1,)
+            elif "FROM host_worker_bindings" in query:
+                cursor.fetchall.return_value = [("host-remote", "ACTIVE", 4)]
+            return cursor
+
+        db.execute.side_effect = execute
+        with patch(f"{module}.connect_postgres") as connect, \
+             patch(f"{module}.current_host_id", return_value="host-local"):
+            connect.return_value.__enter__.return_value = db
+            action()
+
+    with patch("aao.execution_queue.verify_execution_principal"):
+        with pytest.raises(ExecutionConflict, match="different host"):
+            connected_module("aao.execution_queue", ExecutionConflict, lambda: claim(
+                "worker", agent_credential="agent-token", project_id="project"
+            ))
+        with pytest.raises(ExecutionConflict, match="different host"):
+            connected_module("aao.execution_queue", ExecutionConflict, lambda: complete(
+                "execution", "lease", "worker", {}, agent_credential="agent-token"
+            ))
+
+    with patch("aao.principal_credentials.authenticate_in_transaction", return_value="worker"), \
+         pytest.raises(EffectConflict, match="different host"):
+        connected_module("aao.external_effect_registry", EffectConflict, lambda: propose(
+            execution_id="execution", worker_id="worker", lease_token="lease",
+            agent_credential="agent-token", idempotency_key="key",
+            capability="effect.propose", request={},
+        ))
+
+
 @pytest.fixture
 def clean_postgres(monkeypatch):
     """Ensure clean PostgreSQL tables before and after test."""

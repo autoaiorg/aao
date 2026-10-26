@@ -367,7 +367,7 @@ def test_scenario_08_unbound_worker_fails_closed():
 # ==============================================================================
 # Scenario 9: Two workers competing for the same effect (idempotency / collision)
 # ==============================================================================
-def test_scenario_09_competing_effect_idempotency_or_conflict():
+def test_scenario_09_competing_effect_idempotency_or_conflict(monkeypatch):
     """Scenario 9: Two workers submit effect with same idempotency key.
 
     Registry must ensure atomic uniqueness and return existing effect or conflict.
@@ -402,6 +402,7 @@ def test_scenario_09_competing_effect_idempotency_or_conflict():
         return m
 
     mock_db.execute.side_effect = fake_execute
+    monkeypatch.setenv("AAO_TEST_HOST_ID", "host-1")
 
     with patch("aao.external_effect_registry.connect_postgres") as mock_conn, \
          patch("aao.principal_credentials.authenticate_in_transaction", return_value="w-1"):
@@ -424,7 +425,7 @@ def test_scenario_09_competing_effect_idempotency_or_conflict():
 # ==============================================================================
 # Scenario 10: Host revoked while in-flight worker holds lease (epoch mismatch)
 # ==============================================================================
-def test_scenario_10_fence_epoch_mismatch_fails_closed():
+def test_scenario_10_fence_epoch_mismatch_fails_closed(monkeypatch):
     """Scenario 10: Cutover fencing increments fence_epoch while worker execution in-flight.
 
     Worker attempting to complete task or propose effect with stale claimed epoch
@@ -451,6 +452,7 @@ def test_scenario_10_fence_epoch_mismatch_fails_closed():
         return m
 
     mock_db.execute.side_effect = fake_execute
+    monkeypatch.setenv("AAO_TEST_HOST_ID", "host-1")
 
     with patch("aao.execution_queue.connect_postgres") as mock_conn, \
          patch("aao.execution_queue.verify_execution_principal"):

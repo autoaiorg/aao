@@ -3,6 +3,7 @@ import hashlib
 import json
 from uuid import uuid4
 
+from aao.host_identity import HostIdentityError, current_host_id
 from aao.postgresql_connection import connect_postgres
 
 
@@ -64,6 +65,12 @@ def propose(*, execution_id: str, worker_id: str, lease_token: str,
                     f"Worker '{worker_id}' must have exactly one active host binding; effect proposal rejected."
                 )
             host_row = active_rows[0]
+            try:
+                local_host_id = current_host_id()
+            except HostIdentityError as exc:
+                raise EffectConflict("Trusted local host identity unavailable; effect proposal rejected") from exc
+            if host_row[0] != local_host_id:
+                raise EffectConflict("Active worker binding belongs to a different host; effect proposal rejected")
             if host_row[2] is None:
                 raise EffectConflict("Host fencing epoch is missing; effect proposal rejected")
 

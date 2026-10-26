@@ -106,12 +106,16 @@ say "7. Testing AC-08 & AC-12: Permissions, Secret Segregation and Isolation..."
 API_PERMS=$(stat -c "%a %U:%G" /etc/aao/aao-api.env)
 WORKER_PERMS=$(stat -c "%a %U:%G" /etc/aao/aao-worker.env)
 DB_SECRET_PERMS=$(stat -c "%a %U:%G" /etc/aao/aao-db.secret)
+HOST_ID_PERMS=$(stat -c "%a %U:%G" /etc/aao/host-id)
 
 assert_true "aao-api.env has restricted permissions (0600 or 0640 root:aao-api)" \
   test "$API_PERMS" = "640 root:aao-api" -o "$API_PERMS" = "600 root:root" -o "$API_PERMS" = "640 root:root"
 
 assert_true "aao-worker.env has restricted permissions (0600 or 0640 root:aao-impl-ag)" \
   test "$WORKER_PERMS" = "640 root:aao-impl-ag" -o "$WORKER_PERMS" = "600 root:root" -o "$WORKER_PERMS" = "640 root:root"
+
+assert_true "host identity is root-owned and readable only by the worker group" \
+  test "$HOST_ID_PERMS" = "440 root:aao-impl-ag"
 
 assert_true "aao-api cannot access /var/lib/aao-auditor" \
   bash -c "! runuser -u aao-api -- ls /var/lib/aao-auditor >/dev/null 2>&1"

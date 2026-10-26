@@ -7,6 +7,7 @@ import hmac
 import json
 from uuid import uuid4
 
+from aao.host_identity import HostIdentityError, current_host_id
 from aao.postgresql_connection import connect_postgres
 from aao.principal_credentials import digest_token
 
@@ -67,6 +68,12 @@ def claim(worker_id: str, *, agent_credential: str, project_id: str,
                 raise ExecutionConflict(
                     f"Worker '{worker_id}' must have exactly one active host binding; execution rejected."
                 )
+            try:
+                local_host_id = current_host_id()
+            except HostIdentityError as exc:
+                raise ExecutionConflict("Trusted local host identity unavailable; execution rejected") from exc
+            if active_rows[0][0] != local_host_id:
+                raise ExecutionConflict("Active worker binding belongs to a different host; execution rejected")
             host_fence_epoch = active_rows[0][2]
             if host_fence_epoch is None:
                 raise ExecutionConflict("Host fencing epoch is missing; execution rejected")
@@ -173,6 +180,12 @@ def complete(execution_id: str, token: str, worker_id: str, result: dict,
                 raise ExecutionConflict(
                     f"Worker '{worker_id}' must have exactly one active host binding; completion rejected."
                 )
+            try:
+                local_host_id = current_host_id()
+            except HostIdentityError as exc:
+                raise ExecutionConflict("Trusted local host identity unavailable; completion rejected") from exc
+            if active_rows[0][0] != local_host_id:
+                raise ExecutionConflict("Active worker binding belongs to a different host; completion rejected")
             host_fence_epoch = active_rows[0][2]
             if host_fence_epoch is None:
                 raise ExecutionConflict("Host fencing epoch is missing; completion rejected")

@@ -91,6 +91,8 @@ def test_agent_worker_reads_task_instructions_and_persists_proposal(monkeypatch)
     @contextmanager
     def tx(): yield DB()
     monkeypatch.setattr("aao.work_management_api.tx", tx)
+    monkeypatch.setattr("aao.work_management_api._authenticate_request_principal", lambda *args: "agent-1")
+    monkeypatch.setattr("aao.work_management_api.ensure_agent_work_in_progress", lambda *args: None)
     def runner(repository, base, instructions, **kwargs):
         captured["instructions"] = instructions
         captured.update(kwargs)
@@ -109,6 +111,16 @@ def test_agent_worker_reads_task_instructions_and_persists_proposal(monkeypatch)
     failed = completed.pop()[3]
     assert "lease must exceed" in failed["error"]
     assert (failed["backend"], failed["provider"], failed["backend_version"]) == ("fixture", "fixture", "fixture-v1")
+    from fastapi import HTTPException
+
+    def deny_start(*args):
+        raise HTTPException(403, "Project grant required")
+
+    monkeypatch.setattr("aao.work_management_api.ensure_agent_work_in_progress", deny_start)
+    assert worker.run_one("agent-1", "credential", project_id="project-1", seconds=400)["status"] == "FAILED"
+    assert "instructions" not in captured  # denied start never calls the model
+    completed.clear()
+    monkeypatch.setattr("aao.work_management_api.ensure_agent_work_in_progress", lambda *args: None)
     outcome = worker.run_one("agent-1", "credential", project_id="project-1", seconds=400)
     assert outcome["status"] == "SUCCEEDED"
     assert completed[0][3]["candidate_sha"] == "c" * 40
@@ -140,6 +152,8 @@ def test_agent_worker_empty_diff_fails_without_proposal(monkeypatch):
     @contextmanager
     def tx(): yield DB()
     monkeypatch.setattr("aao.work_management_api.tx", tx)
+    monkeypatch.setattr("aao.work_management_api._authenticate_request_principal", lambda *args: "agent-1")
+    monkeypatch.setattr("aao.work_management_api.ensure_agent_work_in_progress", lambda *args: None)
     monkeypatch.setattr("aao.agent_runner.run_agent_patch", lambda *a, **kw: {
         "patch": "", "backend": "fixture", "backend_version": "fixture-v1", "elapsed_seconds": .01, "exit_status": 0})
     monkeypatch.setattr("aao.work_management_api.persist_patch_proposal", lambda *a: pytest.fail("proposal must not be created"))
@@ -173,6 +187,8 @@ def test_agent_worker_runs_the_backend_and_model_of_the_staged_capability(monkey
     @contextmanager
     def tx(): yield DB()
     monkeypatch.setattr("aao.work_management_api.tx", tx)
+    monkeypatch.setattr("aao.work_management_api._authenticate_request_principal", lambda *args: "agent-1")
+    monkeypatch.setattr("aao.work_management_api.ensure_agent_work_in_progress", lambda *args: None)
     captured = {}
     def runner(repository, base, instructions, **kwargs):
         captured.update(kwargs)

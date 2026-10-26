@@ -971,15 +971,14 @@ def test_group_assignment_routes_execution_without_creating_grants(monkeypatch):
             assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
                 "principal_id": worker_id, "capability": "code.propose", "expires_at": expiry,
             }).status_code == 201
-        assert client.post(f"/v1/work/{work_id}/progress", headers=workers[0]).status_code == 200
         patch = ("diff --git a/tests/assigned.py b/tests/assigned.py\n"
                  "new file mode 100644\n--- /dev/null\n+++ b/tests/assigned.py\n"
                  "@@ -0,0 +1 @@\n+assert True\n")
         path = f"/v1/work/{work_id}/patch-proposals"
         payload = {"base_sha": "a" * 40, "patch": patch}
         assert client.post(path, headers=workers[1], json=payload).status_code == 403
-        proposal = client.post(path, headers=workers[0], json=payload)
-        assert proposal.status_code == 201, proposal.text
+        # No manual READY -> IN_PROGRESS call: the claimed worker must do it.
+        assert client.post(path, headers=workers[0], json=payload).status_code == 409
 
         from aao.inert_execution_worker import run_one
         from aao.patch_proposals import inspect_patch
@@ -1013,15 +1012,48 @@ def test_group_assignment_routes_execution_without_creating_grants(monkeypatch):
         assert len(calls) == 1
         with connect_postgres() as db:
             assert db.execute("SELECT author_id FROM work_items WHERE id=%s", (work_id,)).fetchone()[0] == "ceo"
-            assert db.execute(
-                "SELECT proposer_id FROM patch_proposals WHERE id=%s",
-                (proposal.json()["proposal_id"],),
-            ).fetchone()[0] == worker_ids[0]
+            proposal = db.execute(
+                "SELECT id,proposer_id FROM patch_proposals WHERE work_id=%s", (work_id,),
+            ).fetchone()
+            assert proposal[1] == worker_ids[0]
+            assert db.execute("SELECT status FROM work_items WHERE id=%s", (work_id,)).fetchone()[0] == "IN_PROGRESS"
             stored = db.execute(
                 "SELECT worker_id,result_json FROM execution_queue WHERE id=%s", (execution_id,),
             ).fetchone()
             assert stored[0] == worker_ids[0]
-            assert stored[1]["proposal_id"] == proposal.json()["proposal_id"]
+            assert stored[1]["proposal_id"] == str(proposal[0])
+
+        from aao.work_management_api import (
+            _authenticate_request_principal,
+            ensure_agent_work_in_progress,
+        )
+
+        principal = _authenticate_request_principal(worker_tokens[0], "AGENT")
+        ensure_agent_work_in_progress(work_id, principal)
+        ensure_agent_work_in_progress(work_id, principal)
+        other = _authenticate_request_principal(worker_tokens[1], "AGENT")
+        with pytest.raises(HTTPException) as denied:
+            ensure_agent_work_in_progress(work_id, other)
+        assert denied.value.status_code == 403
+        with connect_postgres() as db:
+            assert db.execute(
+                "SELECT count(*) FROM events WHERE subject_id=%s AND kind='work.progressed' "
+                "AND details->>'to'='IN_PROGRESS'", (work_id,),
+            ).fetchone()[0] == 1
+            db.execute(
+                "DELETE FROM project_grants WHERE project_id=%s AND principal_id=%s "
+                "AND capability='work.progress'", (project, worker_ids[0]),
+            )
+        with pytest.raises(HTTPException) as revoked:
+            ensure_agent_work_in_progress(work_id, principal)
+        assert revoked.value.status_code == 403
+        assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
+            "principal_id": worker_ids[0], "capability": "work.progress",
+        }).status_code == 201
+        assert client.post(f"/v1/work/{work_id}/progress", headers=workers[0]).json()["status"] == "IN_REVIEW"
+        with pytest.raises(HTTPException) as terminal:
+            ensure_agent_work_in_progress(work_id, principal)
+        assert terminal.value.status_code == 409
 
 
 @pytest.mark.skipif(

@@ -53,6 +53,12 @@
   margin-bottom: 16px;
 }
 
+.office-form-panel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .office-activity__list {
   display: grid;
   gap: 6px;

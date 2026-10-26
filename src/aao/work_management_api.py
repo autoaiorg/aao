@@ -652,28 +652,51 @@ def _authenticate_request_principal(token: str | None, kind: str):
 
 
 
+def _frontend_dist_dir() -> Path:
+    custom = os.environ.get("AAO_STATIC_DIR")
+    if custom:
+        custom_path = Path(custom)
+        if custom_path.is_dir():
+            return custom_path
+    built_dist = Path(__file__).resolve().parents[2] / "frontend" / "app" / "dist"
+    if built_dist.is_dir() and (built_dist / "index.html").is_file():
+        return built_dist
+    return Path(__file__).resolve().parents[2] / "frontend"
+
+
 @app.get("/", include_in_schema=False)
 def workboard_ui():
-    """Serve the workboard from the same origin as the PostgreSQL API."""
-    return FileResponse(Path(__file__).resolve().parents[2] / "frontend" / "index.html")
+    """Serve the Control Center UI from the same origin as the API."""
+    dist_dir = _frontend_dist_dir()
+    index_file = dist_dir / "index.html"
+    if not index_file.is_file():
+        index_file = Path(__file__).resolve().parents[2] / "frontend" / "index.html"
+    return FileResponse(index_file)
 
 
-@app.get("/assets/control-center.css", include_in_schema=False)
-def control_center_stylesheet():
-    """Serve the Control Center stylesheet from the same origin."""
-    return FileResponse(
-        Path(__file__).resolve().parents[2] / "frontend" / "control-center.css",
-        media_type="text/css",
-    )
+@app.get("/assets/{asset_name:path}", include_in_schema=False)
+def control_center_asset(asset_name: str):
+    """Serve built static assets from Control Center or legacy fallback."""
+    if ".." in asset_name or asset_name.startswith("/"):
+        raise HTTPException(status_code=400, detail="Invalid asset path")
 
+    dist_dir = _frontend_dist_dir()
+    candidate = dist_dir / "assets" / asset_name
+    if candidate.is_file():
+        return FileResponse(candidate)
 
-@app.get("/assets/control-center.js", include_in_schema=False)
-def control_center_script():
-    """Serve the Control Center client from the same origin."""
-    return FileResponse(
-        Path(__file__).resolve().parents[2] / "frontend" / "control-center.js",
-        media_type="text/javascript",
-    )
+    root_candidate = dist_dir / asset_name
+    if root_candidate.is_file():
+        return FileResponse(root_candidate)
+
+    legacy_file = Path(__file__).resolve().parents[2] / "frontend" / asset_name
+    if legacy_file.is_file():
+        media_type = "text/css" if asset_name.endswith(".css") else (
+            "text/javascript" if asset_name.endswith(".js") else None
+        )
+        return FileResponse(legacy_file, media_type=media_type)
+
+    raise HTTPException(status_code=404, detail="Asset not found")
 
 
 @app.get("/health")
@@ -3712,3 +3735,37 @@ def dispatch_next_agent_work(
                     "work_id": work_id, "reason": str(exc.detail)}
         raise
     return {**staged, "work_id": work_id}
+
+
+ALLOWED_SPA_ROUTES = {
+    "dashboard", "projects", "kanban", "decisions", "alerts", "audit",
+    "operations", "organization", "office", "settings", "mandates", "activity",
+}
+
+
+@app.get("/{client_route:path}", include_in_schema=False)
+def spa_route_fallback(client_route: str):
+    """Fallback handler for client-side React SPA routes (e.g. /kanban, /mandates)."""
+    clean_route = client_route.strip("/")
+    first_segment = clean_route.split("/")[0]
+
+    # Explicit allowed client routes return the SPA entrypoint
+    if first_segment in ALLOWED_SPA_ROUTES:
+        dist_dir = _frontend_dist_dir()
+        index_file = dist_dir / "index.html"
+        if not index_file.is_file():
+            index_file = Path(__file__).resolve().parents[2] / "frontend" / "index.html"
+        if index_file.is_file():
+            return FileResponse(index_file)
+
+    # Check if a public static file directly in dist exists (e.g. favicon, manifest)
+    dist_dir = _frontend_dist_dir()
+    candidate = dist_dir / clean_route
+    try:
+        resolved = candidate.resolve()
+        if resolved.is_relative_to(dist_dir.resolve()) and resolved.is_file():
+            return FileResponse(resolved)
+    except (ValueError, RuntimeError):
+        pass
+
+    raise HTTPException(status_code=404, detail="Not Found")

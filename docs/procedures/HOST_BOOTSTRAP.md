@@ -1,4 +1,46 @@
-# Arranque completo de un host AAO (`scripts/bootstrap/host_bootstrap.sh`)
+# Arquitectura de Despliegue y Arranque de Host en AAO
+
+AAO distingue explícitamente entre dos niveles de despliegue en un host Linux:
+
+1. **Bootstrap Integral del Producto (`scripts/bootstrap/aao_bootstrap.sh`):**
+   - **Objetivo:** Poner en funcionamiento de manera reproducible, automatizada e idempotente el producto completo de AAO en una máquina Linux limpia (Ubuntu 24.04 LTS).
+   - **Componentes desplegados:** PostgreSQL 16 nativo, aplicador de migraciones unificado (001 a 030), entorno virtual aislado en `/opt/aao/venv`, cuenta de servicio sin privilegios `aao-api`, servicio systemd `aao-api.service`, Control Center React compilado y servido como SPA, worker supervisado `aao-worker-self-dev.service`, configuración protegida en `/etc/aao/`, backup/restore seguro y herramienta operativa `aao-ops`.
+   - **Garantías de gobierno:** El integrador permanece en **OFF**, las RA permanecen en **PENDING** y el nivel de riesgo **R2** permanece bloqueado.
+
+2. **Infraestructura de Gobierno y Raíz de Confianza (`scripts/bootstrap/host_bootstrap.sh`):**
+   - **Objetivo:** Establecer la raíz criptográfica de confianza, auditorías independientes, verificación 9/9 de GitHub Apps, árboles congelados en `/srv/aao/frozen` y unidades de despacho.
+   - **Quién:** El CEO, con sudo (P5 (a)).
+
+---
+
+# 1. Bootstrap Integral del Producto (`aao_bootstrap.sh`)
+
+### Requisitos Mínimos:
+- Ubuntu 24.04 LTS (Noble Numbat) x86_64 o Debian 12.
+- 4 GB de RAM mínima y 15 GB de almacenamiento libre en `/`.
+- Acceso a internet durante la instalación para descargar paquetes del sistema y Node.js 24 LTS.
+
+### Ejecución de Instalación Limpia:
+```bash
+# Simulación (Dry-run de preflight)
+sudo ./scripts/bootstrap/aao_bootstrap.sh
+
+# Despliegue completo con aplicación de cambios
+sudo ./scripts/bootstrap/aao_bootstrap.sh --apply
+```
+
+### Verificación Inmediata tras la Instalación:
+```bash
+# Diagnóstico de salud accionable
+sudo /opt/aao/venv/bin/aao-ops doctor
+
+# Acceso al Control Center
+curl -I http://127.0.0.1:8001/
+```
+
+---
+
+# 2. Arranque de Gobernanza y Raíz de Confianza (`host_bootstrap.sh`)
 
 **Quién:** el CEO, con sudo (P5 (a)). Ningún agente ejecuta estos pasos.
 **Para qué:** dejar un host nuevo en el mismo estado que el actual, o mover AAO de una máquina a otra.

@@ -1,0 +1,27 @@
+[Unit]
+Description=AAO Self-Development Queue Worker
+After=network-online.target aao-api.service
+Wants=network-online.target aao-api.service
+
+[Service]
+Type=simple
+User=aao-impl-ag
+Group=aao-impl-ag
+UMask=0027
+WorkingDirectory=/opt/aao/repo
+EnvironmentFile=-/etc/aao/aao-worker.env
+ExecStart=/opt/aao/venv/bin/python scripts/run_self_development_worker.py --watch
+Restart=on-failure
+RestartSec=10s
+KillMode=mixed
+TimeoutStopSec=30s
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=/var/log/aao /var/lib/aao-impl-ag
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

@@ -221,7 +221,7 @@ Los perfiles/unidades persistidos y la edición CEO ya están construidos (#134/
 - **Validación local:** Ruff, `compileall`, `git diff --check` pasan; backend completo `610 passed, 48 skipped`. La prueba nueva requiere PostgreSQL desechable y fue ejecutada en CI.
 - **Integrado:** PR #162 mergeada en `513c65989cc56249f72482cf37ecce5f6d1b2bd6`; checks PR runs `40245188564` y `40245192209`; CI post-merge `main` run `40245352064` (test/frontend verde).
 - No se ha inspeccionado ni verificado en ejecución un entorno PostgreSQL local; el diferencial se basa en rutas, código y CI. No se ejercitaron credenciales ni llamadas a modelo de Agents Office.
-- **Siguiente owner:** PM/backend concreta contrato mínimo para asignar hijos a identidades reales con permisos canónicos y enlazar resultados; frontend consume solo ese contrato. CEO interviene solo si aparece una decisión estratégica o riesgo reservado.
+- **Siguiente owner:** PM/backend define un recurso de consolidación durable separado del trabajo padre, fijado a resultados y evidencia reales; frontend consume ese contrato y exige confirmación CEO. CEO interviene solo si aparece una decisión estratégica o riesgo reservado.
 
 ### F3 — asignación CEO a identidad autorizada (integrada)
 

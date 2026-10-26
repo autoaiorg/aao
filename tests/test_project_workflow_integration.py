@@ -1597,12 +1597,34 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         assert work_count_after_proposal == work_count_before_proposal
         assert proposal_event[0]["persisted_as_work"] is False
         assert proposal_event[0]["admitted"] is False
+        assert proposal_event[0]["proposal"]["title"] == proposal_body["proposal"]["title"]
+        assert "test-ceo-key" not in json.dumps(proposal_event[0])
+        assert "test-ceo-key" not in proposed.text
+        assert client.get(
+            f"/v1/projects/{project}/conversations/{conversation_id}/work-group-proposals/latest",
+        ).status_code == 403
+        recovered_proposal = client.get(
+            f"/v1/projects/{project}/conversations/{conversation_id}/work-group-proposals/latest",
+            headers=ceo,
+        )
+        assert recovered_proposal.status_code == 200, recovered_proposal.text
+        assert recovered_proposal.json()["proposal"] == proposal_body["proposal"]
+        assert recovered_proposal.json()["based_on_message_ids"] == proposal_body["based_on_message_ids"]
+        assert recovered_proposal.json()["is_current"] is True
+        assert recovered_proposal.json()["persisted_as_work"] is False
+        assert "test-ceo-key" not in recovered_proposal.text
         # A generated plan may not be confirmed after the persisted transcript changes.
         late_message = client.post(
             f"/v1/projects/{project}/conversations/{conversation_id}/messages",
             headers=ceo, json={"body": "Añadir una nueva restricción"},
         )
         assert late_message.status_code == 201
+        stale_proposal = client.get(
+            f"/v1/projects/{project}/conversations/{conversation_id}/work-group-proposals/latest",
+            headers=ceo,
+        )
+        assert stale_proposal.status_code == 200
+        assert stale_proposal.json()["is_current"] is False
         stale_group = {
             "idempotency_key": str(uuid4()),
             "based_on_message_ids": proposal_body["based_on_message_ids"],

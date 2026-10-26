@@ -24,6 +24,7 @@ describe('office persistent project conversation', () => {
     const port: AaoConversationPort = {
       listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
       listAssignableAgents: vi.fn().mockResolvedValue(ready([])),
+      getLatestWorkGroupProposal: vi.fn().mockResolvedValue(ready(null)),
       listConversationMessages: vi.fn().mockResolvedValue(ready([message])),
       createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(),
       streamCEOConversationTurn: vi.fn().mockResolvedValue(ready({ message_id: 'response-2' })),
@@ -53,6 +54,7 @@ describe('office persistent project conversation', () => {
     const port: AaoConversationPort = {
       listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
       listAssignableAgents: vi.fn().mockResolvedValue(ready([])),
+      getLatestWorkGroupProposal: vi.fn().mockResolvedValue(ready(null)),
       listConversationMessages: vi.fn().mockResolvedValue(ready([message])),
       createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(),
       streamCEOConversationTurn: vi.fn().mockImplementation((_project, _conversation, _body, _key, onDelta) => {
@@ -84,6 +86,7 @@ describe('office persistent project conversation', () => {
       listAssignableAgents: vi.fn().mockResolvedValue(ready([
         { principal_id: 'worker-1', display_name: 'Agente de implementación', competencies: ['implementación'] },
       ])),
+      getLatestWorkGroupProposal: vi.fn().mockResolvedValue(ready(null)),
       listConversationMessages: vi.fn().mockResolvedValue(ready([message])),
       createProjectConversation: vi.fn(),
       appendCEOConversationMessage: vi.fn().mockResolvedValue(ready(message)),
@@ -112,6 +115,7 @@ describe('office persistent project conversation', () => {
     const port: AaoConversationPort = {
       listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
       listAssignableAgents: vi.fn().mockResolvedValue(ready([])),
+      getLatestWorkGroupProposal: vi.fn().mockResolvedValue(ready(null)),
       listConversationMessages: vi.fn().mockResolvedValue(ready([linkedMessage])),
       createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(), streamCEOConversationTurn: vi.fn(),
       createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(),
@@ -134,6 +138,7 @@ describe('office persistent project conversation', () => {
     const port: AaoConversationPort = {
       listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
       listAssignableAgents: vi.fn().mockResolvedValue(ready([])),
+      getLatestWorkGroupProposal: vi.fn().mockResolvedValue(ready(null)),
       listConversationMessages: vi.fn().mockResolvedValue(ready([resultMessage])),
       createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(), streamCEOConversationTurn: vi.fn(),
       createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(), createWorkGroupFromConversation: vi.fn(),
@@ -151,6 +156,7 @@ describe('office persistent project conversation', () => {
     const port: AaoConversationPort = {
       listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
       listAssignableAgents: vi.fn().mockResolvedValue(ready([])),
+      getLatestWorkGroupProposal: vi.fn().mockResolvedValue(ready(null)),
       listConversationMessages: vi.fn().mockResolvedValue(ready([message])),
       createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(), streamCEOConversationTurn: vi.fn(),
       createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(), createWorkGroupFromConversation: vi.fn(), proposeWorkGroupFromConversation: vi.fn(),
@@ -192,6 +198,7 @@ describe('office persistent project conversation', () => {
     const port: AaoConversationPort = {
       listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
       listAssignableAgents: vi.fn().mockResolvedValue(ready([])),
+      getLatestWorkGroupProposal: vi.fn().mockResolvedValue(ready(null)),
       listConversationMessages: vi.fn().mockResolvedValue(ready([message])),
       createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(),
       streamCEOConversationTurn: vi.fn()
@@ -219,6 +226,7 @@ describe('office persistent project conversation', () => {
     const port: AaoConversationPort = {
       listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
       listAssignableAgents: vi.fn().mockResolvedValue(ready([])),
+      getLatestWorkGroupProposal: vi.fn().mockResolvedValue(ready(null)),
       listConversationMessages: vi.fn().mockResolvedValue(ready([pending])),
       createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(),
       streamCEOConversationTurn: vi.fn().mockResolvedValue(ready({ message_id: 'reply-recovered' })),
@@ -241,6 +249,7 @@ describe('office persistent project conversation', () => {
     const port: AaoConversationPort = {
       listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
       listAssignableAgents: vi.fn().mockResolvedValue(ready([])),
+      getLatestWorkGroupProposal: vi.fn().mockResolvedValue(ready(null)),
       listConversationMessages: vi.fn().mockResolvedValue(ready([pending])),
       createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(),
       streamCEOConversationTurn: vi.fn().mockResolvedValue(ready({ message_id: 'reply-recovered' })),
@@ -263,6 +272,7 @@ describe('office persistent project conversation', () => {
     const port: AaoConversationPort = {
       listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
       listAssignableAgents: vi.fn().mockResolvedValue(ready([])),
+      getLatestWorkGroupProposal: vi.fn().mockResolvedValue(ready(null)),
       listConversationMessages: vi.fn().mockResolvedValue(ready([pending])),
       createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(), streamCEOConversationTurn: vi.fn(),
       createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(),
@@ -281,6 +291,7 @@ describe('office persistent project conversation', () => {
     const port: AaoConversationPort = {
       listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
       listAssignableAgents: vi.fn().mockResolvedValue(ready([])),
+      getLatestWorkGroupProposal: vi.fn().mockResolvedValue(ready(null)),
       listConversationMessages: vi.fn()
         .mockResolvedValueOnce(ready([pending]))
         .mockResolvedValue(ready([pending, completed])),
@@ -296,12 +307,58 @@ describe('office persistent project conversation', () => {
     expect(port.listConversationMessages).toHaveBeenCalledTimes(2);
   });
 
+  it('restores a current persisted proposal after the office panel reloads', async () => {
+    const proposal = {
+      title: 'Resultado acordado', description: 'Resumen persistido',
+      acceptance_criteria: ['Evidencia enlazada'], due_date: null,
+      tasks: [{
+        key: 'research', title: 'Investigar', description: 'Revisar el estado real',
+        acceptance_criteria: ['Fuentes registradas'], due_date: null, depends_on: [],
+        required_competencies: ['technical-writing'], assigned_principal_id: null,
+      }],
+    };
+    const port: AaoConversationPort = {
+      listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
+      listAssignableAgents: vi.fn().mockResolvedValue(ready([])),
+      getLatestWorkGroupProposal: vi.fn().mockResolvedValue(ready({
+        proposal, based_on_message_ids: ['message-1'], provider: 'openai-compatible',
+        model: 'persisted-model', endpoint: 'https://provider.invalid/v1',
+        persisted_as_work: false, is_current: true,
+      })),
+      listConversationMessages: vi.fn().mockResolvedValue(ready([message])),
+      createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(),
+      streamCEOConversationTurn: vi.fn(), createWorkRequestFromMessage: vi.fn(),
+      createWorkRequestFromConversation: vi.fn(), createWorkGroupFromConversation: vi.fn(),
+      proposeWorkGroupFromConversation: vi.fn(),
+      listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), assignWorkGroupChild: vi.fn(),
+      confirmWorkGroupConsolidation: vi.fn(), confirmWorkGroupAcceptance: vi.fn(),
+      createWorkGroupPartialReport: vi.fn(),
+    };
+    setup(port);
+    await screen.findByText('Preparar el plan');
+    expect(await screen.findByDisplayValue('Resultado acordado')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('Investigar')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('Revisar el estado real')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('Evidencia enlazada')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Confirmar desglose y crear en Entrada' })).toBeInTheDocument();
+    expect(port.createWorkGroupFromConversation).not.toHaveBeenCalled();
+  });
+
   it('structures CEO-confirmed parent and dependent tasks from the conversation thread', async () => {
+    const proposal = {
+      title: 'Plan acordado', description: 'Resultado del hilo', acceptance_criteria: ['Criterios trazables'],
+      tasks: [{ key: 'task-1', title: 'Investigar', description: 'Revisar fuentes', acceptance_criteria: ['Fuentes registradas'], depends_on: [], required_competencies: ['technical-writing'], assigned_principal_id: 'worker-1' }],
+    };
+    const persistedProposal = {
+      proposal, based_on_message_ids: ['message-1', 'message-2'], provider: 'openai-compatible',
+      model: 'test-model', persisted_as_work: false as const, is_current: true,
+    };
     const port: AaoConversationPort = {
       listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
       listAssignableAgents: vi.fn().mockResolvedValue(ready([
         { principal_id: 'worker-1', display_name: 'Agente de implementación', competencies: ['technical-writing'] },
       ])),
+      getLatestWorkGroupProposal: vi.fn().mockResolvedValueOnce(ready(null)).mockResolvedValue(ready(persistedProposal)),
       listConversationMessages: vi.fn().mockResolvedValue(ready([message, { ...message, id: 'message-2', sender: 'AAO', body: 'Propongo documentar los hallazgos.' } ])),
       createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(), streamCEOConversationTurn: vi.fn(),
       createWorkRequestFromMessage: vi.fn(),
@@ -312,12 +369,7 @@ describe('office persistent project conversation', () => {
         tasks: [{ id: 'work-child', title: 'Documentar', status: 'INBOX', assigned_principal_id: null, depends_on: [] }],
       })),
       proposeWorkGroupFromConversation: vi.fn().mockResolvedValue(ready({
-        proposal: {
-          title: 'Plan acordado', description: 'Resultado del hilo',
-          acceptance_criteria: ['Criterios trazables'],
-          tasks: [{ key: 'task-1', title: 'Investigar', description: 'Revisar fuentes', acceptance_criteria: ['Fuentes registradas'], depends_on: [], required_competencies: ['technical-writing'], assigned_principal_id: 'worker-1' }],
-        },
-        based_on_message_ids: ['message-1', 'message-2'], provider: 'openai-compatible', model: 'test-model', persisted_as_work: false,
+        ...persistedProposal,
       })),
       listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), assignWorkGroupChild: vi.fn(), confirmWorkGroupConsolidation: vi.fn(), confirmWorkGroupAcceptance: vi.fn(), createWorkGroupPartialReport: vi.fn(),
     };
@@ -356,6 +408,7 @@ describe('office persistent project conversation', () => {
     const port: AaoConversationPort = {
       listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
       listAssignableAgents: vi.fn().mockResolvedValue(ready([])),
+      getLatestWorkGroupProposal: vi.fn().mockResolvedValue(ready(null)),
       listConversationMessages: vi.fn().mockResolvedValue(ready([
         message, { ...message, id: 'message-2', sender: 'AAO', body: 'Acuerdo del hilo.' },
       ])),

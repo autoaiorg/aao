@@ -65,6 +65,22 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
   });
   const conversations = conversationsQuery.data?.kind === 'ready' ? conversationsQuery.data.data : [];
 
+  const latestProposalQuery = useQuery({
+    queryKey: ['office-latest-work-group-proposal', sessionId, projectId, conversationId],
+    queryFn: () => port.getLatestWorkGroupProposal(projectId, conversationId),
+    enabled: !!projectId && !!conversationId,
+    refetchInterval: 15_000,
+    retry: false,
+  });
+  const proposalSourceCurrent = proposalSourceMessageIds === null
+    || (latestProposalQuery.data?.kind === 'ready' && latestProposalQuery.data.data?.is_current === true);
+
+  useEffect(() => {
+    setRequestTitle(''); setRequestDescription(''); setRequestCriteria(''); setRequestDueDate('');
+    setWorkTasks([{ key: 'task-1', title: '', description: '', acceptanceCriteria: '', dependsOn: [], requiredCompetencies: [], assignedPrincipalId: '', dueDate: '' }]);
+    setNextTaskNumber(2); setWorkGroupIdempotencyKey(''); setProposalGenerated(false); setProposalSourceMessageIds(null);
+  }, [projectId, conversationId]);
+
   useEffect(() => {
     if (!conversations.some((item) => item.id === conversationId)) {
       setConversationId(conversations[0]?.id || '');
@@ -98,6 +114,30 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
     enabled: !!projectId,
   });
   const assignableAgents = assignableAgentsQuery.data?.kind === 'ready' ? assignableAgentsQuery.data.data : [];
+
+  useEffect(() => {
+    const result = latestProposalQuery.data;
+    if (proposalGenerated || result?.kind !== 'ready' || !result.data?.is_current) return;
+    const proposal = result.data.proposal;
+    setRequestTitle(proposal.title);
+    setRequestDescription(proposal.description);
+    setRequestCriteria(proposal.acceptance_criteria.join('\n'));
+    setRequestDueDate(proposal.due_date || '');
+    setWorkTasks(proposal.tasks.map((task) => ({
+      key: task.key,
+      title: task.title,
+      description: task.description,
+      acceptanceCriteria: task.acceptance_criteria.join('\n'),
+      dependsOn: task.depends_on,
+      requiredCompetencies: task.required_competencies || [],
+      assignedPrincipalId: task.assigned_principal_id || '',
+      suggestedPrincipalId: task.assigned_principal_id || undefined,
+      dueDate: task.due_date || '',
+    })));
+    setNextTaskNumber(proposal.tasks.length + 1);
+    setProposalGenerated(true);
+    setProposalSourceMessageIds(result.data.based_on_message_ids);
+  }, [latestProposalQuery.data, proposalGenerated]);
 
   const createConversation = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -200,6 +240,10 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
 
   const submitWorkGroup = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (proposalSourceMessageIds && !proposalSourceCurrent) {
+      setNotice('La conversación cambió desde esta propuesta. Vuelve a pedir un desglose actualizado antes de confirmar.');
+      return;
+    }
     const criteria = requestCriteria.split('\n').map((item) => item.trim()).filter(Boolean);
     const tasks = workTasks.map((task) => ({
       key: task.key,
@@ -262,6 +306,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
       setProposalGenerated(true);
       setProposalSourceMessageIds(result.data.based_on_message_ids);
       setNotice(`AAO propuso ${proposal.tasks.length} tareas a partir de ${result.data.based_on_message_ids.length} mensajes (${result.data.provider}${result.data.model ? ` / ${result.data.model}` : ''}). Revísalas y edítalas antes de confirmar.`);
+      await queryClient.invalidateQueries({ queryKey: ['office-latest-work-group-proposal', sessionId, projectId, conversationId] });
     } else {
       setNotice(result.kind === 'error' ? `${result.code}: ${result.message}` : result.kind === 'forbidden' ? result.reason : 'No se pudo proponer el desglose desde la conversación.');
     }
@@ -498,9 +543,12 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
                     setWorkTasks((current) => [...current, { key, title: '', description: '', acceptanceCriteria: '', dependsOn: [], requiredCompetencies: [], assignedPrincipalId: '', dueDate: '' }]);
                   }}>Añadir tarea</Button>
                 </div>
-                <Button type="submit" disabled={requestingMessageId || !requestTitle.trim() || !requestDescription.trim() || !requestCriteria.trim() || workTasks.some((task) => !task.title.trim() || !task.acceptanceCriteria.trim())}>
+                <Button type="submit" disabled={requestingMessageId || !proposalSourceCurrent || !requestTitle.trim() || !requestDescription.trim() || !requestCriteria.trim() || workTasks.some((task) => !task.title.trim() || !task.acceptanceCriteria.trim())}>
                   {requestingMessageId ? 'Guardando…' : 'Confirmar desglose y crear en Entrada'}
                 </Button>
+                {proposalSourceMessageIds && !proposalSourceCurrent && (
+                  <p role="alert">La conversación cambió o no se pudo verificar la propuesta. Solicita un desglose actualizado antes de confirmarlo.</p>
+                )}
               </form>
             </>
           )}

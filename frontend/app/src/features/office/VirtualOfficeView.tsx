@@ -13,6 +13,8 @@ import { OfficeCapabilityCatalogPanel } from './components/OfficeCapabilityCatal
 import { OfficeActivityPanel } from './components/OfficeActivityPanel';
 import { OfficeKnowledgePanel } from './components/OfficeKnowledgePanel';
 import { OfficeCalendarPanel } from './components/OfficeCalendarPanel';
+import { OFFICE_ROOMS } from './types';
+import { buildLiveOfficeRooms } from './liveOfficeLayout';
 
 export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
   organization,
@@ -61,10 +63,15 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
 
   const units = useMemo(() => data?.units || [], [data]);
   const allAgents = useMemo(() => data?.agents || [], [data]);
+  const roomConfigs = useMemo(
+    () => (isDemo ? OFFICE_ROOMS : buildLiveOfficeRooms(units)),
+    [isDemo, units]
+  );
+  const live3DAvailable = Boolean(data && units.length > 0);
 
   useEffect(() => {
-    if (!isDemo && viewMode === '3d') setViewMode('2d');
-  }, [isDemo, viewMode]);
+    if (!isDemo && !live3DAvailable && viewMode === '3d') setViewMode('2d');
+  }, [isDemo, live3DAvailable, viewMode]);
 
   useEffect(() => {
     const isDerivedUnassignedUnit =
@@ -221,6 +228,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
         reducedMotion={reducedMotion}
         onToggleReducedMotion={() => setReducedMotion((prev) => !prev)}
         isDemo={isDemo}
+        allow3D={live3DAvailable}
       />
 
       {/* 3. Main Workspace Grid: (3D WebGL Canvas OR 2D Plan) + Context Inspector Sidebar */}
@@ -238,6 +246,8 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
             <Office3DCanvas
               ref={canvas3DRef}
               agents={filteredAgents}
+              rooms={roomConfigs}
+              demoFurniture={isDemo}
               selectedRoomId={selectedRoomId}
               selectedAgentId={selectedAgentId}
               onSelectRoom={handleSelectRoom}

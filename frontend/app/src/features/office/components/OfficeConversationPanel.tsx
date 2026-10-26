@@ -76,6 +76,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
     queryKey: ['office-conversation-work-groups', sessionId, projectId, conversationId],
     queryFn: () => port.listProjectWorkGroups(projectId),
     enabled: !!projectId && !!conversationId,
+    refetchInterval: 15_000,
   });
   const conversationWorkGroups = workGroupsQuery.data?.kind === 'ready'
     ? workGroupsQuery.data.data.filter((group) => group.conversation_id === conversationId)
@@ -314,7 +315,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
                 <div className="office-form-panel__header">
                   <div>
                     <h4 id="office-conversation-work-status-title">Trabajo estructurado desde este hilo</h4>
-                    <p>Estado del motor AAO. Consultar aquí no admite ni ejecuta tareas.</p>
+                    <p>Estado del motor AAO. Se actualiza cada 15 segundos mientras este hilo está abierto; consultar aquí no admite ni ejecuta tareas.</p>
                   </div>
                   <Button type="button" variant="secondary" size="sm" onClick={() => void workGroupsQuery.refetch()} disabled={workGroupsQuery.isFetching}>
                     {workGroupsQuery.isFetching ? 'Actualizando…' : 'Actualizar estado'}

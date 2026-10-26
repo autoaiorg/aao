@@ -12,7 +12,13 @@ mkdir -p "$EVIDENCE_DIR"
 # transcript or another run's evidence.
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 LOG_FILE="${AAO_VM_EVIDENCE_LOG:-$EVIDENCE_DIR/vm_validation_${RUN_ID}.log}"
-VM_DIR="${AAO_VM_DIR:-$(mktemp -d "/tmp/aao-vm-validation-${RUN_ID}.XXXXXX")}"
+VM_DIR_AUTO=0
+if [[ -n "${AAO_VM_DIR:-}" ]]; then
+  VM_DIR="$AAO_VM_DIR"
+else
+  VM_DIR=$(mktemp -d "/tmp/aao-vm-validation-${RUN_ID}.XXXXXX")
+  VM_DIR_AUTO=1
+fi
 # Tee output to console and transcript log
 exec > >(tee "$LOG_FILE") 2>&1
 
@@ -25,6 +31,34 @@ if [[ -n "${AAO_VM_DIR:-}" ]]; then
 fi
 [[ ! -e "$LOG_FILE" ]] || die "Evidence log already exists; refusing to overwrite: $LOG_FILE"
 mkdir -p "$VM_DIR"
+
+QEMU_PID=""
+VM_VALIDATION_SUCCEEDED=0
+cleanup() {
+  if [[ -n "$QEMU_PID" ]]; then
+    say "Cleaning up VM (PID $QEMU_PID)..."
+    kill "$QEMU_PID" 2>/dev/null || true
+    wait "$QEMU_PID" 2>/dev/null || true
+  fi
+  # Successful default runs retain the evidence transcript but remove only
+  # the unique scratch directory created by this invocation. Failed runs keep
+  # their VM disk and logs for diagnosis; caller-supplied directories are
+  # always preserved.
+  if [[ "$VM_VALIDATION_SUCCEEDED" == 1 && "$VM_DIR_AUTO" == 1 \
+        && "$VM_DIR" == "/tmp/aao-vm-validation-${RUN_ID}."* ]]; then
+    python3 - "$VM_DIR" <<'PY'
+from pathlib import Path
+import shutil
+import sys
+
+path = Path(sys.argv[1])
+if path.is_dir() and not path.is_symlink():
+    shutil.rmtree(path)
+PY
+    say "Removed this run's temporary VM scratch; evidence transcript retained."
+  fi
+}
+trap cleanup EXIT
 
 CEO_USER="${1:-${CEO_USER:-$(whoami)}}"
 IMAGE_URL="https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img"
@@ -144,12 +178,6 @@ qemu-system-x86_64 \
 QEMU_PID=$!
 say "VM launched with PID $QEMU_PID. Waiting for SSH..."
 
-cleanup() {
-  say "Cleaning up VM (PID $QEMU_PID)..."
-  kill "$QEMU_PID" 2>/dev/null || true
-}
-trap cleanup EXIT
-
 # Wait for SSH port
 TIMEOUT=180
 ELAPSED=0
@@ -262,4 +290,5 @@ ssh $SSH_OPTS ${CEO_USER}@127.0.0.1 "sudo bash -c '
 say "CLEAN VM VALIDATION COMPLETED SUCCESSFULLY."
 say "Tested Git Revision: $CURRENT_SHA"
 say "Log transcript stored at: $LOG_FILE"
+VM_VALIDATION_SUCCEEDED=1
 exit 0

@@ -5,6 +5,7 @@ import { Card } from '../../components/ui/Card';
 import { SectionHeading, PermissionNotice } from '../../components/ui/SectionHeading';
 import { DataStatePanel } from '../../components/ui/DataStatePanel';
 import { TaskDetailDrawer } from './TaskDetailDrawer';
+import type { WorkPriority } from '../../data/ports/AaoWorkCommandPort';
 
 export interface KanbanViewProps {
   boardState: DataState<ProjectBoard>;
@@ -13,6 +14,8 @@ export interface KanbanViewProps {
   onRefresh: () => void;
   focusWorkId?: string | null;
   onFocusWorkConsumed?: () => void;
+  canManagePriority?: boolean;
+  onSetPriority?: (workId: string, priority: WorkPriority) => Promise<DataState<unknown>>;
 }
 
 export const KanbanView: React.FC<KanbanViewProps> = ({
@@ -22,6 +25,8 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
   onRefresh,
   focusWorkId,
   onFocusWorkConsumed,
+  canManagePriority = false,
+  onSetPriority,
 }) => {
   const [selectedTask, setSelectedTask] = useState<TaskItem | null>(null);
 
@@ -32,6 +37,12 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
     if (task) setSelectedTask(task);
     onFocusWorkConsumed?.();
   }, [focusWorkId, boardState, onFocusWorkConsumed]);
+
+  useEffect(() => {
+    if (!selectedTask || boardState.kind !== 'ready') return;
+    const current = boardState.data.items.find((item) => item.id === selectedTask.id);
+    if (current && current !== selectedTask) setSelectedTask(current);
+  }, [boardState, selectedTask]);
 
   const stageBorderColors: Record<BoardStage, string> = {
     INBOX: 'var(--stage-inbox)',
@@ -323,7 +334,8 @@ export const KanbanView: React.FC<KanbanViewProps> = ({
         )}
       />
 
-      <TaskDetailDrawer task={selectedTask} onClose={() => setSelectedTask(null)} />
+      <TaskDetailDrawer task={selectedTask} onClose={() => setSelectedTask(null)}
+        canManagePriority={canManagePriority} onSetPriority={onSetPriority} />
     </div>
   );
 };

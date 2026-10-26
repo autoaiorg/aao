@@ -14,7 +14,7 @@
 
 import type { AaoReadPort } from '../../ports/AaoReadPort';
 import type { AaoOrganizationCommandPort, OrganizationProfileCommand, OrganizationUnitCommand } from '../../ports/AaoOrganizationCommandPort';
-import type { AaoWorkCommandPort, CEOWorkRequest, CreatedWorkRequest } from '../../ports/AaoWorkCommandPort';
+import type { AaoWorkCommandPort, CEOWorkRequest, CreatedWorkRequest, WorkPriority, SetWorkPriorityResult } from '../../ports/AaoWorkCommandPort';
 import type { CapabilityFeedbackInput, CapabilityFeedbackProposal, CapabilityFeedbackVersionInput } from '../../ports/AaoCapabilityFeedbackPort';
 import type { AaoConversationPort, AssignableAgent, ConversationWorkGroupInput, ConversationWorkGroupProposal, ConversationWorkGroupResult, ConversationWorkRequestInput, ConversationWorkRequestResult, ProjectConversation, ProjectConversationMessage, ProjectWorkGroup, WorkGroupConsolidationResult } from '../../ports/AaoConversationPort';
 import type {
@@ -515,6 +515,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
           id,
           title,
           status: rawStatus, // PRESERVES RAW SEMANTIC STATUS WITHOUT MUTATION
+          priority: itemObj.priority === 'HIGH' || itemObj.priority === 'NORMAL' ? itemObj.priority : undefined,
           rawStatus,
           isUnrecognizedStatus: !isCanonical,
           acceptanceCriteria: Array.isArray(itemObj.acceptance_criteria)
@@ -928,6 +929,21 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(input),
+      },
+    );
+  }
+
+  async setWorkPriority(workId: string, priority: WorkPriority): Promise<DataState<SetWorkPriorityResult>> {
+    if (this.getAuthRole() !== 'CEO') {
+      return { kind: 'forbidden', reason: 'Solo la sesión CEO puede cambiar la prioridad del trabajo.' };
+    }
+    return this.request(
+      `/v1/work/${encodeURIComponent(workId)}/priority`,
+      z.object({ work_id: z.string().uuid(), priority: z.enum(['NORMAL', 'HIGH']), changed: z.boolean() }),
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ priority }),
       },
     );
   }

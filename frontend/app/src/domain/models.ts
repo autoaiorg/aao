@@ -133,6 +133,7 @@ export interface TaskItem {
   id: string;
   title: string;
   status: string; // Preserves exact semantic status from backend without silent conversion
+  priority?: 'NORMAL' | 'HIGH';
   rawStatus?: string;
   isUnrecognizedStatus?: boolean;
   acceptanceCriteria?: string[];

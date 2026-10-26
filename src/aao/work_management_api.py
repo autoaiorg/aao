@@ -3749,7 +3749,16 @@ def dispatch_next_agent_work(
                 reason = "A capability evaluation selecting a registered version is required"
             return {"status": "BLOCKED", "execution_id": None,
                     "work_id": str(first[0]), "reason": reason}
-        work_id, status, _recommendation, capability_id, version = selected
+        (
+            work_id,
+            status,
+            _recommendation,
+            capability_id,
+            version,
+            _dependencies_complete,
+            _latest_execution_status,
+            _has_successful_execution,
+        ) = selected
         work_id = str(work_id)
 
     # Reuse the same identity-scoped operations as an interactive worker. The

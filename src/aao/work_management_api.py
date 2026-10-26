@@ -28,6 +28,7 @@ from aao.conversation_turns import (
     CONVERSATION_TURN_LEASE_SECONDS,
 )
 from aao.planner import Admission, decide_admission
+from aao.protocol_instances import start_work_protocol
 from aao.review import evaluate_review
 
 
@@ -1484,6 +1485,20 @@ def _insert_ceo_work_request(
     if source_message_id is not None:
         details["source_message_id"] = source_message_id
     audit(db, work_id, "work.requested", details)
+    start_work_protocol(
+        db,
+        protocol_id="intake-classification",
+        work_id=work_id,
+        started_by="ceo",
+        request={
+            "project_id": project_id,
+            "title": title,
+            "description": description,
+            "acceptance_criteria": acceptance_criteria,
+            "due_date": due_date,
+            "source_message_id": source_message_id,
+        },
+    )
     return work_id
 
 

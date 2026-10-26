@@ -1134,7 +1134,10 @@ def run_test(test_id: str, owner: str, repo: str, role: str,
 def write_evidence(test_id: str, status: str, reason: str, repo: str, role: str, app_id: int, evidence: list[dict]) -> Path:
     timestamp = datetime.now(UTC).isoformat(timespec="seconds")
     safe_ts = timestamp.replace(":", "").replace("+00:00", "Z")
-    directory = Path.home() / "aao-trial-evidence"
+    data_home = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share")))
+    if not data_home.is_absolute():
+        raise ValueError("XDG_DATA_HOME must be an absolute path")
+    directory = data_home / "aao/evidence/trials"
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(directory, 0o700)
     shas: set[str] = set()

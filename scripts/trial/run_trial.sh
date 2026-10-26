@@ -153,7 +153,10 @@ capture_evidence(){ # uid home test_id role [observed_rc] [output_file]
   # with the exit code root observed (PASS=0, FAIL=1, other=2). Otherwise the root copy is recorded as FAIL.
   local uid=$1 home=$2 test_id=$3 role=${4:-} observed_rc=${5:-} outfile=${6:-} source dest announced verdict
   source=$(runuser -u "$uid" -- env -i HOME="$home" PATH=/usr/bin:/bin AAO_TRIAL_RUN_ID="$AAO_TRIAL_RUN_ID" AAO_TRIAL_ROLE="$role" /usr/bin/python3 -I -c 'import glob,json,os,sys; matches=[]
-for p in glob.glob(os.path.join(sys.argv[1], "aao-trial-evidence", sys.argv[2]+"-*.json")):
+root=os.environ.get("XDG_DATA_HOME", os.path.join(sys.argv[1], ".local", "share"))
+if not os.path.isabs(root): raise SystemExit("XDG_DATA_HOME must be absolute")
+directory=os.path.join(root, "aao", "evidence", "trials")
+for p in glob.glob(os.path.join(directory, sys.argv[2]+"-*.json")):
  try:
   st=os.lstat(p)
   if not os.path.isfile(p) or os.path.islink(p) or st.st_uid != os.getuid(): continue
@@ -164,7 +167,7 @@ print(max(matches)[1] if matches else "")' "$home" "$test_id") || return 1
   [[ -n $source ]] || return 1
   if [[ -n $outfile ]]; then
     announced=$(grep -Eo '^Evidence: .*' "$outfile" | tail -1 | cut -d' ' -f2-)
-    [[ $announced == "$home/aao-trial-evidence/$test_id-"*.json && $announced != *..* ]] || announced="<outside $home/aao-trial-evidence>"
+    [[ $announced == "$home/.local/share/aao/evidence/trials/$test_id-"*.json && $announced != *..* ]] || announced="<outside $home/.local/share/aao/evidence/trials>"
     [[ $announced == "$source" || $announced == "<"* ]] || source=$announced
   fi
   dest=$LOG/collected-${uid}-${test_id}-${role:-role}.json

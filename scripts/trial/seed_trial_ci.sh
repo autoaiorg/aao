@@ -6,11 +6,15 @@
 # Exit 0 only if the protection is restored. If not, STOP the trial and restore by hand from the saved JSON.
 #   scripts/trial/seed_trial_ci.sh [OUT_DIR]
 set -euo pipefail
+umask 077
 R=autoaiorg/aao-governance-trial
 A=25776805 B=25776806 C=25776807
 WF=$(dirname "$0")/../../deploy/trial/test.yml
-OUT=${1:-$HOME/aao-trial-ci-seed-$(date +%Y%m%dT%H%M%S)}
-mkdir -p "$OUT"
+DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
+[[ $DATA_HOME == /* ]] || { echo 'XDG_DATA_HOME must be an absolute path' >&2; exit 2; }
+OUT=${1:-$DATA_HOME/aao/evidence/trials/ci-seed/$(date -u +%Y/%m/%dT%H%M%SZ)}
+(umask 077; mkdir -p "$OUT")
+chmod 700 "$OUT"
 norm='del(.updated_at,.created_at,._links,.node_id,.current_user_can_bypass)'
 for id in $A $B $C; do gh api "repos/$R/rulesets/$id" --jq "$norm" > "$OUT/ruleset-$id.before.json"; done
 for id in $A $B $C; do

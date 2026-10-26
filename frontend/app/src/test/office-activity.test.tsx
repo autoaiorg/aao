@@ -14,6 +14,10 @@ const events: ActivityEvent[] = [{
   id: 'event-1', subject_id: 'work-123', kind: 'work.requested', details: { owner: 'ceo' }, created_at: '2026-10-26T00:00:00Z',
 }, {
   id: 'event-2', subject_id: 'execution-234', kind: 'execution.claimed', details: { token: 'must-not-render' }, created_at: '2026-10-26T00:01:00Z',
+}, {
+  id: 'event-3', subject_id: 'work-345', kind: 'work.dispatch_blocked',
+  details: { reason: 'A capability evaluation selecting a registered version is required', secret: 'must-not-render' },
+  created_at: '2026-10-26T00:02:00Z',
 }];
 
 function renderPanel(getProjectActivity: AaoReadPort['getProjectActivity'], onOpenBoard = vi.fn()) {
@@ -30,6 +34,8 @@ describe('office persisted activity panel', () => {
 
     expect(await screen.findByText('Trabajo · work.requested')).toBeInTheDocument();
     expect(screen.getByText('Ejecución · execution.claimed')).toBeInTheDocument();
+    expect(screen.getByText('Bloqueo de despacho · work.dispatch_blocked')).toBeInTheDocument();
+    expect(screen.getByText('A capability evaluation selecting a registered version is required')).toBeInTheDocument();
     expect(screen.getByText('work-123')).toBeInTheDocument();
     expect(screen.queryByText('must-not-render')).not.toBeInTheDocument();
     expect(getActivity).toHaveBeenCalledWith('project-a');

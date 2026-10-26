@@ -14,11 +14,20 @@ interface OfficeActivityPanelProps {
 }
 
 function describeActivity(event: ActivityEvent): string {
+  if (event.kind === 'work.dispatch_blocked') return 'Bloqueo de despacho';
   if (event.kind.startsWith('execution.')) return 'Ejecución';
   if (event.kind.startsWith('work.')) return 'Trabajo';
   if (event.kind.startsWith('review.')) return 'Revisión';
   if (event.kind.startsWith('conversation.')) return 'Conversación';
   return 'Evento persistido';
+}
+
+function dispatchBlockerReason(event: ActivityEvent): string | undefined {
+  if (event.kind !== 'work.dispatch_blocked' || !event.details || typeof event.details !== 'object') {
+    return undefined;
+  }
+  const reason = (event.details as Record<string, unknown>).reason;
+  return typeof reason === 'string' && reason.trim() ? reason.trim() : undefined;
 }
 
 export const OfficeActivityPanel: React.FC<OfficeActivityPanelProps> = ({ projects, port, sessionId, onOpenBoard }) => {
@@ -63,6 +72,7 @@ export const OfficeActivityPanel: React.FC<OfficeActivityPanelProps> = ({ projec
               <li key={event.id}>
                 <button type="button" className="office-activity__event" onClick={() => onOpenBoard(projectId, event.kind.startsWith('work.') ? event.subject_id : undefined)}>
                   <span className="office-activity__kind">{describeActivity(event)} · {event.kind}</span>
+                  {dispatchBlockerReason(event) && <span className="office-activity__reason">{dispatchBlockerReason(event)}</span>}
                   <code>{event.subject_id}</code>
                   <time dateTime={event.created_at}>{new Date(event.created_at).toLocaleString('es-ES')}</time>
                 </button>

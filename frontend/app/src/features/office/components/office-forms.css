@@ -98,6 +98,13 @@
   overflow-wrap: anywhere;
 }
 
+.office-activity__reason {
+  grid-column: 1 / -1;
+  color: var(--text-secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 700px) {
   .office-activity__event {
     grid-template-columns: 1fr;

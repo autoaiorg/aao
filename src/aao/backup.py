@@ -286,13 +286,11 @@ def verify_destructive_restore_authorization(
         return False, "Supplied CEO token does not match authorized host CEO credential.", None
 
     payload = authorization
-    # If no explicit authorization payload was passed, but a valid ceo_token was supplied,
-    # generate a single-use authorization for this execution
-    if not payload and ceo_token:
-        payload = create_restore_authorization(backup_path, target_database, canonical_token, valid_minutes=15)
-
     if not payload:
-        return False, "Neither a structured authorization artifact nor a valid CEO token was provided.", None
+        return False, (
+            "Destructive restore requires an explicit, pre-issued structured CEO authorization artifact. "
+            "An authentication credential or CEO token alone does not authorize destructive operations."
+        ), None
 
     if isinstance(payload, (str, Path)):
         p_path = Path(payload)
@@ -351,21 +349,54 @@ def verify_destructive_restore_authorization(
     if not secrets.compare_digest(actual_sig, expected_sig):
         return False, "CEO cryptographic signature verification failed.", None
 
-    # Check 6: Replay prevention check
+    # Check 6: Atomic anti-replay reservation BEFORE any destructive operations
     if db is not None:
         import psycopg
         try:
-            row = db.execute(
+            db.execute(
                 """
-                SELECT count(*) FROM events
-                WHERE kind = 'ceo.restore.consumed' AND (subject_id::text = %s OR id::text = %s)
+                CREATE TABLE IF NOT EXISTS restore_authorizations (
+                    nonce text PRIMARY KEY,
+                    backup_sha256 text NOT NULL,
+                    target_database text NOT NULL,
+                    consumed_at timestamptz NOT NULL DEFAULT clock_timestamp()
+                );
+                """
+            )
+            # Atomic reservation: ON CONFLICT DO NOTHING returns 0 rows if already present / concurrent
+            cursor = db.execute(
+                """
+                INSERT INTO restore_authorizations (nonce, backup_sha256, target_database)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (nonce) DO NOTHING;
                 """,
-                (nonce, nonce),
-            ).fetchone()
-            if row and int(row[0]) > 0:
-                return False, f"Authorization nonce '{nonce}' has already been consumed (replay denied).", None
-        except (RuntimeError, OSError, psycopg.Error):
-            pass
+                (nonce, actual_hash, target_database),
+            )
+            rowcount = getattr(cursor, "rowcount", -1)
+            if rowcount == 0:
+                return False, f"Authorization nonce '{nonce}' has already been consumed or is locked by a concurrent restore (replay denied).", None
+
+            # Also record event for audit trail
+            from uuid import uuid4
+            event_id = str(uuid4())
+            db.execute(
+                """
+                INSERT INTO events (id, subject_id, kind, details)
+                VALUES (%s, %s, 'ceo.restore.consumed', %s::jsonb)
+                """,
+                (
+                    event_id,
+                    nonce,
+                    json.dumps({
+                        "nonce": nonce,
+                        "backup_sha256": actual_hash,
+                        "target_database": target_database,
+                        "consumed_at": datetime.now(UTC).isoformat(),
+                    }),
+                ),
+            )
+        except (RuntimeError, OSError, psycopg.Error) as exc:
+            return False, f"Failed to record atomic anti-replay authorization reservation: {exc}", None
 
     return True, f"Structured CEO authorization verified (nonce: {nonce[:8]}..., valid until {exp_str})", nonce
 
@@ -558,15 +589,27 @@ def restore_backup(
                     }),
                 ),
             )
-            # Replay retirement
+            # Replay retirement in newly restored database
             if auth_nonce:
                 cursor.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS restore_authorizations (
+                        nonce text PRIMARY KEY,
+                        backup_sha256 text NOT NULL,
+                        target_database text NOT NULL,
+                        consumed_at timestamptz NOT NULL DEFAULT clock_timestamp()
+                    );
+                    INSERT INTO restore_authorizations (nonce, backup_sha256, target_database)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (nonce) DO NOTHING;
                     INSERT INTO events (id, subject_id, kind, details)
                     VALUES (%s, %s, 'ceo.restore.consumed', %s::jsonb)
-                    ON CONFLICT (id) DO NOTHING
+                    ON CONFLICT (id) DO NOTHING;
                     """,
                     (
+                        auth_nonce,
+                        compute_file_sha256(backup_path),
+                        target_database,
                         auth_nonce,
                         auth_nonce,
                         json.dumps({
@@ -672,7 +715,7 @@ def apply_host_fencing(
             SET status = 'FAILED',
                 result_json = jsonb_build_object(
                     'error', 'Host migration cutover fencing applied: worker lease revoked',
-                    'fenced_host', %s
+                    'fenced_host', %s::text
                 ),
                 lease_expires_at = clock_timestamp() - INTERVAL '1 second'
             WHERE worker_id = ANY(%s) AND status IN ('RUNNING', 'QUEUED')

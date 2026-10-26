@@ -35,6 +35,27 @@ def propose(*, execution_id: str, worker_id: str, lease_token: str,
             raise EffectConflict("Active agent credential required") from exc
         if principal_id != worker_id:
             raise EffectConflict("Credential does not match execution worker")
+
+        # Check host-worker binding and cutover fencing status (Finding A-07)
+        has_table = db.execute(
+            "SELECT to_regclass('public.host_worker_bindings')"
+        ).fetchone()[0]
+        if has_table:
+            host_row = db.execute(
+                """
+                SELECT host_id, status FROM host_worker_bindings
+                WHERE worker_id = %s
+                ORDER BY created_at DESC LIMIT 1
+                FOR SHARE
+                """,
+                (worker_id,),
+            ).fetchone()
+            if host_row and host_row[1] == "FENCED":
+                raise EffectConflict(
+                    f"Worker '{worker_id}' is bound to fenced host '{host_row[0]}'. "
+                    "Authority has been revoked via cutover fencing."
+                )
+
         execution = db.execute(
             "SELECT q.status,q.project_id,q.worker_id,q.lease_token,"
             "q.lease_expires_at,p.state,q.project_state_generation,"

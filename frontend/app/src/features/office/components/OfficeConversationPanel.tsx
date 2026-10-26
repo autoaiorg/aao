@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { DataState, ProjectSummary } from '../../../domain/models';
-import type { AaoConversationPort, ProjectConversationMessage } from '../../../data/ports/AaoConversationPort';
+import type { AaoConversationPort, ProjectConversationMessage, ProjectWorkGroup } from '../../../data/ports/AaoConversationPort';
 import { Button } from '../../../components/ui/Button';
 import './office-forms.css';
 
@@ -9,7 +9,7 @@ interface OfficeConversationPanelProps {
   projects: DataState<ProjectSummary[]>;
   port: AaoConversationPort;
   sessionId: string;
-  onOpenBoard: (projectId: string) => void;
+  onOpenBoard: (projectId: string, workId?: string) => void;
 }
 
 interface WorkTaskDraft {
@@ -72,6 +72,14 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
     enabled: !!projectId && !!conversationId,
   });
   const messages = messagesQuery.data?.kind === 'ready' ? messagesQuery.data.data : [];
+  const workGroupsQuery = useQuery({
+    queryKey: ['office-conversation-work-groups', sessionId, projectId, conversationId],
+    queryFn: () => port.listProjectWorkGroups(projectId),
+    enabled: !!projectId && !!conversationId,
+  });
+  const conversationWorkGroups = workGroupsQuery.data?.kind === 'ready'
+    ? workGroupsQuery.data.data.filter((group) => group.conversation_id === conversationId)
+    : [];
   const assignableAgentsQuery = useQuery({
     queryKey: ['office-assignable-agents', sessionId, projectId],
     queryFn: () => port.listAssignableAgents(projectId),
@@ -190,6 +198,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
       setNextTaskNumber(2); setWorkGroupIdempotencyKey(''); setProposalGenerated(false); setProposalSourceMessageIds(null);
       setNotice(`Desglose ${result.data.id} (${result.data.tasks.length} tareas) registrado en Entrada; no se ha admitido ni ejecutado.`);
       await queryClient.invalidateQueries({ queryKey: ['board'] });
+      await queryClient.invalidateQueries({ queryKey: ['office-conversation-work-groups', sessionId, projectId, conversationId] });
     } else {
       setNotice(result.kind === 'error' ? `${result.code}: ${result.message}` : result.kind === 'forbidden' ? result.reason : 'No se pudo estructurar el desglose.');
     }
@@ -301,6 +310,45 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
                 {streamingReply && <li className="office-conversation-message office-conversation-message--aao" aria-live="polite"><div className="office-conversation-message__meta"><strong>AAO</strong><span>Respondiendo…</span></div><p className="office-conversation-message__body">{streamingReply}</p></li>}
                 {messages.length === 0 && <li role="status" style={{ listStyle: 'none', color: 'var(--text-secondary)', fontSize: 12 }}>El hilo aún no tiene mensajes.</li>}
               </ol>
+              <section className="office-conversation-work-status" aria-labelledby="office-conversation-work-status-title">
+                <div className="office-form-panel__header">
+                  <div>
+                    <h4 id="office-conversation-work-status-title">Trabajo estructurado desde este hilo</h4>
+                    <p>Estado del motor AAO. Consultar aquí no admite ni ejecuta tareas.</p>
+                  </div>
+                  <Button type="button" variant="secondary" size="sm" onClick={() => void workGroupsQuery.refetch()} disabled={workGroupsQuery.isFetching}>
+                    {workGroupsQuery.isFetching ? 'Actualizando…' : 'Actualizar estado'}
+                  </Button>
+                </div>
+                {workGroupsQuery.data?.kind === 'error' && <p role="alert">{workGroupsQuery.data.code}: {workGroupsQuery.data.message}</p>}
+                {workGroupsQuery.data?.kind === 'forbidden' && <p role="alert">{workGroupsQuery.data.reason}</p>}
+                {workGroupsQuery.data?.kind === 'unavailable' && <p role="alert">{workGroupsQuery.data.reason}</p>}
+                {workGroupsQuery.isLoading && <p role="status">Consultando grupos persistidos…</p>}
+                {workGroupsQuery.data?.kind === 'ready' && conversationWorkGroups.length === 0 && <p>No hay desglose confirmado desde este hilo.</p>}
+                {conversationWorkGroups.map((group: ProjectWorkGroup) => (
+                  <article className="office-conversation-work-status__group" key={group.id}>
+                    <div className="office-conversation-work-status__heading">
+                      <strong>{group.title}</strong><span>Grupo {group.id} · {group.parent_status}</span>
+                    </div>
+                    <Button type="button" variant="secondary" size="sm" onClick={() => onOpenBoard(projectId, group.parent_work_id)}>
+                      Abrir encargo padre
+                    </Button>
+                    <ul aria-label={`Estado de tareas: ${group.title}`}>
+                      {group.children.map((child) => {
+                        const latestExecution = child.executions[child.executions.length - 1];
+                        return <li key={child.work_id}>
+                          <Button type="button" variant="secondary" size="sm" onClick={() => onOpenBoard(projectId, child.work_id)}>
+                            Abrir tarea {child.work_id} · {child.status}
+                          </Button>
+                          {child.assigned_principal_id && <small>Asignado a {child.assigned_principal_id}</small>}
+                          {latestExecution && <small>Última ejecución {latestExecution.id}: {latestExecution.status}{latestExecution.result_sha256 ? ` · resultado SHA-256 ${latestExecution.result_sha256}` : ''}</small>}
+                        </li>;
+                      })}
+                    </ul>
+                    {group.consolidation && <p>Consolidación CEO registrada · {group.consolidation.created_at}</p>}
+                  </article>
+                ))}
+              </section>
               <form onSubmit={sendMessage} style={{ display: 'grid', gap: 8 }}>
                 <label className="office-form-field">Mensaje CEO
                   <textarea className="office-form-control office-form-control--textarea" aria-label="Mensaje CEO" required maxLength={10000} rows={3} value={draft} onChange={(event) => { setDraft(event.target.value); setTurnIdempotencyKey(''); }} disabled={sendingTurn} />

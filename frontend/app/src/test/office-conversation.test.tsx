@@ -13,9 +13,10 @@ const conversation = { id: 'conversation-1', project_id: 'project-active', title
 const message = { id: 'message-1', sender: 'CEO' as const, body: 'Preparar el plan', related_work_id: null, work_status: null, latest_execution: null, created_at: '2026-10-25T10:00:00Z' };
 const ready = <T,>(data: T): DataState<T> => ({ kind: 'ready', origin: 'live', fetchedAt: 'now', data });
 
-function setup(port: AaoConversationPort) {
+function setup(port: AaoConversationPort, onOpenBoard = vi.fn()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}><OfficeConversationPanel projects={projects} port={port} sessionId="session-a" onOpenBoard={vi.fn()} /></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><OfficeConversationPanel projects={projects} port={port} sessionId="session-a" onOpenBoard={onOpenBoard} /></QueryClientProvider>);
+  return onOpenBoard;
 }
 
 describe('office persistent project conversation', () => {
@@ -46,6 +47,38 @@ describe('office persistent project conversation', () => {
     expect(await screen.findByText(/Respuesta AAO recibida y persistida/)).toBeInTheDocument();
     expect(port.createWorkRequestFromMessage).not.toHaveBeenCalled();
     expect(screen.queryByRole('option', { name: 'Proyecto pausado' })).not.toBeInTheDocument();
+  });
+
+  it('shows execution status for tasks confirmed from the selected conversation without rendering result payloads', async () => {
+    const resultSha = 'a'.repeat(64);
+    const port: AaoConversationPort = {
+      listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
+      listAssignableAgents: vi.fn().mockResolvedValue(ready([])),
+      listConversationMessages: vi.fn().mockResolvedValue(ready([message])),
+      createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(), streamCEOConversationTurn: vi.fn(),
+      createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(), createWorkGroupFromConversation: vi.fn(), proposeWorkGroupFromConversation: vi.fn(),
+      listProjectWorkGroups: vi.fn().mockResolvedValue(ready([
+        {
+          id: 'group-current', conversation_id: 'conversation-1', parent_work_id: 'parent-1', title: 'Proyecto acordado',
+          parent_status: 'INBOX', source_sha256: resultSha, consolidation_ready: false, consolidation: null, partial_reports: [],
+          children: [{ work_id: 'work-current', status: 'DONE', assigned_principal_id: 'agent-1', evidence: [],
+            executions: [{ id: 'execution-current', status: 'SUCCEEDED', worker_id: 'agent-1', result_sha256: resultSha }], reviews: [] }],
+        },
+        {
+          id: 'group-other', conversation_id: 'another-conversation', parent_work_id: 'parent-2', title: 'No pertenece a este hilo',
+          parent_status: 'INBOX', source_sha256: resultSha, consolidation_ready: false, consolidation: null, partial_reports: [], children: [],
+        },
+      ])),
+      assignWorkGroupChild: vi.fn(), confirmWorkGroupConsolidation: vi.fn(), createWorkGroupPartialReport: vi.fn(),
+    };
+    const onOpenBoard = setup(port);
+    expect(await screen.findByText('Proyecto acordado')).toBeInTheDocument();
+    expect(screen.getByText(/work-current · DONE/)).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(`Última ejecución execution-current: SUCCEEDED · resultado SHA-256 ${resultSha}`))).toBeInTheDocument();
+    expect(screen.queryByText('No pertenece a este hilo')).not.toBeInTheDocument();
+    expect(screen.queryByText(/execution result body/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Abrir tarea work-current · DONE' }));
+    expect(onOpenBoard).toHaveBeenCalledWith('project-active', 'work-current');
   });
 
   it('reuses the same idempotency key when retrying an interrupted logical turn', async () => {

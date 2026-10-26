@@ -1457,14 +1457,17 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
                 "ON m.id=t.assistant_message_id WHERE t.id=%s", (worker_turn_id,),
             ).fetchone()
             worker_events = db.execute(
-                "SELECT count(*) FROM events WHERE subject_id=%s "
-                "AND kind='conversation.turn.recovered' AND details->>'turn_id'=%s",
-                (conversation_id, worker_turn_id),
-            ).fetchone()[0]
+                "SELECT kind,details FROM events WHERE subject_id=%s "
+                "AND details->>'idempotency_key'=%s ORDER BY created_at,id",
+                (conversation_id, worker_key),
+            ).fetchall()
         assert worker_row[0] == "COMPLETED"
         assert worker_row[2] == "Recovered by backend."
         assert worker_row[3] is None and worker_row[4] is None
-        assert worker_events == 1
+        assert [event[0] for event in worker_events] == [
+            "conversation.turn.recovered", "conversation.turn.completed",
+        ]
+        assert all(event[1]["idempotency_key"] == worker_key for event in worker_events)
 
         concurrent_key = str(uuid4())
         concurrent_message_id = str(uuid4())
@@ -1648,6 +1651,17 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         recovered = client.post(turn_url, headers=ceo, json=retry_turn)
         assert "Respuesta recuperada." in recovered.text
         assert failure_calls == 2
+        with connect_postgres() as db:
+            retry_events = db.execute(
+                "SELECT kind,details FROM events WHERE subject_id=%s "
+                "AND details->>'idempotency_key'=%s ORDER BY created_at,id",
+                (conversation_id, failure_key),
+            ).fetchall()
+        assert [event[0] for event in retry_events] == [
+            "conversation.turn.started", "conversation.turn.failed",
+            "conversation.turn.retry_started", "conversation.turn.completed",
+        ]
+        assert all(event[1]["idempotency_key"] == failure_key for event in retry_events)
 
         pending_message = client.post(
             f"/v1/projects/{project}/conversations/{conversation_id}/messages",

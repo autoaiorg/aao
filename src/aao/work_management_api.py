@@ -2815,6 +2815,7 @@ def stream_project_conversation_turn(
                     if changed.rowcount:
                         audit(db, conversation_id, "conversation.turn.failed", {
                             "turn_id": turn_id, "user_message_id": user_message_id,
+                            "idempotency_key": str(payload.idempotency_key),
                             "error_code": "EMPTY_PROVIDER_RESPONSE",
                         })
                 yield "event: error\ndata: {\"code\":\"EMPTY_PROVIDER_RESPONSE\"}\n\n"
@@ -2854,6 +2855,7 @@ def stream_project_conversation_turn(
                 if changed.rowcount:
                     audit(db, conversation_id, "conversation.turn.failed", {
                         "turn_id": turn_id, "user_message_id": user_message_id,
+                        "idempotency_key": str(payload.idempotency_key),
                         "error_code": exc.code,
                     })
             yield f"event: error\ndata: {json_module.dumps({'code': exc.code, 'message': str(exc)})}\n\n"
@@ -2868,6 +2870,7 @@ def stream_project_conversation_turn(
                 if changed.rowcount:
                     audit(db, conversation_id, "conversation.turn.failed", {
                         "turn_id": turn_id, "user_message_id": user_message_id,
+                        "idempotency_key": str(payload.idempotency_key),
                         "error_code": "PROVIDER_ERROR",
                     })
             yield "event: error\ndata: {\"code\":\"PROVIDER_ERROR\",\"message\":\"AAO no pudo completar la respuesta.\"}\n\n"

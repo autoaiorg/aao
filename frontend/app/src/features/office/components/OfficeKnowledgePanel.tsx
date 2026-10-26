@@ -5,6 +5,12 @@ import type { DataState, ProjectBoard, ProjectSummary, TaskItem } from '../../..
 import { DataStatePanel } from '../../../components/ui/DataStatePanel';
 import './office-forms.css';
 
+function evidenceReferences(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((reference): reference is string => typeof reference === 'string' && reference.trim().length > 0)
+    : [];
+}
+
 interface OfficeKnowledgePanelProps {
   projects: DataState<ProjectSummary[]>;
   port: Pick<AaoReadPort, 'getProjectBoard'>;
@@ -58,6 +64,28 @@ export const OfficeKnowledgePanel: React.FC<OfficeKnowledgePanelProps> = ({ proj
                   <details>
                     <summary>Criterios de aceptación ({item.acceptanceCriteria.length})</summary>
                     <ul>{item.acceptanceCriteria.map((criterion, index) => <li key={`${item.id}-criterion-${index}`}>{criterion}</li>)}</ul>
+                  </details>
+                )}
+                {(() => {
+                  const references = [...new Set([
+                    ...evidenceReferences(item.evidence),
+                    ...(item.reviews ?? []).flatMap((review) => evidenceReferences(review.evidence)),
+                  ])];
+                  return references.length > 0 ? (
+                    <details>
+                      <summary>Referencias canónicas ({references.length})</summary>
+                      <ul className="office-knowledge__references">
+                        {references.map((reference) => <li key={`${item.id}-${reference}`}><code>{reference}</code></li>)}
+                      </ul>
+                    </details>
+                  ) : null;
+                })()}
+                {item.reviews && item.reviews.length > 0 && (
+                  <details>
+                    <summary>Revisiones registradas ({item.reviews.length})</summary>
+                    <ul className="office-knowledge__references">
+                      {item.reviews.map((review) => <li key={review.id}>{review.decision} · {review.reviewer_id} · {review.created_at}</li>)}
+                    </ul>
                   </details>
                 )}
               </li>

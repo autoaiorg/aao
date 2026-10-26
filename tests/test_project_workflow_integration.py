@@ -499,6 +499,12 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
     monkeypatch.setenv("AAO_CEO_TOKEN", "conversation-ceo")
     monkeypatch.setenv("AAO_CONVERSATION_PROVIDER", "openai-compatible")
     monkeypatch.setenv("AAO_CONVERSATION_MODEL", "conversation-test-model")
+    provider_token = "conversation-test-secret-token"
+    monkeypatch.setenv("AAO_CONVERSATION_API_KEY", provider_token)
+    monkeypatch.setenv(
+        "AAO_CONVERSATION_API_URL",
+        "https://user:ignored@gateway.example/v1/chat?api_key=" + provider_token,
+    )
     ceo = {"X-CEO-Token": "conversation-ceo"}
     with TestClient(app) as client:
         assert client.post(
@@ -785,6 +791,38 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         assert "result_json" not in snapshot_message and '"patch"' not in snapshot_message
         # SSE data is JSON-escaped by json.dumps (including non-ASCII text).
         assert '"delta": "Conversaci\\u00f3n persistida."' in first_turn.text
+        assert provider_token not in first_turn.text
+        with connect_postgres() as db:
+            stored_turn = db.execute(
+                "SELECT provider,model,endpoint FROM project_conversation_turns "
+                "WHERE conversation_id=%s AND idempotency_key=%s",
+                (conversation_id, turn["idempotency_key"]),
+            ).fetchone()
+            provenance = db.execute(
+                "SELECT details FROM events WHERE subject_id=%s "
+                "AND kind IN ('conversation.turn.started','conversation.turn.completed')",
+                (conversation_id,),
+            ).fetchall()
+        assert tuple(stored_turn) == (
+            "openai-compatible", "conversation-test-model", "https://gateway.example/v1/chat",
+        )
+        assert len(provenance) >= 2
+        assert all(
+            event[0]["provider"] == "openai-compatible"
+            and event[0]["model"] == "conversation-test-model"
+            and event[0]["endpoint"] == "https://gateway.example/v1/chat"
+            and provider_token not in json.dumps(event[0])
+            for event in provenance
+        )
+        persisted_messages = client.get(
+            f"/v1/projects/{project}/conversations/{conversation_id}/messages", headers=ceo,
+        ).json()
+        assistant = next(item for item in persisted_messages if item["sender"] == "AAO")
+        assert assistant["provider"] == "openai-compatible"
+        assert assistant["model"] == "conversation-test-model"
+        assert assistant["endpoint"] == "https://gateway.example/v1/chat"
+        assert provider_token not in json.dumps(persisted_messages)
+        assert provider_token not in str(first_turn.headers)
         replayed_turn = client.post(turn_url, headers=ceo, json=turn)
         assert replayed_turn.status_code == 200
         assert replayed_turn.text == first_turn.text
@@ -816,10 +854,10 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
             )
             db.execute(
                 "INSERT INTO project_conversation_turns(id,conversation_id,idempotency_key,"
-                "request_sha256,user_message_id,state,provider,model,lease_owner,lease_expires_at) "
-                "VALUES (%s,%s,%s,%s,%s,'PENDING','openai-compatible','conversation-test-model',%s,clock_timestamp()+interval '10 minutes')",
+                "request_sha256,user_message_id,state,provider,model,endpoint,lease_owner,lease_expires_at) "
+                "VALUES (%s,%s,%s,%s,%s,'PENDING','openai-compatible','conversation-test-model',%s,%s,clock_timestamp()+interval '10 minutes')",
                 (crashed_turn_id, conversation_id, crashed_key, sha256(crashed_body.encode()).hexdigest(),
-                 crashed_message_id, str(uuid4())),
+                 crashed_message_id, "https://gateway.example/v1/chat", str(uuid4())),
             )
         assert client.post(turn_url, headers=ceo, json={
             "body": crashed_body, "idempotency_key": crashed_key,
@@ -840,7 +878,7 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
             "body": crashed_body, "idempotency_key": crashed_key,
         })
         assert provider_mismatch.status_code == 409
-        assert "provider/model differs" in provider_mismatch.text
+        assert "provider configuration differs" in provider_mismatch.text
         monkeypatch.setenv("AAO_CONVERSATION_MODEL", "conversation-test-model")
         monkeypatch.setattr(conversation_provider, "stream_reply", lambda _messages: iter(["Recovered once."]))
         recovered_crash = client.post(turn_url, headers=ceo, json={
@@ -883,9 +921,9 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
             )
             db.execute(
                 "INSERT INTO project_conversation_turns(id,conversation_id,idempotency_key,"
-                "request_sha256,user_message_id,state,provider,model,lease_owner,lease_expires_at) "
+                "request_sha256,user_message_id,state,provider,model,endpoint,lease_owner,lease_expires_at) "
                 "VALUES (%s,%s,%s,%s,%s,'PENDING','openai-compatible',"
-                "'conversation-test-model',%s,clock_timestamp()-interval '1 second')",
+                "'conversation-test-model','https://provider.invalid/v1/chat/completions',%s,clock_timestamp()-interval '1 second')",
                 (worker_turn_id, conversation_id, worker_key,
                  sha256(worker_body.encode()).hexdigest(), worker_message_id, str(uuid4())),
             )
@@ -922,9 +960,9 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
             )
             db.execute(
                 "INSERT INTO project_conversation_turns(id,conversation_id,idempotency_key,"
-                "request_sha256,user_message_id,state,provider,model,lease_owner,lease_expires_at) "
+                "request_sha256,user_message_id,state,provider,model,endpoint,lease_owner,lease_expires_at) "
                 "VALUES (%s,%s,%s,%s,%s,'PENDING','openai-compatible',"
-                "'conversation-test-model',%s,clock_timestamp()-interval '1 second')",
+                "'conversation-test-model','https://provider.invalid/v1/chat/completions',%s,clock_timestamp()-interval '1 second')",
                 (concurrent_turn_id, conversation_id, concurrent_key,
                  sha256(b"Concurrent recovery").hexdigest(), concurrent_message_id, str(uuid4())),
             )

@@ -2113,7 +2113,7 @@ def list_project_conversation_messages(
             "SELECT m.id,m.sender,m.body,m.related_work_id,m.created_at,w.status,"
             "q.id,q.status,q.result_json->>'backend',q.result_json->>'provider',"
             "q.result_json->>'model',m.provider,m.model,t.state,t.error_code,t.idempotency_key,"
-            "t.lease_expires_at,m.message_kind "
+        "t.lease_expires_at,m.message_kind,m.endpoint "
             "FROM project_conversation_messages m "
             "LEFT JOIN work_items w ON w.id=m.related_work_id "
             "LEFT JOIN project_conversation_turns t ON t.user_message_id=m.id "
@@ -2131,7 +2131,7 @@ def list_project_conversation_messages(
                               if row[6] else None), "provider": row[11], "model": row[12],
          "turn_status": row[13], "turn_error_code": row[14],
          "turn_idempotency_key": str(row[15]) if row[15] else None,
-         "turn_lease_expires_at": row[16], "message_kind": row[17]}
+         "turn_lease_expires_at": row[16], "message_kind": row[17], "endpoint": row[18]}
         for row in rows
     ]
 
@@ -2190,12 +2190,13 @@ def stream_project_conversation_turn(
     """
     import hashlib
 
-    from aao.conversation_provider import ProviderUnavailable, stream_reply
+    from aao.conversation_provider import ProviderUnavailable, safe_endpoint_metadata, stream_reply
     from aao.conversation_turn_recovery import build_conversation_prompt
 
     request_hash = hashlib.sha256(payload.body.encode("utf-8")).hexdigest()
     provider = os.getenv("AAO_CONVERSATION_PROVIDER", "openai-compatible")
     model = os.getenv("AAO_CONVERSATION_MODEL", "")
+    endpoint = safe_endpoint_metadata(os.getenv("AAO_CONVERSATION_API_URL", ""))
     lease_owner = str(uuid4())
     replay: tuple[str, str | None, str | None, str | None] | None = None
     user_message_id = str(uuid4())
@@ -2213,7 +2214,7 @@ def stream_project_conversation_turn(
             raise HTTPException(409, "Project not active")
         existing = db.execute(
             "SELECT t.request_sha256,t.state,t.error_code,m.id,m.body,t.user_message_id,"
-            "t.provider,t.model "
+            "t.provider,t.model,t.endpoint "
             "FROM project_conversation_turns t "
             "LEFT JOIN project_conversation_messages m ON m.id=t.assistant_message_id "
             "WHERE t.conversation_id=%s AND t.idempotency_key=%s",
@@ -2222,8 +2223,10 @@ def stream_project_conversation_turn(
         if existing:
             if existing[0] != request_hash:
                 raise HTTPException(409, "Idempotency key was already used with a different message")
-            if existing[1] != "COMPLETED" and (existing[6] != provider or existing[7] != model):
-                raise HTTPException(409, "Conversation turn provider/model differs from current configuration")
+            if existing[1] != "COMPLETED" and (
+                existing[6] != provider or existing[7] != model or existing[8] != endpoint
+            ):
+                raise HTTPException(409, "Conversation turn provider configuration differs from current settings")
             if existing[1] == "PENDING":
                 claimed = db.execute(
                     "UPDATE project_conversation_turns SET lease_owner=%s,"
@@ -2278,11 +2281,11 @@ def stream_project_conversation_turn(
             )
             db.execute(
                 "INSERT INTO project_conversation_turns(id,conversation_id,idempotency_key,"
-                "request_sha256,user_message_id,state,provider,model,lease_owner,lease_expires_at) "
-                "VALUES (%s,%s,%s,%s,%s,'PENDING',%s,%s,%s,"
+                "request_sha256,user_message_id,state,provider,model,endpoint,lease_owner,lease_expires_at) "
+                "VALUES (%s,%s,%s,%s,%s,'PENDING',%s,%s,%s,%s,"
                 "clock_timestamp()+(%s * interval '1 second'))",
                 (turn_id, conversation_id, payload.idempotency_key, request_hash,
-                 user_message_id, provider, model, lease_owner,
+                 user_message_id, provider, model, endpoint, lease_owner,
                  CONVERSATION_TURN_LEASE_SECONDS),
             )
             history = db.execute(
@@ -2296,6 +2299,7 @@ def stream_project_conversation_turn(
             audit(db, conversation_id, "conversation.turn.started", {
                 "turn_id": turn_id, "user_message_id": user_message_id,
                 "idempotency_key": str(payload.idempotency_key), "actor": "ceo",
+                "provider": provider, "model": model, "endpoint": endpoint,
             })
         if replay is None:
             prompt_messages = build_conversation_prompt(db, project_id, conversation_id, history)
@@ -2367,9 +2371,9 @@ def stream_project_conversation_turn(
                 return
             with tx() as db:
                 db.execute(
-                    "INSERT INTO project_conversation_messages(id,conversation_id,sender,body,provider,model) "
-                    "VALUES (%s,%s,'AAO',%s,%s,%s)",
-                    (response_id, conversation_id, body, provider, model),
+                    "INSERT INTO project_conversation_messages(id,conversation_id,sender,body,provider,model,endpoint) "
+                    "VALUES (%s,%s,'AAO',%s,%s,%s,%s)",
+                    (response_id, conversation_id, body, provider, model, endpoint),
                 )
                 db.execute(
                     "UPDATE project_conversation_turns SET state='COMPLETED',assistant_message_id=%s,"
@@ -2385,6 +2389,7 @@ def stream_project_conversation_turn(
                 db.execute("UPDATE project_conversations SET updated_at=clock_timestamp() WHERE id=%s", (conversation_id,))
                 audit(db, conversation_id, "conversation.turn.completed", {
                     "user_message_id": user_message_id, "assistant_message_id": response_id,
+                    "provider": provider, "model": model, "endpoint": endpoint,
                 })
             yield f"event: done\ndata: {json_module.dumps({'message_id': response_id})}\n\n"
         except ProviderUnavailable as exc:
@@ -2435,7 +2440,7 @@ def propose_conversation_work_group(
     This endpoint returns an editable proposal only. Canonical work is created by the
     separate CEO-confirmed work-groups endpoint; this call never admits or executes it.
     """
-    from aao.conversation_provider import ProviderUnavailable, stream_reply
+    from aao.conversation_provider import ProviderUnavailable, safe_endpoint_metadata, stream_reply
 
     with tx() as db:
         conversation = db.execute(
@@ -2469,6 +2474,7 @@ def propose_conversation_work_group(
 
     provider = os.getenv("AAO_CONVERSATION_PROVIDER", "openai-compatible")
     model = os.getenv("AAO_CONVERSATION_MODEL", "")
+    endpoint = safe_endpoint_metadata(os.getenv("AAO_CONVERSATION_API_URL", ""))
     eligible_agents = [{
         "principal_id": row[0], "display_name": row[1], "role_title": row[2],
         "declared_competencies": row[3],
@@ -2518,6 +2524,7 @@ def propose_conversation_work_group(
             "message_ids": [str(row[0]) for row in history],
             "provider": provider,
             "model": model,
+            "endpoint": endpoint,
             "task_count": len(proposal.tasks),
             "persisted_as_work": False,
             "admitted": False,
@@ -2528,6 +2535,7 @@ def propose_conversation_work_group(
         "based_on_message_ids": [str(row[0]) for row in history],
         "provider": provider,
         "model": model,
+        "endpoint": endpoint,
         "persisted_as_work": False,
     }
 

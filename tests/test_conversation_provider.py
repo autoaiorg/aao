@@ -39,6 +39,32 @@ def test_provider_streams_only_content_delta_and_ignores_malformed_frames(monkey
     assert list(conversation_provider.stream_reply([{"role": "user", "content": "hi"}])) == ["Hello", " world"]
 
 
+def test_endpoint_metadata_omits_userinfo_query_and_fragment():
+    assert conversation_provider.safe_endpoint_metadata(
+        "https://user:password@gateway.example/v1/chat?api_key=secret#fragment",
+    ) == "https://gateway.example/v1/chat"
+
+
+def test_provider_http_errors_do_not_echo_credentials(monkeypatch):
+    from urllib.error import HTTPError
+
+    secret = "never-log-this-token"
+    monkeypatch.setenv("AAO_CONVERSATION_PROVIDER", "openai-compatible")
+    monkeypatch.setenv("AAO_CONVERSATION_API_URL", "https://provider.invalid/chat")
+    monkeypatch.setenv("AAO_CONVERSATION_MODEL", "test-model")
+    monkeypatch.setenv("AAO_CONVERSATION_API_KEY", secret)
+
+    def reject(request, **_kwargs):
+        assert request.get_header("Authorization") == f"Bearer {secret}"
+        raise HTTPError(request.full_url, 401, secret, {}, None)
+
+    monkeypatch.setattr(conversation_provider, "urlopen", reject)
+    with pytest.raises(conversation_provider.ProviderUnavailable) as error:
+        list(conversation_provider.stream_reply([{"role": "user", "content": "hello"}]))
+    assert secret not in str(error.value)
+    assert error.value.code == "PROVIDER_HTTP_ERROR"
+
+
 def test_unauthorized_conversation_turn_never_invokes_provider(monkeypatch):
     from aao.work_management_api import app
 

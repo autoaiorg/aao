@@ -1,0 +1,19 @@
+[Unit]
+Description=AAO Expired Conversation Turn Recovery Worker
+After=network-online.target aao-api.service
+Wants=network-online.target aao-api.service
+
+[Service]
+Type=oneshot
+User=aao-api
+Group=aao-api
+UMask=0027
+WorkingDirectory=/opt/aao/repo
+EnvironmentFile=-/etc/aao/aao-api.env
+ExecStart=/opt/aao/venv/bin/python scripts/run_conversation_recovery_worker.py
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=/var/log/aao /var/lib/aao-api
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

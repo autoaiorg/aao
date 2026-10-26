@@ -1,0 +1,29 @@
+[Unit]
+Description=AAO Work Management API and Control Center Service
+After=network-online.target postgresql.service
+Wants=network-online.target postgresql.service
+
+[Service]
+Type=simple
+User=aao-api
+Group=aao-api
+UMask=0027
+WorkingDirectory=/opt/aao/repo
+EnvironmentFile=-/etc/aao/aao-api.env
+ExecStart=/opt/aao/venv/bin/uvicorn aao.work_management_api:app --host 127.0.0.1 --port 8001 --no-access-log
+Restart=on-failure
+RestartSec=5s
+KillMode=mixed
+TimeoutStopSec=15s
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=/var/log/aao /var/lib/aao-api
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

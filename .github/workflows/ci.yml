@@ -38,15 +38,22 @@ jobs:
       - name: Apply PostgreSQL schema to the disposable CI database via unified migrator
         env:
           AAO_TEST_POSTGRES_URL: postgresql://aao_test@localhost:5432/aao_test
+          AAO_TEST_RESTORE_AUTHORITY_URL: postgresql://aao_test@localhost:5432/aao_restore_authority
         run: |
           python scripts/migrate.py --apply --dsn "$AAO_TEST_POSTGRES_URL"
           python scripts/migrate.py --verify --dsn "$AAO_TEST_POSTGRES_URL"
+          # Anti-replay tests require a distinct, disposable database: the authority
+          # ledger must not share the database that a destructive restore can replace.
+          createdb --host=localhost --username=aao_test aao_restore_authority
+          psql "$AAO_TEST_RESTORE_AUTHORITY_URL" --set ON_ERROR_STOP=1 \
+            --file db/postgres/restore_authority/001_consumed_restore_authorizations.sql
       - run: python -m compileall -q src tests
       - run: python -m ruff check src tests
       - name: Run unit and PostgreSQL integration tests with warnings as errors
         env:
           AAO_ENV: test
           AAO_TEST_POSTGRES_URL: postgresql://aao_test@localhost:5432/aao_test
+          AAO_TEST_RESTORE_AUTHORITY_URL: postgresql://aao_test@localhost:5432/aao_restore_authority
           AAO_TEST_DB_DISPOSABLE: "yes"
         # --tb=short: tracebacks omit function arguments/locals, reducing the chance that test
         # credentials reach public logs (exposure audit EXP-02). Explicit test output can still leak.

@@ -2430,6 +2430,24 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
 
             second = pool.submit(publish_second)
             assert second_started.wait(timeout=10)
+            # Prove the second call reached PostgreSQL and is waiting on the work-row
+            # lock held by the first publisher; the Python thread-start signal alone
+            # would not establish that serialization actually occurred.
+            from aao.postgresql_connection import connect_postgres
+
+            deadline = time.monotonic() + 5
+            blocked_on_work = False
+            while time.monotonic() < deadline:
+                with connect_postgres() as observer:
+                    blocked_on_work = observer.execute(
+                        "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                        "WHERE query LIKE 'SELECT project_id,status,author_id,title FROM work_items WHERE id=%' "
+                        "AND wait_event_type='Lock')"
+                    ).fetchone()[0]
+                if blocked_on_work:
+                    break
+                time.sleep(0.01)
+            assert blocked_on_work, "concurrent publisher did not wait on the locked work row"
             release_effect.set()
             published_results = [first.result(timeout=15), second.result(timeout=15)]
         assert sorted(result["status"] for result in published_results) == ["ALREADY_PUBLISHED", "PUBLISHED"]
@@ -2470,7 +2488,19 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         assert client.post(f"/v1/work/{work}/reviews", headers=auditor, json={
             "decision": "APPROVE", "candidate_sha": candidate_sha, "evidence": [evidence_ref]}).status_code == 201
         assert push_candidate(work, pusher, store=store, push=push)["status"] == "PUSHED"
-        reopened = open_pull_request(work, publisher, open_pr=open_pr)
+        # Simulate GitHub creating the PR but the response being lost. The next
+        # attempt must reconcile the deterministic branch to the existing remote PR.
+        uncertain_result = {}
+
+        def open_pr_with_lost_response(branch, title, body):
+            if "pr" not in uncertain_result:
+                uncertain_result["pr"] = open_pr(branch, title, body)
+                raise TimeoutError("simulated lost response after remote PR creation")
+            return uncertain_result["pr"]
+
+        with pytest.raises(TimeoutError, match="lost response"):
+            open_pull_request(work, publisher, open_pr=open_pr_with_lost_response)
+        reopened = open_pull_request(work, publisher, open_pr=open_pr_with_lost_response)
         assert reopened["status"] == "PUBLISHED" and reopened["pr_number"] == 8
         pr_state = {"state": "closed", "merged": True, "merge_commit_sha": None, "head_sha": candidate_sha}
         merge_sha = "e" * 40

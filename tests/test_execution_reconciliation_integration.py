@@ -158,10 +158,71 @@ def test_reconciliation_requires_distinct_granted_reviewer(monkeypatch):
             agent_credential=secret, idempotency_key="expired-" + str(uuid4()),
             capability="test.inert", request={"kind": "test-only"},
         )
+    from aao import execution_queue
+    original_start_protocol = execution_queue.start_work_protocol
+
+    def fail_protocol_pin(*_args, **_kwargs):
+        raise RuntimeError("injected protocol pin failure")
+
+    monkeypatch.setattr(execution_queue, "start_work_protocol", fail_protocol_pin)
+    with pytest.raises(RuntimeError, match="injected protocol pin failure"):
+        quarantine_expired()
+    assert state(eid)["status"] == "RUNNING"
+    with connect_postgres() as db:
+        assert db.execute(
+            "SELECT count(*) FROM execution_journal WHERE execution_id=%s "
+            "AND kind='quarantined'", (eid,),
+        ).fetchone()[0] == 0
+        assert db.execute(
+            "SELECT count(*) FROM events WHERE subject_id=%s "
+            "AND kind='work.execution_quarantined' AND details->>'execution_id'=%s",
+            (wid, eid),
+        ).fetchone()[0] == 0
+    monkeypatch.setattr(execution_queue, "start_work_protocol", original_start_protocol)
     assert quarantine_expired() >= 1
     assert state(eid)["status"] == "UNCERTAIN"
-    # Re-running quarantine must not alter this execution again.
+    with connect_postgres() as db:
+        escalation = db.execute(
+            "SELECT id,protocol_version,started_by,idempotency_key "
+            "FROM protocol_instances WHERE protocol_id='blockage-escalation' "
+            "AND subject_type='work_item' AND subject_id=%s",
+            (wid,),
+        ).fetchone()
+        quarantine_event = db.execute(
+            "SELECT details FROM events WHERE subject_id=%s "
+            "AND kind='work.execution_quarantined' AND details->>'execution_id'=%s",
+            (wid, eid),
+        ).fetchone()
+        protocol_start = db.execute(
+            "SELECT details FROM events WHERE subject_id=%s AND kind='protocol.started' "
+            "AND details->>'protocol_id'='blockage-escalation'",
+            (wid,),
+        ).fetchone()
+    assert escalation is not None
+    assert escalation[1:] == (
+        "1.0.0", "system:execution_queue.quarantine_expired",
+        f"blockage-escalation:work_item:{wid}:execution:{eid}:attempt:1",
+    )
+    assert quarantine_event is not None
+    assert quarantine_event[0]["protocol_instance_id"] == str(escalation[0])
+    assert quarantine_event[0]["former_worker_id"] == worker_id
+    assert "do not retry automatically" in quarantine_event[0]["next_action"]
+    assert protocol_start is not None
+    assert protocol_start[0]["protocol_instance_id"] == str(escalation[0])
+    assert protocol_start[0]["actor"] == "system:execution_queue.quarantine_expired"
+    # Re-running quarantine must not alter this execution or add another episode.
+    quarantine_expired()
     assert state(eid)["attempts"] == 1
+    with connect_postgres() as db:
+        assert db.execute(
+            "SELECT count(*) FROM protocol_instances WHERE protocol_id='blockage-escalation' "
+            "AND subject_type='work_item' AND subject_id=%s", (wid,),
+        ).fetchone()[0] == 1
+        assert db.execute(
+            "SELECT count(*) FROM events WHERE subject_id=%s "
+            "AND kind='work.execution_quarantined' AND details->>'execution_id'=%s",
+            (wid, eid),
+        ).fetchone()[0] == 1
     with pytest.raises(ReconciliationDenied):
         reconcile(eid, auditor_credential=auditor_secret, evidence=["operator checked"],
                   disposition="RETRY_CONFIRMED_SAFE")

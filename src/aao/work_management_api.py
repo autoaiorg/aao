@@ -3775,6 +3775,36 @@ def admit(work_id: str, principal: str = Depends(require_worker)):
     return {"id": work_id, "status": "READY"}
 
 
+def ensure_agent_work_in_progress(work_id: str, principal: str) -> None:
+    """Idempotent worker start, never a transition into review or acceptance.
+
+    Reuses work.progress authority; a queue claim alone does not confer it.
+    The worker calls this after claiming and before invoking any model.
+    """
+    with tx() as db:
+        row = db.execute(
+            "SELECT project_id,status,author_id,parent_work_id FROM work_items "
+            "WHERE id=%s FOR UPDATE", (work_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Work not found")
+        project_id, status, author_id, parent_work_id = row
+        require_grant(db, principal, project_id, "work.progress")
+        require_group_work_assignee(db, work_id, principal)
+        if parent_work_id is None and author_id != principal:
+            raise HTTPException(403, "Only the author may start standalone agent work")
+        project = db.execute(
+            "SELECT state FROM projects WHERE id=%s FOR SHARE", (project_id,),
+        ).fetchone()
+        if not project or project[0] != "ACTIVE" or status not in ("READY", "IN_PROGRESS"):
+            raise HTTPException(409, "Agent work must be ready or in progress in an active project")
+        if status == "READY":
+            db.execute("UPDATE work_items SET status='IN_PROGRESS' WHERE id=%s", (work_id,))
+            audit(db, work_id, "work.progressed", {
+                "from": "READY", "to": "IN_PROGRESS", "principal_id": principal,
+            })
+
+
 @app.post("/v1/work/{work_id}/progress")
 def progress(work_id: str, principal: str = Depends(require_worker)):
     with tx() as db:

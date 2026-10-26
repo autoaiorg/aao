@@ -31,6 +31,7 @@ def run_one(worker_id: str, agent_credential: str, *, project_id: str, seconds: 
             raise ExecutionConflict("Malformed registered agent capability selection")
         from aao.work_management_api import (
             _authenticate_request_principal,
+            ensure_agent_work_in_progress,
             persist_patch_proposal,
             tx,
         )
@@ -68,6 +69,10 @@ def run_one(worker_id: str, agent_credential: str, *, project_id: str, seconds: 
                 agent_timeout = seconds - CHECK_BUDGET_SECONDS
                 if agent_timeout < 1:
                     raise ValueError(f"lease must exceed {CHECK_BUDGET_SECONDS}s to run the agent and its checks")
+                principal = _authenticate_request_principal(agent_credential, "AGENT")
+                if principal != worker_id:
+                    raise ValueError("worker credential does not authenticate the claiming agent")
+                ensure_agent_work_in_progress(str(lease.get("work_id")), principal)
                 from aao.agent_runner import run_agent_patch
                 run = run_agent_patch(repository, selected["base_sha"], instructions,
                                       backend=backend, model=model,

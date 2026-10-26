@@ -442,6 +442,32 @@ def test_agent_dispatches_only_its_assigned_and_pre_evaluated_work(monkeypatch):
         assert len(blocker_events) == 1
         assert blocker_events[0][0]["principal_id"] == agent_ids[0]
         assert blocker_events[0][0]["reason"] == blocked.json()["reason"]
+        block_details = blocker_events[0][0]
+        assert block_details["blockage_id"]
+        assert block_details["next_action"].startswith("Resolve the persisted precondition")
+        assert block_details["protocol_instance_id"]
+        with connect_postgres() as db:
+            pinned = db.execute(
+                "SELECT protocol_id,protocol_version,started_by,subject_type,subject_id "
+                "FROM protocol_instances WHERE id=%s",
+                (block_details["protocol_instance_id"],),
+            ).fetchone()
+            start_details = db.execute(
+                "SELECT details FROM events WHERE kind='protocol.started' "
+                "AND details->>'protocol_instance_id'=%s",
+                (block_details["protocol_instance_id"],),
+            ).fetchone()[0]
+        assert pinned[:4] == ("blockage-escalation", "1.0.0", agent_ids[0], "work_item")
+        assert str(pinned[4]) == work_id
+        assert start_details["protocol_id"] == "blockage-escalation"
+        assert start_details["protocol_version"] == "1.0.0"
+        assert start_details["actor"] == agent_ids[0]
+        projected_group = client.get(
+            f"/v1/projects/{project}/work-groups", headers=ceo,
+        ).json()[0]
+        projected_block = projected_group["children"][0]["dispatch_block"]
+        assert projected_block["protocol_instance_id"] == block_details["protocol_instance_id"]
+        assert projected_block["next_action"] == block_details["next_action"]
         # Repeated worker polling preserves the canonical event log without spam.
         repeated = client.post("/v1/agent/dispatch-next", headers=workers[0], json={
             "project_id": project, "principal_id": agent_ids[0], "base_sha": base_sha,

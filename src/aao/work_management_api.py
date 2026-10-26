@@ -1852,6 +1852,11 @@ def _work_group_source_snapshot(db, project_id: str, parent_work_id: str, *, loc
                 "reason": dispatch["details"].get("reason", "Dispatch blocked; inspect audit event"),
                 "created_at": dispatch["occurred_at"].isoformat(),
             }
+            if dispatch["details"].get("protocol_instance_id"):
+                child["dispatch_block"].update({
+                    "protocol_instance_id": dispatch["details"]["protocol_instance_id"],
+                    "next_action": dispatch["details"].get("next_action"),
+                })
         snapshot_children.append(child)
     snapshot = {"children": snapshot_children}
     canonical = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str)
@@ -4075,9 +4080,31 @@ def dispatch_next_agent_work(
             last_details = latest_block[0] if latest_block and isinstance(latest_block[0], dict) else {}
             if (last_details.get("principal_id") != str(principal)
                     or last_details.get("reason") != reason):
+                blockage_id = str(uuid4())
+                next_action = (
+                    "Resolve the persisted precondition through an existing authorized operation; "
+                    "if no competent actor is known, escalate to the CEO."
+                )
+                protocol_instance_id = start_work_protocol(
+                    db,
+                    protocol_id="blockage-escalation",
+                    work_id=work_id,
+                    started_by=str(principal),
+                    subject_type="work_item",
+                    idempotency_key=f"blockage-escalation:work_item:{work_id}:{blockage_id}",
+                    request={
+                        "blockage_id": blockage_id,
+                        "project_id": payload.project_id,
+                        "reason": reason,
+                        "reported_by": str(principal),
+                    },
+                )
                 audit(db, work_id, "work.dispatch_blocked", {
                     "project_id": payload.project_id, "work_id": work_id,
                     "principal_id": str(principal), "reason": reason,
+                    "blockage_id": blockage_id,
+                    "protocol_instance_id": protocol_instance_id,
+                    "next_action": next_action,
                 })
             return {"status": "BLOCKED", "execution_id": None,
                     "work_id": work_id, "reason": reason}

@@ -11,6 +11,7 @@ PROTOCOL_VERSIONS = {
     "planning-assignment": "1.0.0",
     "implementation": "1.0.0",
     "review-acceptance": "1.0.0",
+    "blockage-escalation": "1.0.0",
 }
 
 
@@ -22,6 +23,7 @@ def start_work_protocol(
     started_by: str,
     request: dict,
     subject_type: str = "work_item",
+    idempotency_key: str | None = None,
 ) -> str:
     """Pin a fixed protocol version and emit its start event in the caller's tx."""
     version = PROTOCOL_VERSIONS.get(protocol_id)
@@ -29,7 +31,7 @@ def start_work_protocol(
         raise ValueError(f"Protocol is not enabled: {protocol_id}")
     canonical = json.dumps(request, sort_keys=True, separators=(",", ":"), default=str)
     request_sha256 = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    key = f"{protocol_id}:{subject_type}:{work_id}"
+    key = idempotency_key or f"{protocol_id}:{subject_type}:{work_id}"
     instance_id = str(uuid4())
     inserted = db.execute(
         "INSERT INTO protocol_instances(id,protocol_id,protocol_version,subject_type,subject_id,"

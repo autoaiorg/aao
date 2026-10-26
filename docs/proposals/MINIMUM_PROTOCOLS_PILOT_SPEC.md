@@ -3,7 +3,7 @@
 **Estado:** propuesta técnica para revisión; no es protocolo vigente ni concede autoridad.
 **Base:** `CEO-DEC-ENTERPRISE-MODEL-2026-10-26`, D-01, D-03, D-04, D-05 y D-10.
 **Alcance:** mínimo para el piloto §14, no un motor genérico de workflows.
-**Revisión de código:** base `main` `02bb02f08aa5053cb969f04f004c7faceb9c2fd9`; el pinning de metadatos está en un candidato de construcción separado. No equivale a integración E2E ni al gate de protocolo.
+**Revisión de código:** base `main` `02bb02f08aa5053cb969f04f004c7faceb9c2fd9`; candidato de pinning de metadatos `4e1769be970dc87a01afccb494c3f91720affb54`. No equivale a integración E2E ni al gate de protocolo.
 
 ## Criterios de diseño
 

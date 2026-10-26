@@ -266,12 +266,11 @@ def get_authorization_store_dir() -> Path:
 
 
 def consume_authorization_nonce_host(nonce: str, metadata: dict[str, Any]) -> tuple[bool, str]:
-    """Atomically consume an authorization nonce in persistent host storage independent of DB.
+    """Legacy host-local nonce helper retained only for legacy callers and tests.
 
-    Uses kernel-level atomic O_CREAT | O_EXCL file reservation to guarantee:
-    1. Single-use uniqueness across concurrent processes.
-    2. Protection against database replacement or deletion.
-    3. Audit ledger persistence even if subsequent restore steps fail.
+    This does not provide cross-host exclusivity and is not used by the destructive
+    restore authorization path. Production restores use the dedicated PostgreSQL
+    authority database via :func:`consume_restore_authorization_nonce`.
     """
     if (
         not isinstance(nonce, str)
@@ -347,6 +346,63 @@ def consume_authorization_nonce_host(nonce: str, metadata: dict[str, Any]) -> tu
         return False, f"Nonce reserved but consumption audit could not be persisted: {exc}"
 
     return True, f"Nonce '{nonce}' atomically consumed in persistent host authority store."
+
+
+def consume_restore_authorization_nonce(
+    nonce: str,
+    metadata: dict[str, Any],
+    target_database: str,
+) -> tuple[bool, str]:
+    """Atomically reserve a restore nonce in a separate durable PostgreSQL authority DB.
+
+    The authority database must be separately provisioned and named differently
+    from the database being restored. Its executor role should have INSERT and
+    SELECT(nonce) only on the append-only ledger table. No DDL is performed here.
+    """
+    if (
+        not isinstance(nonce, str)
+        or not nonce
+        or len(nonce) > 200
+        or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for c in nonce)
+    ):
+        return False, "Authorization nonce has invalid characters."
+    dsn = os.environ.get("AAO_RESTORE_AUTHORITY_DATABASE_URL")
+    if not dsn:
+        return False, "Dedicated restore authority database is not configured."
+    try:
+        with psycopg.connect(dsn) as authority_db:
+            row = authority_db.execute(
+                "SELECT current_database(), current_setting('fsync'), "
+                "current_setting('synchronous_commit')"
+            ).fetchone()
+            authority_database, fsync, synchronous_commit = row
+            if authority_database == target_database:
+                return False, "Restore authority database must differ from the restore target database."
+            if fsync != "on" or synchronous_commit != "on":
+                return False, "Restore authority PostgreSQL durability settings must enable fsync and synchronous_commit."
+            inserted = authority_db.execute(
+                """
+                INSERT INTO restore_authority.consumed_authorizations
+                    (nonce, action, authority_id, backup_sha256, target_database, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s::jsonb)
+                ON CONFLICT (nonce) DO NOTHING
+                RETURNING nonce
+                """,
+                (
+                    nonce,
+                    metadata["action"],
+                    metadata["authority_id"],
+                    metadata["backup_sha256"],
+                    target_database,
+                    json.dumps(metadata, sort_keys=True, separators=(",", ":")),
+                ),
+            ).fetchone()
+            if inserted is None:
+                return False, f"Authorization nonce '{nonce}' has already been consumed (replay denied)."
+    except psycopg.Error:
+        # Do not expose DSNs or connection details; a commit outcome may be uncertain.
+        return False, "Restore authority database unavailable or reservation outcome uncertain; retry is denied pending reconciliation."
+    return True, f"Nonce '{nonce[:8]}...' durably consumed by the separate restore authority database."
 
 
 def create_restore_authorization(
@@ -522,7 +578,7 @@ def verify_destructive_restore_authorization(
     if not sig_valid:
         return False, "CEO authority cryptographic signature verification failed.", None
 
-    # Check 6: Atomic anti-replay reservation in persistent host store INDEPENDENT of destination DB (A-10)
+    # Check 6: Atomic anti-replay reservation in the external authority database.
     metadata = {
         "nonce": nonce,
         "action": "database.destructive_restore",
@@ -532,31 +588,16 @@ def verify_destructive_restore_authorization(
         "consumed_at_utc": datetime.now(UTC).isoformat(),
         "pid": os.getpid(),
     }
-    host_ok, host_msg = consume_authorization_nonce_host(nonce, metadata)
-    if not host_ok:
-        return False, host_msg, None
+    authority_ok, authority_msg = consume_restore_authorization_nonce(
+        nonce, metadata, target_database,
+    )
+    if not authority_ok:
+        return False, authority_msg, None
 
-    # Secondary audit reservation in PostgreSQL if database is accessible
+    # Target-database event is informational only; the dedicated authority DB above
+    # is the sole anti-replay source of truth and is never restored with this DB.
     if db is not None:
         try:
-            db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS restore_authorizations (
-                    nonce text PRIMARY KEY,
-                    backup_sha256 text NOT NULL,
-                    target_database text NOT NULL,
-                    consumed_at timestamptz NOT NULL DEFAULT clock_timestamp()
-                );
-                """
-            )
-            db.execute(
-                """
-                INSERT INTO restore_authorizations (nonce, backup_sha256, target_database)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (nonce) DO NOTHING;
-                """,
-                (nonce, actual_hash, target_database),
-            )
             from uuid import uuid4
             event_id = str(uuid4())
             db.execute(
@@ -571,7 +612,8 @@ def verify_destructive_restore_authorization(
                 ),
             )
         except (RuntimeError, OSError, psycopg.Error) as db_exc:
-            # Persistent host store already guarantees anti-replay; log database notice without failing
+            # The dedicated authority database already guarantees anti-replay;
+            # this target-database event is informational only.
             logger.warning(
                 "Could not record secondary nonce audit in destination database before restore: %s",
                 db_exc,
@@ -795,7 +837,8 @@ def restore_backup(
                     shutil.copytree(safety_candidates_dir, target_candidates_dir, dirs_exist_ok=True)
                 raise BackupError(f"Candidate repository restoration failed ({exc}). Compensating rollback applied across all components.") from exc
 
-    # Step 4: Record restore event and retire authorization nonce in target database
+    # Step 4: Record the restore event in the target database. Anti-replay state
+    # was committed to the independent authority database before any mutation.
     try:
         from uuid import uuid4
         with psycopg.connect(target_dsn, autocommit=True) as conn, conn.cursor() as cursor:
@@ -815,31 +858,20 @@ def restore_backup(
                     }),
                 ),
             )
-            # Replay retirement in newly restored database
             if auth_nonce:
+                consumed_event_id = str(uuid4())
+                consumed_subject_id = str(uuid4())
                 cursor.execute(
                     """
-                    CREATE TABLE IF NOT EXISTS restore_authorizations (
-                        nonce text PRIMARY KEY,
-                        backup_sha256 text NOT NULL,
-                        target_database text NOT NULL,
-                        consumed_at timestamptz NOT NULL DEFAULT clock_timestamp()
-                    );
-                    INSERT INTO restore_authorizations (nonce, backup_sha256, target_database)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT (nonce) DO NOTHING;
                     INSERT INTO events (id, subject_id, kind, details)
                     VALUES (%s, %s, 'ceo.restore.consumed', %s::jsonb)
-                    ON CONFLICT (id) DO NOTHING;
                     """,
                     (
-                        auth_nonce,
-                        compute_file_sha256(backup_path),
-                        target_database,
-                        auth_nonce,
-                        auth_nonce,
+                        consumed_event_id,
+                        consumed_subject_id,
                         json.dumps({
                             "target_database": target_database,
+                            "authorization_nonce": auth_nonce,
                             "consumed_at": datetime.now(UTC).isoformat(),
                         }),
                     ),

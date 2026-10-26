@@ -46,6 +46,16 @@ from aao.ops import check_governance_identities
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def inject_local_nonce_store_for_unit_tests(tmp_path, monkeypatch):
+    """These unit tests do not exercise PostgreSQL durability or host independence."""
+    monkeypatch.setenv("AAO_AUTH_STORE_DIR", str(tmp_path / "unit-authority"))
+    monkeypatch.setattr(
+        "aao.backup.consume_restore_authorization_nonce",
+        lambda nonce, metadata, target_database: consume_authorization_nonce_host(nonce, metadata),
+    )
+
+
 # ==============================================================================
 # Scenario 1: Two concurrent restores consuming the same authorization nonce
 # ==============================================================================

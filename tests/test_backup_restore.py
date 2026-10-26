@@ -19,8 +19,14 @@ from aao.backup import (
 
 @pytest.fixture(autouse=True)
 def isolated_authorization_store(tmp_path, monkeypatch):
-    """Every test gets its own protected replay store; never use /tmp fallback."""
+    """Unit tests inject a local stand-in; production never falls back to it."""
     monkeypatch.setenv("AAO_AUTH_STORE_DIR", str(tmp_path / "authorization-store"))
+    from aao.backup import consume_authorization_nonce_host
+
+    monkeypatch.setattr(
+        "aao.backup.consume_restore_authorization_nonce",
+        lambda nonce, metadata, target_database: consume_authorization_nonce_host(nonce, metadata),
+    )
 
 
 def test_nonce_store_rejects_symlink_and_insecure_directory(tmp_path, monkeypatch):

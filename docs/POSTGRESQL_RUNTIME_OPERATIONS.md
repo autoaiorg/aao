@@ -36,7 +36,24 @@ for migration in db/postgres/001_foundation.sql \
   db/postgres/014_execution_retry.sql \
   db/postgres/015_organization_profiles.sql \
   db/postgres/016_project_conversations.sql \
-  db/postgres/017_ceo_browser_sessions.sql; do
+  db/postgres/017_ceo_browser_sessions.sql \
+  db/postgres/018_conversation_provider_metadata.sql \
+  db/postgres/019_project_conversation_turns.sql \
+  db/postgres/020_persistent_work_groups.sql \
+  db/postgres/021_conversation_turn_leases.sql \
+  db/postgres/022_work_item_assignments.sql \
+  db/postgres/023_work_group_consolidations.sql \
+  db/postgres/024_work_group_partial_reports.sql \
+  db/postgres/025_work_item_due_dates.sql \
+  db/postgres/026_capability_feedback_proposals.sql \
+  db/postgres/027_capability_feedback_review.sql \
+  db/postgres/028_capability_feedback_version_link.sql \
+  db/postgres/029_organization_profile_competencies.sql \
+  db/postgres/030_conversation_work_group_results.sql \
+  db/postgres/031_conversation_endpoint_metadata.sql \
+  db/postgres/032_work_item_required_competencies.sql \
+  db/postgres/033_protocol_instances.sql \
+  db/postgres/034_work_item_priority.sql; do
   psql "$AAO_POSTGRES_URL" -v ON_ERROR_STOP=1 -f "$migration"
 done
 export AAO_CEO_TOKEN='locally-generated-secret'
@@ -64,6 +81,19 @@ an `AGENT` or `AUDITOR`, then send its one-time returned token as
 `X-Agent-Token` or `X-Auditor-Token`. Grant the resulting principal ID only
 the project capabilities it needs. `AAO_WORK_TOKEN` and `AAO_REVIEW_TOKEN`
 are SQLite-prototype settings and are not accepted by this PostgreSQL API.
+
+### Pending runtime-role installation prerequisite
+
+Migration `033_protocol_instances.sql` explicitly revokes all privileges on
+`protocol_instances` from `PUBLIC`; it does not grant access to the service
+role. Before a deployment uses this table, identify the effective PostgreSQL
+role used by the API and explicitly grant it only `SELECT` and `INSERT` on
+`protocol_instances`. The runtime role must not own the table or have elevated
+role flags; use a separate migration/owner identity for schema changes. Verify
+the effective role and its privileges in the deployment itself. The disposable
+database privilege test checks the intended boundary, but does not prove the
+deployment is configured this way. Until that installation check is complete,
+the real deployment's runtime identity and grants remain unverified.
 
 **Do not expose port 8001 beyond loopback.** Both secrets are development
 credentials, not a production identity system. PostgreSQL permissions,

@@ -19,6 +19,13 @@ class EvidenceDenied(ValueError):
     pass
 
 
+def _validate_evidence(content: bytes, media_type: str) -> None:
+    if not isinstance(content, bytes) or not content or len(content) > MAX_EVIDENCE_BYTES:
+        raise EvidenceDenied("Evidence must contain 1 to 1048576 bytes")
+    if not media_type or len(media_type) > 127 or any(ord(char) < 32 for char in media_type):
+        raise EvidenceDenied("Invalid evidence media type")
+
+
 def register_evidence(
     project_id: str,
     content: bytes,
@@ -28,56 +35,65 @@ def register_evidence(
     media_type: str = "application/octet-stream",
 ) -> str:
     """Persist bytes under a digest after checking AGENT identity and grant."""
-    if not isinstance(content, bytes) or not content or len(content) > MAX_EVIDENCE_BYTES:
-        raise EvidenceDenied("Evidence must contain 1 to 1048576 bytes")
-    if not media_type or len(media_type) > 127 or any(ord(char) < 32 for char in media_type):
-        raise EvidenceDenied("Invalid evidence media type")
-    digest = hashlib.sha256(content).hexdigest()
+    _validate_evidence(content, media_type)
     with connect_postgres() as db:
-        from aao.principal_credentials import PrincipalDenied, authenticate_in_transaction
+        return register_evidence_in_transaction(
+            db, project_id, content, agent_id=agent_id,
+            agent_credential=agent_credential, media_type=media_type,
+        )
 
-        try:
-            principal_id = authenticate_in_transaction(
-                db, agent_credential, kind="AGENT",
-            )
-        except PrincipalDenied as exc:
-            raise EvidenceDenied("Active agent credential required") from exc
-        if principal_id != agent_id:
-            raise EvidenceDenied("Credential does not match evidence submitter")
-        project = db.execute(
-            "SELECT state FROM projects WHERE id=%s FOR SHARE", (project_id,),
+
+def register_evidence_in_transaction(
+    db, project_id: str, content: bytes, *, agent_id: str,
+    agent_credential: str, media_type: str = "application/octet-stream",
+) -> str:
+    """Same credential/grant checks and immutable storage in a caller-owned transaction."""
+    _validate_evidence(content, media_type)
+    digest = hashlib.sha256(content).hexdigest()
+    from aao.principal_credentials import PrincipalDenied, authenticate_in_transaction
+
+    try:
+        principal_id = authenticate_in_transaction(
+            db, agent_credential, kind="AGENT",
+        )
+    except PrincipalDenied as exc:
+        raise EvidenceDenied("Active agent credential required") from exc
+    if principal_id != agent_id:
+        raise EvidenceDenied("Credential does not match evidence submitter")
+    project = db.execute(
+        "SELECT state FROM projects WHERE id=%s FOR SHARE", (project_id,),
+    ).fetchone()
+    if not project or project[0] != "ACTIVE":
+        raise EvidenceDenied("Active project required")
+    grant = db.execute(
+        "SELECT 1 FROM project_grants WHERE principal_id=%s AND project_id=%s "
+        "AND capability='evidence.submit' "
+        "AND (expires_at IS NULL OR expires_at > clock_timestamp()) FOR SHARE",
+        (principal_id, project_id),
+    ).fetchone()
+    if not grant:
+        raise EvidenceDenied("Evidence submission grant required")
+    inserted = db.execute(
+        "INSERT INTO evidence_artifacts(project_id,digest,submitted_by,media_type,content) "
+        "VALUES (%s,%s,%s,%s,%s) ON CONFLICT (project_id,digest) DO NOTHING "
+        "RETURNING digest",
+        (project_id, digest, principal_id, media_type, content),
+    ).fetchone()
+    if inserted:
+        db.execute(
+            "INSERT INTO events(id,subject_id,kind,details) "
+            "VALUES (%s,%s,'evidence.registered',%s::jsonb)",
+            (str(uuid4()), project_id, json.dumps({
+                "digest": f"sha256:{digest}", "submitted_by": principal_id,
+            })),
+        )
+    else:
+        existing = db.execute(
+            "SELECT content FROM evidence_artifacts WHERE project_id=%s AND digest=%s",
+            (project_id, digest),
         ).fetchone()
-        if not project or project[0] != "ACTIVE":
-            raise EvidenceDenied("Active project required")
-        grant = db.execute(
-            "SELECT 1 FROM project_grants WHERE principal_id=%s AND project_id=%s "
-            "AND capability='evidence.submit' "
-            "AND (expires_at IS NULL OR expires_at > clock_timestamp()) FOR SHARE",
-            (principal_id, project_id),
-        ).fetchone()
-        if not grant:
-            raise EvidenceDenied("Evidence submission grant required")
-        inserted = db.execute(
-            "INSERT INTO evidence_artifacts(project_id,digest,submitted_by,media_type,content) "
-            "VALUES (%s,%s,%s,%s,%s) ON CONFLICT (project_id,digest) DO NOTHING "
-            "RETURNING digest",
-            (project_id, digest, principal_id, media_type, content),
-        ).fetchone()
-        if inserted:
-            db.execute(
-                "INSERT INTO events(id,subject_id,kind,details) "
-                "VALUES (%s,%s,'evidence.registered',%s::jsonb)",
-                (str(uuid4()), project_id, json.dumps({
-                    "digest": f"sha256:{digest}", "submitted_by": principal_id,
-                })),
-            )
-        else:
-            existing = db.execute(
-                "SELECT content FROM evidence_artifacts WHERE project_id=%s AND digest=%s",
-                (project_id, digest),
-            ).fetchone()
-            if not existing or bytes(existing[0]) != content:
-                raise EvidenceDenied("Digest collision or corrupted evidence record")
+        if not existing or bytes(existing[0]) != content:
+            raise EvidenceDenied("Digest collision or corrupted evidence record")
     return f"sha256:{digest}"
 
 

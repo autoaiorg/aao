@@ -43,6 +43,11 @@ def test_worker_runs_one_authorized_queue_item_without_logging_token(tmp_path, m
     runtime, _ = make_runtime(tmp_path)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
     monkeypatch.setattr(worker.os, "getuid", lambda: os.stat(runtime).st_uid)
+    submissions = []
+    monkeypatch.setattr(
+        "aao.work_management_api.submit_next_agent_result",
+        lambda *args: submissions.append(args) or {"work_id": "work-recovered"},
+    )
     monkeypatch.setattr(
         "aao.inert_execution_worker.run_one",
         lambda principal, token, *, project_id, seconds: (
@@ -58,6 +63,8 @@ def test_worker_runs_one_authorized_queue_item_without_logging_token(tmp_path, m
     assert worker.main() == 0
     output = capsys.readouterr().out
     assert "Execution exec-1: SUCCEEDED" in output
+    assert "Submitted work work-recovered: IN_REVIEW" in output
+    assert submissions == [("project-1", "agent-1", "agent-token-fixture")]
     assert "agent-token-fixture" not in output
 
 
@@ -77,6 +84,7 @@ def test_worker_error_output_does_not_include_exception_details(tmp_path, monkey
     runtime, _ = make_runtime(tmp_path)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
     monkeypatch.setattr(worker.os, "getuid", lambda: os.stat(runtime).st_uid)
+    monkeypatch.setattr("aao.work_management_api.submit_next_agent_result", lambda *_: None)
     monkeypatch.setattr(
         "aao.inert_execution_worker.run_one",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("sensitive detail")),

@@ -3805,6 +3805,88 @@ def ensure_agent_work_in_progress(work_id: str, principal: str) -> None:
             })
 
 
+def submit_next_agent_result(project_id: str, worker_id: str, credential: str) -> dict | None:
+    """Recover one durable successful result into review, never approve it.
+
+    Work lock serializes submitters, staging and reassignment. Evidence, protocol,
+    state and provenance commit together; a restart retries from execution_queue.
+    No new endpoint or grant is introduced.
+    """
+    from aao.evidence_registry import register_evidence_in_transaction
+    from aao.principal_credentials import PrincipalDenied
+
+    try:
+        principal = _authenticate_request_principal(credential, "AGENT")
+    except PrincipalDenied as exc:
+        raise HTTPException(403, "Individual principal invalid or revoked") from exc
+    if principal != worker_id:
+        raise HTTPException(403, "Worker identity does not match credential")
+    with tx() as db:
+        row = db.execute(
+            "SELECT w.id,w.author_id,w.parent_work_id FROM work_items w "
+            "WHERE w.project_id=%s AND w.status='IN_PROGRESS' AND EXISTS "
+            "(SELECT 1 FROM execution_queue q WHERE q.work_id=w.id "
+            "AND q.worker_id=%s AND q.status='SUCCEEDED' "
+            "AND q.input_json->>'type'='aao.agent-patch.v1') "
+            "ORDER BY w.id FOR UPDATE OF w SKIP LOCKED LIMIT 1",
+            (project_id, worker_id),
+        ).fetchone()
+        if row is None:
+            return None
+        work_id, author_id, parent_work_id = row
+        work_id = str(work_id)
+        require_grant(db, principal, project_id, "work.progress")
+        require_grant(db, principal, project_id, "evidence.submit")
+        require_group_work_assignee(db, work_id, principal)
+        if parent_work_id is None and author_id != principal:
+            raise HTTPException(403, "Only the author may submit standalone agent work")
+        project = db.execute(
+            "SELECT state FROM projects WHERE id=%s FOR SHARE", (project_id,),
+        ).fetchone()
+        if not project or project[0] != "ACTIVE":
+            raise HTTPException(409, "Project not active")
+        latest = db.execute(
+            "SELECT id,status,worker_id,result_json FROM execution_queue "
+            "WHERE work_id=%s ORDER BY created_at DESC,id DESC LIMIT 1",
+            (work_id,),
+        ).fetchone()
+        if not latest or latest[1] != "SUCCEEDED" or latest[2] != worker_id:
+            raise HTTPException(409, "Latest execution must have succeeded for this worker")
+        execution_id, _, _, result = latest
+        check = result.get("check") if isinstance(result, dict) else None
+        candidate = result.get("candidate_sha") if isinstance(result, dict) else None
+        if (not isinstance(candidate, str) or len(candidate) != 40
+                or any(char not in "0123456789abcdef" for char in candidate)
+                or result.get("kind") != "aao.agent-patch.v1"
+                or result.get("conclusion") != "success"
+                or not isinstance(check, dict) or check.get("conclusion") != "success"):
+            raise HTTPException(409, "Successful candidate and check evidence required")
+        record = json.dumps({"candidate_sha": candidate, "check": {
+            key: check.get(key) for key in (
+                "check_id", "extra_tests", "conclusion", "exit_code", "duration_ms",
+                "stdout", "stderr", "limits",
+            )}}, sort_keys=True).encode()
+        evidence = register_evidence_in_transaction(
+            db, project_id, record, agent_id=worker_id,
+            agent_credential=credential, media_type="application/json",
+        )
+        protocol = start_work_protocol(
+            db, protocol_id="review-acceptance", work_id=work_id,
+            started_by=worker_id,
+            request={"work_id": work_id, "project_id": project_id},
+        )
+        db.execute("UPDATE work_items SET status='IN_REVIEW' WHERE id=%s", (work_id,))
+        details = {"execution_id": str(execution_id), "candidate_sha": candidate,
+                   "evidence": evidence, "submitted_by": worker_id,
+                   "protocol_instance_id": str(protocol)}
+        audit(db, work_id, "work.execution_submitted", details)
+        audit(db, work_id, "work.progressed", {
+            "from": "IN_PROGRESS", "to": "IN_REVIEW", **details,
+        })
+    return {"work_id": work_id, "execution_id": str(execution_id),
+            "status": "IN_REVIEW", "evidence": evidence}
+
+
 @app.post("/v1/work/{work_id}/progress")
 def progress(work_id: str, principal: str = Depends(require_worker)):
     with tx() as db:

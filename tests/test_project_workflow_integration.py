@@ -1050,7 +1050,75 @@ def test_group_assignment_routes_execution_without_creating_grants(monkeypatch):
         assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
             "principal_id": worker_ids[0], "capability": "work.progress",
         }).status_code == 201
-        assert client.post(f"/v1/work/{work_id}/progress", headers=workers[0]).json()["status"] == "IN_REVIEW"
+        # Submission recovers from the durable result, without rerunning the model.
+        from aao.work_management_api import submit_next_agent_result
+        with pytest.raises(HTTPException) as no_evidence_grant:
+            submit_next_agent_result(project, worker_ids[0], worker_tokens[0])
+        assert no_evidence_grant.value.status_code == 403
+        assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
+            "principal_id": worker_ids[0], "capability": "evidence.submit",
+        }).status_code == 201
+        assert submit_next_agent_result(project, worker_ids[1], worker_tokens[1]) is None
+        with pytest.raises(HTTPException) as wrong_identity:
+            submit_next_agent_result(project, worker_ids[0], worker_tokens[1])
+        assert wrong_identity.value.status_code == 403
+        with pytest.raises(HTTPException) as invalid_token:
+            submit_next_agent_result(project, worker_ids[0], "invalid-token")
+        assert invalid_token.value.status_code == 403
+        with connect_postgres() as db:
+            db.execute(
+                "UPDATE execution_queue SET result_json=jsonb_set(result_json, "
+                "'{check,conclusion}', '\"failure\"') WHERE id=%s", (execution_id,),
+            )
+        with pytest.raises(HTTPException) as failed_check:
+            submit_next_agent_result(project, worker_ids[0], worker_tokens[0])
+        assert failed_check.value.status_code == 409
+        with connect_postgres() as db:
+            db.execute(
+                "UPDATE execution_queue SET result_json=jsonb_set(result_json, "
+                "'{check,conclusion}', '\"success\"') WHERE id=%s", (execution_id,),
+            )
+        with connect_postgres() as db:
+            db.execute(
+                "DELETE FROM project_grants WHERE project_id=%s AND principal_id=%s "
+                "AND capability='work.progress'", (project, worker_ids[0]),
+            )
+        with pytest.raises(HTTPException) as no_progress_grant:
+            submit_next_agent_result(project, worker_ids[0], worker_tokens[0])
+        assert no_progress_grant.value.status_code == 403
+        assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
+            "principal_id": worker_ids[0], "capability": "work.progress",
+        }).status_code == 201
+        # Crash after the evidence insertion: the whole transaction rolls back.
+        from aao import work_management_api as workflow_api
+        original_protocol = workflow_api.start_work_protocol
+
+        def interrupted_protocol(*_args, **_kwargs):
+            raise RuntimeError("simulated interruption before review transition")
+
+        monkeypatch.setattr(workflow_api, "start_work_protocol", interrupted_protocol)
+        with pytest.raises(RuntimeError, match="simulated interruption"):
+            submit_next_agent_result(project, worker_ids[0], worker_tokens[0])
+        with connect_postgres() as db:
+            assert db.execute("SELECT status FROM work_items WHERE id=%s", (work_id,)).fetchone()[0] == "IN_PROGRESS"
+            assert db.execute("SELECT count(*) FROM evidence_artifacts WHERE project_id=%s", (project,)).fetchone()[0] == 0
+        monkeypatch.setattr(workflow_api, "start_work_protocol", original_protocol)
+        submitted = submit_next_agent_result(project, worker_ids[0], worker_tokens[0])
+        assert submitted["execution_id"] == execution_id
+        assert submitted["status"] == "IN_REVIEW"
+        assert submitted["evidence"].startswith("sha256:")
+        assert submit_next_agent_result(project, worker_ids[0], worker_tokens[0]) is None
+        assert len(calls) == 1
+        with connect_postgres() as db:
+            event = db.execute(
+                "SELECT details FROM events WHERE subject_id=%s "
+                "AND kind='work.execution_submitted'", (work_id,),
+            ).fetchall()
+            assert len(event) == 1
+            assert event[0][0]["execution_id"] == execution_id
+            assert event[0][0]["submitted_by"] == worker_ids[0]
+            assert event[0][0]["evidence"] == submitted["evidence"]
+            assert db.execute("SELECT count(*) FROM reviews WHERE work_id=%s", (work_id,)).fetchone()[0] == 0
         with pytest.raises(HTTPException) as terminal:
             ensure_agent_work_in_progress(work_id, principal)
         assert terminal.value.status_code == 409

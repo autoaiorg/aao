@@ -99,6 +99,22 @@ ejecución que ya esté corriendo (su lease puede durar hasta 1800 s). El modo
 continuo no activa ni autoriza proveedores: no debe desplegarse con un proveedor
 habilitado fuera de un ensayo expresamente autorizado por el CEO.
 
+### Recuperación automática de resultados del worker
+
+Antes de reclamar otra ejecución, el worker busca un resultado `SUCCEEDED`
+persistido para su identidad y entrega como máximo uno a `IN_REVIEW`. Revalida
+la credencial, la asignación, los grants `work.progress` y `evidence.submit`, el
+proyecto activo y el candidato/check exitosos de la última ejecución. La
+evidencia, la instancia versionada de `review-acceptance`, la transición y sus
+eventos se escriben en una sola transacción. Una interrupción revierte esa
+transacción y la siguiente consulta recupera el resultado desde PostgreSQL sin
+volver a llamar al modelo. En modo one-shot, esa recuperación ocurre en la
+siguiente invocación; con `--watch`, en la siguiente consulta.
+
+Esto **no** crea una revisión, no aprueba el candidato y no lleva la tarea a
+`DONE`. El revisor mantiene su identidad y autorización separadas. Tampoco
+activa el proveedor ni concede grants.
+
 **Agente y modelo:** desde I3 los decide la capacidad elegida con `--agent`, no el entorno. `aao.agent-runner.codex` lleva en su `model_profile` el backend `codex`, el proveedor `openai` y el modelo `gpt-6-luna`; codex lo recibe como `-m`. La evidencia registra `capability_id`, `backend_source: capability`, proveedor, modelo y la versión real del CLI. Registrar la capacidad no activa nada: sin `AAO_AGENT_PROVIDER=codex` en el worker, el runner rechaza el backend. Las capacidades sin `model_profile` conservan el comportamiento anterior (`AAO_AGENT_BACKEND` y `AAO_AGENT_CODEX_MODEL`) y la evidencia lo indica como `backend_source: environment`.
 
 **Activación y router (I4):** `AAO_AGENT_PROVIDER` admite una lista separada por comas (`codex`, …) y lo comprueban tres puntos por separado:

@@ -87,8 +87,12 @@ def run(project_id: str, principal_id: str) -> dict:
     data_home = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
     os.environ.setdefault("AAO_CANDIDATE_REPOSITORY", str(data_home / "aao" / "candidates.git"))
     from aao.inert_execution_worker import run_one
+    from aao.work_management_api import submit_next_agent_result
 
     try:
+        submitted = submit_next_agent_result(project_id, principal_id, token)
+        if submitted:
+            print(f"Submitted work {submitted['work_id']}: IN_REVIEW")
         return run_one(
             principal_id, token, project_id=project_id, seconds=MAX_LEASE_SECONDS,
         )

@@ -79,30 +79,25 @@ Para cumplir la directriz de restauración en entorno aislado:
 Para trasladar AAO de un Host A a un Host B de forma reproducible y segura:
 
 ### Fase 1: En el Host Origen (Host A)
-1. **Detener servicios que producen efectos:**
+1. **Aplicar Fencing de Host (Exclusividad Efectiva):**
+   Detener servicios de worker, enmascarar unidades locales, revocar credenciales de agentes activos en base de datos, expirar leases de turnos y registrar el evento de auditoría `host.fenced`:
    ```bash
-   sudo systemctl stop aao-worker-self-dev.service
+   sudo aao-ops fence-host --host-id "host-a-prod"
    sudo systemctl stop aao-api.service
    ```
-2. **Aplicar Fencing:**
-   Ejecutar revocación de leases en cola para garantizar que ninguna tarea quede en estado ambiguo:
-   ```python
-   from aao.backup import apply_host_fencing
-   from aao.postgresql_connection import connect_postgres
-   with connect_postgres() as db:
-       print(apply_host_fencing(db))
-   ```
-3. **Generar el backup final:**
+
+2. **Generar el backup final:**
    ```bash
    aao-ops backup --output-dir /var/backups/aao
    ```
-4. **Verificar el backup generado:**
+
+3. **Verificar el backup generado:**
    ```bash
    aao-ops verify-backup /var/backups/aao/aao-backup-final.tar.gz
    ```
 
 ### Fase 2: Transferencia Segura
-1. Copiar el paquete verificado al Host B mediante canal cifrado (`scp` / `rsync` sobre SSH).
+1. Copiar el paquete verificado al Host B mediante canal cifrado (`scp` sobre SSH con host keys verificadas).
 2. Transferir de forma independiente las credenciales de `/etc/aao/`.
 
 ### Fase 3: En el Host Destino (Host B)
@@ -110,10 +105,15 @@ Para trasladar AAO de un Host A a un Host B de forma reproducible y segura:
    ```bash
    sudo ./scripts/bootstrap/aao_bootstrap.sh --apply
    ```
-2. **Restaurar el estado de datos:**
+
+2. **Restaurar el estado de datos con pre-verificación aislada y autorización explícita:**
    ```bash
+   # Pre-verificar en destino aislado y aplicar con autorización explícita del CEO
    aao-ops restore /var/backups/aao/aao-backup-final.tar.gz \
-     --target-dsn "$AAO_POSTGRES_URL" --allow-non-empty
+     --target-dsn "$AAO_POSTGRES_URL" \
+     --verify-isolated-dsn "postgresql://aao_app:SECRETO@127.0.0.1:5432/aao_isolated_verify" \
+     --allow-non-empty \
+     --authorized-by-ceo
    ```
 3. **Verificar coherencia:**
    ```bash

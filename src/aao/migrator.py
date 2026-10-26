@@ -12,7 +12,7 @@ import hashlib
 import os
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +40,8 @@ class MigrationStatus:
     pending_count: int
     applied_versions: list[str]
     pending_versions: list[str]
+    verified_versions: list[str] = field(default_factory=list)
+    legacy_unverified_versions: list[str] = field(default_factory=list)
 
 
 def default_migrations_dir() -> Path:
@@ -156,16 +158,23 @@ def check_status(connection: Any, migrations_dir: Path | None = None) -> Migrati
     applied_stems = set(applied.keys())
     applied_versions: list[str] = []
     pending_versions: list[str] = []
+    verified_versions: list[str] = []
+    legacy_unverified_versions: list[str] = []
 
     for migration in available:
         if migration.stem in applied_stems:
             applied_versions.append(migration.stem)
             recorded_hash = applied[migration.stem]["checksum"]
-            if recorded_hash and recorded_hash != migration.sha256:
-                raise MigrationError(
-                    f"Integrity violation in migration {migration.name}: "
-                    f"recorded SHA-256 {recorded_hash} != current {migration.sha256}"
-                )
+            if recorded_hash:
+                if recorded_hash != migration.sha256:
+                    raise MigrationError(
+                        f"Integrity violation in migration {migration.name}: "
+                        f"recorded SHA-256 {recorded_hash} != current {migration.sha256}"
+                    )
+                verified_versions.append(migration.stem)
+            else:
+                # Migration applied prior to checksum tracking; do not falsely claim verified
+                legacy_unverified_versions.append(migration.stem)
         else:
             pending_versions.append(migration.stem)
 
@@ -193,6 +202,8 @@ def check_status(connection: Any, migrations_dir: Path | None = None) -> Migrati
         pending_count=len(pending_versions),
         applied_versions=applied_versions,
         pending_versions=pending_versions,
+        verified_versions=verified_versions,
+        legacy_unverified_versions=legacy_unverified_versions,
     )
 
 
@@ -211,16 +222,6 @@ def apply_migrations(
         ensure_schema_migrations_table(connection)
         status = check_status(connection, migrations_dir)
         if not status.pending_versions:
-            # Backfill checksums for existing applied migrations if missing
-            available = {m.stem: m for m in discover_migrations(migrations_dir)}
-            applied = fetch_applied_migrations(connection)
-            with connection.cursor() as cursor:
-                for stem, data in applied.items():
-                    if data.get("checksum") is None and stem in available:
-                        cursor.execute(
-                            "UPDATE schema_migrations SET checksum = %s WHERE version = %s AND checksum IS NULL",
-                            (available[stem].sha256, stem),
-                        )
             return 0, []
 
         if dry_run:
@@ -265,7 +266,11 @@ def run(
             if action == "status":
                 status = check_status(conn, migrations_dir)
                 print(f"Total available migrations: {status.available_count}")
-                print(f"Applied migrations:         {status.applied_count}")
+                print(
+                    f"Applied migrations:         {status.applied_count} "
+                    f"({len(status.verified_versions)} SHA-256 verified, "
+                    f"{len(status.legacy_unverified_versions)} legacy unverified)"
+                )
                 print(f"Pending migrations:         {status.pending_count}")
                 if status.pending_versions:
                     print("\nPending:")
@@ -281,7 +286,15 @@ def run(
                         file=sys.stderr,
                     )
                     return 1
-                print(f"PASS: All {status.applied_count} migrations applied and verified.")
+                legacy_msg = (
+                    f", {len(status.legacy_unverified_versions)} legacy applied prior to checksum tracking"
+                    if status.legacy_unverified_versions
+                    else ""
+                )
+                print(
+                    f"PASS: All {status.applied_count} migrations applied "
+                    f"({len(status.verified_versions)} verified by recorded SHA-256{legacy_msg})."
+                )
                 return 0
 
             elif action == "apply":

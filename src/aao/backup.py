@@ -86,7 +86,7 @@ def create_backup(
                     "SELECT version FROM schema_migrations ORDER BY applied_at DESC LIMIT 1"
                 ).fetchone()
                 if row:
-                    schema_version = row[0]
+                    schema_version = str(row[0])
         except (RuntimeError, OSError):
             pass
 
@@ -127,6 +127,20 @@ def create_backup(
                     shutil.copy2(item, dest_file)
                     collected_artifacts.append(f"artifacts/{rel}")
                     file_checksums[f"artifacts/{rel}"] = compute_file_sha256(dest_file)
+
+        # Include candidate repository if present
+        candidate_repo = Path(os.environ.get("AAO_CANDIDATE_REPOSITORY") or "/var/lib/aao/candidates.git")
+        if candidate_repo.is_dir():
+            cand_dest = staging_path / "candidates.git"
+            cand_dest.mkdir(parents=True, exist_ok=True)
+            for item in candidate_repo.rglob("*"):
+                if item.is_file():
+                    rel = item.relative_to(candidate_repo)
+                    dest_file = cand_dest / rel
+                    dest_file.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(item, dest_file)
+                    collected_artifacts.append(f"candidates.git/{rel}")
+                    file_checksums[f"candidates.git/{rel}"] = compute_file_sha256(dest_file)
 
         manifest = BackupManifest(
             version="1.0.0",
@@ -199,15 +213,49 @@ def verify_backup(backup_path: Path) -> BackupManifest:
         return manifest
 
 
+def verify_restore_isolated(backup_path: Path, isolated_dsn: str) -> BackupManifest:
+    """Validate that the backup can be successfully restored into an isolated destination.
+
+    Verifies that the target is completely empty, restores the dump, and verifies schema consistency.
+    """
+    verify_backup(backup_path)
+    import psycopg
+
+    with psycopg.connect(isolated_dsn, autocommit=True) as conn, conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT count(*) FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+            """
+        )
+        table_count = cursor.fetchone()[0]
+        if table_count > 0:
+            raise BackupError(
+                f"Isolated verification destination must be empty; contains {table_count} tables"
+            )
+
+    return restore_backup(
+        backup_path,
+        isolated_dsn,
+        allow_non_empty_target=True,
+        authorized_by_ceo=True,
+        pre_verified_isolated=True,
+    )
+
+
 def restore_backup(
     backup_path: Path,
     target_dsn: str,
     target_artifacts_dir: Path | None = None,
+    target_candidates_dir: Path | None = None,
     allow_non_empty_target: bool = False,
+    authorized_by_ceo: bool = False,
+    pre_verified_isolated: bool = False,
 ) -> BackupManifest:
     """Restore a verified backup into the target database and filesystem.
 
-    Fails closed if the target database contains tables unless allow_non_empty_target is True.
+    Fails closed if the target database contains tables unless both allow_non_empty_target
+    and authorized_by_ceo are True, preventing accidental destructive restoration.
     """
     manifest = verify_backup(backup_path)
 
@@ -217,16 +265,23 @@ def restore_backup(
     with psycopg.connect(target_dsn, autocommit=True) as conn, conn.cursor() as cursor:
         cursor.execute(
             """
-                SELECT count(*) FROM information_schema.tables
-                WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-                """
+            SELECT count(*) FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+            """
         )
         table_count = cursor.fetchone()[0]
-        if table_count > 0 and not allow_non_empty_target:
-            raise BackupError(
-                f"Refusing destructive restore: target database contains {table_count} tables. "
-                "Use isolated destination or explicitly specify allow_non_empty_target."
-            )
+        if table_count > 0:
+            if not allow_non_empty_target:
+                raise BackupError(
+                    f"Refusing destructive restore: target database contains {table_count} tables. "
+                    "Restoration over existing databases requires prior isolated verification "
+                    "and explicit CEO authorization (--authorized-by-ceo)."
+                )
+            if not authorized_by_ceo:
+                raise BackupError(
+                    "Destructive restore over active non-empty database requires explicit CEO authorization "
+                    "(--authorized-by-ceo)."
+                )
 
     with tempfile.TemporaryDirectory() as restore_dir:
         restore_path = Path(restore_dir)
@@ -261,27 +316,44 @@ def restore_backup(
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(item, dest)
 
+        # Restore candidate repository if present
+        cand_src = restore_path / "candidates.git"
+        if cand_src.is_dir() and target_candidates_dir:
+            target_candidates_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(cand_src, target_candidates_dir, dirs_exist_ok=True)
+
     return manifest
 
 
-def apply_host_fencing(db: Any) -> list[str]:
-    """Apply host fencing: revoke active leases and disable execution queue tokens.
+def apply_host_fencing(db: Any, host_identifier: str = "current-host") -> list[str]:
+    """Apply host fencing: revoke active leases, worker tokens, and mark tasks failed.
 
     Ensures that migrating between hosts cannot produce dual active workers.
     """
     actions = []
-    # Expire execution queue claims
+    # 1. Invalidate active worker agent credentials
+    db.execute(
+        """
+        UPDATE principal_credentials
+        SET enabled = false
+        WHERE kind = 'AGENT' AND enabled = true
+        """
+    )
+    actions.append("principal_credentials: revoked active agent credentials")
+
+    # 2. Expire execution queue claims and mark failed with fencing note
     db.execute(
         """
         UPDATE execution_queue
         SET status = 'FAILED',
-            last_error = 'Host migration fencing applied: worker lease revoked'
-        WHERE status IN ('CLAIMED', 'STAGED')
+            result_json = '{"error": "Host migration fencing applied: worker lease revoked"}'::jsonb,
+            lease_expires_at = clock_timestamp() - INTERVAL '1 second'
+        WHERE status IN ('RUNNING', 'QUEUED')
         """
     )
     actions.append("execution_queue: revoked in-flight tasks")
 
-    # Expire conversation turn leases
+    # 3. Expire conversation turn leases
     db.execute(
         """
         UPDATE project_conversation_turns
@@ -290,5 +362,21 @@ def apply_host_fencing(db: Any) -> list[str]:
         """
     )
     actions.append("conversation_turns: expired active leases")
+
+    # 4. Record host fencing event
+    from uuid import uuid4
+    event_id = str(uuid4())
+    db.execute(
+        """
+        INSERT INTO events (id, subject_id, kind, details)
+        VALUES (%s, %s, 'host.fenced', %s::jsonb)
+        """,
+        (
+            event_id,
+            event_id,
+            json.dumps({"host": host_identifier, "fenced_at": datetime.now(UTC).isoformat()}),
+        ),
+    )
+    actions.append("events: recorded host.fenced audit event")
 
     return actions

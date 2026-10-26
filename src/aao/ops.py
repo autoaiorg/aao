@@ -273,7 +273,15 @@ def main(argv: list[str] | None = None) -> int:
     p_restore.add_argument("archive", type=Path)
     p_restore.add_argument("--target-dsn", default=os.environ.get("AAO_POSTGRES_URL"))
     p_restore.add_argument("--allow-non-empty", action="store_true",
-                           help="Allow restoring over non-empty database (USE WITH CAUTION)")
+                           help="Allow restoring over non-empty database (requires --authorized-by-ceo)")
+    p_restore.add_argument("--authorized-by-ceo", action="store_true",
+                           help="Explicit CEO authorization for destructive restore over existing database")
+    p_restore.add_argument("--verify-isolated-dsn", default=None,
+                           help="Verify restoration into an isolated destination before touching target")
+
+    # fence-host
+    p_fence = subparsers.add_parser("fence-host", help="Apply host fencing: revoke worker leases, tokens and stop local worker units")
+    p_fence.add_argument("--host-id", default=os.uname().nodename, help="Host identifier to record in fencing audit")
 
     args = parser.parse_args(argv)
 
@@ -294,13 +302,51 @@ def main(argv: list[str] | None = None) -> int:
         print(f"PASS: Backup verified. Revision: {manifest.git_revision}, DB hash: {manifest.database_dump_sha256[:12]}")
         return 0
     elif args.command == "restore":
-        from aao.backup import restore_backup
+        from aao.backup import restore_backup, verify_restore_isolated
         if not args.target_dsn:
             print("ERROR: Target DSN must be provided via --target-dsn or AAO_POSTGRES_URL", file=sys.stderr)
             return 1
-        manifest = restore_backup(args.archive, args.target_dsn, allow_non_empty_target=args.allow_non_empty)
-        print(f"PASS: Restored backup from revision {manifest.git_revision}")
-        return 0
+
+        if args.verify_isolated_dsn:
+            print(f"Executing pre-restoration dry run in isolated destination: {args.verify_isolated_dsn}...")
+            verify_restore_isolated(args.archive, args.verify_isolated_dsn)
+            print("PASS: Pre-restoration dry run in isolated environment completed successfully.")
+
+        try:
+            manifest = restore_backup(
+                args.archive,
+                args.target_dsn,
+                allow_non_empty_target=args.allow_non_empty,
+                authorized_by_ceo=args.authorized_by_ceo,
+                pre_verified_isolated=bool(args.verify_isolated_dsn),
+            )
+            print(f"PASS: Restored backup from revision {manifest.git_revision}")
+            return 0
+        except (RuntimeError, OSError) as exc:
+            print(f"RESTORE FAILED: {exc}", file=sys.stderr)
+            return 1
+
+    elif args.command == "fence-host":
+        from aao.backup import apply_host_fencing
+        print(f"Applying host fencing for '{args.host_id}'...")
+
+        # If systemd is available, stop and mask background workers
+        if shutil.which("systemctl"):
+            for unit in ("aao-worker-self-dev.service", "aao-conversation-recovery.timer", "aao-conversation-recovery.service"):
+                subprocess.run(["systemctl", "stop", unit], capture_output=True, check=False)
+                subprocess.run(["systemctl", "mask", unit], capture_output=True, check=False)
+            print("  [+] Masked and stopped local worker systemd units")
+
+        try:
+            with connect_postgres() as db:
+                actions = apply_host_fencing(db, host_identifier=args.host_id)
+                for a in actions:
+                    print(f"  [+] {a}")
+            print(f"PASS: Host '{args.host_id}' successfully fenced from cluster.")
+            return 0
+        except (RuntimeError, OSError) as exc:
+            print(f"FENCING ERROR: {exc}", file=sys.stderr)
+            return 1
     return 0
 
 

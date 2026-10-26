@@ -7,7 +7,12 @@ die() { echo "FAIL [FRONTEND]: $*" >&2; exit 1; }
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_DIR=$(cd "$SCRIPT_DIR/../.." && pwd)
-APP_DIR="$REPO_DIR/frontend/app"
+
+if [[ -d "/opt/aao/current/frontend/app" ]]; then
+  APP_DIR="/opt/aao/current/frontend/app"
+else
+  APP_DIR="$REPO_DIR/frontend/app"
+fi
 TARGET_DIR="${AAO_STATIC_DIR:-/opt/aao/frontend/dist}"
 
 say "Compiling Control Center from $APP_DIR..."
@@ -15,7 +20,7 @@ say "Compiling Control Center from $APP_DIR..."
 
 cd "$APP_DIR"
 say "Installing npm dependencies cleanly..."
-npm ci --silent
+npm ci --no-audit
 
 say "Running production build (tsc && vite build)..."
 npm run build

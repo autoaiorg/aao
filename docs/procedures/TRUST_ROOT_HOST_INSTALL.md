@@ -84,8 +84,9 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now aao-supervisor-intake.service aao-supervisor-heartbeat.timer aao-supervisor-attribution.timer aao-supervisor-watch.timer
 # 1) Verify FIRST. The status file is what the integrator requires (PASS less than 26 h old).
 set -o pipefail
+mkdir -p "${XDG_STATE_HOME:-$HOME/.local/state}/aao/runs/trust-root-verification"; chmod 700 "${XDG_STATE_HOME:-$HOME/.local/state}/aao/runs/trust-root-verification"; umask 077
 sudo /usr/bin/python3 -I /srv/aao/frozen/aao-supervisor/tree/scripts/verify_trust_root_host.py --expected-revision "$REV" \
-  --status-file /var/lib/aao-trust-verify/status.json | tee ~/aao-trust-root-verify-$(date +%Y%m%dT%H%M%S).log \
+  --status-file /var/lib/aao-trust-verify/status.json | tee "${XDG_STATE_HOME:-$HOME/.local/state}/aao/runs/trust-root-verification/aao-trust-root-verify-$(date -u +%Y%m%dT%H%M%SZ).log" \
   || { echo "Verification failed: the R1 loop is NOT enabled. Paste the log in the bootstrap issue."; return 1 2>/dev/null || exit 1; }
 # 2) Only with RESULT: PASS: daily re-verification and the R1 loop. With RA PENDING in the registry it audits
 #    and stages but never promotes; without a fresh verifier PASS it never promotes either.

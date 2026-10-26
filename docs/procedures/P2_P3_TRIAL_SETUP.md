@@ -77,7 +77,9 @@ git -C "$REPO" show "$REV:deploy/github-apps/aao-github-apps-registry.json" | su
 for m in $(git -C "$REPO" ls-tree --name-only "$REV" docs/proposals/github-apps/ | grep '\.json$'); do
   git -C "$REPO" show "$REV:$m" | sudo install -o root -g root -m 0644 /dev/stdin "/opt/aao-p2/github-apps/$(basename "$m")"
 done
-out=~/aao-p2-app-auth-$(date +%Y%m%dT%H%M%S).jsonl
+out=${XDG_DATA_HOME:-$HOME/.local/share}/aao/evidence/trials/app-auth/$(date -u +%Y/%m/%dT%H%M%SZ).jsonl
+umask 077
+mkdir -p "$(dirname "$out")"; chmod 700 "$(dirname "$out")"
 # Tercera columna: solo implementadores. Sustituye cada <forks-...> por TODOS los repos en los que está
 # instalada esa App, separados por comas: su fork de producción (padre autoaiorg/aao) y, si ya existe,
 # su fork de ensayo del paso 3 (padre autoaiorg/aao-governance-trial). Sus repos accesibles deben

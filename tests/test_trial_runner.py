@@ -244,7 +244,7 @@ def _capture_check(tmp_path, record, rc, announced="same"):
     code = RUNNER.read_text().split("capture_evidence(){", 1)[1].split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
     path = tmp_path / "evidence.json"
     path.write_text(record if isinstance(record, str) else json.dumps(record))
-    source = "/home/r/aao-trial-evidence/P3-03-x.json"
+    source = "/home/r/.local/share/aao/evidence/trials/P3-03-x.json"
     out = subprocess.run(["python3", "-I", "-", str(path), "P3-03", "aao-integrator", "RUN", "REV", rc,
                           source if announced == "same" else announced, source],
                          input=code, capture_output=True, text=True, check=True).stdout
@@ -258,7 +258,7 @@ def test_capture_accepts_only_evidence_consistent_with_the_root_observed_invocat
     for bad, rc, announced in ((good, "1", "same"),                                   # forged PASS, process exited FAIL
                                ({**good, "harness_revision": "OTHER"}, "0", "same"),  # stale harness
                                ({**good, "run_id": "OLD"}, "0", "same"),              # another run
-                               (good, "0", "/home/r/aao-trial-evidence/other.json"),  # not the announced file
+                               (good, "0", "/home/r/.local/share/aao/evidence/trials/other.json"),  # not the announced file
                                ("not json", "0", "same")):
         verdict, record = _capture_check(tmp_path, bad, rc, announced)
         assert verdict == "inconsistent" and record["status"] == "FAIL"

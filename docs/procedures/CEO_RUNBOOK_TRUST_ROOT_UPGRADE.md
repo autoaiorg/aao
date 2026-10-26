@@ -68,7 +68,10 @@ $B --apply --trust-root-upgrade --loop-repo autoaiorg/aao-governance-trial --aud
 ## Paso 3. Ensayo P2/P3 (de 30 a 60 min; no lo interrumpas)
 
 ```bash
-sudo /root/aao-src/scripts/trial/run_trial.sh --rev $REV 2>&1 | tee ~/aao-trial-run-$REV.log
+umask 077
+mkdir -p "${XDG_STATE_HOME:-$HOME/.local/state}/aao/runs/trials"
+chmod 700 "${XDG_STATE_HOME:-$HOME/.local/state}/aao/runs/trials"
+sudo /root/aao-src/scripts/trial/run_trial.sh --rev $REV 2>&1 | tee "${XDG_STATE_HOME:-$HOME/.local/state}/aao/runs/trials/aao-trial-run-$REV.log"
 ```
 
 **Qué hace:** opera solo sobre el repositorio desechable `autoaiorg/aao-governance-trial` y sus forks, y nunca sobre `autoaiorg/aao`. Comprueba los rulesets al empezar y al terminar.
@@ -85,7 +88,9 @@ Al terminar, deja la evidencia legible para el PM:
 
 ```bash
 TS=$(sudo ls -t /var/log/aao-trial | head -1)
-sudo tar -C /var/log/aao-trial -czf ~/aao-trial-$TS.tgz "$TS" && sudo chown "$USER": ~/aao-trial-$TS.tgz && sha256sum ~/aao-trial-$TS.tgz
+mkdir -p -m 700 "${XDG_DATA_HOME:-$HOME/.local/share}/aao/evidence/trials/archives"
+chmod 700 "${XDG_DATA_HOME:-$HOME/.local/share}/aao/evidence/trials/archives"
+sudo tar -C /var/log/aao-trial -czf "${XDG_DATA_HOME:-$HOME/.local/share}/aao/evidence/trials/archives/aao-trial-$TS.tgz" "$TS" && sudo chown "$USER": "${XDG_DATA_HOME:-$HOME/.local/share}/aao/evidence/trials/archives/aao-trial-$TS.tgz" && chmod 600 "${XDG_DATA_HOME:-$HOME/.local/share}/aao/evidence/trials/archives/aao-trial-$TS.tgz" && sha256sum "${XDG_DATA_HOME:-$HOME/.local/share}/aao/evidence/trials/archives/aao-trial-$TS.tgz"
 ```
 
 ## Después del procedimiento

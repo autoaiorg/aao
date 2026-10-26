@@ -19,6 +19,8 @@ set -euo pipefail
 [[ $EUID != 0 ]] || { echo 'run as the CEO, not root (sudo is used per step)' >&2; exit 2; }
 SESSION_STATE_HOME=${XDG_STATE_HOME:-$HOME/.local/state}
 [[ $SESSION_STATE_HOME == /* ]] || { echo 'XDG_STATE_HOME must be an absolute path' >&2; exit 2; }
+SESSION_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
+[[ $SESSION_DATA_HOME == /* ]] || { echo 'XDG_DATA_HOME must be an absolute path' >&2; exit 2; }
 SESSION_ROOT=${AAO_SESSION_ROOT:-$SESSION_STATE_HOME/aao/sessions}
 [[ $SESSION_ROOT == /* ]] || { echo 'AAO_SESSION_ROOT must be an absolute path' >&2; exit 2; }
 SESSION_MONTH=$(date -u +%Y/%m)
@@ -26,6 +28,8 @@ SESSION_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 (umask 077; mkdir -p -- "$SESSION_ROOT/$SESSION_MONTH")
 chmod 700 -- "$SESSION_ROOT"
 OUT=$(umask 077; mktemp -d "$SESSION_ROOT/$SESSION_MONTH/$SESSION_STAMP-XXXXXXXX")
+AUDIT_EVIDENCE_ROOT=$SESSION_DATA_HOME/aao/evidence/audits
+TRIAL_EVIDENCE_ROOT=$SESSION_DATA_HOME/aao/evidence/trials
 # Never read code from a working copy: its .git is agent-writable (hooks, config, replace objects). Every file this
 # session installs or runs comes from a private clean clone of the public repository, by exact SHA.
 SRC=$OUT/src
@@ -49,9 +53,12 @@ audit(){ # base head prompt [tool]
   case $tool in antigravity) ;; codex) runner=run_codex_audit.sh;; *) die "unknown auditor tool $tool";; esac
   say "$tool audit $3 of $2 (10-30 min, silent: do not interrupt)"
   sudo -u aao-auditor-alt -H "/opt/aao-audit/$runner" "$1" "$2" "$3" 2>&1 | tee -a "$OUT/session.log" || die "audit $3 failed"
-  sudo cat "/home/aao-auditor-alt/aao-audits/$2$suffix/report.md" > "$HOME/aao-agy-audit-$2$suffix.md"
-  sudo cat "/home/aao-auditor-alt/aao-audits/$2$suffix/attestation.json" > "$HOME/aao-agy-attest-$2$suffix.json"
-  python3 -I - "$HOME/aao-agy-attest-$2$suffix.json" "$HOME/aao-agy-audit-$2$suffix.md" "$2" <<'PY' | tee -a "$OUT/session.log"
+  local evidence_dir="$AUDIT_EVIDENCE_ROOT/$2$suffix"
+  (umask 077; mkdir -p -- "$evidence_dir"); chmod 700 -- "$evidence_dir"
+  sudo cat "/home/aao-auditor-alt/aao-audits/$2$suffix/report.md" > "$evidence_dir/report.md"
+  sudo cat "/home/aao-auditor-alt/aao-audits/$2$suffix/attestation.json" > "$evidence_dir/attestation.json"
+  chmod 600 -- "$evidence_dir/report.md" "$evidence_dir/attestation.json"
+  python3 -I - "$evidence_dir/attestation.json" "$evidence_dir/report.md" "$2" <<'PY' | tee -a "$OUT/session.log"
 import hashlib, json, re, sys
 att, report, rev = json.load(open(sys.argv[1])), open(sys.argv[2], "rb").read(), sys.argv[3]
 assert att["head"] == att["checked_out_head"] == rev and att["os_user"] == "aao-auditor-alt", "attestation is not for this REV"
@@ -104,8 +111,10 @@ case ${1:-} in
     say "4/5 full P2/P3 trial (30-60 min; A-13 keeps running ~62 min detached)"
     set +e; sudo /root/aao-src/scripts/trial/run_trial.sh --rev "$REV" 2>&1 | tee "$OUT/trial.log"; trial_rc=${PIPESTATUS[0]}; set -e
     TS=$(sudo ls -t /var/log/aao-trial | head -1)
-    sudo tar -C /var/log/aao-trial -czf "$OUT/aao-trial-$TS.tgz" "$TS" && sudo chown "$USER": "$OUT/aao-trial-$TS.tgz"
-    echo "trial exit=$trial_rc run_id=$TS (FAIL lines are results for the PM to analyse, not a reason to stop)" | tee -a "$OUT/session.log"
+    (umask 077; mkdir -p -- "$TRIAL_EVIDENCE_ROOT/archives/$(date -u +%Y/%m)")
+    sudo tar -C /var/log/aao-trial -czf "$TRIAL_EVIDENCE_ROOT/archives/$(date -u +%Y/%m)/aao-trial-$TS.tgz" "$TS" && sudo chown "$USER": "$TRIAL_EVIDENCE_ROOT/archives/$(date -u +%Y/%m)/aao-trial-$TS.tgz"
+    chmod 600 "$TRIAL_EVIDENCE_ROOT/archives/$(date -u +%Y/%m)/aao-trial-$TS.tgz"
+    echo "trial exit=$trial_rc run_id=$TS (FAIL lines are results for the PM to analyse, not a reason to stop); archive=$TRIAL_EVIDENCE_ROOT/archives/$(date -u +%Y/%m)/aao-trial-$TS.tgz" | tee -a "$OUT/session.log"
     ((trial_rc != 99)) || die "the trial could not restore ruleset A (exit 99): fix that before anything else"
     say "5/5 canonical fork-PR approval policy -> all_external_contributors (CEO-DEC-P2P3 §4)"
     g -C "$SRC" show "$REV:scripts/governance/canonical_protection.py" > "$OUT/canonical_protection.py"

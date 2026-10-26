@@ -838,6 +838,7 @@ def test_redirect_handler_never_forwards_credentials():
 
 def test_evidence_mode_and_redaction(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     monkeypatch.setenv("AAO_TRIAL_RUN_ID", "trial-1")
     monkeypatch.setenv("AAO_TRIAL_HARNESS_REV", "a" * 40)
     monkeypatch.setenv("AAO_TRIAL_CANDIDATE_SHA", "b" * 40)
@@ -845,12 +846,20 @@ def test_evidence_mode_and_redaction(tmp_path, monkeypatch):
     dest = trial.write_evidence("A-01", "PASS", "ok", "org/trial", "aao-impl-codex", 17,
                                 [{"request": {"token": "hide"}, "response": {"ok": True}}])
     assert dest.stat().st_mode & 0o777 == 0o600
+    assert dest.parent == tmp_path / ".local/share/aao/evidence/trials"
     payload = json.loads(dest.read_text())
     assert "hide" not in dest.read_text()
     assert payload["run_id"] == "trial-1"
     assert payload["harness_revision"] == "a" * 40
     assert payload["candidate_sha"] == "b" * 40
     assert "c" * 40 not in payload["shas"]
+
+
+def test_trial_evidence_rejects_relative_xdg_data_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("XDG_DATA_HOME", "relative/data")
+    with pytest.raises(ValueError, match="XDG_DATA_HOME must be an absolute path"):
+        trial.write_evidence("A-01", "PASS", "ok", "org/trial", "aao-impl-codex", 17, [])
 
 
 def test_explicit_audit_publication_is_auditor_only_and_trial_only(monkeypatch):

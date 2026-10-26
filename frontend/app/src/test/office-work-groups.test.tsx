@@ -62,6 +62,19 @@ describe('office work group consolidation', () => {
     expect(await screen.findByText(/Prerequisito 99999999 · IN_REVIEW/)).toBeInTheDocument();
   });
 
+  it('shows the latest persisted dispatch block for a child', async () => {
+    const blockedGroup = { ...group, children: [{
+      ...group.children[0],
+      dispatch_block: {
+        principal_id: 'agent-a',
+        reason: 'A capability evaluation is required before dispatch',
+        created_at: '2026-10-26T12:55:00Z',
+      },
+    }] };
+    setup([blockedGroup]);
+    expect(await screen.findByText(/Despacho bloqueado por agent-a: A capability evaluation is required before dispatch/)).toBeInTheDocument();
+  });
+
   it('refreshes the canonical group projection while the office view remains open', async () => {
     vi.useFakeTimers();
     try {

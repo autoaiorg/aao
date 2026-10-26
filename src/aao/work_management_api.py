@@ -1768,6 +1768,21 @@ def _work_group_source_snapshot(db, project_id: str, parent_work_id: str, *, loc
             "id": str(review_id), "decision": decision,
             "candidate_sha": candidate_sha, "evidence": evidence,
         })
+    dispatch_events = db.execute(
+        "SELECT subject_id,kind,details,created_at FROM events WHERE "
+        "(subject_id=ANY(%s) AND kind='work.dispatch_blocked') OR "
+        "(kind='execution.staged' AND details->>'work_id'=ANY(%s)) "
+        "ORDER BY created_at,id",
+        (child_ids, [str(work_id) for work_id in child_ids]),
+    ).fetchall()
+    latest_dispatch_by_work: dict[str, dict] = {}
+    for subject_id, kind, details, occurred_at in dispatch_events:
+        details = details if isinstance(details, dict) else {}
+        work_id = str(subject_id) if kind == "work.dispatch_blocked" else str(details.get("work_id", ""))
+        latest_dispatch_by_work[work_id] = {
+            "kind": kind, "details": details, "occurred_at": occurred_at,
+            "execution_id": str(subject_id) if kind == "execution.staged" else None,
+        }
     snapshot_children = []
     for work_id, status, evidence, assigned_principal_id, required_competencies in children:
         child = {
@@ -1780,6 +1795,13 @@ def _work_group_source_snapshot(db, project_id: str, parent_work_id: str, *, loc
         # Keep legacy snapshots byte-for-byte stable when the new metadata is absent.
         if required_competencies:
             child["required_competencies"] = required_competencies
+        dispatch = latest_dispatch_by_work.get(str(work_id))
+        if dispatch and dispatch["kind"] == "work.dispatch_blocked":
+            child["dispatch_block"] = {
+                "principal_id": dispatch["details"].get("principal_id"),
+                "reason": dispatch["details"].get("reason", "Dispatch blocked; inspect audit event"),
+                "created_at": dispatch["occurred_at"].isoformat(),
+            }
         snapshot_children.append(child)
     snapshot = {"children": snapshot_children}
     canonical = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str)

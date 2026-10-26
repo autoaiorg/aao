@@ -213,7 +213,7 @@ Los perfiles/unidades persistidos y la edición CEO ya están construidos (#134/
 - **No forma parte aún:** planificación automática, identidad de agente ficticia/efímera, coordinación paralela automática ni síntesis pretendida como resultado consolidado. Falta definir la asignación autorizada por hijo y la consolidación durable enlazada a ejecuciones/evidencia; la UI solo refleja estado canónico.
 - **Aceptación del primer incremento:** CEO puede confirmar un desglose de conversación en una transacción; padre e hijos tienen IDs persistidos en `INBOX`; dependencias intra-grupo sin ciclos; reintentos no duplican; board aplica scope; sin grants ni ejecuciones al crear; reinicio y relectura conservan el grafo. CI PR y post-merge verdes.
 
-### F3 — admisión consciente de dependencias (integrada; asignación y consolidación pendientes)
+### F3 — admisión consciente de dependencias (integrada; asignación integrada; consolidación pendiente)
 
 - **Problema verificado:** aunque el DAG se persistía, `/v1/work/{id}/admit` enviaba `dependencies_satisfied=True` incondicionalmente; un hijo podía pasar a `READY` antes de completar sus prerrequisitos.
 - **Cambio en `fix/f3-dependency-aware-admission`:** la admisión lee los estados de prerrequisitos del mismo proyecto y toma bloqueos `FOR SHARE`; solo `DONE` satisface la dependencia. Un hijo bloqueado se conserva en `INBOX`; un hermano sin dependencias puede admitirse independientemente. El padre del grupo se rechaza como contenedor, no es trabajo ejecutable. No hay grants heredados ni nueva ruta de ejecución.
@@ -223,12 +223,12 @@ Los perfiles/unidades persistidos y la edición CEO ya están construidos (#134/
 - No se ha inspeccionado ni verificado en ejecución un entorno PostgreSQL local; el diferencial se basa en rutas, código y CI. No se ejercitaron credenciales ni llamadas a modelo de Agents Office.
 - **Siguiente owner:** PM/backend concreta contrato mínimo para asignar hijos a identidades reales con permisos canónicos y enlazar resultados; frontend consume solo ese contrato. CEO interviene solo si aparece una decisión estratégica o riesgo reservado.
 
-### F3 — asignación CEO a identidad autorizada (construcción incremental)
+### F3 — asignación CEO a identidad autorizada (integrada)
 
-- **Cambio propuesto en esta rama `feat/f3-authoritative-assignment`:** migración `022_work_item_assignments.sql` persiste una asignación explícita por hijo. `PUT /v1/work/{id}/assignment` es CEO-only, acepta solo identidades AGENT habilitadas con grants preexistentes `work.admit` y `execution.claim`, registra evento y declara `grants_created: false`. No crea autoridad ni permite asignar padres, trabajos revisados/finalizados o ejecuciones activas/inciertas.
+- **Cambio integrado en PR #167, squash SHA `a5771d2ae8334191f800c00210883fff41c0d1d2`:** migración `022_work_item_assignments.sql` persiste una asignación explícita por hijo. `PUT /v1/work/{id}/assignment` es CEO-only, acepta solo identidades AGENT habilitadas con grants preexistentes `work.admit` y `execution.claim`, registra evento y declara `grants_created: false`. No crea autoridad ni permite asignar padres, trabajos revisados/finalizados o ejecuciones activas/inciertas.
 - **Ejecución:** admisión, progreso, staging y claim filtran los hijos por principal asignado; el board incluye `assigned_principal_id`. La asignación no sustituye los checks de grant del motor ni la autenticación de ejecución. Se conserva la restricción de no re-asignar durante una ejecución activa/incierta.
 - **Pruebas añadidas:** integración PostgreSQL cubre escritura CEO, prohibición a AGENT, proyección, grants inalterados, denegación de otro agente, claim del asignado y fencing de finalización/reasignación.
-- **Evidencia local:** `compileall`, Ruff y `git diff --check` pasan. La prueba focalizada local reportó 20 skips porque no hay configuración de PostgreSQL desechable; por tanto, esto no acredita la integración hasta que CI la ejecute.
+- **Evidencia:** CI de PR #167 run `40248236640` aplicó la migración y pasó los jobs `test` y `frontend`; suite PostgreSQL `658 passed, 1 skipped`; Ruff, TypeScript y Vitest pasaron. La ejecución local sin base desechable reportó skips y no se cuenta como evidencia de integración.
 - **Límites pendientes:** aún no hay control UI de asignación visible en la oficina/Control Center; tampoco consolidación durable del padre enlazada a resultados/evidencia. No se dibujan equipos ejecutores ni se sintetizan resultados.
 
 

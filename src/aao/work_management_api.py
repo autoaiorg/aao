@@ -487,6 +487,12 @@ class AgentRunRequest(BaseModel):
     base_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
 
 
+class AgentDispatchRequest(BaseModel):
+    project_id: str
+    principal_id: str = Field(min_length=1, max_length=128)
+    base_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+
+
 class ExternalResolutionRequest(BaseModel):
     reason: str = Field(min_length=10, max_length=2000)
     pr_number: int = Field(ge=1)
@@ -3683,3 +3689,100 @@ def stage_agent_run(work_id: str, payload: AgentRunRequest, principal: str = Dep
         db.execute("INSERT INTO execution_queue(id,work_id,project_id,status,input_json) VALUES (%s,%s,%s,'QUEUED',%s::jsonb)", (execution_id, work_id, project_id, json.dumps(job)))
         audit(db, execution_id, "execution.staged", {"work_id": work_id, "capability_id": payload.capability_id, "version": payload.version, "base_sha": payload.base_sha, "cost_estimate_usd": estimate})
     return {"execution_id": execution_id, "status": "QUEUED", "capability_id": payload.capability_id, "version": payload.version}
+
+
+@app.post("/v1/agent/dispatch-next", status_code=202)
+def dispatch_next_agent_work(
+    payload: AgentDispatchRequest,
+    principal: str = Depends(require_worker),
+):
+    """Admit and stage one already assigned/evaluated child task for this agent.
+
+    This is a convenience orchestration over the existing authorization gates,
+    not a grant or a new scheduler. It cannot assign work, create capability
+    evaluations, choose a provider, or bypass the ordinary admission/staging
+    checks. A blocked task remains in its canonical status for a PM/CEO action.
+    """
+    if str(principal) != payload.principal_id:
+        raise HTTPException(403, "Requested worker identity does not match the authenticated credential")
+    with tx() as db:
+        require_grant(db, principal, payload.project_id, "work.admit")
+        require_grant(db, principal, payload.project_id, "execution.claim")
+        rows = db.execute(
+            "SELECT w.id,w.status,e.details->>'recommendation',"
+            "e.details->>'capability_id',e.details->>'version',"
+            "NOT EXISTS (SELECT 1 FROM work_item_dependencies d "
+            "JOIN work_items prerequisite ON prerequisite.project_id=d.project_id "
+            "AND prerequisite.id=d.depends_on_work_id WHERE d.project_id=w.project_id "
+            "AND d.work_id=w.id AND prerequisite.status<>'DONE'),"
+            "(SELECT q.status FROM execution_queue q WHERE q.work_id=w.id "
+            "AND q.input_json->>'type'='aao.agent-patch.v1' "
+            "ORDER BY q.created_at DESC,q.id DESC LIMIT 1),"
+            "EXISTS (SELECT 1 FROM execution_queue completed WHERE completed.work_id=w.id "
+            "AND completed.input_json->>'type'='aao.agent-patch.v1' "
+            "AND completed.status='SUCCEEDED') "
+            "FROM work_items w "
+            "JOIN work_item_assignments a ON a.project_id=w.project_id AND a.work_id=w.id "
+            "LEFT JOIN LATERAL (SELECT details FROM events "
+            "  WHERE subject_id=w.id AND kind='capability.evaluated' "
+            "  ORDER BY created_at DESC,id DESC LIMIT 1) e ON true "
+            "WHERE w.project_id=%s AND a.principal_id=%s AND w.parent_work_id IS NOT NULL "
+            "AND w.status IN ('INBOX','READY','IN_PROGRESS') "
+            "ORDER BY CASE w.status WHEN 'IN_PROGRESS' THEN 0 WHEN 'READY' THEN 1 ELSE 2 END, w.id "
+            "FOR UPDATE OF w SKIP LOCKED",
+            (payload.project_id, str(principal)),
+        ).fetchall()
+        if not rows:
+            return {"status": "IDLE", "execution_id": None}
+        selected = next((row for row in rows if row[5] and not row[7]
+                         and row[6] not in {"SUCCEEDED", "UNCERTAIN"}
+                         and row[2] in {"reuse", "adapt"} and row[3] and row[4]), None)
+        if selected is None:
+            first = rows[0]
+            if first[7] or first[6] == "SUCCEEDED":
+                reason = "A successful execution is awaiting downstream review or reconciliation"
+            elif first[6] == "UNCERTAIN":
+                reason = "An uncertain execution requires reconciliation before retry"
+            elif not first[5]:
+                reason = "Dependencies must be DONE before dispatch"
+            else:
+                reason = "A capability evaluation selecting a registered version is required"
+            return {"status": "BLOCKED", "execution_id": None,
+                    "work_id": str(first[0]), "reason": reason}
+        (
+            work_id,
+            status,
+            _recommendation,
+            capability_id,
+            version,
+            _dependencies_complete,
+            _latest_execution_status,
+            _has_successful_execution,
+        ) = selected
+        work_id = str(work_id)
+
+    # Reuse the same identity-scoped operations as an interactive worker. The
+    # admission endpoint rechecks project, mandate, assignment and dependencies;
+    # staging rechecks capability registration, provider activation, budget,
+    # retry limit and execution grants in its own transaction.
+    if status == "INBOX":
+        try:
+            admit(work_id, principal)
+        except HTTPException as exc:
+            if exc.status_code == 409:
+                return {"status": "BLOCKED", "execution_id": None,
+                        "work_id": work_id, "reason": str(exc.detail)}
+            raise
+    try:
+        staged = stage_agent_run(
+            work_id,
+            AgentRunRequest(capability_id=capability_id, version=version,
+                            base_sha=payload.base_sha),
+            principal,
+        )
+    except HTTPException as exc:
+        if exc.status_code == 409:
+            return {"status": "BLOCKED", "execution_id": None,
+                    "work_id": work_id, "reason": str(exc.detail)}
+        raise
+    return {**staged, "work_id": work_id}

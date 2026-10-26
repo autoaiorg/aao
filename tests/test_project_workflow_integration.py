@@ -8,7 +8,23 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
+
+
+def test_agent_dispatch_rejects_a_declared_identity_that_disagrees_with_credential():
+    from aao.work_management_api import (
+        AgentDispatchRequest,
+        AuthenticatedPrincipal,
+        dispatch_next_agent_work,
+    )
+
+    authenticated = AuthenticatedPrincipal("actual-agent", "digest", "AGENT")
+    request = AgentDispatchRequest(project_id="project", principal_id="other-agent", base_sha="a" * 40)
+    with pytest.raises(HTTPException) as error:
+        dispatch_next_agent_work(request, authenticated)
+
+    assert error.value.status_code == 403
 
 
 @pytest.mark.skipif(
@@ -152,6 +168,119 @@ def test_work_group_admission_waits_for_prerequisites_and_rejects_parent(monkeyp
         admitted = client.post(f"/v1/work/{ids['Dependent']}/admit", headers=worker)
         assert admitted.status_code == 200, admitted.text
         assert admitted.json()["status"] == "READY"
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or
+    os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="PostgreSQL integration requires an explicitly disposable test database",
+)
+def test_agent_dispatches_only_its_assigned_and_pre_evaluated_work(monkeypatch):
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    monkeypatch.setenv("AAO_CEO_TOKEN", "dispatch-ceo")
+    monkeypatch.setenv("AAO_AGENT_QUEUE_ENABLED", "true")
+    ceo = {"X-CEO-Token": "dispatch-ceo"}
+    with TestClient(app) as client:
+        agent_ids = ["dispatch-agent-" + str(uuid4()), "unassigned-agent-" + str(uuid4())]
+        workers = []
+        for principal_id in agent_ids:
+            token = client.post("/v1/principals/credentials", headers=ceo, json={
+                "principal_id": principal_id, "kind": "AGENT",
+            }).json()["token"]
+            workers.append({"X-Agent-Token": token})
+
+        mandate = client.post("/v1/mandates", headers=ceo, json={
+            "title": "Dispatch " + str(uuid4()), "objective": "Dispatch only existing authorized work",
+        }).json()["id"]
+        assert client.post(f"/v1/mandates/{mandate}/confirm", headers=ceo).status_code == 200
+        project = client.post("/v1/projects", headers=ceo, json={
+            "name": "Dispatch test", "mandate_id": mandate,
+        }).json()["id"]
+        for principal_id in agent_ids:
+            for capability in ("work.create", "work.admit", "execution.claim"):
+                assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
+                    "principal_id": principal_id, "capability": capability,
+                }).status_code == 201
+
+        conversation = client.post(f"/v1/projects/{project}/conversations", headers=ceo, json={
+            "title": "Dispatch plan",
+        }).json()["id"]
+        group_response = client.post(
+            f"/v1/projects/{project}/conversations/{conversation}/work-groups",
+            headers=ceo,
+            json={
+                "idempotency_key": str(uuid4()), "title": "Confirmed plan", "description": "A bounded task",
+                "acceptance_criteria": ["The task has an auditable execution"],
+                "tasks": [{"key": "task", "title": "Assigned task", "acceptance_criteria": ["Execute once"]}],
+            },
+        )
+        assert group_response.status_code == 201, group_response.text
+        work_id = group_response.json()["tasks"][0]["id"]
+        assert client.put(f"/v1/work/{work_id}/assignment", headers=ceo, json={
+            "principal_id": agent_ids[0],
+        }).status_code == 200
+        base_sha = "a" * 40
+
+        # The dispatcher neither fabricates a capability evaluation nor stages
+        # work in its absence. Another authorized but unassigned identity sees idle.
+        blocked = client.post("/v1/agent/dispatch-next", headers=workers[0], json={
+            "project_id": project, "principal_id": agent_ids[0], "base_sha": base_sha,
+        })
+        assert blocked.status_code == 202, blocked.text
+        assert blocked.json()["status"] == "BLOCKED"
+        assert blocked.json()["work_id"] == work_id
+        assert client.post("/v1/agent/dispatch-next", headers=workers[1], json={
+            "project_id": project, "principal_id": agent_ids[1], "base_sha": base_sha,
+        }).json()["status"] == "IDLE"
+        mismatch = client.post("/v1/agent/dispatch-next", headers=workers[0], json={
+            "project_id": project, "principal_id": agent_ids[1], "base_sha": base_sha,
+        })
+        assert mismatch.status_code == 403
+
+        capability = {
+            "capability_id": "aao.agent-runner", "version": "1.0.0", "capability_type": "agent",
+            "provenance": {"kind": "repository"},
+            "contract": {
+                "purpose": "Turn a task into a patch proposal", "entrypoint": "aao.agent_runner:patch",
+                "inputs": ["task", "base_sha"], "outputs": ["patch proposal"], "platform": "Linux",
+                "authority_boundary": "edits only a disposable clone; proposes, never applies or merges",
+                "compatible_roles": ["implementer"],
+                "model_profile": {"backend": "fixture", "provider": "fixture", "model": None,
+                                  "seats": ["patch.tests"], "cost_per_attempt_usd": 0.5},
+            },
+            "required_permissions": ["execution.claim", "code.propose"], "risks": ["agent edits a disposable clone"],
+            "dependencies": [], "tests": ["tests/test_agent_runner.py"], "compatibility": {},
+            "evidence": ["repository capability contract"],
+        }
+        registered = client.post(f"/v1/projects/{project}/capabilities", headers=workers[0], json=capability)
+        assert registered.status_code == 201, registered.text
+        evaluation = client.post(f"/v1/projects/{project}/capability-evaluations", headers=workers[0], json={
+            "task_id": work_id,
+            "options": [{"choice": choice, "fit": fit, "security": fit, "cost": fit,
+                         "time": fit, "tokens": fit, "maintenance": fit}
+                        for choice, fit in (("reuse", 5), ("adapt", 3), ("build", 1))],
+            "rationale": "Use the registered local runner for this bounded task.",
+            "evidence": ["repository capability contract"],
+            "capability_id": "aao.agent-runner", "version": "1.0.0",
+        })
+        assert evaluation.status_code == 201, evaluation.text
+
+        staged = client.post("/v1/agent/dispatch-next", headers=workers[0], json={
+            "project_id": project, "principal_id": agent_ids[0], "base_sha": base_sha,
+        })
+        assert staged.status_code == 202, staged.text
+        assert staged.json()["status"] == "QUEUED"
+        assert staged.json()["work_id"] == work_id
+        assert client.post("/v1/agent/dispatch-next", headers=workers[0], json={
+            "project_id": project, "principal_id": agent_ids[0], "base_sha": base_sha,
+        }).json()["execution_id"] == staged.json()["execution_id"]
+
+        board = client.get(f"/v1/projects/{project}/board", headers=ceo).json()
+        item = next(row for row in board if row["id"] == work_id)
+        assert item["status"] == "READY"
+        assert len(item["executions"]) == 1
 
 
 @pytest.mark.skipif(

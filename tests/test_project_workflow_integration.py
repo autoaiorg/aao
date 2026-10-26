@@ -2261,7 +2261,9 @@ def test_capability_feedback_is_persisted_as_non_applied_ceo_proposal(monkeypatc
         capability = client.post(f"/v1/projects/{project}/capabilities", headers=worker, json={
             "capability_id": "reviewed.skill", "version": "1.0.0",
             "capability_type": "agent_skill", "provenance": {"kind": "test"},
-            "contract": {"purpose": "Test capability", "inputs": ["request"], "outputs": ["response"]},
+            "contract": {"purpose": "Test capability", "compatible_roles": ["agent"],
+                         "inputs": ["request"], "outputs": ["response"],
+                         "usage_limits": ["project scope"]},
             "tests": ["test-reference"], "evidence": ["source-reference"],
         })
         assert capability.status_code == 201, capability.text

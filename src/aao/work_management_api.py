@@ -3681,8 +3681,21 @@ def dispatch_next_agent_work(
                 reason = "Dependencies must be DONE before dispatch"
             else:
                 reason = "A capability evaluation selecting a registered version is required"
+            work_id = str(first[0])
+            latest_block = db.execute(
+                "SELECT details FROM events WHERE subject_id=%s AND kind='work.dispatch_blocked' "
+                "ORDER BY created_at DESC,id DESC LIMIT 1",
+                (work_id,),
+            ).fetchone()
+            last_details = latest_block[0] if latest_block and isinstance(latest_block[0], dict) else {}
+            if (last_details.get("principal_id") != str(principal)
+                    or last_details.get("reason") != reason):
+                audit(db, work_id, "work.dispatch_blocked", {
+                    "project_id": payload.project_id, "work_id": work_id,
+                    "principal_id": str(principal), "reason": reason,
+                })
             return {"status": "BLOCKED", "execution_id": None,
-                    "work_id": str(first[0]), "reason": reason}
+                    "work_id": work_id, "reason": reason}
         (
             work_id,
             status,

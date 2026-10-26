@@ -15,7 +15,7 @@
 import type { AaoReadPort } from '../../ports/AaoReadPort';
 import type { AaoOrganizationCommandPort, OrganizationProfileCommand, OrganizationUnitCommand } from '../../ports/AaoOrganizationCommandPort';
 import type { AaoWorkCommandPort, CEOWorkRequest, CreatedWorkRequest } from '../../ports/AaoWorkCommandPort';
-import type { CapabilityFeedbackInput, CapabilityFeedbackProposal } from '../../ports/AaoCapabilityFeedbackPort';
+import type { CapabilityFeedbackInput, CapabilityFeedbackProposal, CapabilityFeedbackVersionInput } from '../../ports/AaoCapabilityFeedbackPort';
 import type { AaoConversationPort, AssignableAgent, ConversationWorkGroupInput, ConversationWorkGroupProposal, ConversationWorkGroupResult, ConversationWorkRequestInput, ConversationWorkRequestResult, ProjectConversation, ProjectConversationMessage, ProjectWorkGroup, WorkGroupConsolidationResult } from '../../ports/AaoConversationPort';
 import type {
   PrincipalSummary,
@@ -665,7 +665,8 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
       id: z.string().uuid(), capability_id: z.string(), version: z.string(), work_id: z.string().uuid().nullable(),
       correction: z.string(), evidence: z.array(z.string()), status: z.enum(['proposed', 'accepted', 'rejected']),
       created_by: z.string(), created_at: z.string(), reviewed_by: z.string().nullable(),
-      reviewed_at: z.string().nullable(), applied: z.literal(false),
+      reviewed_at: z.string().nullable(), applied: z.boolean(),
+      applied_capability_version: z.string().nullable(), applied_by: z.string().nullable(), applied_at: z.string().nullable(),
     })));
   }
 
@@ -681,8 +682,16 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
     if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede revisar propuestas de corrección.' };
     return this.request(`/v1/projects/${encodeURIComponent(projectId)}/capability-feedback/${encodeURIComponent(proposalId)}/review`, z.object({
       id: z.string().uuid(), status: z.enum(['accepted', 'rejected']), reviewed_by: z.string(),
-      reviewed_at: z.string(), applied: z.literal(false),
+      reviewed_at: z.string(), applied: z.boolean(),
     }), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) });
+  }
+
+  async registerFeedbackCapabilityVersion(projectId: string, proposalId: string, input: CapabilityFeedbackVersionInput) {
+    if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede crear una versión desde una corrección aceptada.' } as const;
+    return this.request(`/v1/projects/${encodeURIComponent(projectId)}/capability-feedback/${encodeURIComponent(proposalId)}/version`, z.object({
+      id: z.string().uuid(), capability_id: z.string(), source_version: z.string(), version: z.string(),
+      status: z.literal('registered_local'), applied: z.literal(true), execution_authorized: z.literal(false),
+    }), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
   }
 
   async getProjectEvaluations(projectId: string): Promise<DataState<EvaluationSummary[]>> {

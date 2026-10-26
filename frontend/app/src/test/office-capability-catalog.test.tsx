@@ -14,7 +14,7 @@ const projects: DataState<ProjectSummary[]> = { kind: 'ready', origin: 'live', f
 const ready = <T,>(data: T): DataState<T> => ({ kind: 'ready', origin: 'live', fetchedAt: 'now', data });
 const skill: CapabilitySummary = {
   capability_id: 'review-skill', version: '2', capability_type: 'agent_skill', status: 'evaluated',
-  provenance: {}, contract: {}, created_by: 'agent-1', created_at: 'now', evidence: ['test:one'],
+  provenance: {}, contract: { purpose: 'Review', compatible_roles: ['agent'], inputs: ['x'], outputs: ['y'], usage_limits: ['project'] }, created_by: 'agent-1', created_at: 'now', evidence: ['test:one'],
   execution_authorized: false,
 };
 
@@ -22,6 +22,7 @@ function renderPanel(getProjectCapabilities: AaoReadPort['getProjectCapabilities
   listCapabilityFeedback: vi.fn().mockResolvedValue(ready([])),
   proposeCapabilityFeedback: vi.fn().mockResolvedValue(ready({ id: 'proposal-1', capability_id: 'review-skill', version: '2', work_id: null, status: 'proposed', applied: false as const })),
   reviewCapabilityFeedback: vi.fn().mockResolvedValue(ready({ id: 'proposal-1', status: 'accepted', reviewed_by: 'ceo', reviewed_at: '2026-10-26T00:00:00Z', applied: false as const })),
+  registerFeedbackCapabilityVersion: vi.fn().mockResolvedValue(ready({ id: 'proposal-1', capability_id: 'review-skill', source_version: '2', version: '3', status: 'registered_local' as const, applied: true as const, execution_authorized: false as const })),
 }) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><OfficeCapabilityCatalogPanel projects={projects}
@@ -61,6 +62,7 @@ describe('office capability catalog', () => {
       id: 'proposal-1', capability_id: 'review-skill', version: '2', work_id: null,
       correction: 'Aclarar límite de revisión', evidence: ['work:abc'], status: 'proposed',
       created_by: 'ceo', created_at: 'now', reviewed_by: null, reviewed_at: null, applied: false,
+      applied_capability_version: null, applied_by: null, applied_at: null,
     };
     const feedbackPort: AaoCapabilityFeedbackPort = {
       listCapabilityFeedback: vi.fn().mockResolvedValue(ready([saved])),
@@ -69,6 +71,7 @@ describe('office capability catalog', () => {
         work_id: null, status: 'proposed', applied: false,
       })),
       reviewCapabilityFeedback: vi.fn().mockResolvedValue(ready({ id: saved.id, status: 'accepted', reviewed_by: 'ceo', reviewed_at: 'now', applied: false })),
+      registerFeedbackCapabilityVersion: vi.fn(),
     };
     renderPanel(vi.fn().mockResolvedValue(ready([skill])), feedbackPort);
 
@@ -91,6 +94,7 @@ describe('office capability catalog', () => {
       id: 'proposal-2', capability_id: 'review-skill', version: '2', work_id: null,
       correction: 'Aclarar límite', evidence: ['sha256:proof'], status: 'proposed',
       created_by: 'ceo', created_at: 'now', reviewed_by: null, reviewed_at: null, applied: false,
+      applied_capability_version: null, applied_by: null, applied_at: null,
     };
     let decision: CapabilityFeedbackProposal['status'] = 'proposed';
     const feedbackPort: AaoCapabilityFeedbackPort = {
@@ -101,6 +105,7 @@ describe('office capability catalog', () => {
         reviewed_at: decision === 'proposed' ? null : '2026-10-26T00:00:00Z',
       }])),
       proposeCapabilityFeedback: vi.fn(),
+      registerFeedbackCapabilityVersion: vi.fn().mockResolvedValue(ready({ id: proposal.id, capability_id: proposal.capability_id, source_version: proposal.version, version: '3', status: 'registered_local' as const, applied: true as const, execution_authorized: false as const })),
       reviewCapabilityFeedback: vi.fn().mockImplementation(async (_projectId, proposalId, status) => {
         decision = status;
         return ready({ id: proposalId, status, reviewed_by: 'ceo', reviewed_at: '2026-10-26T00:00:00Z', applied: false as const });
@@ -116,6 +121,16 @@ describe('office capability catalog', () => {
     expect(screen.getByText(/aplicada: no/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Rechazar propuesta' })).not.toBeInTheDocument();
     expect(feedbackPort.reviewCapabilityFeedback).toHaveBeenCalledWith('project-a', 'proposal-2', 'accepted');
+    fireEvent.click(screen.getByRole('button', { name: 'Preparar nueva versión' }));
+    fireEvent.change(screen.getByLabelText('Versión nueva'), { target: { value: '3' } });
+    fireEvent.change(screen.getByLabelText('Referencias de pruebas (una por línea)'), { target: { value: 'test:new' } });
+    fireEvent.change(screen.getByLabelText('Referencias de evidencia (una por línea)'), { target: { value: 'sha256:new' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar versión revisada' }));
+    await screen.findByText('Registrada versión 3 (registered_local); no autoriza ejecución.');
+    expect(feedbackPort.registerFeedbackCapabilityVersion).toHaveBeenCalledWith('project-a', 'proposal-2', expect.objectContaining({
+      version: '3', tests: ['test:new'], evidence: ['sha256:new'],
+      contract: skill.contract,
+    }));
   });
 
 });

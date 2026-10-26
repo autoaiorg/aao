@@ -423,6 +423,19 @@ class CapabilityRequest(BaseModel):
     status: str = Field(default="registered_local", pattern=r"^registered_local$")
 
 
+class CapabilityFeedbackVersionRequest(BaseModel):
+    """Complete immutable metadata for a CEO-reviewed follow-up version."""
+    version: str = Field(min_length=1, max_length=64)
+    provenance: dict
+    contract: dict
+    required_permissions: list[str] = Field(default_factory=list, max_length=32)
+    risks: list[str] = Field(default_factory=list, max_length=32)
+    dependencies: list[str] = Field(default_factory=list, max_length=64)
+    tests: list[str] = Field(default_factory=list, max_length=64)
+    compatibility: dict = Field(default_factory=dict)
+    evidence: list[str] = Field(default_factory=list, max_length=64)
+
+
 class CapabilityOption(BaseModel):
     choice: str = Field(pattern=r"^(reuse|adapt|build)$")
     fit: int = Field(ge=0, le=5)
@@ -2742,7 +2755,8 @@ def list_capability_feedback(project_id: str, _: str = Depends(require_ceo)):
             raise HTTPException(404, "Project not found")
         rows = db.execute(
             "SELECT id,capability_id,version,work_id,correction,evidence,status,created_by,created_at,"
-            "reviewed_by,reviewed_at FROM capability_feedback_proposals "
+            "reviewed_by,reviewed_at,applied_capability_version,applied_by,applied_at "
+            "FROM capability_feedback_proposals "
             "WHERE project_id=%s ORDER BY created_at DESC,id",
             (project_id,),
         ).fetchall()
@@ -2751,7 +2765,10 @@ def list_capability_feedback(project_id: str, _: str = Depends(require_ceo)):
         "work_id": str(row[3]) if row[3] else None, "correction": row[4],
         "evidence": row[5], "status": row[6], "created_by": row[7],
         "created_at": row[8].isoformat(), "reviewed_by": row[9],
-        "reviewed_at": row[10].isoformat() if row[10] else None, "applied": False,
+        "reviewed_at": row[10].isoformat() if row[10] else None,
+        "applied": row[11] is not None,
+        "applied_capability_version": row[11],
+        "applied_by": row[12], "applied_at": row[13].isoformat() if row[13] else None,
     } for row in rows]
 
 
@@ -2763,7 +2780,8 @@ def review_capability_feedback(
     """Record one explicit CEO decision; accepted proposals remain unapplied."""
     with tx() as db:
         row = db.execute(
-            "SELECT status,reviewed_by,reviewed_at FROM capability_feedback_proposals "
+            "SELECT status,reviewed_by,reviewed_at,applied_capability_version "
+            "FROM capability_feedback_proposals "
             "WHERE project_id=%s AND id=%s FOR UPDATE",
             (project_id, str(proposal_id)),
         ).fetchone()
@@ -2774,7 +2792,7 @@ def review_capability_feedback(
                 raise HTTPException(409, "Capability feedback proposal already has a different decision")
             return {
                 "id": str(proposal_id), "status": row[0], "reviewed_by": row[1],
-                "reviewed_at": row[2].isoformat(), "applied": False,
+                "reviewed_at": row[2].isoformat(), "applied": row[3] is not None,
             }
         reviewed = db.execute(
             "UPDATE capability_feedback_proposals SET status=%s,reviewed_by='ceo',"
@@ -2790,6 +2808,74 @@ def review_capability_feedback(
         "id": str(proposal_id), "status": payload.status, "reviewed_by": "ceo",
         "reviewed_at": reviewed[0].isoformat(), "applied": False,
     }
+
+
+@app.post("/v1/projects/{project_id}/capability-feedback/{proposal_id}/version", status_code=201)
+def register_feedback_capability_version(
+    project_id: str, proposal_id: UUID, payload: CapabilityFeedbackVersionRequest,
+    _: str = Depends(require_ceo),
+):
+    """Explicitly register a complete new immutable version from accepted feedback."""
+    if not payload.provenance or not payload.contract:
+        raise HTTPException(422, "Capability provenance and contract are required")
+    if not payload.tests or not payload.evidence:
+        raise HTTPException(422, "At least one test reference and evidence reference are required")
+    with tx() as db:
+        proposal = db.execute(
+            "SELECT f.status,f.capability_id,f.version,f.applied_capability_version,"
+            "c.capability_type FROM capability_feedback_proposals f "
+            "JOIN capability_versions c ON c.project_id=f.project_id "
+            "AND c.capability_id=f.capability_id AND c.version=f.version "
+            "WHERE f.project_id=%s AND f.id=%s FOR UPDATE OF f",
+            (project_id, str(proposal_id)),
+        ).fetchone()
+        if not proposal:
+            raise HTTPException(404, "Capability feedback proposal not found")
+        if proposal[0] != "accepted":
+            raise HTTPException(409, "Only accepted feedback can create a capability version")
+        capability_id, source_version, applied_version, capability_type = proposal[1:]
+        if applied_version is not None:
+            raise HTTPException(409, "Feedback already created capability version " + applied_version)
+        if payload.version == source_version:
+            raise HTTPException(422, "A feedback version must differ from its source version")
+        missing_fields = missing_contract_fields(capability_type, payload.contract)
+        if missing_fields:
+            raise HTTPException(422, "Capability contract is incomplete: " + ", ".join(sorted(missing_fields)))
+        profile_errors = model_profile_errors(payload.contract) if capability_type == "agent" else []
+        if profile_errors:
+            raise HTTPException(422, "; ".join(profile_errors))
+        provenance = dict(payload.provenance)
+        provenance["feedback_proposal_id"] = str(proposal_id)
+        provenance["source_version"] = source_version
+        inserted = db.execute(
+            "INSERT INTO capability_versions(project_id,capability_id,version,capability_type,"
+            "status,provenance,contract,required_permissions,risks,dependencies,tests,compatibility,evidence,created_by) "
+            "VALUES (%s,%s,%s,%s,'registered_local',%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,"
+            "%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,'ceo') "
+            "ON CONFLICT (project_id,capability_id,version) DO NOTHING RETURNING version",
+            (project_id, capability_id, payload.version, capability_type, json.dumps(provenance),
+             json.dumps(payload.contract), json.dumps(payload.required_permissions),
+             json.dumps(payload.risks), json.dumps(payload.dependencies), json.dumps(payload.tests),
+             json.dumps(payload.compatibility), json.dumps(payload.evidence)),
+        ).fetchone()
+        if not inserted:
+            raise HTTPException(409, "Capability version already exists and is immutable")
+        applied = db.execute(
+            "UPDATE capability_feedback_proposals SET applied_capability_version=%s,"
+            "applied_by='ceo',applied_at=clock_timestamp() WHERE project_id=%s AND id=%s "
+            "AND status='accepted' AND applied_capability_version IS NULL RETURNING applied_at",
+            (payload.version, project_id, str(proposal_id)),
+        ).fetchone()
+        if not applied:
+            raise HTTPException(409, "Feedback has already been applied")
+        audit(db, project_id, "capability.feedback.version_registered", {
+            "proposal_id": str(proposal_id), "capability_id": capability_id,
+            "source_version": source_version, "version": payload.version,
+            "actor": "ceo", "execution_authorized": False,
+        })
+    return {"id": str(proposal_id), "capability_id": capability_id,
+            "source_version": source_version, "version": payload.version,
+            "status": "registered_local", "applied": True, "execution_authorized": False}
 
 
 @app.post("/v1/projects/{project_id}/capability-feedback", status_code=201)

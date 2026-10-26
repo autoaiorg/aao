@@ -2298,4 +2298,31 @@ def test_capability_feedback_is_persisted_as_non_applied_ceo_proposal(monkeypatc
         assert reviewed["reviewed_by"] == "ceo"
         assert reviewed["reviewed_at"] == decision.json()["reviewed_at"]
         assert reviewed["applied"] is False
-        assert client.get(f"/v1/projects/{project}/capabilities", headers=ceo).json()[0]["version"] == "1.0.0"
+        version_path = f"/v1/projects/{project}/capability-feedback/{proposal_id}/version"
+        version_payload = {
+            "version": "1.1.0", "provenance": {"kind": "ceo-reviewed"},
+            "contract": {"purpose": "Test capability", "compatible_roles": ["agent"],
+                         "inputs": ["request"], "outputs": ["response"],
+                         "usage_limits": ["project scope"]},
+            "tests": ["test-reference-v2"], "evidence": ["sha256:reviewed-change"],
+        }
+        assert client.post(version_path, json=version_payload).status_code == 403
+        assert client.post(version_path, headers=ceo, json={**version_payload, "version": "1.0.0"}).status_code == 422
+        created = client.post(version_path, headers=ceo, json=version_payload)
+        assert created.status_code == 201, created.text
+        assert created.json() == {
+            "id": proposal_id, "capability_id": "reviewed.skill", "source_version": "1.0.0",
+            "version": "1.1.0", "status": "registered_local", "applied": True,
+            "execution_authorized": False,
+        }
+        assert client.post(version_path, headers=ceo, json=version_payload).status_code == 409
+        versions = client.get(f"/v1/projects/{project}/capabilities", headers=ceo).json()
+        assert {item["version"] for item in versions} == {"1.0.0", "1.1.0"}
+        new_version = next(item for item in versions if item["version"] == "1.1.0")
+        assert new_version["status"] == "registered_local"
+        assert new_version["execution_authorized"] is False
+        assert new_version["provenance"]["feedback_proposal_id"] == proposal_id
+        reviewed = client.get(f"/v1/projects/{project}/capability-feedback", headers=ceo).json()[0]
+        assert reviewed["applied"] is True
+        assert reviewed["applied_capability_version"] == "1.1.0"
+        assert client.post(review_path, headers=ceo, json={"status": "accepted"}).json()["applied"] is True

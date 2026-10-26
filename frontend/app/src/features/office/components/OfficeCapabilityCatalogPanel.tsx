@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { AaoReadPort } from '../../../data/ports/AaoReadPort';
-import type { AaoCapabilityFeedbackPort } from '../../../data/ports/AaoCapabilityFeedbackPort';
+import type { AaoCapabilityFeedbackPort, CapabilityFeedbackVersionInput } from '../../../data/ports/AaoCapabilityFeedbackPort';
 import type { CapabilitySummary, DataState, ProjectSummary } from '../../../domain/models';
 import { DataStatePanel } from '../../../components/ui/DataStatePanel';
 import './office-forms.css';
@@ -36,6 +36,12 @@ export const OfficeCapabilityCatalogPanel: React.FC<OfficeCapabilityCatalogPanel
   const [submitting, setSubmitting] = useState(false);
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const [reviewState, setReviewState] = useState<string | null>(null);
+  const [versionDraftId, setVersionDraftId] = useState<string | null>(null);
+  const [versionDraft, setVersionDraft] = useState<CapabilityFeedbackVersionInput | null>(null);
+  const [versionContractText, setVersionContractText] = useState('');
+  const [versionTestsText, setVersionTestsText] = useState('');
+  const [versionEvidenceText, setVersionEvidenceText] = useState('');
+  const [versionState, setVersionState] = useState<string | null>(null);
   const projectId = activeProjects.some((project) => project.id === requestedProjectId)
     ? requestedProjectId : activeProjects[0]?.id || '';
   const capabilitiesQuery = useQuery({
@@ -90,6 +96,47 @@ export const OfficeCapabilityCatalogPanel: React.FC<OfficeCapabilityCatalogPanel
       setReviewState(result.kind === 'error' ? `${result.code}: ${result.message}`
         : result.kind === 'forbidden' ? result.reason : 'No se pudo guardar la revisión.');
       await feedbackQuery.refetch();
+    }
+  };
+
+  const beginVersionDraft = (proposalId: string, capabilityId: string, sourceVersion: string) => {
+    const source = capabilities.find((item) => item.capability_id === capabilityId && item.version === sourceVersion);
+    if (!source || !source.contract || typeof source.contract !== 'object' || Array.isArray(source.contract)) {
+      setVersionState('No se puede preparar la nueva versión: el contrato fuente no es un objeto válido.');
+      return;
+    }
+    setVersionDraftId(proposalId);
+    setVersionState(null);
+    setVersionDraft({ version: '', provenance: { kind: 'ceo-reviewed-feedback' },
+      contract: source.contract as Record<string, unknown>, required_permissions: source.required_permissions ?? [],
+      risks: source.risks ?? [], dependencies: source.dependencies ?? [], tests: [],
+      compatibility: source.compatibility ?? {}, evidence: [] });
+    setVersionContractText(JSON.stringify(source.contract, null, 2));
+    setVersionTestsText('');
+    setVersionEvidenceText('');
+  };
+
+  const submitVersionDraft = async (event: React.FormEvent, proposalId: string) => {
+    event.preventDefault();
+    if (!feedbackPort || !versionDraft) return;
+    try {
+      const contract = JSON.parse(versionContractText) as unknown;
+      if (!contract || typeof contract !== 'object' || Array.isArray(contract)) throw new Error('El contrato debe ser un objeto JSON.');
+      const result = await feedbackPort.registerFeedbackCapabilityVersion(projectId, proposalId, {
+        ...versionDraft, contract: contract as Record<string, unknown>,
+        tests: versionTestsText.split('\n').map((value) => value.trim()).filter(Boolean),
+        evidence: versionEvidenceText.split('\n').map((value) => value.trim()).filter(Boolean),
+      });
+      if (result.kind === 'ready') {
+        setVersionState(`Registrada versión ${result.data.version} (${result.data.status}); no autoriza ejecución.`);
+        setVersionDraftId(null);
+        await Promise.all([feedbackQuery.refetch(), capabilitiesQuery.refetch()]);
+      } else {
+        setVersionState(result.kind === 'error' ? `${result.code}: ${result.message}`
+          : result.kind === 'forbidden' ? result.reason : 'No se pudo registrar la nueva versión.');
+      }
+    } catch (error) {
+      setVersionState(error instanceof Error ? error.message : 'El contrato no es JSON válido.');
     }
   };
 
@@ -156,14 +203,34 @@ export const OfficeCapabilityCatalogPanel: React.FC<OfficeCapabilityCatalogPanel
         {feedbackQuery.data && <DataStatePanel state={feedbackQuery.data} renderReady={(items) => items.length ? (
           <ul className="office-capability-catalog__list">{items.map((item) => <li key={item.id} className="office-capability-catalog__item">
             <strong>{item.capability_id} · {item.version} · {item.status}</strong>
-            <p>{item.correction}</p><small>{item.evidence.length} referencias · guardada por {item.created_by} · aplicada: no</small>
+            <p>{item.correction}</p><small>{item.evidence.length} referencias · guardada por {item.created_by} · aplicada: {item.applied ? `sí, versión ${item.applied_capability_version}` : 'no'}</small>
             {item.reviewed_by && <small>Revisada por {item.reviewed_by}{item.reviewed_at ? ` · ${new Date(item.reviewed_at).toLocaleString()}` : ''}</small>}
             {item.status === 'proposed' && <div className="office-capability-feedback__actions">
               <button type="button" disabled={!!reviewingId} onClick={() => void reviewFeedback(item.id, 'accepted')}>{reviewingId === item.id ? 'Guardando…' : 'Aceptar propuesta'}</button>
               <button type="button" disabled={!!reviewingId} onClick={() => void reviewFeedback(item.id, 'rejected')}>Rechazar propuesta</button>
             </div>}
+            {item.status === 'accepted' && !item.applied && <>
+              <button type="button" onClick={() => beginVersionDraft(item.id, item.capability_id, item.version)}>Preparar nueva versión</button>
+              {versionDraftId === item.id && versionDraft && <form className="office-form" onSubmit={(event) => void submitVersionDraft(event, item.id)}>
+                <p role="note">La corrección no se inserta automáticamente. Revisa el contrato completo y registra una versión inmutable; seguirá sin autorizar ejecución.</p>
+                <label className="office-form-field">Versión nueva
+                  <input className="office-form-control" required value={versionDraft.version} onChange={(event) => setVersionDraft({ ...versionDraft, version: event.target.value })} />
+                </label>
+                <label className="office-form-field">Contrato completo (JSON)
+                  <textarea className="office-form-control office-form-control--textarea" required rows={8} value={versionContractText} onChange={(event) => setVersionContractText(event.target.value)} />
+                </label>
+                <label className="office-form-field">Referencias de pruebas (una por línea)
+                  <textarea className="office-form-control" required value={versionTestsText} onChange={(event) => setVersionTestsText(event.target.value)} />
+                </label>
+                <label className="office-form-field">Referencias de evidencia (una por línea)
+                  <textarea className="office-form-control" required value={versionEvidenceText} onChange={(event) => setVersionEvidenceText(event.target.value)} />
+                </label>
+                <button type="submit">Registrar versión revisada</button>
+              </form>}
+            </>}
           </li>)}</ul>
         ) : <p>No hay correcciones propuestas en este proyecto.</p>} />}
+        {versionState && <p role="status">{versionState}</p>}
       </section>}
     </section>
   );

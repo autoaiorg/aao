@@ -39,6 +39,7 @@ export const App: React.FC = () => {
   const [focusWorkId, setFocusWorkId] = useState<string | null>(null);
   const [detailedProjectId, setDetailedProjectId] = useState<string | null>(null);
   const [staleTimeSeconds, setStaleTimeSeconds] = useState<number>(15);
+  const refreshOfficeLiveState = origin === 'live' && isAuthenticated && activeNav === 'office3d';
 
   // Initialize Port Adapter depending on origin
   const port: AaoReadPort = useMemo(() => {
@@ -138,6 +139,7 @@ export const App: React.FC = () => {
     queryFn: () => port.listProjects(),
     enabled: origin === 'demo' || isAuthenticated,
     staleTime: staleTimeSeconds * 1000,
+    refetchInterval: refreshOfficeLiveState ? 15_000 : false,
   });
 
   const projectsList: ProjectSummary[] = useMemo(() => {
@@ -212,6 +214,7 @@ export const App: React.FC = () => {
     queryFn: () => port.getOrganizationStructure(),
     enabled: true,
     staleTime: staleTimeSeconds * 1000,
+    refetchInterval: refreshOfficeLiveState ? 15_000 : false,
   });
 
   // Query: Project activity (real backend events only)

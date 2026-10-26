@@ -35,6 +35,7 @@ export const OfficeCalendarPanel: React.FC<OfficeCalendarPanelProps> = ({ projec
     queryKey: ['office-dated-work', sessionId, projectId],
     queryFn: () => port.getProjectBoard(projectId),
     enabled: !!projectId,
+    refetchInterval: 15_000,
   });
   const today = localDate();
 
@@ -43,7 +44,7 @@ export const OfficeCalendarPanel: React.FC<OfficeCalendarPanelProps> = ({ projec
       <div className="office-form-panel__header">
         <div>
           <h3 id="office-calendar-title" className="office-form-panel__title">Fechas objetivo</h3>
-          <p className="office-form-panel__description">Vista LIVE de fechas persistidas en los trabajos canónicos del proyecto. No programa ni inicia ejecuciones.</p>
+          <p className="office-form-panel__description">Vista LIVE de fechas persistidas en los trabajos canónicos del proyecto; se actualiza cada 15 segundos mientras está abierta. No programa ni inicia ejecuciones.</p>
         </div>
         {projectId && <Button type="button" variant="secondary" onClick={() => onOpenWork(projectId)}>Abrir tablero</Button>}
       </div>

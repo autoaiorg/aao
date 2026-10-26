@@ -2985,16 +2985,38 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         subprocess.run(["git", "--git-dir", str(remote), "config", "receive.shallowUpdate", "true"], check=True)
         subprocess.run(["git", "-C", str(repo), "push", "-q", str(remote), "HEAD:refs/heads/main"], check=True)
         opened = []
+        remote_prs = {}
+        push_calls = 0
+        lost_pr_response = False
 
         def push(sha, branch):
+            nonlocal push_calls
+            push_calls += 1
             subprocess.run(["git", "--git-dir", str(store), "push", "-q", str(remote), f"{sha}:refs/heads/{branch}"], check=True)
+            if push_calls == 1:
+                # Simulate GitHub accepting the ref update, then the client losing its response.
+                raise TimeoutError("push response lost after remote acceptance")
 
         def open_pr(branch, title, body):
-            opened.append((branch, title, body))
+            nonlocal lost_pr_response
+            if branch in remote_prs:
+                current_head = subprocess.run(["git", "--git-dir", str(remote), "rev-parse",
+                                               f"refs/heads/{branch}"], capture_output=True,
+                                              text=True, check=True).stdout.strip()
+                return {**remote_prs[branch], "head_sha": current_head}
             head = subprocess.run(["git", "--git-dir", str(remote), "rev-parse", f"refs/heads/{branch}"],
                                   capture_output=True, text=True, check=True).stdout.strip()
-            number = 6 + len(opened)
-            return {"number": number, "url": f"https://github.invalid/autoaiorg/aao/pull/{number}", "head_sha": head}
+            if head != candidate_sha:
+                return {"number": 6, "url": "https://github.invalid/autoaiorg/aao/pull/6", "head_sha": head}
+            number = 7 + len(remote_prs)
+            result = {"number": number, "url": f"https://github.invalid/autoaiorg/aao/pull/{number}", "head_sha": head}
+            remote_prs[branch] = result
+            opened.append((branch, title, body))
+            if not lost_pr_response:
+                lost_pr_response = True
+                # Simulate PR creation succeeding remotely before the API response is lost.
+                raise TimeoutError("pull request response lost after remote acceptance")
+            return result
 
         with pytest.raises(PublishError, match="Project grant required"):
             push_candidate(work, pusher, store=store, push=push)
@@ -3042,8 +3064,30 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
 
         with pytest.raises(PublishError, match="has not been pushed"):
             open_pull_request(work, publisher, open_pr=open_pr)
+        with pytest.raises(PublishError, match="outcome is uncertain"):
+            push_candidate(work, pusher, store=store, push=push)
+        assert subprocess.run(["git", "--git-dir", str(remote), "show-ref", "--verify",
+                               f"refs/heads/aao/work-{work}-{candidate_sha[:12]}"],
+                              check=False, capture_output=True, text=True).returncode == 0
+        with connect_postgres() as db:
+            assert db.execute("SELECT count(*) FROM events WHERE subject_id=%s AND kind='work.candidate_pushed'",
+                              (work,)).fetchone() == (0,)
+            assert db.execute("SELECT count(*) FROM events WHERE subject_id=%s AND kind='work.candidate_push_uncertain'",
+                              (work,)).fetchone() == (1,)
         pushed = push_candidate(work, pusher, store=store, push=push)
         assert pushed["status"] == "PUSHED" and pushed["candidate_sha"] == candidate_sha
+        assert pushed["operation_id"]
+        assert push_calls == 2
+        with connect_postgres() as db:
+            uncertain_push = db.execute(
+                "SELECT details->>'operation_id' FROM events WHERE subject_id=%s "
+                "AND kind='work.candidate_push_uncertain'", (work,),
+            ).fetchone()
+            successful_push = db.execute(
+                "SELECT details->>'operation_id' FROM events WHERE subject_id=%s "
+                "AND kind='work.candidate_pushed'", (work,),
+            ).fetchone()
+        assert uncertain_push == successful_push == (pushed["operation_id"],)
         branch = pushed["branch"]
         assert subprocess.run(["git", "--git-dir", str(remote), "rev-parse", f"refs/heads/{branch}"],
                               capture_output=True, text=True, check=True).stdout.strip() == candidate_sha
@@ -3053,9 +3097,27 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         with pytest.raises(PublishError, match="head is not the approved candidate"):
             open_pull_request(work, publisher, open_pr=open_pr)
         subprocess.run(["git", "--git-dir", str(remote), "update-ref", f"refs/heads/{branch}", candidate_sha], check=True)
-        opened.clear()
+        with pytest.raises(PublishError, match="outcome is uncertain"):
+            open_pull_request(work, publisher, open_pr=open_pr)
+        assert len(remote_prs) == 1 and len(opened) == 1
+        with connect_postgres() as db:
+            assert db.execute("SELECT count(*) FROM events WHERE subject_id=%s AND kind='work.pr_opened'",
+                              (work,)).fetchone() == (0,)
+            assert db.execute("SELECT count(*) FROM events WHERE subject_id=%s AND kind='work.pr_open_uncertain'",
+                              (work,)).fetchone() == (1,)
         published = open_pull_request(work, publisher, open_pr=open_pr)
         assert published["status"] == "PUBLISHED" and published["pusher"] == pusher_id
+        assert published["operation_id"]
+        with connect_postgres() as db:
+            uncertain_pr = db.execute(
+                "SELECT details->>'operation_id' FROM events WHERE subject_id=%s "
+                "AND kind='work.pr_open_uncertain'", (work,),
+            ).fetchone()
+            successful_pr = db.execute(
+                "SELECT details->>'operation_id' FROM events WHERE subject_id=%s "
+                "AND kind='work.pr_opened'", (work,),
+            ).fetchone()
+        assert uncertain_pr == successful_pr == (published["operation_id"],)
         assert opened == [(branch, "aao: Add a notes test", opened[0][2])] and candidate_sha in opened[0][2]
         assert open_pull_request(work, publisher, open_pr=open_pr)["status"] == "ALREADY_PUBLISHED"
         assert len(opened) == 1

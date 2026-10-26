@@ -15,6 +15,7 @@ Run it as a one-shot process (scripts/publish_candidate.py) so App keys never re
 from __future__ import annotations
 
 import base64
+import hashlib
 import os
 import re
 import subprocess
@@ -27,6 +28,18 @@ _SHA = re.compile(r"^[0-9a-f]{40}$")
 
 class PublishError(RuntimeError):
     pass
+
+
+def _publish_operation_id(step: str, work_id: str, candidate_sha: str) -> str:
+    value = f"{step}:{work_id}:{candidate_sha}".encode()
+    return hashlib.sha256(value).hexdigest()
+
+
+def _record_publish_event(work_id: str, kind: str, details: dict) -> None:
+    from aao.work_management_api import audit, tx
+
+    with tx() as db:
+        audit(db, work_id, kind, details)
 
 
 def _git(repo: Path, *args: str, env: dict | None = None, input: bytes | None = None) -> str:
@@ -118,11 +131,18 @@ def push_candidate(work_id: str, credential: str, *, store: str | Path,
         return {**c["done"], "status": "ALREADY_PUSHED"}
     verify_candidate(Path(store).resolve(), c["candidate_sha"], c["base_sha"], c["patch"])
     branch = f"aao/work-{work_id}-{c['candidate_sha'][:12]}"
-    # ponytail: pushing the same SHA to the same branch is idempotent, so a crash before the event is
-    # recovered by re-running; move to external_effects if UNCERTAIN tracking becomes necessary.
-    push(c["candidate_sha"], branch)
+    operation_id = _publish_operation_id("candidate-push", work_id, c["candidate_sha"])
+    effect = {"operation_id": operation_id, "candidate_sha": c["candidate_sha"], "branch": branch,
+              "pusher": c["principal"]}
+    _record_publish_event(work_id, "work.candidate_push_started", effect)
+    try:
+        push(c["candidate_sha"], branch)
+    except Exception as exc:
+        _record_publish_event(work_id, "work.candidate_push_uncertain", effect)
+        raise PublishError("candidate push outcome is uncertain; retry the same approved SHA to reconcile") from exc
     record = {"candidate_sha": c["candidate_sha"], "base_sha": c["base_sha"], "branch": branch,
-              "proposal_id": c["proposal_id"], "review_id": c["review_id"], "pusher": c["principal"]}
+              "proposal_id": c["proposal_id"], "review_id": c["review_id"], "pusher": c["principal"],
+              "operation_id": operation_id}
     with tx() as db:
         audit(db, work_id, "work.candidate_pushed", record)
     return {**record, "status": "PUSHED"}
@@ -138,14 +158,23 @@ def open_pull_request(work_id: str, credential: str, *, open_pr: Callable[[str, 
     pushed = c["pushed"]
     if not pushed or pushed["candidate_sha"] != c["candidate_sha"]:
         raise PublishError("the approved candidate has not been pushed")
+    operation_id = _publish_operation_id("pull-request", work_id, c["candidate_sha"])
+    effect = {"operation_id": operation_id, "candidate_sha": c["candidate_sha"],
+              "branch": pushed["branch"], "publisher": c["principal"]}
+    _record_publish_event(work_id, "work.pr_open_started", effect)
     body = (f"AAO work `{work_id}`\n\n- candidate: `{c['candidate_sha']}` on base `{c['base_sha']}`\n"
             f"- proposal: `{c['proposal_id']}`\n- approval review: `{c['review_id']}`\n"
             f"- pushed by: `{pushed['pusher']}`; opened by: `{c['principal']}`\n")
-    pr = open_pr(pushed["branch"], f"aao: {c['title']}", body)
+    try:
+        pr = open_pr(pushed["branch"], f"aao: {c['title']}", body)
+    except Exception as exc:
+        _record_publish_event(work_id, "work.pr_open_uncertain", effect)
+        raise PublishError("pull request outcome is uncertain; retry to reconcile the same branch") from exc
     if pr.get("head_sha") != c["candidate_sha"]:
         # The fork branch moved after the push: never record an unapproved head as this task's PR.
         raise PublishError("opened pull request head is not the approved candidate")
-    record = {**pushed, "publisher": c["principal"], "pr_number": int(pr["number"]), "pr_url": str(pr["url"])}
+    record = {**pushed, "publisher": c["principal"], "pr_number": int(pr["number"]), "pr_url": str(pr["url"]),
+              "operation_id": operation_id}
     with tx() as db:
         audit(db, work_id, "work.pr_opened", record)
     return {**record, "status": "PUBLISHED"}

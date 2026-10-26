@@ -313,6 +313,7 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
               <ol aria-label="Mensajes de la conversación" className="office-conversation-list">
                 {messages.map(renderMessage)}
                 {sendingTurn && <li className="office-conversation-message office-conversation-message--ceo"><div className="office-conversation-message__meta"><strong>CEO</strong><span>Enviando…</span></div><p className="office-conversation-message__body">{pendingUserMessage}</p></li>}
+                {sendingTurn && !streamingReply && <li className="office-conversation-message office-conversation-message--aao" role="status" aria-live="polite"><div className="office-conversation-message__meta"><strong>AAO</strong><span>Preparando respuesta…</span></div><p className="office-conversation-message__body">La respuesta aparecerá aquí.</p></li>}
                 {streamingReply && <li className="office-conversation-message office-conversation-message--aao" aria-live="polite"><div className="office-conversation-message__meta"><strong>AAO</strong><span>Respondiendo…</span></div><p className="office-conversation-message__body">{streamingReply}</p></li>}
                 {messages.length === 0 && <li role="status" style={{ listStyle: 'none', color: 'var(--text-secondary)', fontSize: 12 }}>El hilo aún no tiene mensajes.</li>}
               </ol>

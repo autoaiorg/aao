@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, expect, it, vi } from 'vitest';
 import { OfficeConversationPanel } from '../features/office/components/OfficeConversationPanel';
@@ -20,6 +20,37 @@ function setup(port: AaoConversationPort, onOpenBoard = vi.fn()) {
 }
 
 describe('office persistent project conversation', () => {
+  it('acknowledges a CEO turn before the first provider delta, then replaces the placeholder with streamed text', async () => {
+    let emitDelta: ((delta: string) => void) | undefined;
+    let finishTurn: ((result: DataState<{ message_id: string }>) => void) | undefined;
+    const port: AaoConversationPort = {
+      listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
+      listAssignableAgents: vi.fn().mockResolvedValue(ready([])),
+      listConversationMessages: vi.fn().mockResolvedValue(ready([message])),
+      createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(),
+      streamCEOConversationTurn: vi.fn().mockImplementation((_project, _conversation, _body, _key, onDelta) => {
+        emitDelta = onDelta;
+        return new Promise((resolve) => { finishTurn = resolve; });
+      }),
+      createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(),
+      createWorkGroupFromConversation: vi.fn(), proposeWorkGroupFromConversation: vi.fn(),
+      listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), assignWorkGroupChild: vi.fn(),
+      confirmWorkGroupConsolidation: vi.fn(), createWorkGroupPartialReport: vi.fn(),
+    };
+    setup(port);
+    await screen.findByText('Preparar el plan');
+    fireEvent.change(screen.getByLabelText('Mensaje CEO'), { target: { value: 'Ayúdame con el alcance' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar a AAO' }));
+    expect(await screen.findByText('Preparando respuesta…')).toBeInTheDocument();
+    expect(screen.getByText('Ayúdame con el alcance')).toBeInTheDocument();
+
+    await act(async () => { emitDelta?.('Primer fragmento'); });
+    expect(screen.getByText('Primer fragmento')).toBeInTheDocument();
+    expect(screen.queryByText('Preparando respuesta…')).not.toBeInTheDocument();
+    await act(async () => { finishTurn?.(ready({ message_id: 'response-2' })); });
+    expect(await screen.findByText(/Respuesta AAO recibida y persistida/)).toBeInTheDocument();
+  });
+
   it('streams a provider response and does not create work merely by conversing', async () => {
     const port: AaoConversationPort = {
       listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),

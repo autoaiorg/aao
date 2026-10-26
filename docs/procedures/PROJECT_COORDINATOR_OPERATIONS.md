@@ -5,7 +5,9 @@ El runner no es un modo de solo lectura: una pasada puede asignar trabajo.
 
 ## Alcance y precondiciones
 
-`scripts/run_project_coordinator.py` solo consulta grupos ya confirmados por el CEO y, si encuentra hijos `INBOX` sin asignar, llama al endpoint existente protegido por `work.assign`. No crea ni confirma grupos, no admite ni ejecuta trabajo, no cambia grants y no consolida ni acepta resultados.
+`scripts/run_project_coordinator.py` consulta grupos ya confirmados por el CEO y, si encuentra hijos `INBOX` sin asignar, llama al endpoint existente protegido por `work.assign`. Por defecto no consolida. La opción explícita `--auto-consolidate` registra una consolidación descriptiva solo cuando todos los hijos están en `DONE` y aún no existe consolidación. No crea ni confirma grupos, no admite ni ejecuta trabajo, no cambia grants ni acepta resultados.
+
+La consolidación automática es deliberadamente mecánica: genera un índice de IDs, estados, ejecuciones y dictámenes persistidos, ligado al SHA-256 del snapshot. No copia el campo de evidencia, no llama a un modelo, no infiere significado, no confirma criterios de aceptación y no equivale a una revisión independiente. La API revalida la fuente bajo transacción y rechaza consolidación obsoleta; además impide que el PM consolide hijos que haya escrito, asignado a sí mismo o ejecutado. El mismo snapshot genera la misma clave UUIDv5 para que un retry/replay no duplique el efecto.
 
 Antes de ejecutarlo, el CEO debe verificar:
 
@@ -34,12 +36,12 @@ sudo -u aao-pm -H env \
     _ "$AAO_CHECKOUT" "$AAO_PYTHON" "$PROJECT_ID" "$PM_PRINCIPAL_ID"
 ```
 
-La pasada comprueba `/v1/principals/me` y se detiene si la identidad autenticada no coincide con `PM_PRINCIPAL_ID`; no inferir que el ID del principal siempre coincide con el nombre del usuario Linux. Si faltan permisos, proyecto, credencial o servicio, no se debe ampliar autoridad para ocultar el fallo: inspeccionar el rechazo y corregir solo la precondición correspondiente.
+La pasada comprueba `/v1/principals/me` y se detiene si la identidad autenticada no coincide con `PM_PRINCIPAL_ID`; no inferir que el ID del principal siempre coincide con el nombre del usuario Linux. Si faltan permisos, proyecto, credencial o servicio, no se debe ampliar autoridad para ocultar el fallo: inspeccionar el rechazo y corregir solo la precondición correspondiente. Para permitir la consolidación descriptiva del runner, añadir `--auto-consolidate` al comando. Sin esa opción no se crean consolidaciones.
 
 Tras la salida, comprobar en Control Center/API que las asignaciones y eventos persistidos corresponden al grupo y proyecto esperados. El número impreso por el proceso es un resumen, no la evidencia canónica.
 
 ## Polling continuo
 
-Solo después de revisar satisfactoriamente la primera pasada, y con aprobación operativa explícita del CEO para el proyecto indicado, se puede añadir `--watch` al mismo comando. El intervalo predeterminado es 15 segundos y el máximo permitido es 300; detener con `Ctrl-C`/`SIGTERM`.
+Solo después de revisar satisfactoriamente la primera pasada, y con aprobación operativa explícita del CEO para el proyecto indicado, se puede añadir `--watch` al mismo comando. El intervalo predeterminado es 15 segundos y el máximo permitido es 300; detener con `Ctrl-C`/`SIGTERM`. La opción `--auto-consolidate` puede combinarse con `--watch`, pero cada consolidación queda persistida de forma irreversible para ese grupo: la API no permite sustituir una consolidación existente. Confirmar el modo elegido antes de ejecutarlo.
 
-No se proporciona aún una unidad `systemd`, política de reinicio, rotación de credencial ni despliegue automático. No habilitar el proceso al arranque ni ejecutarlo para varios proyectos sin revisar su identidad, grants y alcance por separado. El proceso no sustituye la supervisión de ejecuciones reales ni el ensayo de aceptación §14.
+No se proporciona aún una unidad `systemd`, política de reinicio, rotación de credencial ni despliegue automático. No habilitar el proceso al arranque ni ejecutarlo para varios proyectos sin revisar su identidad, grants y alcance por separado. La consolidación no cierra ni acepta el trabajo padre: el CEO conserva la aceptación. El proceso no supervisa ejecuciones, no reintenta trabajos ni sustituye el ensayo de aceptación §14.

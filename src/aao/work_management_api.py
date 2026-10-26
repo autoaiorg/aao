@@ -295,6 +295,29 @@ class WorkGroupConsolidationRequest(BaseModel):
         return value
 
 
+class WorkGroupAcceptanceRequest(BaseModel):
+    idempotency_key: UUID
+    expected_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    accepted_criteria: list[str] = Field(min_length=1, max_length=20)
+    acceptance_statement: str = Field(min_length=1, max_length=20000)
+
+    @field_validator("accepted_criteria")
+    @classmethod
+    def accepted_criteria_not_blank(cls, values: list[str]) -> list[str]:
+        criteria = [value.strip() for value in values]
+        if any(not value for value in criteria):
+            raise ValueError("Accepted criteria must not be blank")
+        return criteria
+
+    @field_validator("acceptance_statement")
+    @classmethod
+    def acceptance_statement_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Acceptance statement must not be blank")
+        return value
+
+
 class WorkGroupPartialReportRequest(BaseModel):
     idempotency_key: UUID
     expected_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -1843,7 +1866,7 @@ def _list_project_work_groups(db, project_id: str):
     groups = db.execute(
         "SELECT g.id,g.conversation_id,g.parent_work_id,w.title,w.status,"
         "c.id,c.summary,c.source_sha256,c.source_snapshot,c.idempotency_key,"
-        "c.created_by,c.created_at FROM work_groups g "
+        "c.created_by,c.created_at,w.acceptance_criteria FROM work_groups g "
         "JOIN work_items w ON w.id=g.parent_work_id "
         "LEFT JOIN work_group_consolidations c ON c.work_group_id=g.id "
         "WHERE g.project_id=%s ORDER BY g.created_at,g.id", (project_id,),
@@ -1865,13 +1888,29 @@ def _list_project_work_groups(db, project_id: str):
             "created_by,created_at FROM work_group_partial_reports "
             "WHERE work_group_id=%s ORDER BY created_at,id", (row[0],),
         ).fetchall()
+        acceptance_row = db.execute(
+            "SELECT details,created_at FROM events WHERE subject_id=%s AND kind='work.group_accepted'",
+            (row[2],),
+        ).fetchone()
+        acceptance = None
+        if acceptance_row:
+            acceptance_details = acceptance_row[0] if isinstance(acceptance_row[0], dict) else {}
+            acceptance = {
+                "source_sha256": acceptance_details.get("source_sha256"),
+                "accepted_criteria": acceptance_details.get("accepted_criteria", []),
+                "acceptance_statement": acceptance_details.get("acceptance_statement"),
+                "created_by": acceptance_details.get("actor"),
+                "created_at": acceptance_row[1].isoformat(),
+            }
         result.append({
             "id": str(row[0]), "conversation_id": str(row[1]),
             "parent_work_id": str(row[2]), "title": row[3],
             "parent_status": row[4], "children": children,
+            "acceptance_criteria": row[12],
             "source_sha256": source_sha256,
             "consolidation_ready": bool(children) and all(child["status"] == "DONE" for child in children),
             "consolidation": stored,
+            "acceptance": acceptance,
             "partial_reports": [{
                 "id": str(report[0]), "report_kind": report[1], "summary": report[2],
                 "source_sha256": report[3], "source_snapshot": report[4],
@@ -1891,6 +1930,134 @@ def create_work_group_consolidation(
 ):
     """Persist one CEO-confirmed summary without changing parent, child or execution states."""
     return _persist_work_group_consolidation(project_id, group_id, payload, actor="ceo")
+
+
+@app.post("/v1/projects/{project_id}/work-groups/{group_id}/acceptance", status_code=201)
+def accept_work_group_result(
+    project_id: str,
+    group_id: str,
+    payload: WorkGroupAcceptanceRequest,
+    _: str = Depends(require_ceo),
+):
+    """Record explicit CEO product acceptance after evidence-backed consolidation.
+
+    This is separate from auditor review and PM coordination. It does not grant
+    permissions or invoke integration; it only closes the persisted group parent.
+    """
+    key = str(payload.idempotency_key)
+    request_sha256 = hashlib.sha256(json.dumps({
+        "expected_source_sha256": payload.expected_source_sha256,
+        "accepted_criteria": payload.accepted_criteria,
+        "acceptance_statement": payload.acceptance_statement,
+    }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    with tx() as db:
+        # Serialize key reuse even when competing requests target different groups.
+        db.execute(
+            "SELECT pg_advisory_xact_lock(hashtext('work.group.acceptance'),hashtext(%s))",
+            (key,),
+        )
+        group = db.execute(
+            "SELECT parent_work_id FROM work_groups WHERE id=%s AND project_id=%s FOR UPDATE",
+            (group_id, project_id),
+        ).fetchone()
+        if not group:
+            raise HTTPException(404, "Work group not found")
+        parent_work_id = str(group[0])
+        parent = db.execute(
+            "SELECT status,acceptance_criteria FROM work_items WHERE id=%s AND project_id=%s FOR UPDATE",
+            (parent_work_id, project_id),
+        ).fetchone()
+        if not parent:
+            raise HTTPException(404, "Work group parent not found")
+
+        prior = db.execute(
+            "SELECT details,created_at FROM events WHERE subject_id=%s AND kind='work.group_accepted'",
+            (parent_work_id,),
+        ).fetchone()
+        if prior:
+            details = prior[0] if isinstance(prior[0], dict) else {}
+            if (details.get("idempotency_key") == key
+                    and details.get("request_sha256") == request_sha256):
+                return {
+                    "work_group_id": group_id, "parent_work_id": parent_work_id,
+                    "source_sha256": details["source_sha256"],
+                    "accepted_criteria": details["accepted_criteria"],
+                    "acceptance_statement": details["acceptance_statement"],
+                    "created_by": details.get("actor", "ceo"),
+                    "created_at": prior[1].isoformat(), "created": False,
+                }
+            raise HTTPException(409, "Work group already has a product acceptance")
+
+        if payload.accepted_criteria != parent[1]:
+            raise HTTPException(409, "Accepted criteria must exactly match the CEO-confirmed work criteria")
+        if parent[0] != "INBOX":
+            raise HTTPException(409, "Work group parent is not awaiting product acceptance")
+        snapshot, source_sha256 = _work_group_source_snapshot(
+            db, project_id, parent_work_id, lock=True,
+        )
+        children = snapshot["children"]
+        if not children or any(child["status"] != "DONE" for child in children):
+            raise HTTPException(409, "All child work must be DONE before product acceptance")
+        child_reviews = db.execute(
+            "SELECT w.id,q.result_json->>'candidate_sha',EXISTS("
+            "SELECT 1 FROM reviews r WHERE r.work_id=w.id AND r.decision='APPROVE' "
+            "AND r.candidate_sha=q.result_json->>'candidate_sha') "
+            "FROM work_items w LEFT JOIN execution_queue q ON q.work_id=w.id "
+            "AND q.project_id=w.project_id AND q.status='SUCCEEDED' "
+            "WHERE w.project_id=%s AND w.parent_work_id=%s ORDER BY w.id FOR SHARE OF w",
+            (project_id, parent_work_id),
+        ).fetchall()
+        if (len(child_reviews) != len(children)
+                or any(not candidate_sha or not approved
+                       for _, candidate_sha, approved in child_reviews)):
+            raise HTTPException(
+                409, "Every completed child requires an APPROVE review for its succeeded candidate SHA",
+            )
+        if source_sha256 != payload.expected_source_sha256:
+            raise HTTPException(409, "Work group results changed; reload before acceptance")
+        if any(execution["status"] in {"QUEUED", "RUNNING", "UNCERTAIN"}
+               for child in children for execution in child["executions"]):
+            raise HTTPException(409, "Active or uncertain execution prevents product acceptance")
+        consolidation = db.execute(
+            "SELECT source_sha256 FROM work_group_consolidations WHERE work_group_id=%s FOR SHARE",
+            (group_id,),
+        ).fetchone()
+        if not consolidation or consolidation[0] != source_sha256:
+            raise HTTPException(409, "A current evidence-bound consolidation is required")
+        reused = db.execute(
+            "SELECT 1 FROM events WHERE kind='work.group_accepted' "
+            "AND details->>'idempotency_key'=%s", (key,),
+        ).fetchone()
+        if reused:
+            raise HTTPException(409, "Idempotency key was used for another acceptance")
+
+        db.execute(
+            "UPDATE work_items SET status='DONE' WHERE id=%s AND project_id=%s AND status='INBOX'",
+            (parent_work_id, project_id),
+        )
+        details = {
+            "project_id": project_id, "work_group_id": group_id,
+            "source_sha256": source_sha256, "idempotency_key": key,
+            "request_sha256": request_sha256,
+            "acceptance_statement": payload.acceptance_statement,
+            "accepted_criteria": payload.accepted_criteria,
+            "actor": "ceo", "parent_status": "DONE",
+            "independent_review": False, "integration_performed": False,
+        }
+        audit(db, parent_work_id, "work.group_accepted", details)
+        row = db.execute(
+            "SELECT created_at FROM events WHERE subject_id=%s AND kind='work.group_accepted' "
+            "AND details->>'idempotency_key'=%s ORDER BY created_at DESC LIMIT 1",
+            (parent_work_id, key),
+        ).fetchone()
+    return {
+        "work_group_id": group_id, "parent_work_id": parent_work_id,
+        "source_sha256": source_sha256,
+        "accepted_criteria": payload.accepted_criteria,
+        "acceptance_statement": payload.acceptance_statement,
+        "created_by": "ceo",
+        "created_at": row[0].isoformat(), "created": True,
+    }
 
 
 @app.post("/v1/agent/projects/{project_id}/work-groups/{group_id}/consolidation", status_code=201)

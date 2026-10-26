@@ -30,7 +30,7 @@ describe('office persistent project conversation', () => {
       createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(),
       createWorkGroupFromConversation: vi.fn(), proposeWorkGroupFromConversation: vi.fn(),
       listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), assignWorkGroupChild: vi.fn(),
-      confirmWorkGroupConsolidation: vi.fn(), createWorkGroupPartialReport: vi.fn(),
+      confirmWorkGroupConsolidation: vi.fn(), confirmWorkGroupAcceptance: vi.fn(), createWorkGroupPartialReport: vi.fn(),
     };
     setup(port);
     await screen.findByText('Preparar el plan');
@@ -62,7 +62,7 @@ describe('office persistent project conversation', () => {
       createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(),
       createWorkGroupFromConversation: vi.fn(), proposeWorkGroupFromConversation: vi.fn(),
       listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), assignWorkGroupChild: vi.fn(),
-      confirmWorkGroupConsolidation: vi.fn(), createWorkGroupPartialReport: vi.fn(),
+      confirmWorkGroupConsolidation: vi.fn(), confirmWorkGroupAcceptance: vi.fn(), createWorkGroupPartialReport: vi.fn(),
     };
     setup(port);
     await screen.findByText('Preparar el plan');
@@ -95,7 +95,7 @@ describe('office persistent project conversation', () => {
       createWorkRequestFromConversation: vi.fn(),
       createWorkGroupFromConversation: vi.fn(),
       proposeWorkGroupFromConversation: vi.fn(),
-      listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), assignWorkGroupChild: vi.fn(), confirmWorkGroupConsolidation: vi.fn(), createWorkGroupPartialReport: vi.fn(),
+      listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), assignWorkGroupChild: vi.fn(), confirmWorkGroupConsolidation: vi.fn(), confirmWorkGroupAcceptance: vi.fn(), createWorkGroupPartialReport: vi.fn(),
     };
     setup(port);
     await screen.findByText('Preparar el plan');
@@ -117,7 +117,7 @@ describe('office persistent project conversation', () => {
       createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(),
       createWorkGroupFromConversation: vi.fn(), proposeWorkGroupFromConversation: vi.fn(),
       listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), assignWorkGroupChild: vi.fn(),
-      confirmWorkGroupConsolidation: vi.fn(), createWorkGroupPartialReport: vi.fn(),
+      confirmWorkGroupConsolidation: vi.fn(), confirmWorkGroupAcceptance: vi.fn(), createWorkGroupPartialReport: vi.fn(),
     };
     const onOpenBoard = setup(port);
     await screen.findByText('Preparar el plan');
@@ -138,7 +138,7 @@ describe('office persistent project conversation', () => {
       createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(), streamCEOConversationTurn: vi.fn(),
       createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(), createWorkGroupFromConversation: vi.fn(),
       proposeWorkGroupFromConversation: vi.fn(), listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])),
-      assignWorkGroupChild: vi.fn(), confirmWorkGroupConsolidation: vi.fn(), createWorkGroupPartialReport: vi.fn(),
+      assignWorkGroupChild: vi.fn(), confirmWorkGroupConsolidation: vi.fn(), confirmWorkGroupAcceptance: vi.fn(), createWorkGroupPartialReport: vi.fn(),
     };
     setup(port);
     expect(await screen.findByText(resultMessage.body)).toBeInTheDocument();
@@ -168,7 +168,7 @@ describe('office persistent project conversation', () => {
           parent_status: 'INBOX', source_sha256: resultSha, consolidation_ready: false, consolidation: null, partial_reports: [], children: [],
         },
       ])),
-      assignWorkGroupChild: vi.fn(), confirmWorkGroupConsolidation: vi.fn(), createWorkGroupPartialReport: vi.fn(),
+      assignWorkGroupChild: vi.fn(), confirmWorkGroupConsolidation: vi.fn(), confirmWorkGroupAcceptance: vi.fn(), createWorkGroupPartialReport: vi.fn(),
     };
     const onOpenBoard = setup(port);
     expect(await screen.findByText('Proyecto acordado')).toBeInTheDocument();
@@ -198,7 +198,7 @@ describe('office persistent project conversation', () => {
         .mockResolvedValueOnce(interrupted)
         .mockResolvedValueOnce(ready({ message_id: 'reply-1' })),
       createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(), createWorkGroupFromConversation: vi.fn(), proposeWorkGroupFromConversation: vi.fn(),
-      listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), assignWorkGroupChild: vi.fn(), confirmWorkGroupConsolidation: vi.fn(), createWorkGroupPartialReport: vi.fn(),
+      listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), assignWorkGroupChild: vi.fn(), confirmWorkGroupConsolidation: vi.fn(), confirmWorkGroupAcceptance: vi.fn(), createWorkGroupPartialReport: vi.fn(),
     };
     setup(port);
     await screen.findByText('Preparar el plan');
@@ -224,7 +224,7 @@ describe('office persistent project conversation', () => {
       streamCEOConversationTurn: vi.fn().mockResolvedValue(ready({ message_id: 'reply-recovered' })),
       createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(),
       createWorkGroupFromConversation: vi.fn(), proposeWorkGroupFromConversation: vi.fn(),
-      listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), assignWorkGroupChild: vi.fn(), confirmWorkGroupConsolidation: vi.fn(), createWorkGroupPartialReport: vi.fn(),
+      listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), assignWorkGroupChild: vi.fn(), confirmWorkGroupConsolidation: vi.fn(), confirmWorkGroupAcceptance: vi.fn(), createWorkGroupPartialReport: vi.fn(),
     };
     setup(port);
     await screen.findByText('Preparar el plan');
@@ -247,7 +247,7 @@ describe('office persistent project conversation', () => {
       createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(),
       createWorkGroupFromConversation: vi.fn(), proposeWorkGroupFromConversation: vi.fn(),
       listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), assignWorkGroupChild: vi.fn(),
-      confirmWorkGroupConsolidation: vi.fn(), createWorkGroupPartialReport: vi.fn(),
+      confirmWorkGroupConsolidation: vi.fn(), confirmWorkGroupAcceptance: vi.fn(), createWorkGroupPartialReport: vi.fn(),
     };
     setup(port);
     await waitFor(() => expect(port.streamCEOConversationTurn).toHaveBeenCalledTimes(1));
@@ -268,7 +268,7 @@ describe('office persistent project conversation', () => {
       createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(),
       createWorkGroupFromConversation: vi.fn(), proposeWorkGroupFromConversation: vi.fn(),
       listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), assignWorkGroupChild: vi.fn(),
-      confirmWorkGroupConsolidation: vi.fn(), createWorkGroupPartialReport: vi.fn(),
+      confirmWorkGroupConsolidation: vi.fn(), confirmWorkGroupAcceptance: vi.fn(), createWorkGroupPartialReport: vi.fn(),
     };
     setup(port);
     await screen.findByText('Preparar el plan');
@@ -288,7 +288,7 @@ describe('office persistent project conversation', () => {
       createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(),
       createWorkGroupFromConversation: vi.fn(), proposeWorkGroupFromConversation: vi.fn(),
       listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), assignWorkGroupChild: vi.fn(),
-      confirmWorkGroupConsolidation: vi.fn(), createWorkGroupPartialReport: vi.fn(),
+      confirmWorkGroupConsolidation: vi.fn(), confirmWorkGroupAcceptance: vi.fn(), createWorkGroupPartialReport: vi.fn(),
     };
     setup(port);
     expect(await screen.findByRole('button', { name: 'Reintentar si quedó interrumpida' })).toBeInTheDocument();
@@ -319,7 +319,7 @@ describe('office persistent project conversation', () => {
         },
         based_on_message_ids: ['message-1', 'message-2'], provider: 'openai-compatible', model: 'test-model', persisted_as_work: false,
       })),
-      listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), assignWorkGroupChild: vi.fn(), confirmWorkGroupConsolidation: vi.fn(), createWorkGroupPartialReport: vi.fn(),
+      listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), assignWorkGroupChild: vi.fn(), confirmWorkGroupConsolidation: vi.fn(), confirmWorkGroupAcceptance: vi.fn(), createWorkGroupPartialReport: vi.fn(),
     };
     setup(port);
     await screen.findByText('Propongo documentar los hallazgos.');
@@ -369,7 +369,7 @@ describe('office persistent project conversation', () => {
         },
         based_on_message_ids: ['message-1', 'message-2'], provider: 'openai-compatible', model: 'test-model', persisted_as_work: false,
       })),
-      listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), assignWorkGroupChild: vi.fn(), confirmWorkGroupConsolidation: vi.fn(), createWorkGroupPartialReport: vi.fn(),
+      listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), assignWorkGroupChild: vi.fn(), confirmWorkGroupConsolidation: vi.fn(), confirmWorkGroupAcceptance: vi.fn(), createWorkGroupPartialReport: vi.fn(),
     };
     setup(port);
     await screen.findByText('Acuerdo del hilo.');

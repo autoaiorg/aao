@@ -26,12 +26,105 @@ def test_one_pass_assigns_only_confirmed_groups_with_unassigned_children(monkeyp
         else calls.append((path, kwargs)) or {"assigned": [{"work_id": "w-1"}]}
     ))
 
-    assert coordinator.coordinate_once("project-1", "pm-1") == 1
+    assert coordinator.coordinate_once("project-1", "pm-1").assigned == 1
     assert len(calls) == 1
     assert calls[0][0] == (
         "/v1/agent/projects/project-1/work-groups/g-ready/assign-unassigned"
     )
     assert calls[0][1]["method"] == "POST"
+
+
+def test_one_pass_only_consolidates_ready_groups_when_explicitly_enabled(monkeypatch):
+    calls = []
+    groups = [
+        {
+            "id": "g-ready", "title": "Ready", "parent_status": "INBOX",
+            "source_sha256": "a" * 64, "consolidation_ready": True,
+            "consolidation": None,
+            "children": [{
+                "work_id": "w-done", "status": "DONE", "assigned_principal_id": "agent-1",
+                "executions": [{"id": "exec-1", "status": "DONE", "result_sha256": "b" * 64}],
+                "reviews": [{
+                    "id": "review-1", "decision": "APPROVE", "candidate_sha": "c" * 40,
+                    "evidence": "private auditor notes must not be copied into the summary",
+                }],
+                "evidence": "private work evidence must not be copied into the summary",
+            }],
+        },
+        {
+            "id": "g-not-ready", "parent_status": "INBOX", "source_sha256": "d" * 64,
+            "consolidation_ready": False, "consolidation": None,
+            "children": [{"work_id": "w-running", "status": "IN_PROGRESS"}],
+        },
+        {
+            "id": "g-already", "parent_status": "INBOX", "source_sha256": "e" * 64,
+            "consolidation_ready": True, "consolidation": {"id": "c-existing"},
+            "children": [{"work_id": "w-done-2", "status": "DONE"}],
+        },
+    ]
+
+    def fake_api(path, *, method="GET", body=None):
+        if path == "/v1/principals/me":
+            return {"principal_id": "pm-1"}
+        if path.endswith("/work-groups"):
+            return groups
+        calls.append((path, method, body))
+        return {"id": "consolidation-1", "created": True}
+
+    monkeypatch.setattr(coordinator, "api_call", fake_api)
+
+    default_result = coordinator.coordinate_once("project-1", "pm-1")
+    assert default_result.assigned == 0
+    assert default_result.consolidated == 0
+    assert calls == []
+
+    result = coordinator.coordinate_once(
+        "project-1", "pm-1", auto_consolidate=True,
+    )
+    assert result.assigned == 0
+    assert result.consolidated == 1
+    assert len(calls) == 1
+    path, method, body = calls[0]
+    assert path == "/v1/agent/projects/project-1/work-groups/g-ready/consolidation"
+    assert method == "POST"
+    assert body["expected_source_sha256"] == "a" * 64
+    assert body["summary"].startswith("Consolidación descriptiva automática")
+    assert "w-done" in body["summary"]
+    assert "c" * 40 in body["summary"]
+    assert "evidence" not in body["summary"].lower()
+    assert "private auditor notes" not in body["summary"]
+    assert "private work evidence" not in body["summary"]
+
+    coordinator.coordinate_once("project-1", "pm-1", auto_consolidate=True)
+    assert calls[1][2] == body
+
+
+def test_auto_consolidation_fails_closed_without_a_valid_source_digest(monkeypatch):
+    monkeypatch.setattr(coordinator, "api_call", lambda path, **kwargs: (
+        {"principal_id": "pm-1"} if path == "/v1/principals/me"
+        else [{"id": "g-ready", "parent_status": "INBOX", "source_sha256": "bad",
+               "consolidation_ready": True, "consolidation": None,
+               "children": [{"work_id": "w-1", "status": "DONE"}]}]
+    ))
+    with pytest.raises(coordinator.CoordinatorError, match="source digest"):
+        coordinator.coordinate_once("project-1", "pm-1", auto_consolidate=True)
+
+
+def test_auto_consolidation_reports_only_newly_created_records(monkeypatch):
+    group = {
+        "id": "g-ready", "parent_status": "INBOX", "source_sha256": "a" * 64,
+        "consolidation_ready": True, "consolidation": None,
+        "children": [{"work_id": "w-done", "status": "DONE"}],
+    }
+    monkeypatch.setattr(coordinator, "api_call", lambda path, **kwargs: (
+        {"principal_id": "pm-1"} if path == "/v1/principals/me"
+        else [group] if path.endswith("/work-groups")
+        else {"id": "consolidation-1", "created": False}
+    ))
+
+    result = coordinator.coordinate_once("project-1", "pm-1", auto_consolidate=True)
+
+    assert result.consolidated == 0
 
 
 def test_one_pass_fails_closed_if_token_identity_does_not_match_config(monkeypatch):
@@ -45,11 +138,11 @@ def test_watch_runs_again_until_stopped(monkeypatch):
     calls = []
     waits = []
 
-    def one_pass(project_id, principal_id):
+    def one_pass(project_id, principal_id, *, auto_consolidate=False):
         calls.append((project_id, principal_id))
         if len(calls) == 2:
             stop.set()
-        return len(calls)
+        return coordinator.CoordinatorPassResult(assigned=len(calls))
 
     monkeypatch.setattr(coordinator, "coordinate_once", one_pass)
     assert coordinator.run_watch(

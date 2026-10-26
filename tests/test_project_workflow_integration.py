@@ -913,6 +913,24 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         assert repeated_group.json()["created"] is False
         assert repeated_group.json()["id"] == group_body["id"]
         assert repeated_group.json()["parent_work_id"] == group_body["parent_work_id"]
+        with connect_postgres() as db:
+            planning_instance = db.execute(
+                "SELECT id,protocol_id,protocol_version,subject_type,subject_id,started_by "
+                "FROM protocol_instances WHERE subject_type='work_group' AND subject_id=%s",
+                (group_body["id"],),
+            ).fetchone()
+            planning_events = db.execute(
+                "SELECT details FROM events WHERE subject_id=%s AND kind='protocol.started'",
+                (group_body["id"],),
+            ).fetchall()
+        assert planning_instance is not None
+        assert (
+            planning_instance[1], planning_instance[2], planning_instance[3],
+            str(planning_instance[4]), planning_instance[5],
+        ) == ("planning-assignment", "1.0.0", "work_group", group_body["id"], "ceo")
+        assert len(planning_instance[0].hex) == 32
+        assert len(planning_events) == 1
+        assert planning_events[0][0]["protocol_instance_id"] == str(planning_instance[0])
         assert client.post(group_url, headers=ceo, json={
             **group_request, "description": "Same key, mutated payload",
         }).status_code == 409

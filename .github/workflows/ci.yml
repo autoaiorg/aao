@@ -35,43 +35,12 @@ jobs:
           # bwrap sandbox (repository checks, agent candidates) needs them on the disposable runner.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: python -m pip install -e '.[dev,postgres]'
-      - name: Apply PostgreSQL schema to the disposable CI database
+      - name: Apply PostgreSQL schema to the disposable CI database via unified migrator
         env:
           AAO_TEST_POSTGRES_URL: postgresql://aao_test@localhost:5432/aao_test
         run: |
-          for migration in db/postgres/001_foundation.sql \
-            db/postgres/002_dev_identity.sql \
-            db/postgres/003_execution.sql \
-            db/postgres/004_execution_guards.sql \
-            db/postgres/005_principal_credentials.sql; do
-            psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f "$migration"
-          done
-          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -c "INSERT INTO worker_registrations(worker_id,token_digest,enabled) VALUES ('legacy-ci-agent','f96fec142530f614fd37bdadb76c54cd017b1ccabb0d29164ef894447f36a81f',true)"
-          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/006_unified_execution_identity.sql
-          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/007_fence_leases_across_project_state_changes.sql
-          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/008_content_addressed_evidence.sql
-          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/009_prevent_evidence_truncation.sql
-          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/010_capability_registry.sql
-          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/011_sha_bound_reviews_and_veto.sql
-          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/012_patch_proposals.sql
-          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/013_work_description.sql
-          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/014_execution_retry.sql
-          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/015_organization_profiles.sql
-          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/016_project_conversations.sql
-          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/017_ceo_browser_sessions.sql
-          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/018_conversation_provider_metadata.sql
-          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/019_project_conversation_turns.sql
-          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/020_persistent_work_groups.sql
-          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/021_conversation_turn_leases.sql
-          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/022_work_item_assignments.sql
-          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/023_work_group_consolidations.sql
-          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/024_work_group_partial_reports.sql
-          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/025_work_item_due_dates.sql
-          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/026_capability_feedback_proposals.sql
-          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/027_capability_feedback_review.sql
-          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/028_capability_feedback_version_link.sql
-          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/029_organization_profile_competencies.sql
-          psql "$AAO_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -f db/postgres/030_conversation_work_group_results.sql
+          python scripts/migrate.py --apply --dsn "$AAO_TEST_POSTGRES_URL"
+          python scripts/migrate.py --verify --dsn "$AAO_TEST_POSTGRES_URL"
       - run: python -m compileall -q src tests
       - run: python -m ruff check src tests
       - name: Run unit and PostgreSQL integration tests with warnings as errors

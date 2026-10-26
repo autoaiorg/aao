@@ -40,25 +40,31 @@ def claim(worker_id: str, *, agent_credential: str, project_id: str,
     with connect_postgres() as db:
         verify_execution_principal(db, worker_id, agent_credential)
 
-        # Check host-worker cutover fencing status (Finding A-07)
+        # Check host-worker cutover fencing status (Finding A-07 / A-14)
         has_table = db.execute(
             "SELECT to_regclass('public.host_worker_bindings')"
         ).fetchone()[0]
+        host_fence_epoch = None
         if has_table:
             host_row = db.execute(
                 """
-                SELECT host_id, status FROM host_worker_bindings
+                SELECT host_id, status, fence_epoch FROM host_worker_bindings
                 WHERE worker_id = %s
                 ORDER BY created_at DESC LIMIT 1
                 FOR SHARE
                 """,
                 (worker_id,),
             ).fetchone()
-            if host_row and host_row[1] == "FENCED":
+            if not host_row:
+                raise ExecutionConflict(
+                    f"Worker '{worker_id}' has no registered host binding; execution rejected under fail-closed fencing."
+                )
+            if host_row[1] != "ACTIVE":
                 raise ExecutionConflict(
                     f"Worker '{worker_id}' is bound to fenced host '{host_row[0]}'. "
                     "Authority revoked via cutover fencing."
                 )
+            host_fence_epoch = host_row[2]
 
         grant = db.execute(
             "SELECT 1 FROM project_grants WHERE principal_id=%s AND project_id=%s "
@@ -108,13 +114,28 @@ def claim(worker_id: str, *, agent_credential: str, project_id: str,
             if input_data["check_id"] != "core-unit":
                 raise ExecutionConflict("Repository check is not allow-listed")
         token = str(uuid4())
-        expiry = db.execute(
-            "UPDATE execution_queue SET status='RUNNING',lease_token=%s,"
-            "worker_id=%s,lease_expires_at=clock_timestamp()+make_interval(secs => %s),"
-            "project_state_generation=%s,attempts=attempts+1 "
-            "WHERE id=%s RETURNING lease_expires_at",
-            (token, worker_id, seconds, project[1], eid),
-        ).fetchone()[0]
+        has_epoch_col = False
+        if has_table:
+            has_epoch_col = db.execute(
+                "SELECT 1 FROM information_schema.columns WHERE table_name='execution_queue' AND column_name='claim_fence_epoch'"
+            ).fetchone() is not None
+
+        if has_epoch_col:
+            expiry = db.execute(
+                "UPDATE execution_queue SET status='RUNNING',lease_token=%s,"
+                "worker_id=%s,lease_expires_at=clock_timestamp()+make_interval(secs => %s),"
+                "project_state_generation=%s,attempts=attempts+1,claim_fence_epoch=%s "
+                "WHERE id=%s RETURNING lease_expires_at",
+                (token, worker_id, seconds, project[1], host_fence_epoch, eid),
+            ).fetchone()[0]
+        else:
+            expiry = db.execute(
+                "UPDATE execution_queue SET status='RUNNING',lease_token=%s,"
+                "worker_id=%s,lease_expires_at=clock_timestamp()+make_interval(secs => %s),"
+                "project_state_generation=%s,attempts=attempts+1 "
+                "WHERE id=%s RETURNING lease_expires_at",
+                (token, worker_id, seconds, project[1], eid),
+            ).fetchone()[0]
         journal(db, eid, "claimed", {"worker_id": worker_id})
     return {"execution_id": eid, "work_id": work_id, "input": input_data,
             "token": token, "worker_id": worker_id,
@@ -126,25 +147,31 @@ def complete(execution_id: str, token: str, worker_id: str, result: dict,
     with connect_postgres() as db:
         verify_execution_principal(db, worker_id, agent_credential)
 
-        # Check host-worker cutover fencing status (Finding A-07)
+        # Check host-worker cutover fencing status (Finding A-07 / A-14)
         has_table = db.execute(
             "SELECT to_regclass('public.host_worker_bindings')"
         ).fetchone()[0]
+        host_fence_epoch = None
         if has_table:
             host_row = db.execute(
                 """
-                SELECT host_id, status FROM host_worker_bindings
+                SELECT host_id, status, fence_epoch FROM host_worker_bindings
                 WHERE worker_id = %s
                 ORDER BY created_at DESC LIMIT 1
                 FOR SHARE
                 """,
                 (worker_id,),
             ).fetchone()
-            if host_row and host_row[1] == "FENCED":
+            if not host_row:
+                raise ExecutionConflict(
+                    f"Worker '{worker_id}' has no registered host binding; execution rejected under fail-closed fencing."
+                )
+            if host_row[1] != "ACTIVE":
                 raise ExecutionConflict(
                     f"Worker '{worker_id}' is bound to fenced host '{host_row[0]}'. "
                     "Authority revoked via cutover fencing."
                 )
+            host_fence_epoch = host_row[2]
 
         execution = db.execute(
             "SELECT project_id,project_state_generation FROM execution_queue "
@@ -153,6 +180,19 @@ def complete(execution_id: str, token: str, worker_id: str, result: dict,
         ).fetchone()
         if not execution:
             raise ExecutionConflict("Execution not found")
+
+        if has_table and host_fence_epoch is not None:
+            has_epoch_col = db.execute(
+                "SELECT 1 FROM information_schema.columns WHERE table_name='execution_queue' AND column_name='claim_fence_epoch'"
+            ).fetchone() is not None
+            if has_epoch_col:
+                epoch_row = db.execute(
+                    "SELECT claim_fence_epoch FROM execution_queue WHERE id=%s", (execution_id,)
+                ).fetchone()
+                if epoch_row and epoch_row[0] is not None and host_fence_epoch != epoch_row[0]:
+                    raise ExecutionConflict(
+                        f"Host fencing epoch changed during task execution (claimed: {epoch_row[0]}, current: {host_fence_epoch}); lease invalidated."
+                    )
         assignment = db.execute(
             "SELECT w.parent_work_id,a.principal_id FROM execution_queue q "
             "JOIN work_items w ON w.id=q.work_id "

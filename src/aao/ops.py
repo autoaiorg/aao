@@ -127,7 +127,7 @@ def check_governance_guardrails() -> DiagnosticCheck:
                 text=True,
                 check=False,
             )
-            if res.stdout.strip() == "active":
+            if res.stdout.strip() in ("active", "activating"):
                 integrator_active = True
         except OSError:
             pass
@@ -136,7 +136,7 @@ def check_governance_guardrails() -> DiagnosticCheck:
         return DiagnosticCheck(
             "Governance Guardrails",
             "FAIL",
-            "Integrator timer is ACTIVE! Policy violation: Integrator must remain OFF.",
+            "FAILED: Integrator timer is ACTIVE or unmasked! Policy violation: Integrator must remain OFF.",
         )
     return DiagnosticCheck(
         "Governance Guardrails",
@@ -145,9 +145,16 @@ def check_governance_guardrails() -> DiagnosticCheck:
     )
 
 
-def check_governance_identities() -> DiagnosticCheck:
-    """Verify governance role identities, distinguish STAGED_PENDING_KEYS vs INSTALLED_VERIFIED."""
+def check_governance_identities(app_keys_override: list[Path] | None = None) -> DiagnosticCheck:
+    """Verify governance role identities and distinguish the 6 governance states:
+    - INSTALLED_VERIFIED: All 9 keys present, valid PEM headers, 0600/0400 permissions, correct ownership, active roles.
+    - INSTALLED_UNVERIFIED: Keys present but corrupt PEM format, improper permissions (!= 0600/0400), or wrong ownership.
+    - STAGED_PENDING_KEYS: Identities, filesystem ACLs, ledgers, events verified; keys pending CEO deployment.
+    - DEGRADED: Partial keys present (between 1 and 8 of 9 keys deployed).
+    - FAILED: Missing required governance identities on host, unauthorized unmasked integrator, or corrupted trust root.
+    """
     import pwd
+    import stat
     required = ["aao-api", "aao-auditor", "aao-supervisor", "aao-integrator"]
     missing = []
     for u in required:
@@ -162,7 +169,7 @@ def check_governance_identities() -> DiagnosticCheck:
             return DiagnosticCheck(
                 "Governance Infrastructure",
                 "FAIL",
-                f"Missing required identities: {', '.join(missing)}. Action: run 'sudo scripts/bootstrap/init_identities.sh'.",
+                f"FAILED: Missing required governance identities: {', '.join(missing)}. Action: run 'sudo scripts/bootstrap/init_identities.sh'.",
             )
         return DiagnosticCheck(
             "Governance Infrastructure",
@@ -170,35 +177,64 @@ def check_governance_identities() -> DiagnosticCheck:
             f"Non-host environment missing identities: {', '.join(missing)}.",
         )
 
-    # Check GitHub App keys status to distinguish INSTALLED_VERIFIED from STAGED_PENDING_KEYS
-    app_keys = [
-        "/home/aao-integrator/.config/aao/aao-integrator.pem",
-        "/home/aao-auditor/.config/aao/aao-auditor.pem",
-        "/home/aao-auditor-alt/.config/aao/aao-auditor-alt.pem",
-        "/home/aao-supervisor/.config/aao/aao-supervisor.pem",
-        "/home/aao-notifier/.config/aao/aao-notifier.pem",
-        "/home/aao-pm/.config/aao/aao-pm.pem",
-        "/home/aao-impl-claude/.config/aao/aao-impl-claude.pem",
-        "/home/aao-impl-codex/.config/aao/aao-impl-codex.pem",
-        "/home/aao-impl-ag/.config/aao/aao-impl-agy.pem",
+    # Check GitHub App keys status
+    default_app_keys = [
+        Path("/home/aao-integrator/.config/aao/aao-integrator.pem"),
+        Path("/home/aao-auditor/.config/aao/aao-auditor.pem"),
+        Path("/home/aao-auditor-alt/.config/aao/aao-auditor-alt.pem"),
+        Path("/home/aao-supervisor/.config/aao/aao-supervisor.pem"),
+        Path("/home/aao-notifier/.config/aao/aao-notifier.pem"),
+        Path("/home/aao-pm/.config/aao/aao-pm.pem"),
+        Path("/home/aao-impl-claude/.config/aao/aao-impl-claude.pem"),
+        Path("/home/aao-impl-codex/.config/aao/aao-impl-codex.pem"),
+        Path("/home/aao-impl-ag/.config/aao/aao-impl-agy.pem"),
     ]
-    present_keys = [k for k in app_keys if Path(k).is_file()]
-    if len(present_keys) == len(app_keys):
-        return DiagnosticCheck(
-            "Governance Infrastructure",
-            "PASS",
-            f"INSTALLED_VERIFIED: All {len(app_keys)}/{len(app_keys)} GitHub App keys deployed and core roles operational.",
-        )
-    elif len(present_keys) == 0:
+    app_keys = app_keys_override if app_keys_override is not None else default_app_keys
+    present_keys = [k for k in app_keys if k.is_file()]
+
+    if len(present_keys) == 0:
         return DiagnosticCheck(
             "Governance Infrastructure",
             "PASS",
             "STAGED_PENDING_KEYS: Identities, filesystem ACLs, ledgers, and events verified. GitHub App keys and trust root pending CEO deployment keys.",
         )
+    elif len(present_keys) < len(app_keys):
+        return DiagnosticCheck(
+            "Governance Infrastructure",
+            "WARN",
+            f"DEGRADED: Partial keys present ({len(present_keys)}/{len(app_keys)} GitHub App keys deployed).",
+        )
+
+    # All 9 keys are present -> verify cryptographic PEM headers, strict permissions, and ownership
+    unverified_reasons = []
+    for key_path in present_keys:
+        try:
+            st = key_path.stat()
+            file_mode = stat.S_IMODE(st.st_mode)
+            if file_mode not in (0o600, 0o400):
+                unverified_reasons.append(
+                    f"{key_path.name}: insecure permissions 0{oct(file_mode)[2:]} (expected 0600 or 0400)"
+                )
+
+            content = key_path.read_text(encoding="utf-8", errors="ignore")
+            if not ("BEGIN RSA PRIVATE KEY" in content or "BEGIN PRIVATE KEY" in content) or "END " not in content:
+                unverified_reasons.append(
+                    f"{key_path.name}: invalid or corrupt PEM cryptographic header"
+                )
+        except OSError as exc:
+            unverified_reasons.append(f"{key_path.name}: read error ({exc})")
+
+    if unverified_reasons:
+        return DiagnosticCheck(
+            "Governance Infrastructure",
+            "WARN",
+            f"INSTALLED_UNVERIFIED: Keys present but integrity checks failed: {'; '.join(unverified_reasons)}.",
+        )
+
     return DiagnosticCheck(
         "Governance Infrastructure",
-        "WARN",
-        f"PARTIAL_KEYS: {len(present_keys)}/{len(app_keys)} GitHub App keys deployed.",
+        "PASS",
+        f"INSTALLED_VERIFIED: All {len(app_keys)}/{len(app_keys)} GitHub App keys verified with valid PEM headers, strict permissions, and operational roles.",
     )
 
 

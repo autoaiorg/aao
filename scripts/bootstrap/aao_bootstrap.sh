@@ -51,7 +51,25 @@ done
 [[ -n "$CEO_USER" ]] || die "--ceo-user <name> must be specified (could not safely determine from SUDO_USER or logname)."
 id "$CEO_USER" >/dev/null 2>&1 || die "Configured CEO user '$CEO_USER' does not exist on this host."
 
-say "Starting AAO Bootstrap (APPLY=$APPLY, CEO_USER=$CEO_USER)..."
+# Mandatory Git commit revision resolution (Finding B-10)
+if [[ -z "$REV" ]]; then
+  if git -C "$REPO_DIR" rev-parse HEAD >/dev/null 2>&1; then
+    REV=$(git -C "$REPO_DIR" rev-parse HEAD)
+    say "Resolved Git commit revision from working tree: $REV"
+  elif [[ -f "$REPO_DIR/.git-rev" ]]; then
+    REV=$(tr -d '[:space:]' < "$REPO_DIR/.git-rev")
+    say "Resolved Git commit revision from .git-rev: $REV"
+  elif [[ -f /opt/aao/current/.git-rev ]]; then
+    REV=$(tr -d '[:space:]' < /opt/aao/current/.git-rev)
+    say "Resolved Git commit revision from /opt/aao/current/.git-rev: $REV"
+  else
+    die "Mandatory Git commit revision (--rev <40-hex>) could not be determined. Fail closed."
+  fi
+fi
+
+[[ "$REV" =~ ^[0-9a-f]{40}$ ]] || die "Invalid commit revision '$REV': must be 40 hexadecimal characters."
+
+say "Starting AAO Bootstrap (APPLY=$APPLY, CEO_USER=$CEO_USER, REV=$REV)..."
 
 # ------------------------------------------------------------------------------
 # STEP 0: Preflight checks
@@ -99,17 +117,14 @@ rollback_release() {
         rollback_errors+=("Python runtime verification failed in rolled-back environment")
       fi
 
-      # 4. Verify database schema compatibility with the rolled-back release
+      # 4. Verify database schema compatibility with the rolled-back release (Finding A-12)
       if [[ -f /etc/aao/aao-db.secret && -x /opt/aao/venv/bin/python ]]; then
         local db_pass
         db_pass=$(cat /etc/aao/aao-db.secret)
         local test_dsn="postgresql://aao_app:${db_pass}@127.0.0.1:5432/aao_prod"
-        say "Verifying schema compatibility for rolled-back release..."
+        say "Verifying strict schema compatibility for rolled-back release ($prev_dir)..."
         if ! /opt/aao/venv/bin/python "$prev_dir/scripts/migrate.py" --verify --dsn "$test_dsn" >/dev/null 2>&1; then
-          say "Notice: Database contains forward migrations; checking basic database connectivity..."
-          if ! /opt/aao/venv/bin/python -c "from aao.postgresql_connection import connect_postgres; db = connect_postgres(); db.execute('SELECT 1');" >/dev/null 2>&1; then
-            rollback_errors+=("Database connectivity / schema verification failed for rolled-back release")
-          fi
+          rollback_errors+=("Database schema is incompatible with rolled-back release ($prev_dir). Forward recovery required; destructive downgrade rejected.")
         fi
       fi
 
@@ -135,7 +150,10 @@ rollback_release() {
       fi
 
       # 6. Evaluate rollback outcome (fail closed on incomplete rollback)
+      mkdir -p /etc/aao /var/lib/aao 2>/dev/null || true
       if (( ${#rollback_errors[@]} > 0 )); then
+        echo "ROLLBACK_INCOMPLETE" > /var/lib/aao/rollback_status 2>/dev/null || true
+        echo "ROLLBACK_INCOMPLETE" > /etc/aao/rollback_status 2>/dev/null || true
         echo -e "\n\033[1;31mFAIL [ROLLBACK]: ROLLBACK INCOMPLETE / CRITICAL INCONSISTENCY DETECTED!\033[0m" >&2
         echo "The system could not be fully restored to a consistent operational state:" >&2
         for err in "${rollback_errors[@]}"; do
@@ -144,6 +162,8 @@ rollback_release() {
         exit 1
       fi
 
+      echo "ROLLBACK_SUCCESSFUL" > /var/lib/aao/rollback_status 2>/dev/null || true
+      echo "ROLLBACK_SUCCESSFUL" > /etc/aao/rollback_status 2>/dev/null || true
       say "PASS [ROLLBACK]: Rollback successfully verified: /opt/aao/current, Python runtime, and services restored to consistent operational state ($prev_dir)."
     fi
   fi
@@ -176,14 +196,16 @@ if id aao-trust >/dev/null 2>&1; then
   done
 fi
 
-if [[ -n "$REV" && -f "$REPO_DIR/scripts/bootstrap/host_bootstrap.sh" ]]; then
-  if [[ -n "${KEYS_DIR:-}" ]]; then
-    say "Executing full verified host governance bootstrap (host_bootstrap.sh --keys-dir $KEYS_DIR)..."
-    bash -p "$REPO_DIR/scripts/bootstrap/host_bootstrap.sh" --rev "$REV" --ceo-user "$CEO_USER" --keys-dir "$KEYS_DIR" --apply
-  else
-    say "Verifying host governance configuration (dry-run preflight without production keys)..."
-    bash -p "$REPO_DIR/scripts/bootstrap/host_bootstrap.sh" --rev "$REV" --ceo-user "$CEO_USER"
-  fi
+if [[ ! -f "$REPO_DIR/scripts/bootstrap/host_bootstrap.sh" ]]; then
+  die "Mandatory governance bootstrap script '$REPO_DIR/scripts/bootstrap/host_bootstrap.sh' is missing!"
+fi
+
+if [[ -n "${KEYS_DIR:-}" ]]; then
+  say "Executing full verified host governance bootstrap (host_bootstrap.sh --keys-dir $KEYS_DIR)..."
+  bash -p "$REPO_DIR/scripts/bootstrap/host_bootstrap.sh" --rev "$REV" --ceo-user "$CEO_USER" --keys-dir "$KEYS_DIR" --apply
+else
+  say "Verifying host governance configuration (dry-run preflight without production keys)..."
+  bash -p "$REPO_DIR/scripts/bootstrap/host_bootstrap.sh" --rev "$REV" --ceo-user "$CEO_USER"
 fi
 
 say "Verifying governance identity separation across core roles..."

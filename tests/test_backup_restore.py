@@ -166,7 +166,7 @@ def test_restore_requires_ceo_authorization_on_non_empty_database(tmp_path, monk
             )
 
         # 3. Fail if pre_verified_isolated is True but authorization artifact is missing (token alone is not authorization)
-        with pytest.raises(BackupError, match="requires an explicit, pre-issued structured CEO authorization artifact"):
+        with pytest.raises(BackupError, match="Separation of duties violation"):
             restore_backup(
                 archive,
                 "postgresql://user:pass@localhost/db",
@@ -321,14 +321,15 @@ def test_structured_restore_authorization_verification(tmp_path, monkeypatch):
     # 7. Reject when authorization artifact is omitted entirely (token alone is not authorization)
     ok, msg, _ = verify_destructive_restore_authorization(None, archive, "aao_prod", None, ceo_key)
     assert ok is False
-    assert "requires an explicit, pre-issued structured CEO authorization artifact" in msg
+    assert "Separation of duties violation" in msg
 
-    # 8. Prove atomic reservation succeeds when nonce is fresh (1 row inserted)
+    # 8. Prove atomic reservation succeeds when nonce is fresh
+    fresh_auth = create_restore_authorization(archive, "aao_prod", ceo_key, valid_minutes=60)
     mock_fresh_db = MagicMock()
     mock_fresh_cursor = MagicMock()
     mock_fresh_cursor.rowcount = 1
     mock_fresh_db.execute.return_value = mock_fresh_cursor
-    ok, msg, nonce = verify_destructive_restore_authorization(mock_fresh_db, archive, "aao_prod", valid_auth, ceo_key)
+    ok, msg, nonce = verify_destructive_restore_authorization(mock_fresh_db, archive, "aao_prod", fresh_auth, ceo_key)
     assert ok is True
     assert nonce is not None
 

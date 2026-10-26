@@ -238,10 +238,29 @@ def test_postgres_mandate_project_grant_work_admission(monkeypatch):
         assert created.status_code == 201, created.text
         wid = created.json()["id"]
         assert client.post(f"/v1/work/{wid}/admit").status_code == 403
+        from aao.postgresql_connection import connect_postgres
+        with connect_postgres() as db:
+            assert db.execute(
+                "SELECT 1 FROM protocol_instances WHERE protocol_id='implementation' AND subject_id=%s",
+                (wid,),
+            ).fetchone() is None
         admitted = client.post(f"/v1/work/{wid}/admit", headers=worker)
         assert admitted.status_code == 200, admitted.text
         assert admitted.json()["status"] == "READY"
         assert client.post(f"/v1/work/{wid}/admit", headers=worker).status_code == 409
+        with connect_postgres() as db:
+            implementation = db.execute(
+                "SELECT id,protocol_version,subject_type,started_by FROM protocol_instances "
+                "WHERE protocol_id='implementation' AND subject_id=%s", (wid,),
+            ).fetchone()
+            events = db.execute(
+                "SELECT details FROM events WHERE subject_id=%s AND kind='protocol.started'",
+                (wid,),
+            ).fetchall()
+        assert implementation is not None
+        assert implementation[1:] == ("1.0.0", "work_item", agent_id)
+        assert len(events) == 1
+        assert events[0][0]["protocol_instance_id"] == str(implementation[0])
         board = client.get(f"/v1/projects/{project}/board", headers=ceo)
         assert board.status_code == 200
         assert any(w["id"] == wid and w["status"] == "READY" for w in board.json())
@@ -318,6 +337,11 @@ def test_work_group_admission_waits_for_prerequisites_and_rejects_parent(monkeyp
         blocked = client.post(f"/v1/work/{ids['Dependent']}/admit", headers=worker)
         assert blocked.status_code == 409
         assert "Dependencies unresolved" in blocked.text
+        with connect_postgres() as db:
+            assert db.execute(
+                "SELECT 1 FROM protocol_instances WHERE protocol_id='implementation' "
+                "AND subject_id=%s", (ids["Dependent"],),
+            ).fetchone() is None
         assert client.post(f"/v1/work/{ids['Independent sibling']}/admit", headers=worker).status_code == 200
         assert client.post(f"/v1/work/{group['parent_work_id']}/admit", headers=worker).status_code == 409
 

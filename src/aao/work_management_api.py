@@ -3441,6 +3441,13 @@ def admit(work_id: str, principal: str = Depends(require_worker)):
         )
         if current != "INBOX" or decision.status != Admission.READY:
             raise HTTPException(409, f"Admission rejected: {decision.reason}")
+        start_work_protocol(
+            db,
+            protocol_id="implementation",
+            work_id=work_id,
+            started_by=str(principal),
+            request={"work_id": work_id, "project_id": str(project_id), "admitted_by": str(principal)},
+        )
         db.execute("UPDATE work_items SET status='READY' WHERE id=%s", (work_id,))
         audit(db, work_id, "work.admitted", {"principal_id": principal})
     return {"id": work_id, "status": "READY"}

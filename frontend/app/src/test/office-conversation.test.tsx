@@ -125,6 +125,27 @@ describe('office persistent project conversation', () => {
     expect(onOpenBoard).toHaveBeenCalledWith('project-active', 'work-linked');
   });
 
+  it('labels a persisted work-group result as an AAO result, not a provider reply', async () => {
+    const resultMessage = {
+      ...message, sender: 'AAO' as const, message_kind: 'WORK_GROUP_RESULT' as const,
+      body: 'Resultado del grupo de trabajo: resumen CEO. Snapshot de origen SHA-256: abc.',
+      related_work_id: 'parent-work', work_status: 'INBOX',
+    };
+    const port: AaoConversationPort = {
+      listProjectConversations: vi.fn().mockResolvedValue(ready([conversation])),
+      listAssignableAgents: vi.fn().mockResolvedValue(ready([])),
+      listConversationMessages: vi.fn().mockResolvedValue(ready([resultMessage])),
+      createProjectConversation: vi.fn(), appendCEOConversationMessage: vi.fn(), streamCEOConversationTurn: vi.fn(),
+      createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(), createWorkGroupFromConversation: vi.fn(),
+      proposeWorkGroupFromConversation: vi.fn(), listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])),
+      assignWorkGroupChild: vi.fn(), confirmWorkGroupConsolidation: vi.fn(), createWorkGroupPartialReport: vi.fn(),
+    };
+    setup(port);
+    expect(await screen.findByText(resultMessage.body)).toBeInTheDocument();
+    expect(screen.getByText('Origen: resultado de trabajo persistido en AAO')).toBeInTheDocument();
+    expect(screen.queryByText(/Proveedor:/)).not.toBeInTheDocument();
+  });
+
   it('shows execution status for tasks confirmed from the selected conversation without rendering result payloads', async () => {
     const resultSha = 'a'.repeat(64);
     const port: AaoConversationPort = {

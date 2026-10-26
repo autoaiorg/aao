@@ -270,7 +270,8 @@ export const OfficeConversationPanel: React.FC<OfficeConversationPanelProps> = (
         <strong>{message.sender}</strong><time dateTime={message.created_at}>{new Date(message.created_at).toLocaleString()}</time>
       </div>
       <p className="office-conversation-message__body">{message.body}</p>
-      {message.sender === 'AAO' && message.provider && (
+      {message.message_kind === 'WORK_GROUP_RESULT' && <small>Origen: resultado de trabajo persistido en AAO</small>}
+      {message.message_kind !== 'WORK_GROUP_RESULT' && message.sender === 'AAO' && message.provider && (
         <small>Proveedor: {message.provider}{message.model ? ` · modelo ${message.model}` : ''}</small>
       )}
       {message.turn_status === 'FAILED' && <p role="alert">La respuesta de AAO falló ({message.turn_error_code ?? 'ERROR'}). Puedes reenviar el mensaje para reintentar.</p>}

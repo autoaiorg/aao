@@ -70,6 +70,7 @@ export const OfficeWorkGroupPanel: React.FC<OfficeWorkGroupPanelProps> = ({ proj
     if (result.kind === 'ready') {
       setNotice('Consolidación CEO guardada y vinculada al snapshot de trabajos/evidencias. No cambia estados ni inicia ejecuciones.');
       await queryClient.invalidateQueries({ queryKey: ['office-work-groups', sessionId, selectedProjectId] });
+      await queryClient.invalidateQueries({ queryKey: ['office-conversation-messages', sessionId, selectedProjectId] });
     } else if (result.kind === 'error') {
       setNotice(`${result.code}: ${result.message}`);
       if (result.code === 'HTTP_409') {

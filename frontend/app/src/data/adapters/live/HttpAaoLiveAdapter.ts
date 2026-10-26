@@ -951,6 +951,7 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
     if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede leer conversaciones de proyecto.' };
     return this.request(`/v1/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/messages`, z.array(z.object({
       id: z.string().uuid(), sender: z.enum(['CEO', 'AAO']), body: z.string(),
+      message_kind: z.enum(['CHAT', 'WORK_GROUP_RESULT']).optional(),
       related_work_id: z.string().uuid().nullable(), work_status: z.string().nullable(),
       latest_execution: z.object({ id: z.string().uuid(), status: z.string(),
         backend: z.string().nullable(), provider: z.string().nullable(), model: z.string().nullable(),

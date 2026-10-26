@@ -36,6 +36,7 @@ describe('office persistent project conversation', () => {
       createWorkRequestFromConversation: vi.fn(),
       createWorkGroupFromConversation: vi.fn(),
       proposeWorkGroupFromConversation: vi.fn(),
+      listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), confirmWorkGroupConsolidation: vi.fn(),
     };
     setup(port);
     await screen.findByText('Preparar el plan');
@@ -60,6 +61,7 @@ describe('office persistent project conversation', () => {
         .mockResolvedValueOnce(interrupted)
         .mockResolvedValueOnce(ready({ message_id: 'reply-1' })),
       createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(), createWorkGroupFromConversation: vi.fn(), proposeWorkGroupFromConversation: vi.fn(),
+      listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), confirmWorkGroupConsolidation: vi.fn(),
     };
     setup(port);
     await screen.findByText('Preparar el plan');
@@ -85,6 +87,7 @@ describe('office persistent project conversation', () => {
       streamCEOConversationTurn: vi.fn().mockResolvedValue(ready({ message_id: 'reply-recovered' })),
       createWorkRequestFromMessage: vi.fn(), createWorkRequestFromConversation: vi.fn(),
       createWorkGroupFromConversation: vi.fn(), proposeWorkGroupFromConversation: vi.fn(),
+      listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), confirmWorkGroupConsolidation: vi.fn(),
     };
     setup(port);
     await screen.findByText('Preparar el plan');
@@ -117,6 +120,7 @@ describe('office persistent project conversation', () => {
         },
         based_on_message_ids: ['message-1', 'message-2'], provider: 'openai-compatible', model: 'test-model', persisted_as_work: false,
       })),
+      listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), confirmWorkGroupConsolidation: vi.fn(),
     };
     setup(port);
     await screen.findByText('Propongo documentar los hallazgos.');
@@ -164,6 +168,7 @@ describe('office persistent project conversation', () => {
         },
         based_on_message_ids: ['message-1', 'message-2'], provider: 'openai-compatible', model: 'test-model', persisted_as_work: false,
       })),
+      listProjectWorkGroups: vi.fn().mockResolvedValue(ready([])), confirmWorkGroupConsolidation: vi.fn(),
     };
     setup(port);
     await screen.findByText('Acuerdo del hilo.');

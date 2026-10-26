@@ -425,4 +425,34 @@ describe('HttpAaoLiveAdapter organization projection', () => {
       method: 'POST', headers: expect.objectContaining({ 'X-CEO-Token': 'ceo-token' }),
     }));
   });
+
+  it('reads and confirms durable work-group consolidations only in a CEO session', async () => {
+    const fetch = vi.spyOn(global, 'fetch');
+    const agent = new HttpAaoLiveAdapter({ getToken: () => 'agent-token', getAuthRole: () => 'AGENT' });
+    expect((await agent.listProjectWorkGroups('p')).kind).toBe('forbidden');
+    expect((await agent.confirmWorkGroupConsolidation('p', 'g', {
+      idempotency_key: '00000000-0000-4000-8000-000000000051', expected_source_sha256: 'a'.repeat(64), summary: 'CEO reviewed',
+    })).kind).toBe('forbidden');
+    expect(fetch).not.toHaveBeenCalled();
+
+    fetch.mockResolvedValueOnce({ status: 200, ok: true, json: async () => [] } as Response);
+    fetch.mockResolvedValueOnce({ status: 201, ok: true, json: async () => ({
+      id: '00000000-0000-4000-8000-000000000052', project_id: '00000000-0000-4000-8000-000000000053',
+      work_group_id: '00000000-0000-4000-8000-000000000054', parent_work_id: '00000000-0000-4000-8000-000000000055',
+      summary: 'CEO reviewed', source_sha256: 'a'.repeat(64), source_snapshot: { children: [] },
+      idempotency_key: '00000000-0000-4000-8000-000000000051', created_by: 'ceo',
+      created_at: '2026-10-26T00:00:00Z', created: true,
+    }) } as Response);
+    const ceo = new HttpAaoLiveAdapter({ getToken: () => 'ceo-token', getAuthRole: () => 'CEO', requireAuth: true });
+    expect((await ceo.listProjectWorkGroups('project/1')).kind).toBe('ready');
+    expect((await ceo.confirmWorkGroupConsolidation('project/1', 'group/1', {
+      idempotency_key: '00000000-0000-4000-8000-000000000051', expected_source_sha256: 'a'.repeat(64), summary: 'CEO reviewed',
+    })).kind).toBe('ready');
+    expect(fetch).toHaveBeenNthCalledWith(1, expect.stringContaining('/v1/projects/project%2F1/work-groups'), expect.objectContaining({
+      headers: expect.objectContaining({ 'X-CEO-Token': 'ceo-token' }),
+    }));
+    expect(fetch).toHaveBeenNthCalledWith(2, expect.stringContaining('/v1/projects/project%2F1/work-groups/group%2F1/consolidation'), expect.objectContaining({
+      method: 'POST', headers: expect.objectContaining({ 'X-CEO-Token': 'ceo-token', 'Content-Type': 'application/json' }),
+    }));
+  });
 });

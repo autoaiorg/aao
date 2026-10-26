@@ -15,7 +15,7 @@
 import type { AaoReadPort } from '../../ports/AaoReadPort';
 import type { AaoOrganizationCommandPort, OrganizationProfileCommand, OrganizationUnitCommand } from '../../ports/AaoOrganizationCommandPort';
 import type { AaoWorkCommandPort, CEOWorkRequest, CreatedWorkRequest } from '../../ports/AaoWorkCommandPort';
-import type { AaoConversationPort, AssignableAgent, ConversationWorkGroupInput, ConversationWorkGroupProposal, ConversationWorkGroupResult, ConversationWorkRequestInput, ConversationWorkRequestResult, ProjectConversation, ProjectConversationMessage } from '../../ports/AaoConversationPort';
+import type { AaoConversationPort, AssignableAgent, ConversationWorkGroupInput, ConversationWorkGroupProposal, ConversationWorkGroupResult, ConversationWorkRequestInput, ConversationWorkRequestResult, ProjectConversation, ProjectConversationMessage, ProjectWorkGroup, WorkGroupConsolidationResult } from '../../ports/AaoConversationPort';
 import type {
   PrincipalSummary,
   ProjectSummary,
@@ -1054,6 +1054,63 @@ export class HttpAaoLiveAdapter implements AaoReadPort, AaoOrganizationCommandPo
       }),
       { method: 'POST' },
       75_000,
+    );
+  }
+
+  async listProjectWorkGroups(projectId: string): Promise<DataState<ProjectWorkGroup[]>> {
+    if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede consultar equipos de trabajo.' };
+    const evidence = z.unknown();
+    const child = z.object({
+      work_id: z.string().uuid(), status: z.string(), evidence,
+      executions: z.array(z.object({
+        id: z.string().uuid(), status: z.string(), worker_id: z.string().nullable(),
+        result_sha256: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+      })),
+      reviews: z.array(z.object({
+        id: z.string().uuid(), decision: z.string(), candidate_sha: z.string().nullable(), evidence,
+      })),
+    });
+    return this.request(
+      `/v1/projects/${encodeURIComponent(projectId)}/work-groups`,
+      z.array(z.object({
+        id: z.string().uuid(), conversation_id: z.string().uuid(), parent_work_id: z.string().uuid(),
+        title: z.string(), parent_status: z.string(), source_sha256: z.string().regex(/^[0-9a-f]{64}$/),
+        consolidation_ready: z.boolean(), children: z.array(child),
+        consolidation: z.object({
+          id: z.string().uuid(), summary: z.string(), source_sha256: z.string(),
+          source_snapshot: z.object({ children: z.array(child) }), idempotency_key: z.string().uuid(),
+          created_by: z.string(), created_at: z.string(),
+        }).nullable(),
+      })),
+    );
+  }
+
+  async confirmWorkGroupConsolidation(
+    projectId: string,
+    groupId: string,
+    input: { idempotency_key: string; expected_source_sha256: string; summary: string },
+  ): Promise<DataState<WorkGroupConsolidationResult>> {
+    if (this.getAuthRole() !== 'CEO') return { kind: 'forbidden', reason: 'Solo la sesión CEO puede confirmar una consolidación.' };
+    const evidence = z.unknown();
+    const child = z.object({
+      work_id: z.string().uuid(), status: z.string(), evidence,
+      executions: z.array(z.object({
+        id: z.string().uuid(), status: z.string(), worker_id: z.string().nullable(),
+        result_sha256: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+      })),
+      reviews: z.array(z.object({
+        id: z.string().uuid(), decision: z.string(), candidate_sha: z.string().nullable(), evidence,
+      })),
+    });
+    return this.request(
+      `/v1/projects/${encodeURIComponent(projectId)}/work-groups/${encodeURIComponent(groupId)}/consolidation`,
+      z.object({
+        id: z.string().uuid(), project_id: z.string().uuid(), work_group_id: z.string().uuid(),
+        parent_work_id: z.string().uuid(), summary: z.string(), source_sha256: z.string(),
+        source_snapshot: z.object({ children: z.array(child) }), idempotency_key: z.string().uuid(),
+        created_by: z.string(), created_at: z.string(), created: z.boolean(),
+      }),
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) },
     );
   }
 

@@ -92,6 +92,7 @@ export interface VirtualOfficeViewProps {
   canCreateWorkRequest?: boolean;
   conversationPort?: AaoConversationPort;
   capabilityReadPort?: Pick<AaoReadPort, 'getProjectCapabilities'>;
+  activityReadPort?: Pick<AaoReadPort, 'getProjectActivity'>;
   conversationSessionId?: string;
   onCreateWorkRequest?: (projectId: string, input: CEOWorkRequest) => Promise<DataState<CreatedWorkRequest>>;
   onNavigate?: (target: 'organization' | 'kanban' | 'projects', projectId?: string) => void;

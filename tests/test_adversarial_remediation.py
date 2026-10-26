@@ -83,7 +83,7 @@ def test_scenario_01_concurrent_nonce_consumption(tmp_path, monkeypatch):
 # ==============================================================================
 # Scenario 2: Failure after consuming authorization nonce but before restore
 # ==============================================================================
-def test_scenario_02_failure_after_nonce_consumption(tmp_path, monkeypatch):
+def test_scenario_02_failure_after_nonce_consumption(tmp_path, monkeypatch, restore_test_signing_key):
     """Scenario 2: Failure occurs after consuming authorization nonce.
 
     Replay of the same authorization must fail closed immediately on retry,
@@ -99,7 +99,7 @@ def test_scenario_02_failure_after_nonce_consumption(tmp_path, monkeypatch):
         tar.add(dump_file, arcname="db.sql")
 
     authority_key = "authority-secret-key-1"
-    auth = create_restore_authorization(archive, "target_db", authority_key)
+    auth = create_restore_authorization(archive, "target_db", restore_test_signing_key)
 
     # First attempt: consumes the nonce
     ok, _msg, _nonce = verify_destructive_restore_authorization(
@@ -119,12 +119,13 @@ def test_scenario_02_failure_after_nonce_consumption(tmp_path, monkeypatch):
 # ==============================================================================
 # Scenario 3: Failed restore after partially modifying destination (compensated DB)
 # ==============================================================================
-def test_scenario_03_failed_restore_compensated_rollback(tmp_path, monkeypatch):
+def test_scenario_03_failed_restore_compensated_rollback(tmp_path, monkeypatch, restore_test_signing_key):
     """Scenario 3: PostgreSQL restore fails during psql execution.
 
     Safety snapshot taken prior to modification must be restored, reverting
     the target database to its pre-restore consistent state.
     """
+    monkeypatch.setenv("AAO_AUTH_STORE_DIR", str(tmp_path / "auth-store"))
     dump_file = tmp_path / "db.sql"
     dump_file.write_text("CREATE TABLE bad_table ();", encoding="utf-8")
     archive = tmp_path / "backup.tar.gz"
@@ -132,7 +133,7 @@ def test_scenario_03_failed_restore_compensated_rollback(tmp_path, monkeypatch):
         tar.add(dump_file, arcname="db.sql")
 
     authority_key = "auth-key-scenario-3"
-    auth = create_restore_authorization(archive, "aao_prod", authority_key)
+    auth = create_restore_authorization(archive, "aao_prod", restore_test_signing_key)
 
     call_counts = {"psql": 0, "pg_dump": 0}
 
@@ -185,11 +186,12 @@ def test_scenario_03_failed_restore_compensated_rollback(tmp_path, monkeypatch):
 # ==============================================================================
 # Scenario 4: Failure to publish restored artifacts (coordinated rollback)
 # ==============================================================================
-def test_scenario_04_failure_to_publish_artifacts_coordinated_rollback(tmp_path, monkeypatch):
+def test_scenario_04_failure_to_publish_artifacts_coordinated_rollback(tmp_path, monkeypatch, restore_test_signing_key):
     """Scenario 4: Restoration fails during artifact extraction.
 
     Both PostgreSQL and filesystem artifacts must be rolled back together.
     """
+    monkeypatch.setenv("AAO_AUTH_STORE_DIR", str(tmp_path / "auth-store"))
     dump_file = tmp_path / "db.sql"
     dump_file.write_text("SELECT 1;", encoding="utf-8")
 
@@ -206,7 +208,7 @@ def test_scenario_04_failure_to_publish_artifacts_coordinated_rollback(tmp_path,
     (target_artifacts / "original.txt").write_text("original-data", encoding="utf-8")
 
     authority_key = "auth-key-scenario-4"
-    auth = create_restore_authorization(archive, "aao_prod", authority_key)
+    auth = create_restore_authorization(archive, "aao_prod", restore_test_signing_key)
 
     psql_calls = []
 
@@ -317,7 +319,7 @@ def test_scenario_08_unbound_worker_fails_closed():
             m.fetchone.return_value = ["public.host_worker_bindings"]
         elif "FROM host_worker_bindings" in query:
             # Unbound worker: no rows found
-            m.fetchone.return_value = None
+            m.fetchall.return_value = []
         elif "information_schema.columns" in query:
             m.fetchone.return_value = [1]
         else:
@@ -330,17 +332,17 @@ def test_scenario_08_unbound_worker_fails_closed():
          patch("aao.execution_queue.verify_execution_principal"):
         mock_conn.return_value.__enter__.return_value = mock_db
 
-        with pytest.raises(ExecutionConflict, match="no registered host binding; execution rejected under fail-closed fencing"):
+        with pytest.raises(ExecutionConflict, match="exactly one active host binding"):
             claim("unregistered-worker", agent_credential="token", project_id="p-1")
 
-        with pytest.raises(ExecutionConflict, match="no registered host binding; execution rejected under fail-closed fencing"):
+        with pytest.raises(ExecutionConflict, match="exactly one active host binding"):
             complete("exec-1", "token-1", "unregistered-worker", {}, agent_credential="token")
 
     with patch("aao.external_effect_registry.connect_postgres") as mock_conn, \
          patch("aao.principal_credentials.authenticate_in_transaction", return_value="unregistered-worker"):
         mock_conn.return_value.__enter__.return_value = mock_db
 
-        with pytest.raises(EffectConflict, match="no registered host binding; effect proposal rejected under fail-closed fencing"):
+        with pytest.raises(EffectConflict, match="exactly one active host binding"):
             propose_external_effect(
                 execution_id="exec-1",
                 worker_id="unregistered-worker",
@@ -368,7 +370,7 @@ def test_scenario_09_competing_effect_idempotency_or_conflict():
             m.fetchone.return_value = ["public.host_worker_bindings"]
         elif "FROM host_worker_bindings" in query:
             # Active binding
-            m.fetchone.return_value = ["host-1", "ACTIVE", 1]
+            m.fetchall.return_value = [["host-1", "ACTIVE", 1]]
         elif "information_schema.columns" in query:
             m.fetchone.return_value = [1]
         elif "FROM execution_queue q" in query:
@@ -426,7 +428,7 @@ def test_scenario_10_fence_epoch_mismatch_fails_closed():
             m.fetchone.return_value = ["public.host_worker_bindings"]
         elif "FROM host_worker_bindings" in query:
             # Host binding currently has epoch 2 (incremented by host fencing)
-            m.fetchone.return_value = ["host-1", "ACTIVE", 2]
+            m.fetchall.return_value = [["host-1", "ACTIVE", 2]]
         elif "FROM execution_queue" in query and "claim_fence_epoch" in query:
             # Execution was claimed under epoch 1
             m.fetchone.return_value = [1]
@@ -444,7 +446,7 @@ def test_scenario_10_fence_epoch_mismatch_fails_closed():
          patch("aao.execution_queue.verify_execution_principal"):
         mock_conn.return_value.__enter__.return_value = mock_db
 
-        with pytest.raises(ExecutionConflict, match="Host fencing epoch changed during task execution"):
+        with pytest.raises(ExecutionConflict, match="Host fencing epoch is missing or changed"):
             complete("exec-1", "token-1", "w-1", {"conclusion": "success"}, agent_credential="cred")
 
 

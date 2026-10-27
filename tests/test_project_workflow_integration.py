@@ -524,7 +524,7 @@ def test_work_group_admission_waits_for_prerequisites_and_rejects_parent(monkeyp
     os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
     reason="PostgreSQL integration requires an explicitly disposable test database",
 )
-@pytest.mark.parametrize("active_status", ["QUEUED", "RUNNING"])
+@pytest.mark.parametrize("active_status", ["QUEUED", "RUNNING", "ATTEMPT_LIMIT", "NO_PROGRESS"])
 def test_agent_dispatches_only_its_assigned_and_pre_evaluated_work(monkeypatch, active_status):
     from aao.postgresql_connection import connect_postgres
     from aao.work_management_api import app
@@ -677,7 +677,7 @@ def test_agent_dispatches_only_its_assigned_and_pre_evaluated_work(monkeypatch, 
         assert item["status"] == "READY"
         assert len(item["executions"]) == 1
 
-        # An active high-priority job must not starve another independent child.
+        # Active or retry-blocked high-priority work must not starve an independent child.
         sibling_group = client.post(
             f"/v1/projects/{project}/conversations/{conversation}/work-groups",
             headers=ceo, json={
@@ -705,10 +705,19 @@ def test_agent_dispatches_only_its_assigned_and_pre_evaluated_work(monkeypatch, 
             },
         )
         assert sibling_evaluation.status_code == 201, sibling_evaluation.text
+        queue_status = "FAILED" if active_status in {"ATTEMPT_LIMIT", "NO_PROGRESS"} else active_status
+        if active_status == "ATTEMPT_LIMIT":
+            monkeypatch.setenv("AAO_AGENT_MAX_ATTEMPTS", "1")
         with connect_postgres() as db:
             db.execute("UPDATE work_items SET priority='HIGH' WHERE id=%s", (work_id,))
             db.execute("UPDATE execution_queue SET status=%s WHERE id=%s",
-                       (active_status, staged.json()["execution_id"]))
+                       (queue_status, staged.json()["execution_id"]))
+            if active_status == "NO_PROGRESS":
+                db.execute(
+                    "INSERT INTO execution_queue(id,work_id,project_id,status,input_json) "
+                    "SELECT %s,work_id,project_id,'FAILED',input_json FROM execution_queue WHERE id=%s",
+                    (str(uuid4()), staged.json()["execution_id"]),
+                )
         second = client.post("/v1/agent/dispatch-next", headers=workers[0], json={
             "project_id": project, "principal_id": agent_ids[0], "base_sha": base_sha,
         })
@@ -718,9 +727,74 @@ def test_agent_dispatches_only_its_assigned_and_pre_evaluated_work(monkeypatch, 
         assert second.json()["execution_id"] != staged.json()["execution_id"]
         with connect_postgres() as db:
             assert db.execute("SELECT count(*) FROM execution_queue WHERE work_id=%s",
-                              (work_id,)).fetchone()[0] == 1
+                              (work_id,)).fetchone()[0] == (2 if active_status == "NO_PROGRESS" else 1)
             assert db.execute("SELECT status FROM execution_queue WHERE id=%s",
-                              (staged.json()["execution_id"],)).fetchone()[0] == active_status
+                              (staged.json()["execution_id"],)).fetchone()[0] == queue_status
+        if queue_status == "FAILED":
+            expected_reason = "attempt limit" if active_status == "ATTEMPT_LIMIT" else "No progress"
+            with connect_postgres() as db:
+                blocks = db.execute(
+                    "SELECT details FROM events WHERE subject_id=%s AND kind='work.dispatch_blocked' "
+                    "ORDER BY created_at DESC,id DESC", (work_id,),
+                ).fetchall()
+            assert expected_reason in blocks[0][0]["reason"]
+            assert blocks[0][0]["principal_id"] == agent_ids[0]
+            assert blocks[0][0]["protocol_instance_id"]
+            # Polling again does not append the same unresolved retry blockage.
+            repeat = client.post("/v1/agent/dispatch-next", headers=workers[0], json={
+                "project_id": project, "principal_id": agent_ids[0], "base_sha": base_sha,
+            })
+            assert repeat.json()["execution_id"] == second.json()["execution_id"]
+            with connect_postgres() as db:
+                assert db.execute(
+                    "SELECT count(*) FROM events WHERE subject_id=%s AND kind='work.dispatch_blocked' "
+                    "AND details->>'reason'=%s", (work_id, blocks[0][0]["reason"]),
+                ).fetchone()[0] == 1
+            # All candidates blocked: preserve the first reason, with no new job.
+            monkeypatch.setenv("AAO_AGENT_MAX_ATTEMPTS", "1")
+            with connect_postgres() as db:
+                db.execute("UPDATE execution_queue SET status='FAILED' WHERE id=%s",
+                           (second.json()["execution_id"],))
+            all_blocked = client.post("/v1/agent/dispatch-next", headers=workers[0], json={
+                "project_id": project, "principal_id": agent_ids[0], "base_sha": base_sha,
+            })
+            assert all_blocked.status_code == 202
+            assert all_blocked.json()["status"] == "BLOCKED"
+            assert all_blocked.json()["work_id"] == work_id
+            assert "attempt limit" in all_blocked.json()["reason"]
+            from aao import work_management_api as api
+            real_stage = api.stage_agent_run
+
+            def revoke_after_staging_conflict(*args, **kwargs):
+                try:
+                    return real_stage(*args, **kwargs)
+                except HTTPException as exc:
+                    assert exc.status_code == 409
+                    with connect_postgres() as db:
+                        db.execute(
+                            "DELETE FROM project_grants WHERE project_id=%s AND principal_id=%s "
+                            "AND capability='work.admit'", (project, agent_ids[0]),
+                        )
+                    raise
+
+            with connect_postgres() as db:
+                event_count = db.execute(
+                    "SELECT count(*) FROM events WHERE subject_id IN (%s,%s) "
+                    "AND kind='work.dispatch_blocked'", (work_id, sibling_id),
+                ).fetchone()[0]
+            monkeypatch.setattr(api, "stage_agent_run", revoke_after_staging_conflict)
+            denied = client.post("/v1/agent/dispatch-next", headers=workers[0], json={
+                "project_id": project, "principal_id": agent_ids[0], "base_sha": base_sha,
+            })
+            assert denied.status_code == 403
+            with connect_postgres() as db:
+                assert db.execute(
+                    "SELECT count(*) FROM events WHERE subject_id IN (%s,%s) "
+                    "AND kind='work.dispatch_blocked'", (work_id, sibling_id),
+                ).fetchone()[0] == event_count
+                assert db.execute(
+                    "SELECT count(*) FROM execution_queue WHERE work_id=%s", (sibling_id,),
+                ).fetchone()[0] == 1
 
 
 @pytest.mark.skipif(

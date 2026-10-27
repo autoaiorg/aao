@@ -1,7 +1,9 @@
 # AAO: arquitectura Zero Trust y despliegue sin coste adicional
 
 **Fecha:** 2026-10-27. **Estado:** arquitectura de destino conforme a las instrucciones
-del CEO; propuesta de transporte y despliegue pendiente de aprobación. No acredita
+del CEO; dirección arquitectónica aprobada por el CEO el 2026-10-27. Worker Free +
+D1 Free es el candidato autorizado para construir y verificar, NO para desplegar.
+El despliegue externo sigue pendiente de autorización específica. No acredita
 instalación, exposición de servicios, cierre de B-2 ni aceptación del integrador.
 
 **Presupuesto adicional máximo: 0 €.** Ninguna contratación, dominio comprado,
@@ -204,3 +206,41 @@ dependientes → asignación PM → dos ejecuciones reales autorizadas → fallo
 recuperable → revisión/evidencia → consolidación → conversación original y vistas
 LIVE; reiniciar un componente sin duplicar. CI, fixtures y scripts instalables no
 sustituyen esta demostración. No se ha demostrado completa aún.
+
+
+## 8. Condiciones de la aprobación y entregable previo al despliegue
+
+El CEO aprueba la dirección, no la publicación. No volver a solicitar esta
+aprobación; presentar únicamente el paquete ejecutable cuando esté verificado.
+La construcción del transporte no desplaza al PM ni al ensayo funcional.
+
+| Requisito CEO | Evidencia necesaria antes de solicitar despliegue |
+|---|---|
+| 0 € sin conversión automática | Fuentes oficiales fechadas y comprobación de plan real Workers Free/D1 Free; detenerse ante trial, Paid o dependencia facturable. No basta con un límite de gasto configurable |
+| HMAC y durabilidad | Prueba con bytes originales no normalizados; cuerpo manipulado rechazado; escritura fallida nunca confirma recepción; original recuperable tras reiniciar proceso |
+| Secretos separados | Inventario de secretos y destinos; secreto webhook distinto de transporte; clave firmante supervisor solo local; ningún token AAO administrativo en receptor |
+| Atribución corroborada | Cliente GitHub independiente del relay y validación de repositorio/hook/GUID/actor inmutable/transición; desacuerdo, revocación o identidad desconocida mantienen estado provisional |
+| Buzón solo transporte | ACK solo tras recibo local protegido durable; ninguna consulta D1 decide autorización, tareas o aceptación |
+| Recuperación y lagunas | Checkpoints durables, reconciliación periódica, deduplicación y alerta explícita ante intervalo no cubierto; una cadena de commits no prueba por sí sola quién hizo cada push |
+| Resistencia | Ensayos de host/collector detenido, secreto revocado, cuerpo alterado, ACK perdido, entrega omitida, cuota agotada y recuperación fuera de retención |
+| Paquete reversible | SHA, recursos exactos, permisos mínimos de instalación y runtime, comandos completos de alta/verificación/parada/revocación, inventario de secretos sin valores, coste y límites |
+
+**Estado verificado por documentación pública el 2026-10-27:** Workers Free
+incluye 100.000 solicitudes diarias y 10 ms de CPU por invocación. D1 Free incluye
+5 millones de filas leídas/día, 100.000 escritas/día y 5 GB por cuenta; cada base
+Free tiene un máximo de 500 MB y Time Travel de 7 días. D1 devuelve errores al
+agotar las cuotas Free; cambiar a Paid es una acción distinta. Esto NO comprueba
+el plan de una cuenta concreta ni garantiza que los límites futuros no cambien.
+Antes del despliegue se verificará esa cuenta y cualquier condición de upgrade;
+no se afirma todavía haber completado esa comprobación.
+[Workers](https://developers.cloudflare.com/workers/platform/pricing/),
+[D1 precios](https://developers.cloudflare.com/d1/platform/pricing/),
+[D1 límites](https://developers.cloudflare.com/d1/platform/limits/),
+[D1 agotamiento Free](https://developers.cloudflare.com/d1/reference/faq/).
+
+**Límite de la recuperación:** ninguna solución puede demostrar desde un buzón
+comprometido la ausencia de todas las entregas si ya expiró la fuente independiente.
+Ese caso debe producir una laguna explícita/no aceptación, nunca un PASS inventado.
+Las pruebas locales de fallo no equivalen a un ensayo real con host apagado ni a
+verificación del runtime remoto. Ambos se registrarán por separado y los remotos
+solo se ejecutarán después de autorizar el despliegue.

@@ -15,6 +15,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from aao.github_delivery_corroboration import PushWebhookTrust, corroborate_push_delivery
 from aao.push_receipts import store_push_receipt
 
 
@@ -24,7 +25,9 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def drain_one(*, endpoint: str, pull_secret: bytes, github_secret: bytes,
-              directory: Path, repositories: set[str], private_key: str, opener=None) -> bool:
+              github_api_token: str, webhook_trust: PushWebhookTrust,
+              directory: Path, private_key: str, opener=None,
+              github_opener=None) -> bool:
     """Retrieve at most one receipt; failures never ack and may be retried idempotently."""
     url = urllib.parse.urlsplit(endpoint)
     if (url.scheme != "https" or not url.hostname or url.username or url.password
@@ -32,6 +35,9 @@ def drain_one(*, endpoint: str, pull_secret: bytes, github_secret: bytes,
         raise ValueError("relay must be an HTTPS origin without credentials or path")
     if len(pull_secret) < 32 or len(github_secret) < 32 or pull_secret == github_secret:
         raise ValueError("distinct relay and webhook secrets of at least 32 bytes required")
+    if (not isinstance(github_api_token, str) or not github_api_token.strip()
+            or github_api_token.encode() in (pull_secret, github_secret)):
+        raise ValueError("explicit independent GitHub API credential is required")
     transport = opener or urllib.request.build_opener(_NoRedirect())
 
     def request(method: str, path: str) -> bytes:
@@ -56,13 +62,19 @@ def drain_one(*, endpoint: str, pull_secret: bytes, github_secret: bytes,
     if not rows:
         return False
     row = rows[0]
+    if not isinstance(row, dict):
+        raise TypeError("invalid relay receipt")
     raw_body = base64.b64decode(row["body_base64"], validate=True)
     payload = json.loads(raw_body)
     repository = payload.get("repository", {}).get("full_name")
-    if repository not in repositories:
-        raise ValueError("relay repository is not allowlisted")
-    # HMAC is checked again over original bytes: relay cannot manufacture pushes.
-    store_push_receipt(directory, payload, repository=repository,
+    if repository != webhook_trust.repository:
+        raise ValueError("relay repository is not allowlisted by verified configuration")
+    confirmed_payload = corroborate_push_delivery(
+        token=github_api_token, trust=webhook_trust, delivery_guid=row.get("delivery_id"),
+        relay_payload=payload, opener=github_opener)
+    # HMAC protects the relayed original bytes; GitHub's separately fetched
+    # delivery corroborates the specific identity and ref-transition claims.
+    store_push_receipt(directory, confirmed_payload, repository=repository,
         delivery_id=row["delivery_id"], raw_body=raw_body, secret=github_secret,
         signature=row["signature"], private_key=private_key)
     request("POST", f"/receipts/{row['delivery_id'].lower()}/ack")

@@ -1,8 +1,8 @@
 # Conditional push transport prototype — NOT deployed
 
 Construction only, Phase 0 / B-2 recovery contribution, not gate acceptance.
-This is an alternative pending the CEO's definitive architecture decision.
-First validate private pull/reconciliation end-to-end. No account, domain,
+The CEO approved Worker Free + D1 Free as a candidate architecture on 2026-10-27,
+NOT its external deployment. First validate private pull/reconciliation end-to-end. No account, domain,
 endpoint, webhook, service, billing or administrator permission is configured here.
 No fact about the CEO's current Cloudflare account/domain is asserted.
 
@@ -57,8 +57,9 @@ A host outage leaves receipts pending remotely; restart pulls the oldest first.
 An invalid oldest receipt stalls collection (fail closed); do not silently ack
 or skip it. Investigate by a separately approved administrative procedure.
 
-Compromised receiver: the host revalidates original GitHub HMAC, so payload
-fabrication fails, but receiver can suppress/replay authentic data or deny service.
+Compromised receiver: because it holds the webhook secret, it can forge a valid
+GitHub HMAC as well as suppress/replay data or deny service. Host HMAC revalidation
+alone does NOT detect that fabrication; independent GitHub corroboration is required.
 Compromise of webhook secret can forge payloads: suspend intake, rotate the secret
 in GitHub and receiver and supervisor under CEO-approved procedure; reconcile
 with GitHub delivery records and AAO evidence before trusting affected intervals.

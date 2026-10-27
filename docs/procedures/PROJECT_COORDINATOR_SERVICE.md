@@ -71,12 +71,13 @@ se redactan para no publicar credenciales.
 
 La salida JSON contiene `PASS`, `MISSING` o `UNVERIFIED` y acciones concretas por comprobación;
 el código de salida es 1 mientras haya elementos pendientes. Es una fotografía, no una
-validación de autorización para ejecutar posteriormente. Comprueba migraciones 001..035,
+validación de autorización para ejecutar posteriormente. Comprueba un manifiesto local
+completo y sin números duplicados de migraciones 001..035,
 proyecto/mandato, credencial AGENT habilitada y grants vigentes (incluidos los sin caducidad
 que admite el backend). Los grants solo los concede el CEO. El rol de inspección, incluso
 si es un superusuario de desarrollo, **no** acredita el rol runtime. Si se especifica este,
 se comprueban flags elevados y privilegios de las tablas 033/035, incluido el rechazo de
-propiedad o DML público. La suficiencia global de permisos runtime sigue `UNVERIFIED`.
+propiedad, DELETE/TRUNCATE del rol o DML/TRUNCATE público. La suficiencia global de permisos runtime sigue `UNVERIFIED`.
 
 Los paths fijos `/srv/aao/frozen/aao-pm/{tree,venv}`, la unidad, configuración y tokens se
 inspeccionan únicamente mediante metadatos (tipo, propietario, modo y ancestros). No se

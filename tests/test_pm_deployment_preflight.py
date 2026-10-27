@@ -213,3 +213,52 @@ def test_metadata_permissions_pass_and_fail(monkeypatch):
     info.st_mode = stat.S_IFREG | 0o600
     ancestor.st_uid = 1002
     assert preflight.path_check("token", path, 1001, 0o600)["status"] == "MISSING"
+
+
+@pytest.mark.parametrize("manifest", ["absent", "empty", "missing-035", "duplicate-035"])
+def test_incomplete_or_duplicate_local_migration_manifest_never_passes(
+    monkeypatch, tmp_path, manifest
+):
+    monkeypatch.setattr(preflight, "ROOT", tmp_path)
+    directory = tmp_path / "db/postgres"
+    if manifest != "absent":
+        directory.mkdir(parents=True)
+    if manifest in ("missing-035", "duplicate-035"):
+        for number in range(1, 36 if manifest == "duplicate-035" else 35):
+            (directory / f"{number:03d}_migration.sql").touch()
+    if manifest == "duplicate-035":
+        (directory / "035_duplicate.sql").touch()
+    rows = by_name(preflight.database_checks(Database(), preflight.PROJECT_ID, None, None))
+    check = rows["db:migrations-001-035"]
+    assert check["status"] == "UNVERIFIED"
+    assert "manifest" in check["detail"].lower()
+    assert "All 001..035 recorded" not in check["detail"]
+
+
+@pytest.mark.parametrize("table", ["protocol_instances", "project_routines", "routine_occurrences"])
+def test_runtime_rejects_truncate(table):
+    db = Database()
+    db.execute("SET TRANSACTION READ ONLY")
+    execute = db.execute
+
+    def modified(sql, params=()):
+        if (
+            "has_table_privilege" in sql
+            and "'TRUNCATE'" in sql
+            and params == ("runtime", f"public.{table}")
+        ):
+            return Rows([(True,)])
+        return execute(sql, params)
+
+    db.execute = modified
+    rows = by_name(preflight.runtime_checks(db, "runtime"))
+    assert rows[f"db:runtime:{table}"]["status"] == "MISSING"
+
+
+def test_runtime_public_acl_check_includes_truncate():
+    db = Database()
+    db.execute("SET TRANSACTION READ ONLY")
+    preflight.runtime_checks(db, "runtime")
+    acl_queries = [sql for sql, _ in db.calls if "FROM pg_class" in sql]
+    assert len(acl_queries) == 3
+    assert all("'TRUNCATE'" in sql.split("a.privilege_type IN", 1)[1] for sql in acl_queries)

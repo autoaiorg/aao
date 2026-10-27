@@ -162,22 +162,35 @@ def database_checks(
         db.execute("SET TRANSACTION READ ONLY")
         rows = db.execute("SELECT version FROM schema_migrations").fetchall()
         applied = {r[0] for r in rows}
-        required = {
-            p.stem
+        manifest = [
+            p
             for p in (ROOT / "db/postgres").glob("*.sql")
             if p.name[:3].isdigit() and 1 <= int(p.name[:3]) <= 35
-        }
-        missing = sorted(required - applied)
-        checks.append(
-            result(
-                "db:migrations-001-035",
-                "MISSING" if missing else "PASS",
-                "Missing: " + ", ".join(missing) if missing else "All 001..035 recorded",
-                "Administrator apply missing migrations; preflight never applies them"
-                if missing
-                else "",
+        ]
+        numbers = [int(p.name[:3]) for p in manifest]
+        absent = sorted(set(range(1, 36)) - set(numbers))
+        duplicates = sorted({n for n in numbers if numbers.count(n) > 1})
+        if absent or duplicates:
+            checks.append(
+                result(
+                    "db:migrations-001-035",
+                    "UNVERIFIED",
+                    f"Invalid local migration manifest; absent numbers: {absent}; duplicate numbers: {duplicates}",
+                    "Restore complete unique local manifest 001..035 before checking installation",
+                )
             )
-        )
+        else:
+            missing = sorted({p.stem for p in manifest} - applied)
+            checks.append(
+                result(
+                    "db:migrations-001-035",
+                    "MISSING" if missing else "PASS",
+                    "Missing: " + ", ".join(missing) if missing else "All 001..035 recorded",
+                    "Administrator apply missing migrations; preflight never applies them"
+                    if missing
+                    else "",
+                )
+            )
         project = db.execute(
             "SELECT p.state, m.status FROM projects p JOIN mandates m ON m.id=p.mandate_id WHERE p.id=%s",
             (project_id,),
@@ -275,7 +288,7 @@ def runtime_checks(db, role: str | None) -> list[dict]:
         ("routine_occurrences", "SELECT,INSERT"),
     ):
         row = db.execute(
-            "SELECT has_table_privilege(%s, %s, 'DELETE'), pg_has_role(%s, c.relowner, 'USAGE'), EXISTS (SELECT 1 FROM aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) a WHERE a.grantee=0 AND a.privilege_type IN ('SELECT','INSERT','UPDATE','DELETE')) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname=%s",
+            "SELECT has_table_privilege(%s, %s, 'DELETE'), pg_has_role(%s, c.relowner, 'USAGE'), EXISTS (SELECT 1 FROM aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) a WHERE a.grantee=0 AND a.privilege_type IN ('SELECT','INSERT','UPDATE','DELETE','TRUNCATE')) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname=%s",
             (role, f"public.{table}", role, table),
         ).fetchone()
         if row is None:
@@ -288,7 +301,10 @@ def runtime_checks(db, role: str | None) -> list[dict]:
                 )
             )
             continue
-        allowed = not row[0] and not row[1] and not row[2]
+        truncate = db.execute(
+            "SELECT has_table_privilege(%s, %s, 'TRUNCATE')", (role, f"public.{table}")
+        ).fetchone()[0]
+        allowed = not row[0] and not row[1] and not row[2] and not truncate
         for privilege in needed.split(","):
             allowed = (
                 bool(
@@ -310,7 +326,7 @@ def runtime_checks(db, role: str | None) -> list[dict]:
             result(
                 f"db:runtime:{table}",
                 "PASS" if allowed else "MISSING",
-                f"Requires {needed}; no PUBLIC DML/ownership/DELETE"
+                f"Requires {needed}; no PUBLIC DML/TRUNCATE, ownership or DELETE/TRUNCATE"
                 + ("/UPDATE" if table == "protocol_instances" else ""),
                 "Administrator review explicit grants; 033/035 revoke PUBLIC",
             )

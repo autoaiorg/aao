@@ -524,7 +524,8 @@ def test_work_group_admission_waits_for_prerequisites_and_rejects_parent(monkeyp
     os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
     reason="PostgreSQL integration requires an explicitly disposable test database",
 )
-def test_agent_dispatches_only_its_assigned_and_pre_evaluated_work(monkeypatch):
+@pytest.mark.parametrize("active_status", ["QUEUED", "RUNNING"])
+def test_agent_dispatches_only_its_assigned_and_pre_evaluated_work(monkeypatch, active_status):
     from aao.postgresql_connection import connect_postgres
     from aao.work_management_api import app
 
@@ -675,6 +676,51 @@ def test_agent_dispatches_only_its_assigned_and_pre_evaluated_work(monkeypatch):
         item = next(row for row in board if row["id"] == work_id)
         assert item["status"] == "READY"
         assert len(item["executions"]) == 1
+
+        # An active high-priority job must not starve another independent child.
+        sibling_group = client.post(
+            f"/v1/projects/{project}/conversations/{conversation}/work-groups",
+            headers=ceo, json={
+                "idempotency_key": str(uuid4()), "title": "Independent second plan",
+                "description": "Dispatch while another task is active",
+                "acceptance_criteria": ["Independent tasks can both reach the queue"],
+                "tasks": [{"key": "second", "title": "Independent second task",
+                           "acceptance_criteria": ["Dispatch without duplicating the first job"]}],
+            },
+        )
+        assert sibling_group.status_code == 201, sibling_group.text
+        sibling_id = sibling_group.json()["tasks"][0]["id"]
+        assert client.put(f"/v1/work/{sibling_id}/assignment", headers=ceo, json={
+            "principal_id": agent_ids[0],
+        }).status_code == 200
+        sibling_evaluation = client.post(
+            f"/v1/projects/{project}/capability-evaluations", headers=workers[0], json={
+                "task_id": sibling_id,
+                "options": [{"choice": choice, "fit": fit, "security": fit, "cost": fit,
+                             "time": fit, "tokens": fit, "maintenance": fit}
+                            for choice, fit in (("reuse", 5), ("adapt", 3), ("build", 1))],
+                "rationale": "Use the registered fixture runner for the independent test task.",
+                "evidence": ["repository capability contract"],
+                "capability_id": "aao.agent-runner", "version": "1.0.0",
+            },
+        )
+        assert sibling_evaluation.status_code == 201, sibling_evaluation.text
+        with connect_postgres() as db:
+            db.execute("UPDATE work_items SET priority='HIGH' WHERE id=%s", (work_id,))
+            db.execute("UPDATE execution_queue SET status=%s WHERE id=%s",
+                       (active_status, staged.json()["execution_id"]))
+        second = client.post("/v1/agent/dispatch-next", headers=workers[0], json={
+            "project_id": project, "principal_id": agent_ids[0], "base_sha": base_sha,
+        })
+        assert second.status_code == 202, second.text
+        assert second.json()["work_id"] == sibling_id
+        assert second.json()["status"] == "QUEUED"
+        assert second.json()["execution_id"] != staged.json()["execution_id"]
+        with connect_postgres() as db:
+            assert db.execute("SELECT count(*) FROM execution_queue WHERE work_id=%s",
+                              (work_id,)).fetchone()[0] == 1
+            assert db.execute("SELECT status FROM execution_queue WHERE id=%s",
+                              (staged.json()["execution_id"],)).fetchone()[0] == active_status
 
 
 @pytest.mark.skipif(

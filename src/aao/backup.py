@@ -965,21 +965,52 @@ def ensure_host_worker_registry(db: Any) -> None:
         "SELECT 1 FROM information_schema.columns WHERE table_schema='public' "
         "AND table_name='execution_queue' AND column_name='claim_fence_epoch'"
     ).fetchone()
-    if not registry or registry[0] is None or not epoch:
-        raise BackupError("Host fencing schema is unavailable; apply PostgreSQL migration 031")
+    conversation_lease_host = db.execute(
+        "SELECT 1 FROM information_schema.columns WHERE table_schema='public' "
+        "AND table_name='project_conversation_turns' AND column_name='lease_host_id'"
+    ).fetchone()
+    conversation_lease_epoch = db.execute(
+        "SELECT 1 FROM information_schema.columns WHERE table_schema='public' "
+        "AND table_name='project_conversation_turns' AND column_name='lease_fence_epoch'"
+    ).fetchone()
+    if (
+        not registry or registry[0] is None or not epoch
+        or not conversation_lease_host or not conversation_lease_epoch
+    ):
+        raise BackupError(
+            "Host fencing schema is unavailable; apply PostgreSQL migrations 031 and 032"
+        )
+
+
+def active_host_fence_epoch(db: Any, host_id: str) -> int:
+    """Return and lock the active fence epoch for a local host, or fail closed."""
+    rows = db.execute(
+        "SELECT fence_epoch FROM host_worker_bindings "
+        "WHERE host_id=%s AND status='ACTIVE' ORDER BY fence_epoch DESC FOR SHARE",
+        (host_id,),
+    ).fetchall()
+    if not rows or any(row[0] is None for row in rows):
+        raise BackupError(f"Host '{host_id}' has no active fencing registration")
+    epochs = {int(row[0]) for row in rows}
+    if len(epochs) != 1:
+        raise BackupError(f"Host '{host_id}' has inconsistent active fencing epochs")
+    return epochs.pop()
 
 
 def register_host_worker(db: Any, host_id: str, worker_id: str) -> None:
     """Explicitly register a worker identity as bound to a specific host machine."""
+    db.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (host_id,))
     ensure_host_worker_registry(db)
     db.execute(
         """
         INSERT INTO host_worker_bindings (host_id, worker_id, status, fence_epoch)
-        VALUES (%s, %s, 'ACTIVE', 1)
+        SELECT %s, %s, 'ACTIVE', COALESCE(MAX(fence_epoch), 1)
+        FROM host_worker_bindings WHERE host_id=%s
         ON CONFLICT (host_id, worker_id) DO UPDATE
-        SET status = 'ACTIVE', fenced_at = NULL;
+        SET status = 'ACTIVE', fenced_at = NULL,
+            fence_epoch = GREATEST(host_worker_bindings.fence_epoch, EXCLUDED.fence_epoch);
         """,
-        (host_id, worker_id),
+        (host_id, worker_id, host_id),
     )
 
 
@@ -994,6 +1025,7 @@ def apply_host_fencing(
     Increments fence_epoch to guarantee that any in-flight execution fails closed.
     """
     actions = []
+    db.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (host_identifier,))
     ensure_host_worker_registry(db)
 
     # 1. Identify all workers explicitly bound to this host
@@ -1054,15 +1086,20 @@ def apply_host_fencing(
     else:
         actions.append(f"execution_queue: no in-flight tasks for host '{host_identifier}'")
 
-    # 5. Expire conversation turn leases
+    # 5. Revoke only conversation turns leased by this host. Older turns with
+    # no recorded host are left for ordinary lease expiry/recovery; fencing
+    # must not revoke unrelated hosts' provider work.
     db.execute(
         """
         UPDATE project_conversation_turns
-        SET lease_expires_at = clock_timestamp() - INTERVAL '1 second'
-        WHERE lease_expires_at > clock_timestamp()
-        """
+        SET lease_owner = NULL,
+            lease_expires_at = clock_timestamp() - INTERVAL '1 second',
+            lease_fence_epoch = NULL,
+            updated_at = clock_timestamp()
+        WHERE lease_host_id = %s AND state = 'PENDING'
+        """, (host_identifier,)
     )
-    actions.append("conversation_turns: expired active leases")
+    actions.append(f"conversation_turns: revoked active leases for host '{host_identifier}'")
 
     # 6. Record host fencing audit event
     from uuid import uuid4

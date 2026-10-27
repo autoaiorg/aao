@@ -18,8 +18,13 @@ never rerun an applied migration. The scripts are one-shot, not a general
 schema-repair or rollback tool. If an interrupted migration leaves ambiguous
 state, stop and inspect the database rather than rerunning it blindly.
 
-Migration 031 installs the fencing schema but intentionally does not bind an
-agent identity to a host. Before enabling a worker or W2 GitHub publisher, an
+Migration 031 installs the host registry and execution-claim fencing; migration
+032 binds conversation-turn leases to host and fence epoch. It also expires
+legacy pending leases without host attribution so the new release can reclaim
+them safely. The integral bootstrap stops the API and recovery worker before
+the 032 migration and starts the API only after applying and verifying the
+schema. Migration 031 intentionally does not bind an agent identity to a host.
+Before enabling a worker or W2 GitHub publisher, an
 operator must register its exact principal and host with
 `aao-ops register-host-worker --worker-id <principal-id> --host-id <host-id>`.
 Claims, effect proposals and W2 remote publication fail closed until that
@@ -45,15 +50,15 @@ python -m pip install -e '.[postgres]'
 # Check migration status (applied vs pending)
 python scripts/migrate.py --status
 
-# Apply pending migrations (001 to 031) with advisory locks and integrity verification
+# Apply pending migrations with advisory locks and integrity verification
 python scripts/migrate.py --apply
 
 # Verify that all migrations in db/postgres/ are applied with intact SHA-256 checksums
 python scripts/migrate.py --verify
 ```
 
-### Full Migration Catalog (001 to 031):
-The current canonical catalog comprises 31 versioned migrations in `db/postgres/`:
+### Full Migration Catalog:
+The canonical catalog is the ordered set of versioned migrations in `db/postgres/`:
 - `001_foundation`: Core tables (`schema_migrations`, `mandates`, `projects`, `principals`, `events`).
 - `002_dev_identity`: Relaxed UUID identities to text development identities.
 - `003_execution`: Execution queue and status lifecycle.
@@ -85,6 +90,7 @@ The current canonical catalog comprises 31 versioned migrations in `db/postgres/
 - `029_organization_profile_competencies`: Agent skills, competencies, and specialization tags.
 - `030_conversation_work_group_results`: Grounding conversation outcomes to persisted work group executions.
 - `031_host_worker_fencing`: Versioned host-worker binding registry, unique active worker binding, and execution claim fencing epoch.
+- `032_conversation_turn_host_fencing`: Binds provider-backed conversation leases to host/fence epoch and expires un-attributed legacy leases.
 
 For an existing database, apply only migrations absent from
 `schema_migrations`, preserving the same order. The LIVE organization

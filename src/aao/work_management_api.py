@@ -21,12 +21,14 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from aao.backup import BackupError, active_host_fence_epoch
 from aao.capability_contracts import missing_contract_fields, model_profile_errors
 from aao.capability_evaluation import recommend
 from aao.conversation_turns import (
     CONVERSATION_TURN_HEARTBEAT_SECONDS,
     CONVERSATION_TURN_LEASE_SECONDS,
 )
+from aao.host_identity import HostIdentityError, current_host_id
 from aao.planner import Admission, decide_admission
 from aao.review import evaluate_review
 
@@ -2235,6 +2237,11 @@ def stream_project_conversation_turn(
     from aao.conversation_provider import ProviderUnavailable, stream_reply
     from aao.conversation_turn_recovery import build_conversation_prompt
 
+    try:
+        lease_host_id = current_host_id()
+    except HostIdentityError as exc:
+        raise HTTPException(503, "Trusted local host identity unavailable") from exc
+
     request_hash = hashlib.sha256(payload.body.encode("utf-8")).hexdigest()
     provider = os.getenv("AAO_CONVERSATION_PROVIDER", "openai-compatible")
     model = os.getenv("AAO_CONVERSATION_MODEL", "")
@@ -2244,6 +2251,10 @@ def stream_project_conversation_turn(
     turn_id: str | None = None
     prompt_messages: list[dict[str, str]] = []
     with tx() as db:
+        try:
+            lease_fence_epoch = active_host_fence_epoch(db, lease_host_id)
+        except BackupError as exc:
+            raise HTTPException(503, "Local host is fenced or unregistered") from exc
         row = db.execute(
             "SELECT p.state FROM project_conversations c JOIN projects p ON p.id=c.project_id "
             "WHERE c.id=%s AND c.project_id=%s FOR UPDATE OF c",
@@ -2269,11 +2280,13 @@ def stream_project_conversation_turn(
             if existing[1] == "PENDING":
                 claimed = db.execute(
                     "UPDATE project_conversation_turns SET lease_owner=%s,"
+                    "lease_host_id=%s,lease_fence_epoch=%s,"
                     "lease_expires_at=clock_timestamp()+(%s * interval '1 second'),"
                     "updated_at=clock_timestamp() "
                     "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING' "
                     "AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp()) RETURNING id",
-                    (lease_owner, CONVERSATION_TURN_LEASE_SECONDS, conversation_id,
+                    (lease_owner, lease_host_id, lease_fence_epoch,
+                     CONVERSATION_TURN_LEASE_SECONDS, conversation_id,
                      payload.idempotency_key),
                 ).fetchone()
                 if not claimed:
@@ -2298,10 +2311,11 @@ def stream_project_conversation_turn(
                 user_message_id = str(existing[5])
                 db.execute(
                     "UPDATE project_conversation_turns SET state='PENDING',error_code=NULL,"
-                    "lease_owner=%s,lease_expires_at=clock_timestamp()+(%s * interval '1 second'),"
+                    "lease_owner=%s,lease_host_id=%s,lease_fence_epoch=%s,"
+                    "lease_expires_at=clock_timestamp()+(%s * interval '1 second'),"
                     "updated_at=clock_timestamp() "
                     "WHERE conversation_id=%s AND idempotency_key=%s",
-                    (lease_owner, CONVERSATION_TURN_LEASE_SECONDS,
+                    (lease_owner, lease_host_id, lease_fence_epoch, CONVERSATION_TURN_LEASE_SECONDS,
                      conversation_id, payload.idempotency_key),
                 )
                 history = db.execute(
@@ -2320,11 +2334,12 @@ def stream_project_conversation_turn(
             )
             db.execute(
                 "INSERT INTO project_conversation_turns(id,conversation_id,idempotency_key,"
-                "request_sha256,user_message_id,state,provider,model,lease_owner,lease_expires_at) "
-                "VALUES (%s,%s,%s,%s,%s,'PENDING',%s,%s,%s,"
+                "request_sha256,user_message_id,state,provider,model,lease_owner,lease_host_id,"
+                "lease_fence_epoch,lease_expires_at) "
+                "VALUES (%s,%s,%s,%s,%s,'PENDING',%s,%s,%s,%s,%s,"
                 "clock_timestamp()+(%s * interval '1 second'))",
                 (turn_id, conversation_id, payload.idempotency_key, request_hash,
-                 user_message_id, provider, model, lease_owner,
+                 user_message_id, provider, model, lease_owner, lease_host_id, lease_fence_epoch,
                  CONVERSATION_TURN_LEASE_SECONDS),
             )
             history = db.execute(
@@ -2363,13 +2378,17 @@ def stream_project_conversation_turn(
             while not stop_heartbeat.wait(CONVERSATION_TURN_HEARTBEAT_SECONDS):
                 try:
                     with tx() as db:
+                        if active_host_fence_epoch(db, lease_host_id) != lease_fence_epoch:
+                            lease_lost.set()
+                            return
                         updated = db.execute(
                             "UPDATE project_conversation_turns SET lease_expires_at="
                             "clock_timestamp()+(%s * interval '1 second'),updated_at=clock_timestamp() "
                             "WHERE conversation_id=%s AND idempotency_key=%s "
-                            "AND lease_owner=%s AND state='PENDING'",
+                            "AND lease_owner=%s AND lease_host_id=%s AND lease_fence_epoch=%s "
+                            "AND state='PENDING'",
                             (CONVERSATION_TURN_LEASE_SECONDS, conversation_id,
-                             payload.idempotency_key, lease_owner),
+                             payload.idempotency_key, lease_owner, lease_host_id, lease_fence_epoch),
                         ).rowcount
                     if not updated:
                         lease_lost.set()
@@ -2394,11 +2413,14 @@ def stream_project_conversation_turn(
             body = "".join(answer).strip()
             if not body:
                 with tx() as db:
+                    current_epoch = active_host_fence_epoch(db, lease_host_id)
                     changed = db.execute(
                         "UPDATE project_conversation_turns SET state='FAILED',error_code='EMPTY_PROVIDER_RESPONSE',"
-                        "lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp() "
-                        "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING' AND lease_owner=%s",
-                        (conversation_id, payload.idempotency_key, lease_owner),
+                        "lease_owner=NULL,lease_expires_at=NULL,lease_fence_epoch=NULL,updated_at=clock_timestamp() "
+                        "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING' "
+                        "AND lease_owner=%s AND lease_host_id=%s AND lease_fence_epoch=%s",
+                        (conversation_id, payload.idempotency_key, lease_owner, lease_host_id,
+                         lease_fence_epoch if current_epoch == lease_fence_epoch else -1),
                     )
                     if changed.rowcount:
                         audit(db, conversation_id, "conversation.turn.failed", {
@@ -2408,6 +2430,7 @@ def stream_project_conversation_turn(
                 yield "event: error\ndata: {\"code\":\"EMPTY_PROVIDER_RESPONSE\"}\n\n"
                 return
             with tx() as db:
+                current_epoch = active_host_fence_epoch(db, lease_host_id)
                 db.execute(
                     "INSERT INTO project_conversation_messages(id,conversation_id,sender,body,provider,model) "
                     "VALUES (%s,%s,'AAO',%s,%s,%s)",
@@ -2415,9 +2438,11 @@ def stream_project_conversation_turn(
                 )
                 db.execute(
                     "UPDATE project_conversation_turns SET state='COMPLETED',assistant_message_id=%s,"
-                    "lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp() "
-                    "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING' AND lease_owner=%s",
-                    (response_id, conversation_id, payload.idempotency_key, lease_owner),
+                    "lease_owner=NULL,lease_expires_at=NULL,lease_fence_epoch=NULL,updated_at=clock_timestamp() "
+                    "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING' "
+                    "AND lease_owner=%s AND lease_host_id=%s AND lease_fence_epoch=%s",
+                    (response_id, conversation_id, payload.idempotency_key, lease_owner, lease_host_id,
+                     lease_fence_epoch if current_epoch == lease_fence_epoch else -1),
                 )
                 if not db.execute(
                     "SELECT 1 FROM project_conversation_turns WHERE id=%s AND state='COMPLETED' "
@@ -2431,11 +2456,17 @@ def stream_project_conversation_turn(
             yield f"event: done\ndata: {json_module.dumps({'message_id': response_id})}\n\n"
         except ProviderUnavailable as exc:
             with tx() as db:
+                try:
+                    current_epoch = active_host_fence_epoch(db, lease_host_id)
+                except BackupError:
+                    current_epoch = -1
                 changed = db.execute(
                     "UPDATE project_conversation_turns SET state='FAILED',error_code=%s,"
-                    "lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp() "
-                    "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING' AND lease_owner=%s",
-                    (exc.code, conversation_id, payload.idempotency_key, lease_owner),
+                    "lease_owner=NULL,lease_expires_at=NULL,lease_fence_epoch=NULL,updated_at=clock_timestamp() "
+                    "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING' "
+                    "AND lease_owner=%s AND lease_host_id=%s AND lease_fence_epoch=%s",
+                    (exc.code, conversation_id, payload.idempotency_key, lease_owner, lease_host_id,
+                     lease_fence_epoch if current_epoch == lease_fence_epoch else -1),
                 )
                 if changed.rowcount:
                     audit(db, conversation_id, "conversation.turn.failed", {
@@ -2445,11 +2476,17 @@ def stream_project_conversation_turn(
             yield f"event: error\ndata: {json_module.dumps({'code': exc.code, 'message': str(exc)})}\n\n"
         except Exception:  # noqa: BLE001 - persist every unexpected provider/stream failure durably.
             with tx() as db:
+                try:
+                    current_epoch = active_host_fence_epoch(db, lease_host_id)
+                except BackupError:
+                    current_epoch = -1
                 changed = db.execute(
                     "UPDATE project_conversation_turns SET state='FAILED',error_code='PROVIDER_ERROR',"
-                    "lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp() "
-                    "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING' AND lease_owner=%s",
-                    (conversation_id, payload.idempotency_key, lease_owner),
+                    "lease_owner=NULL,lease_expires_at=NULL,lease_fence_epoch=NULL,updated_at=clock_timestamp() "
+                    "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING' "
+                    "AND lease_owner=%s AND lease_host_id=%s AND lease_fence_epoch=%s",
+                    (conversation_id, payload.idempotency_key, lease_owner, lease_host_id,
+                     lease_fence_epoch if current_epoch == lease_fence_epoch else -1),
                 )
                 if changed.rowcount:
                     audit(db, conversation_id, "conversation.turn.failed", {

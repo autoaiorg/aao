@@ -13,10 +13,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from uuid import uuid4
 
+from aao.backup import BackupError, active_host_fence_epoch
 from aao.conversation_turns import (
     CONVERSATION_TURN_HEARTBEAT_SECONDS,
     CONVERSATION_TURN_LEASE_SECONDS,
 )
+from aao.host_identity import HostIdentityError, current_host_id
 
 
 @contextmanager
@@ -165,7 +167,9 @@ def build_conversation_prompt(db, project_id: str, conversation_id: str, history
     return prompt
 
 
-def claim_expired_turn(db, config: RecoveryConfiguration, *, lease_owner: str):
+def claim_expired_turn(
+    db, config: RecoveryConfiguration, *, lease_owner: str, host_id: str, fence_epoch: int
+):
     """Claim one expired turn with SKIP LOCKED and a fenced lease update."""
     row = db.execute(
         "SELECT t.id::text,t.conversation_id::text,c.project_id::text,"
@@ -183,11 +187,11 @@ def claim_expired_turn(db, config: RecoveryConfiguration, *, lease_owner: str):
     if not row:
         return None
     updated = db.execute(
-        "UPDATE project_conversation_turns SET lease_owner=%s,"
+        "UPDATE project_conversation_turns SET lease_owner=%s,lease_host_id=%s,lease_fence_epoch=%s,"
         "lease_expires_at=clock_timestamp()+(%s * interval '1 second'),"
         "updated_at=clock_timestamp() WHERE id=%s AND state='PENDING' "
         "AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())",
-        (lease_owner, CONVERSATION_TURN_LEASE_SECONDS, row[0]),
+        (lease_owner, host_id, fence_epoch, CONVERSATION_TURN_LEASE_SECONDS, row[0]),
     ).rowcount
     if updated != 1:
         return None
@@ -195,6 +199,7 @@ def claim_expired_turn(db, config: RecoveryConfiguration, *, lease_owner: str):
         "turn_id": row[0], "conversation_id": row[1], "project_id": row[2],
         "idempotency_key": row[3], "user_message_id": row[4],
         "provider": row[5], "model": row[6], "body": row[7], "lease_owner": lease_owner,
+        "lease_host_id": host_id, "lease_fence_epoch": fence_epoch,
     }
 
 
@@ -221,6 +226,12 @@ def _audit(db, conversation_id: str, kind: str, details: dict) -> None:
 def _finish_turn(turn: dict, answer: str, config: RecoveryConfiguration) -> bool:
     response_id = str(uuid4())
     with tx() as db:
+        try:
+            epoch = active_host_fence_epoch(db, turn["lease_host_id"])
+        except BackupError as exc:
+            raise TurnLeaseLost from exc
+        if epoch != turn["lease_fence_epoch"]:
+            raise TurnLeaseLost
         db.execute(
             "INSERT INTO project_conversation_messages(id,conversation_id,sender,body,provider,model) "
             "VALUES (%s,%s,'AAO',%s,%s,%s)",
@@ -229,8 +240,10 @@ def _finish_turn(turn: dict, answer: str, config: RecoveryConfiguration) -> bool
         changed = db.execute(
             "UPDATE project_conversation_turns SET state='COMPLETED',assistant_message_id=%s,"
             "lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp() "
-            "WHERE id=%s AND state='PENDING' AND lease_owner=%s",
-            (response_id, turn["turn_id"], turn["lease_owner"]),
+            "WHERE id=%s AND state='PENDING' AND lease_owner=%s AND lease_host_id=%s "
+            "AND lease_fence_epoch=%s",
+            (response_id, turn["turn_id"], turn["lease_owner"], turn["lease_host_id"],
+             turn["lease_fence_epoch"]),
         ).rowcount
         if changed != 1:
             raise TurnLeaseLost
@@ -245,11 +258,19 @@ def _finish_turn(turn: dict, answer: str, config: RecoveryConfiguration) -> bool
 
 def _fail_turn(turn: dict, error_code: str) -> bool:
     with tx() as db:
+        try:
+            epoch = active_host_fence_epoch(db, turn["lease_host_id"])
+        except BackupError:
+            return False
+        if epoch != turn["lease_fence_epoch"]:
+            return False
         changed = db.execute(
             "UPDATE project_conversation_turns SET state='FAILED',error_code=%s,"
             "lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp() "
-            "WHERE id=%s AND state='PENDING' AND lease_owner=%s",
-            (error_code, turn["turn_id"], turn["lease_owner"]),
+            "WHERE id=%s AND state='PENDING' AND lease_owner=%s AND lease_host_id=%s "
+            "AND lease_fence_epoch=%s",
+            (error_code, turn["turn_id"], turn["lease_owner"], turn["lease_host_id"],
+             turn["lease_fence_epoch"]),
         ).rowcount
         if changed != 1:
             return False
@@ -271,8 +292,18 @@ def recover_one_turn(env: dict[str, str] | None = None) -> dict[str, str]:
     from aao.conversation_provider import ProviderUnavailable, stream_reply
 
     owner = str(uuid4())
+    try:
+        host_id = current_host_id()
+    except HostIdentityError:
+        return {"status": "HOST_IDENTITY_UNAVAILABLE"}
     with tx() as db:
-        turn = claim_expired_turn(db, config, lease_owner=owner)
+        try:
+            fence_epoch = active_host_fence_epoch(db, host_id)
+        except BackupError:
+            return {"status": "HOST_FENCED"}
+        turn = claim_expired_turn(
+            db, config, lease_owner=owner, host_id=host_id, fence_epoch=fence_epoch
+        )
         if not turn:
             return {"status": "CONFIGURATION_MISMATCH"} if has_mismatched_expired_turn(db, config) else {"status": "IDLE"}
         history = db.execute(
@@ -293,11 +324,17 @@ def recover_one_turn(env: dict[str, str] | None = None) -> dict[str, str]:
         while not stop_heartbeat.wait(CONVERSATION_TURN_HEARTBEAT_SECONDS):
             try:
                 with tx() as db:
+                    current_epoch = active_host_fence_epoch(db, host_id)
+                    if current_epoch != fence_epoch:
+                        lease_lost.set()
+                        return
                     count = db.execute(
                         "UPDATE project_conversation_turns SET lease_expires_at="
                         "clock_timestamp()+(%s * interval '1 second'),updated_at=clock_timestamp() "
-                        "WHERE id=%s AND state='PENDING' AND lease_owner=%s",
-                        (CONVERSATION_TURN_LEASE_SECONDS, turn["turn_id"], owner),
+                        "WHERE id=%s AND state='PENDING' AND lease_owner=%s AND lease_host_id=%s "
+                        "AND lease_fence_epoch=%s",
+                        (CONVERSATION_TURN_LEASE_SECONDS, turn["turn_id"], owner, host_id,
+                         fence_epoch),
                     ).rowcount
                 if count != 1:
                     lease_lost.set()

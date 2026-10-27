@@ -511,6 +511,10 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
     monkeypatch.setenv("AAO_CEO_TOKEN", "conversation-ceo")
     monkeypatch.setenv("AAO_CONVERSATION_PROVIDER", "openai-compatible")
     monkeypatch.setenv("AAO_CONVERSATION_MODEL", "conversation-test-model")
+    monkeypatch.setenv("AAO_TEST_HOST_ID", "conversation-integration-host")
+    from aao.backup import register_host_worker
+    with connect_postgres() as db:
+        register_host_worker(db, "conversation-integration-host", "conversation-integration-worker")
     ceo = {"X-CEO-Token": "conversation-ceo"}
     with TestClient(app) as client:
         assert client.post(

@@ -37,7 +37,9 @@ def test_claim_requires_expired_pending_turn_and_matching_provider_model():
 
     db = FakeDB()
     config = RecoveryConfiguration("openai-compatible", "model-1")
-    claim = claim_expired_turn(db, config, lease_owner="owner-1")
+    claim = claim_expired_turn(
+        db, config, lease_owner="owner-1", host_id="test-host", fence_epoch=7
+    )
     assert claim["turn_id"] == "turn-1"
     select_sql, select_params = db.calls[0]
     update_sql, update_params = db.calls[1]
@@ -47,8 +49,9 @@ def test_claim_requires_expired_pending_turn_and_matching_provider_model():
     assert "FOR UPDATE OF t SKIP LOCKED" in normalized
     assert "t.provider=%s AND t.model=%s" in normalized
     assert select_params == ("openai-compatible", "model-1")
-    assert "lease_owner=%s" in update_sql and "lease_expires_at <= clock_timestamp()" in update_sql
-    assert update_params == ("owner-1", 90, "turn-1")
+    assert "lease_owner=%s" in update_sql and "lease_host_id=%s" in update_sql
+    assert "lease_expires_at <= clock_timestamp()" in update_sql
+    assert update_params == ("owner-1", "test-host", 7, 90, "turn-1")
 
 
 def test_claim_does_not_call_provider_or_touch_database_when_disabled(monkeypatch):
@@ -93,6 +96,7 @@ def test_recovery_no_matching_recorded_provider_model_never_calls_provider(monke
         yield EmptyDB()
 
     monkeypatch.setattr(recovery, "tx", empty_tx)
+    monkeypatch.setattr(recovery, "active_host_fence_epoch", lambda *_args: 1)
     monkeypatch.setattr(conversation_provider, "stream_reply", lambda _messages: (_ for _ in ()).throw(
         AssertionError("provider must not be called without a matching expired turn")
     ))
@@ -123,6 +127,7 @@ def test_expired_turn_with_other_recorded_provider_model_is_not_claimed(monkeypa
         yield MismatchDB()
 
     monkeypatch.setattr(recovery, "tx", mismatch_tx)
+    monkeypatch.setattr(recovery, "active_host_fence_epoch", lambda *_args: 1)
     monkeypatch.setattr(conversation_provider, "stream_reply", lambda _messages: (_ for _ in ()).throw(
         AssertionError("mismatched provider/model must never be called")
     ))
@@ -141,7 +146,8 @@ def test_response_persistence_is_fenced_and_rolls_back_on_lease_loss(monkeypatch
 
     calls = []
     turn = {"turn_id": "turn-1", "conversation_id": "conversation-1",
-            "user_message_id": "message-1", "lease_owner": "owner-1"}
+            "user_message_id": "message-1", "lease_owner": "owner-1",
+            "lease_host_id": "test-host", "lease_fence_epoch": 1}
     config = recovery.RecoveryConfiguration("openai-compatible", "model-1")
 
     class SuccessfulDB:
@@ -155,10 +161,11 @@ def test_response_persistence_is_fenced_and_rolls_back_on_lease_loss(monkeypatch
         yield SuccessfulDB()
 
     monkeypatch.setattr(recovery, "tx", success_tx)
+    monkeypatch.setattr(recovery, "active_host_fence_epoch", lambda *_args: 1)
     assert recovery._finish_turn(turn, "Recovered.", config)
     assert "INSERT INTO project_conversation_messages" in calls[0][0]
-    assert "WHERE id=%s AND state='PENDING' AND lease_owner=%s" in calls[1][0]
-    assert calls[1][1][1:] == ("turn-1", "owner-1")
+    assert "WHERE id=%s AND state='PENDING' AND lease_owner=%s AND lease_host_id=%s" in calls[1][0]
+    assert calls[1][1][1:] == ("turn-1", "owner-1", "test-host", 1)
     assert any("INSERT INTO events" in sql for sql, _ in calls)
 
     class LostLeaseDB:
@@ -176,6 +183,7 @@ def test_response_persistence_is_fenced_and_rolls_back_on_lease_loss(monkeypatch
             raise
 
     monkeypatch.setattr(recovery, "tx", lost_tx)
+    monkeypatch.setattr(recovery, "active_host_fence_epoch", lambda *_args: 1)
     calls.clear()
     try:
         recovery._finish_turn(turn, "Must not persist.", config)
@@ -204,13 +212,15 @@ def test_provider_failure_is_persisted_only_by_current_lease_owner(monkeypatch):
         yield FakeDB()
 
     monkeypatch.setattr(recovery, "tx", fake_tx)
+    monkeypatch.setattr(recovery, "active_host_fence_epoch", lambda *_args: 1)
     turn = {"turn_id": "turn-1", "conversation_id": "conversation-1",
-            "user_message_id": "message-1", "lease_owner": "owner-1"}
+            "user_message_id": "message-1", "lease_owner": "owner-1",
+            "lease_host_id": "test-host", "lease_fence_epoch": 1}
     assert recovery._fail_turn(turn, "PROVIDER_UNAVAILABLE")
     update, audit = calls
     assert "state='FAILED'" in update[0]
-    assert "WHERE id=%s AND state='PENDING' AND lease_owner=%s" in update[0]
-    assert update[1] == ("PROVIDER_UNAVAILABLE", "turn-1", "owner-1")
+    assert "WHERE id=%s AND state='PENDING' AND lease_owner=%s AND lease_host_id=%s" in update[0]
+    assert update[1] == ("PROVIDER_UNAVAILABLE", "turn-1", "owner-1", "test-host", 1)
     assert "INSERT INTO events" in audit[0]
     assert "PROVIDER_UNAVAILABLE" in audit[1][3]
 
@@ -222,7 +232,8 @@ def test_recover_one_turn_builds_prompt_and_persists_success(monkeypatch):
     turn = {
         "turn_id": "turn-1", "conversation_id": "conversation-1", "project_id": "project-1",
         "idempotency_key": "key-1", "user_message_id": "message-1", "body": "Question",
-        "lease_owner": "owner-1",
+        "lease_owner": "owner-1", "lease_host_id": "integration-test-host",
+        "lease_fence_epoch": 1,
     }
 
     class FakeDB:
@@ -241,6 +252,7 @@ def test_recover_one_turn_builds_prompt_and_persists_success(monkeypatch):
     provider_prompts = []
     finished = []
     monkeypatch.setattr(recovery, "tx", fake_tx)
+    monkeypatch.setattr(recovery, "active_host_fence_epoch", lambda *_args: 1)
     monkeypatch.setattr(recovery, "claim_expired_turn", lambda *_args, **_kwargs: turn)
     monkeypatch.setattr(recovery, "build_conversation_prompt", lambda *_args: prompt)
     monkeypatch.setattr(conversation_provider, "stream_reply", lambda messages: (

@@ -312,6 +312,32 @@ def test_scenario_07_unhealthy_service_rollback_fails_closed():
     assert 'rollback_errors+=("Service aao-api.service did not become ready (HTTP 200 on /ready) post-rollback")' in script
 
 
+def test_schema_upgrade_drains_legacy_workers_and_restores_active_recovery_timer():
+    """The 032 cutover must invalidate all un-attributed leases and preserve service state."""
+    migration = (REPO_ROOT / "db/postgres/032_conversation_turn_host_fencing.sql").read_text(
+        encoding="utf-8"
+    )
+    cleanup = migration.split("UPDATE project_conversation_turns", 1)[1].split(";", 1)[0]
+    assert "state = 'PENDING'" in cleanup
+    assert "lease_host_id IS NULL" in cleanup
+    assert "lease_owner = NULL" in cleanup
+    assert "lease_expires_at >" not in cleanup
+
+    script = (REPO_ROOT / "scripts/bootstrap/aao_bootstrap.sh").read_text(encoding="utf-8")
+    drain = script.index('say "Draining AAO API and conversation recovery before schema migration..."')
+    apply_migrations = script.index("--apply --dsn \"$AAO_POSTGRES_URL\"")
+    assert drain < apply_migrations
+    assert "systemctl is-system-running" not in script
+    assert "systemctl show --property=Version --value" in script
+    rollback = script[script.index("rollback_release()") : script.index("trap rollback_release ERR")]
+    assert "systemctl start aao-conversation-recovery.timer" in rollback
+    assert "elif (( SYSTEMD_WAS_AVAILABLE ))" in rollback
+    assert "became unavailable after migration" in script
+    deployment_steps = script.split("trap rollback_release ERR", 1)[1]
+    assert "|| die " not in deployment_steps
+    assert "System doctor diagnostics failed; triggering rollback." in deployment_steps
+
+
 # ==============================================================================
 # Scenario 8: Worker without host-worker binding fails closed (A-14)
 # ==============================================================================

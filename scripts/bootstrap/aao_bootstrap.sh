@@ -26,6 +26,11 @@ source "$SCRIPT_DIR/release_state.sh"
 say() { echo -e "\n\033[1;34m== [AAO BOOTSTRAP] $*\033[0m"; }
 die() { echo -e "\n\033[1;31mFAIL [AAO BOOTSTRAP]: $*\033[0m" >&2; exit 1; }
 
+systemd_manager_available() {
+  [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null 2>&1 \
+    && systemctl show --property=Version --value >/dev/null 2>&1
+}
+
 APPLY=0
 SKIP_DEPS=0
 SKIP_FRONTEND=0
@@ -87,6 +92,8 @@ fi
 # `previous` link is history from the last successful deployment, not the
 # rollback target for this deployment (it may be one release older).
 ROLLBACK_RELEASE=""
+RECOVERY_TIMER_WAS_ACTIVE=0
+SYSTEMD_WAS_AVAILABLE=0
 ROLLBACK_RELEASE=$(aao_capture_active_release /opt/aao/current || true)
 
 # Define safe rollback handler with cross-system consistency
@@ -128,7 +135,7 @@ rollback_release() {
       fi
 
       # 5. Service restart and functional verification
-      if command -v systemctl >/dev/null 2>&1 && systemctl is-system-running >/dev/null 2>&1; then
+      if systemd_manager_available; then
         say "Restarting systemd services pointing to previous release..."
         systemctl daemon-reload
         if ! systemctl restart aao-api.service; then
@@ -146,6 +153,11 @@ rollback_release() {
             rollback_errors+=("Service aao-api.service did not become ready (HTTP 200 on /ready) post-rollback")
           fi
         fi
+        if (( RECOVERY_TIMER_WAS_ACTIVE )) && ! systemctl start aao-conversation-recovery.timer; then
+          rollback_errors+=("Failed to restore previously active aao-conversation-recovery.timer during rollback")
+        fi
+      elif (( SYSTEMD_WAS_AVAILABLE )); then
+        rollback_errors+=("systemd manager unavailable; could not restore service state during rollback")
       fi
 
       # 6. Evaluate rollback outcome (fail closed on incomplete rollback)
@@ -196,7 +208,8 @@ if id aao-trust >/dev/null 2>&1; then
 fi
 
 if [[ ! -f "$REPO_DIR/scripts/bootstrap/host_bootstrap.sh" ]]; then
-  die "Mandatory governance bootstrap script '$REPO_DIR/scripts/bootstrap/host_bootstrap.sh' is missing!"
+  echo "FAIL [AAO BOOTSTRAP]: Mandatory governance bootstrap script '$REPO_DIR/scripts/bootstrap/host_bootstrap.sh' is missing!" >&2
+  false
 fi
 
 if [[ -n "${KEYS_DIR:-}" ]]; then
@@ -213,7 +226,7 @@ cp "$REPO_DIR/scripts/verify_identity_separation.sh" "$VERIFY_SCRIPT"
 chmod 0755 "$VERIFY_SCRIPT"
 for u in aao-pm aao-impl-ag aao-auditor aao-supervisor aao-integrator; do
   if id "$u" >/dev/null 2>&1; then
-    runuser -u "$u" -- env CEO_USER="$CEO_USER" bash "$VERIFY_SCRIPT" || die "Governance isolation verification failed for role '$u'!"
+    runuser -u "$u" -- env CEO_USER="$CEO_USER" bash "$VERIFY_SCRIPT"
   fi
 done
 rm -f "$VERIFY_SCRIPT"
@@ -317,10 +330,34 @@ prune_releases
 say "Step 4: Provisioning native PostgreSQL 16..."
 bash "$SCRIPT_DIR/init_postgres.sh"
 
+# A schema upgrade that changes lease fencing must not overlap an older API
+# process that can still renew or complete un-attributed conversation leases.
+# Drain the API and its recovery timer/oneshot before applying migrations.
+if [[ -d /run/systemd/system ]] && ! systemd_manager_available; then
+  echo "FAIL [AAO BOOTSTRAP]: systemd is present but its manager is unavailable; refusing schema migration." >&2
+  false
+fi
+if systemd_manager_available; then
+  SYSTEMD_WAS_AVAILABLE=1
+  say "Draining AAO API and conversation recovery before schema migration..."
+  if systemctl is-active --quiet aao-conversation-recovery.timer; then
+    RECOVERY_TIMER_WAS_ACTIVE=1
+  fi
+  for unit in aao-conversation-recovery.timer aao-conversation-recovery.service aao-api.service; do
+    if systemctl is-active --quiet "$unit"; then
+      systemctl stop "$unit"
+      if systemctl is-active --quiet "$unit"; then
+        echo "FAIL [AAO BOOTSTRAP]: $unit is still active; refusing schema migration." >&2
+        false
+      fi
+    fi
+  done
+fi
+
 # ------------------------------------------------------------------------------
 # STEP 5: Apply Schema Migrations (Single Source of Truth)
 # ------------------------------------------------------------------------------
-say "Step 5: Applying database migrations (001 to 031)..."
+say "Step 5: Applying database migrations..."
 DB_PASS=$(cat /etc/aao/aao-db.secret)
 export AAO_POSTGRES_URL="postgresql://aao_app:${DB_PASS}@127.0.0.1:5432/aao_prod"
 
@@ -359,11 +396,18 @@ install -o root -g root -m 0644 /opt/aao/current/deploy/systemd/aao-worker-self-
 cp /opt/aao/current/deploy/systemd/aao-conversation-recovery.service /etc/systemd/system/
 cp /opt/aao/current/deploy/systemd/aao-conversation-recovery.timer /etc/systemd/system/
 
-if command -v systemctl >/dev/null 2>&1 && systemctl is-system-running >/dev/null 2>&1; then
+if (( SYSTEMD_WAS_AVAILABLE )) && ! systemd_manager_available; then
+  echo "FAIL [AAO BOOTSTRAP]: systemd manager became unavailable after migration; refusing to report success." >&2
+  false
+fi
+if systemd_manager_available; then
   systemctl daemon-reload
   systemd-tmpfiles --create /etc/tmpfiles.d/aao-worker-self-dev.conf
   systemctl enable aao-api.service
   systemctl restart aao-api.service
+  if (( RECOVERY_TIMER_WAS_ACTIVE )); then
+    systemctl start aao-conversation-recovery.timer
+  fi
 
   # Integrator timer MUST remain OFF
   systemctl disable aao-integrator-tick.timer 2>/dev/null || true
@@ -382,7 +426,8 @@ sleep 2
 
 # Running doctor: MUST succeed (exit 0). If it fails, fail closed!
 if ! /opt/aao/venv/bin/python /opt/aao/current/scripts/aao_ops.py doctor; then
-  die "System doctor diagnostics failed. Aborting bootstrap and reverting active release."
+  echo "FAIL [AAO BOOTSTRAP]: System doctor diagnostics failed; triggering rollback." >&2
+  false
 fi
 
 # Publish the rollback pointer only after the new release passes diagnostics.

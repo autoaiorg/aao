@@ -4664,9 +4664,14 @@ def dispatch_next_agent_work(
         ).fetchall()
         if not rows:
             return {"status": "IDLE", "execution_id": None}
-        selected = next((row for row in rows if row[5] and not row[7]
-                         and row[6] not in {"SUCCEEDED", "UNCERTAIN"}
-                         and row[2] in {"reuse", "adapt"} and row[3] and row[4]), None)
+        eligible = [row for row in rows if row[5] and not row[7]
+                    and row[6] not in {"SUCCEEDED", "UNCERTAIN"}
+                    and row[2] in {"reuse", "adapt"} and row[3] and row[4]]
+        # Prefer work that can create an attempt over replaying an active one:
+        # otherwise a high-priority queued/running child starves ready siblings.
+        # With no other candidate, retain the existing idempotent active replay.
+        selected = next((row for row in eligible if row[6] not in {"QUEUED", "RUNNING"}),
+                        eligible[0] if eligible else None)
         if selected is None:
             first = rows[0]
             if first[7] or first[6] == "SUCCEEDED":

@@ -36,6 +36,17 @@ remain mandatory. Unknown actors, missing chains or missing identity evidence
 must not gain authority. This prototype does not implement or claim that final
 identity correlation, live reconciliation, W2/R1 or B-2 acceptance has passed.
 
+Before authoritative attribution, the supervisor must independently corroborate
+against GitHub's delivery API: configured hook/repository, delivery GUID, immutable
+actor ID and exact before/after/ref transition, then correlate verified GitHub Apps
+with AAO's identity catalogue. This is a PENDING prerequisite, not implemented by
+this mailbox/client. A relay holding the webhook secret can forge both payload
+and sender, so raw HMAC plus sender.login alone is insufficient. GitHub deliveries
+outside its 3-day retention, unavailable corroboration, revoked identities or
+unknown mapping remain PROVISIONAL. Never invent historical recovery or infer
+identity authority from the mailbox. No new authoritative attribution source is
+wired into supervisor_service by this change.
+
 ## Persistence, failure and compromise
 
 No expiry deletes unacknowledged data. This prototype never deletes any row,

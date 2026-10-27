@@ -46,3 +46,44 @@ Este procedimiento es una instrucción operativa, no autorización para Codex de
 4. Para detenerlo, `systemctl --user disable --now ...`; no revocar grants ni borrar el token como sustituto de detener el proceso.
 
 El servicio no debe habilitarse hasta que `/srv/aao/frozen/aao-pm` apunte a una revisión desplegada y revisada del repositorio. La unidad limita filesystem y privilegios, pero no configura sandbox de agente ni es un control de autorización. Si el backend rechaza una operación, revisar el estado en AAO; no relanzar con credenciales CEO ni añadir `--auto-consolidate` sin aprobación operativa explícita.
+
+## Preflight local de instalación (solo lectura)
+
+Contribuye a la Fase 0 (instalación, E-1) y a la preparación de planificación/asignación
+para el piloto E-2; no es un gate superado, una certificación ni autorización de servicio.
+Desde el checkout aprobado, con el intérprete/entorno normal del backend:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/pm_deployment_preflight.py
+# Una vez identificado el principal persistido y el rol runtime reales:
+PYTHONPATH=src .venv/bin/python scripts/pm_deployment_preflight.py \
+  --principal-id <principal-AAO-registrado> --runtime-role <rol-runtime>
+```
+
+El proyecto predeterminado es `9d17d6c1-d644-424a-a425-fe7e084c3d91`;
+`--project-id` permite otro UUID. La cuenta Linux no identifica al principal AAO.
+La conexión usa la configuración normal del backend (o `AAO_POSTGRES_URL` ya exportada),
+pero rechaza servidores remotos y servicios libpq indirectos. No se debe copiar, mostrar
+ni pasar por CLI ningún DSN ni token del CEO. El programa no selecciona hashes de tokens.
+Todas las consultas se ejecutan tras `SET TRANSACTION READ ONLY`; no aplica migraciones,
+concede grants, inicia servicios ni llama a proveedores/GitHub. Las excepciones de conexión
+se redactan para no publicar credenciales.
+
+La salida JSON contiene `PASS`, `MISSING` o `UNVERIFIED` y acciones concretas por comprobación;
+el código de salida es 1 mientras haya elementos pendientes. Es una fotografía, no una
+validación de autorización para ejecutar posteriormente. Comprueba un manifiesto local
+completo y sin números duplicados de migraciones 001..035,
+proyecto/mandato, credencial AGENT habilitada y grants vigentes (incluidos los sin caducidad
+que admite el backend). Los grants solo los concede el CEO. El rol de inspección, incluso
+si es un superusuario de desarrollo, **no** acredita el rol runtime. Si se especifica este,
+se comprueban flags elevados y privilegios de las tablas 033/035, incluido el rechazo de
+propiedad, DELETE/TRUNCATE del rol o DML/TRUNCATE público. La suficiencia global de permisos runtime sigue `UNVERIFIED`.
+
+Los paths fijos `/srv/aao/frozen/aao-pm/{tree,venv}`, la unidad, configuración y tokens se
+inspeccionan únicamente mediante metadatos (tipo, propietario, modo y ancestros). No se
+leen claves, tokens ni ficheros `.env` de servicio. Los ficheros W2 `.pem` y `.json` se
+esperan privados (0600) bajo cada cuenta. La revisión congelada, el contenido de la unidad,
+linger/estado del servicio, la identidad efectiva del token, los scopes/instalaciones de
+las Apps y una publicación W2 real requieren evidencia adicional: no se infieren de los
+nombres o permisos. Un path inaccesible es `UNVERIFIED`, no permiso para usar sudo.
+No instalar ni activar nada automáticamente para hacer desaparecer estos pendientes.

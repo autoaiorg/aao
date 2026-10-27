@@ -284,3 +284,33 @@ Este incremento hace explícito el requisito funcional del CEO: **conversar prim
 - **Implementación en curso (`feat/work-skill-assignment`, aún no publicada):** cada trabajo hijo puede persistir `required_competencies`; el formulario CEO las edita usando competencias declaradas en perfiles persistidos; la propuesta limita sus competencias a los perfiles elegibles; la asignación PM exige requisitos explícitos y rechaza un agente cuyo perfil no los declare. La autorización sigue dependiendo de grants canónicos (`work.assign`, `work.admit`, `execution.claim`); no se crea autoridad por competencia.
 - **Verificación local:** suite PostgreSQL desechable `710 passed`, Ruff, compileall, Vitest `203 passed`, build TypeScript/Vite y diff check. Estos resultados no son CI ni aprobación.
 - **Límites y siguiente paso:** una competencia declarada no es una evaluación de aptitud. Completar pruebas y CI/PR; continuar construyendo admisión, despacho, seguimiento, recuperación/reintentos y consolidación del PM. No habilita autonomía ni el ensayo final.
+
+### Incremento: rutinas persistentes en la Oficina LIVE
+
+La oficina consulta y autoriza plantillas recurrentes mediante los endpoints
+`GET/POST /v1/projects/{id}/routines` y `PATCH .../routines/{routine_id}` existentes.
+La sesión CEO puede crear, pausar y reanudar; otras sesiones solo consultan según
+sus grants. Se reutilizan el adaptador HTTP, la cookie/CSRF y la validación de
+contratos. DEMO no conecta este panel al backend.
+
+- La lista es una proyección de PostgreSQL que se consulta cada 15 segundos,
+  con caché separada por sesión y proyecto; no es un scheduler del navegador.
+- Las fechas se introducen explícitamente en UTC y el intervalo es fijo, no una
+  recurrencia de calendario local. La API conserva la plantilla y la próxima fecha.
+- Reintentar sin editar reutiliza la clave y el cuerpo de la solicitud durante
+  la misma sesión de edición. No se promete recuperar un borrador ni una clave
+  no confirmada después de cerrar o recargar el navegador: ante una respuesta
+  incierta, consultar primero el listado canónico antes de autorizar otra rutina.
+- Habilitada significa que puede generar solicitudes `INBOX`, no que esté
+  ejecutándose, que un worker esté sano o que tenga permiso para ejecutar modelos.
+  Pausar no cancela trabajos creados. Reanudar una fecha vencida puede generar
+  una solicitud; el backend agrupa intervalos perdidos.
+- La generación con el navegador cerrado exige desplegar el coordinador con
+  `--materialize-routines`, la migración 035 y los grants explícitos del rol SQL.
+  Este incremento de frontend no instala servicios ni aplica migraciones a la
+  instancia operativa. Tampoco prueba la ejecución autónoma completa de rutinas.
+
+Contribuye al objetivo 7 (calendario/rutinas), Fase 2 (entrada persistente) y
+Fase 4 (observación), sin crear autoridad ni cambiar los protocolos. La prueba
+integrada con PostgreSQL operativo, PM desplegado y navegador cerrado sigue
+siendo necesaria para aceptar esa capacidad completa.

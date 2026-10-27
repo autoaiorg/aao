@@ -12,6 +12,7 @@ import { OfficeWorkGroupPanel } from './components/OfficeWorkGroupPanel';
 import { OfficeCapabilityCatalogPanel } from './components/OfficeCapabilityCatalogPanel';
 import { OfficeActivityPanel } from './components/OfficeActivityPanel';
 import { OfficeKnowledgePanel } from './components/OfficeKnowledgePanel';
+import { OfficeRoutinesPanel } from './components/OfficeRoutinesPanel';
 import { OfficeCalendarPanel } from './components/OfficeCalendarPanel';
 import { OFFICE_ROOMS } from './types';
 import { buildLiveOfficeRooms } from './liveOfficeLayout';
@@ -28,6 +29,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
   activityReadPort,
   knowledgeReadPort,
   calendarReadPort,
+  routinePort,
   conversationSessionId,
   onCreateWorkRequest,
   onNavigate,
@@ -347,6 +349,10 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
           sessionId={conversationSessionId}
           onOpenWork={(projectId, workId) => onNavigate?.('kanban', projectId, workId)}
         />
+      )}
+
+      {routinePort && conversationSessionId && !isDemo && (
+        <OfficeRoutinesPanel projects={projects} port={routinePort} sessionId={conversationSessionId} isCeoSession={isCeoSession} />
       )}
 
       {knowledgeReadPort && conversationSessionId && !isDemo && (

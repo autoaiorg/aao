@@ -469,6 +469,7 @@ export const App: React.FC = () => {
               capabilityFeedbackPort={origin === 'live' && role === 'CEO' && port instanceof HttpAaoLiveAdapter ? port : undefined}
               activityReadPort={origin === 'live' ? port : undefined}
               knowledgeReadPort={origin === 'live' ? port : undefined}
+              routinePort={origin === 'live' && isAuthenticated && port instanceof HttpAaoLiveAdapter ? port : undefined}
               calendarReadPort={origin === 'live' ? port : undefined}
               conversationPort={origin === 'live' && role === 'CEO' && port instanceof HttpAaoLiveAdapter ? port : undefined}
               conversationSessionId={sessionId}

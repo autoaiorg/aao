@@ -665,3 +665,24 @@
     font-size: 0.78rem;
   }
 }
+
+.office-routines {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.office-routines__form {
+  display: grid;
+  gap: 12px;
+  max-width: 760px;
+}
+
+.office-routines__form h4 { margin: 0; }
+.office-routines__form > .aao-button { justify-self: start; }
+
+.office-routines__schedule {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 12px;
+}

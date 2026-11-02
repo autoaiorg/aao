@@ -18,7 +18,7 @@ never rerun an applied migration. The scripts are one-shot, not a general
 schema-repair or rollback tool. If an interrupted migration leaves ambiguous
 state, stop and inspect the database rather than rerunning it blindly.
 
-Migration 031 installs the fencing schema but intentionally does not bind an
+Migration 036 installs the fencing schema but intentionally does not bind an
 agent identity to a host. Before enabling a worker, an operator must register
 its exact principal and host with `aao-ops register-host-worker --worker-id
 <principal-id> --host-id <host-id>`. Claims fail closed until that explicit
@@ -40,15 +40,15 @@ python -m pip install -e '.[postgres]'
 # Check migration status (applied vs pending)
 python scripts/migrate.py --status
 
-# Apply pending migrations (001 to 031) with advisory locks and integrity verification
+# Apply pending migrations (001 to 036) with advisory locks and integrity verification
 python scripts/migrate.py --apply
 
 # Verify that all migrations in db/postgres/ are applied with intact SHA-256 checksums
 python scripts/migrate.py --verify
 ```
 
-### Full Migration Catalog (001 to 031):
-The current canonical catalog comprises 31 versioned migrations in `db/postgres/`:
+### Full Migration Catalog (001 to 036):
+The current canonical catalog comprises 36 versioned migrations in `db/postgres/`:
 - `001_foundation`: Core tables (`schema_migrations`, `mandates`, `projects`, `principals`, `events`).
 - `002_dev_identity`: Relaxed UUID identities to text development identities.
 - `003_execution`: Execution queue and status lifecycle.
@@ -79,7 +79,12 @@ The current canonical catalog comprises 31 versioned migrations in `db/postgres/
 - `028_capability_feedback_version_link`: Version linking between feedback proposals and capability revisions.
 - `029_organization_profile_competencies`: Agent skills, competencies, and specialization tags.
 - `030_conversation_work_group_results`: Grounding conversation outcomes to persisted work group executions.
-- `031_host_worker_fencing`: Versioned host-worker binding registry, unique active worker binding, and execution claim fencing epoch.
+- `031_conversation_endpoint_metadata`: Safe endpoint provenance for every provider-backed conversation turn.
+- `032_work_item_required_competencies`: Explicit skill requirements so PM routing can be checked against CEO profiles.
+- `033_protocol_instances`: Pinned protocol/version and request identity (revokes `PUBLIC` access; see below).
+- `034_work_item_priority`: CEO-controlled scheduling priority for unfinished work.
+- `035_project_routines`: Durable CEO-authorized routines and their occurrences (revokes `PUBLIC` access).
+- `036_host_worker_fencing`: Versioned host-worker binding registry, unique active worker binding, and execution claim fencing epoch (revokes `PUBLIC` access on `host_worker_bindings`). Renumbered from `031_host_worker_fencing` to avoid colliding with `031_conversation_endpoint_metadata`; a database that already recorded `031_host_worker_fencing` in `schema_migrations` needs ledger reconciliation by its owner before applying 036.
 
 For an existing database, apply only migrations absent from
 `schema_migrations`, preserving the same order. The LIVE organization
@@ -115,6 +120,11 @@ the effective role and its privileges in the deployment itself. The disposable
 database privilege test checks the intended boundary, but does not prove the
 deployment is configured this way. Until that installation check is complete,
 the real deployment's runtime identity and grants remain unverified.
+
+Migration `036_host_worker_fencing.sql` likewise revokes all privileges on
+`host_worker_bindings` from `PUBLIC` and grants nothing. Worker claims read the
+registry and `aao-ops` host registration/fencing writes it, so a non-owner
+runtime or operator role needs an explicit, owner-reviewed grant before use.
 
 **Do not expose port 8001 beyond loopback.** Both secrets are development
 credentials, not a production identity system. PostgreSQL permissions,

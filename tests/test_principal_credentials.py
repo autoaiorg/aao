@@ -115,7 +115,7 @@ def test_grant_contract_accepts_execution_capabilities_only_as_exact_values():
     ).capability == "effect.reconcile"
     for invalid in (
         "execution.claim.other", "execution.reconcile.extra",
-        "effect.reconcile.extra", "work.create.extra",
+        "effect.reconcile.extra", "work.create.extra", "credential.issue_publisher",
     ):
         with pytest.raises(ValidationError):
             GrantRequest(principal_id="agent-1", capability=invalid)

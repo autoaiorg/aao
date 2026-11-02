@@ -27,9 +27,15 @@ Además, `require_ceo` con cabecera `X-CEO-Token` solo funciona con `AAO_ENV` en
 ## Qué falta exactamente
 
 1. **Coordinador PM** (token sin caducidad, grants posiblemente sin caducidad): falta un endpoint de **auto-rotación** autenticado por la propia credencial AGENT vigente. Basta con esto: rotar el token no cambia grants ni identidad.
-2. **Publicadores W2** (principal nuevo y grants de 8 h por ejecución): la auto-rotación **no basta**. El diseño actual crea un principal nuevo y le concede grants caducables cada vez; conceder grants es CEO-only. Falta además una de estas dos cosas (decisión reservada al CEO, ver abajo):
-   - (a) una capacidad delegada y acotada de emisión, p. ej. `credential.issue_publisher`, que permita a un principal operador emitir principals `aao-publisher-*` con exactamente los grants W2 fijos y caducidad ≤ 8 h; o
-   - (b) cambiar el modelo W2 a principals estables cuyo token se auto-rota y cuyos grants se renuevan por una regla fija, lo que también requiere una ruta no-CEO de renovación de grants.
+2. **Publicadores W2:** la herramienta `scripts/rotate_w2_publisher_token.py` de la rama `feat/w2-scoped-issuer` solo rota un principal publisher W2 ya existente; no crea ni emite nuevos principales publisher. La emisión inicial sigue en `scripts/provision_w2_publishers.py`, como acción separada autorizada por CEO. La ruta de rotación limita la identidad existente a los dos roles W2, el proyecto activo AAO — Self Development, `project.read` + `code.publish` y ocho horas como máximo; no crea ni amplía autoridad. El texto histórico de la propuesta de emisión delegada no describe esta implementación.
+
+La rotación W2 es de dos fases: el token vigente conserva validez mientras se guarda uno pendiente; el helper lo persiste localmente y confirma indicando el ID exacto esperado. La API rechaza la confirmación si el token pendiente pertenece a otro principal. Después el helper reemplaza el fichero activo. La recuperación valida el principal exacto, la cuenta Linux, el proyecto único y el conjunto exacto de grants antes de instalarlo. Una respuesta perdida no crea un principal nuevo.
+
+La recuperación local cubre cortes de escritura. El sidecar de identidad se persiste antes que el bearer pendiente. Un sidecar huérfano (sin bearer pendiente) se elimina tras validar su propietario y modo. Si el bearer pendiente está truncado o su metadata/contenido no es seguro, el helper solo elimina los ficheros de esa transacción local después de volver a autenticar el token activo y comprobar su cuenta, proyecto y grants exactos; luego puede iniciar otra rotación del mismo principal. Para un bearer pendiente válido sin sidecar, el helper reconstruye el ID esperado solo autenticando el bearer activo anterior y volviendo a comprobar cuenta, proyecto y grants. Si no puede demostrar la identidad del token activo, falla cerrado y no confirma ni sustituye el bearer.
+
+El helper también serializa ejecuciones simultáneas por cuenta con un lock exclusivo en el runtime privado (`/run/user/<uid>`). El lock evita que dos invocaciones sustituyan entre sí el sidecar o el bearer pendiente; un lock preexistente con propietario, tipo o modo inesperado se rechaza.
+
+**No completa la rotación autónoma en el host**: falta el cliente periódico y el mecanismo acotado para entregar de forma segura el token al runtime privado de cada cuenta Linux. No se debe dar sudo general al servicio PM para cerrar ese hueco.
 
 ## Cambio mínimo de API propuesto
 
@@ -49,9 +55,9 @@ Así se cumple «retirar el anterior solo después de verificar el nuevo».
 
 Riesgo de seguridad: quien robe el token puede rotarlo y dejar fuera al titular legítimo. No aumenta privilegios, pero convierte un robo en denegación de servicio; el evento auditado y el fallo de verificación del servicio legítimo lo hacen detectable. Mitigación opcional: límite de frecuencia por principal.
 
-### B. Publicadores W2: requiere decisión CEO
+### B. Publicadores W2: delegación acotada en implementación
 
-Crear una capacidad que emita credenciales o conceda grants a otro principal amplía la autoridad del sistema; según AGENTS.md (regla 2) y `docs/AGENT_OPERATING_RULES.md`, no se auto-concede. Se propone al CEO la opción (a): capacidad no transferible, lista blanca fija de grants W2, caducidad ≤ 8 h forzada en servidor, cuentas destino distintas del emisor y auditoría por emisión. Hasta esa decisión, la emisión W2 sigue siendo CEO-only.
+**Estado del diseño anterior:** `credential.issue_publisher` no tiene consumidor implementado y no se acepta ya como valor válido de `GrantRequest`; no concederlo ni usarlo. No forma parte de la rotación descrita en este procedimiento. La rotación W2 se limita a un principal publisher existente, sin crear principals ni ampliar grants.
 
 ## Flujo de rotación una vez exista A (`scripts/rotate_role_token.py`, futuro)
 

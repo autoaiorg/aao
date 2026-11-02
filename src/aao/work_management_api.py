@@ -6,6 +6,7 @@ SQLite API. No agent execution or external side effects are enabled.
 import hashlib
 import json
 import os
+import re
 import secrets
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
@@ -111,9 +112,12 @@ def require_reviewer(
 def require_worker(
     x_agent_token: str | None = Header(None),
 ):
-    from aao.principal_credentials import PrincipalDenied
+    from aao.principal_credentials import PrincipalDenied, digest_token
     try:
-        return _authenticate_request_principal(x_agent_token, "AGENT")
+        principal_id = _authenticate_request_principal(x_agent_token, "AGENT")
+        # Keep the verified bearer digest attached to the principal so routes
+        # can re-check this exact credential inside their authorization txn.
+        return AuthenticatedPrincipal(principal_id, digest_token(x_agent_token), "AGENT")
     except PrincipalDenied as exc:
         raise HTTPException(403, "Individual agent credential rejected") from exc
 
@@ -144,6 +148,12 @@ class ProjectRequest(BaseModel):
 
 class ProjectStateRequest(BaseModel):
     action: str = Field(pattern=r"^(pause|resume|cancel)$")
+
+
+class W2PublisherRotationConfirmRequest(BaseModel):
+    expected_principal_id: str = Field(
+        min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$"
+    )
 
 
 class WorkRequest(BaseModel):
@@ -858,6 +868,13 @@ def current_principal(principal: Annotated[AuthenticatedPrincipal, Depends(requi
 
 
 SELF_ROTATION_PENDING_TTL = timedelta(minutes=10)
+W2_PUBLISHER_GRANTS = ("project.read", "code.publish")
+W2_PUBLISHER_TTL = timedelta(hours=8)
+W2_PUBLISHER_IDENTITIES = {
+    "aao-publisher-pm-": "aao-pm",
+    "aao-publisher-impl-": "aao-impl-codex",
+}
+W2_PROJECT_NAME = "AAO — Self Development"
 
 
 def require_pending_agent_token(x_agent_token: str | None = Header(None)) -> str:
@@ -919,6 +936,116 @@ def confirm_self_rotation(token: Annotated[str, Depends(require_pending_agent_to
         audit(db, str(uuid4()), "principal.credential.rotated",
               {"principal_id": principal_id, "kind": "AGENT", "self_service": True})
     return {"principal_id": principal_id, "kind": "AGENT", "rotated": True}
+
+
+def _w2_publisher_account(principal_id: str) -> str:
+    account = next(
+        (name for prefix, name in W2_PUBLISHER_IDENTITIES.items()
+         if principal_id.startswith(prefix)),
+        None,
+    )
+    prefix = next(
+        (prefix for prefix in W2_PUBLISHER_IDENTITIES if principal_id.startswith(prefix)),
+        None,
+    )
+    suffix = principal_id[len(prefix):] if prefix else ""
+    # Match the IDs provision_w2_publishers.py actually creates:
+    # YYYYmmddHHMMSS-<8 lowercase hex chars>.
+    if account is None or not re.fullmatch(r"\d{14}-[0-9a-f]{8}", suffix):
+        raise HTTPException(403, "W2 publisher self-rotation rejected")
+    return account
+
+
+def _lock_w2_publisher_grant_set(db, principal_id: str) -> tuple[str, str]:
+    """Lock and validate the exact, unexpired W2 publisher authority set."""
+    account = _w2_publisher_account(principal_id)
+    projects = db.execute(
+        "SELECT id FROM projects WHERE name=%s AND state='ACTIVE' ORDER BY id FOR UPDATE",
+        (W2_PROJECT_NAME,),
+    ).fetchall()
+    if len(projects) != 1:
+        raise HTTPException(409, "W2 publisher project is not uniquely active")
+    project_id = str(projects[0][0])
+    rows = db.execute(
+        "SELECT project_id,capability,expires_at,"
+        "expires_at>clock_timestamp() AS active FROM project_grants "
+        "WHERE principal_id=%s ORDER BY project_id,capability FOR UPDATE",
+        (principal_id,),
+    ).fetchall()
+    if ({(str(row[0]), row[1]) for row in rows}
+            != {(project_id, capability) for capability in W2_PUBLISHER_GRANTS}
+            or any(row[2] is None for row in rows)
+            or any(not row[3] for row in rows)):
+        raise HTTPException(403, "W2 publisher grant set is invalid or expired")
+    return account, project_id
+
+
+@app.post("/v1/principals/me/w2-publisher/rotate")
+def stage_w2_publisher_rotation(
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_worker)],
+):
+    """Stage a self-rotation for a W2 publisher; the PM never receives the token."""
+    from aao.principal_credentials import digest_token
+
+    _w2_publisher_account(str(principal))
+    token = secrets.token_urlsafe(32)
+    with tx() as db:
+        row = db.execute(
+            "SELECT kind FROM principal_credentials WHERE principal_id=%s "
+            "AND token_digest=%s AND kind='AGENT' AND enabled=true FOR UPDATE",
+            (principal, principal.token_digest),
+        ).fetchone()
+        if not row:
+            raise HTTPException(403, "Individual agent credential invalid or revoked")
+        account, project_id = _lock_w2_publisher_grant_set(db, str(principal))
+        expires_at = db.execute(
+            "UPDATE principal_credentials SET pending_token_digest=%s,"
+            "pending_expires_at=clock_timestamp()+%s WHERE principal_id=%s "
+            "RETURNING pending_expires_at",
+            (digest_token(token), SELF_ROTATION_PENDING_TTL, principal),
+        ).fetchone()[0]
+        audit(db, project_id, "principal.w2_publisher.rotation_pending", {
+            "principal_id": str(principal), "account": account,
+        })
+    return {
+        "principal_id": str(principal), "account": account, "kind": "AGENT",
+        "token": token, "pending_expires_at": expires_at.isoformat(),
+    }
+
+
+@app.post("/v1/principals/me/w2-publisher/rotate/confirm")
+def confirm_w2_publisher_rotation(
+    request: W2PublisherRotationConfirmRequest,
+    token: Annotated[str, Depends(require_pending_agent_token)],
+):
+    """Promote the target role's staged token and renew only its fixed W2 grants."""
+    from aao.principal_credentials import PrincipalDenied, lock_pending_agent_rotation
+
+    with tx() as db:
+        try:
+            principal_id = lock_pending_agent_rotation(db, token)
+        except PrincipalDenied as exc:
+            raise HTTPException(403, "Pending W2 publisher credential rejected") from exc
+        if str(principal_id) != request.expected_principal_id:
+            raise HTTPException(403, "Pending W2 publisher principal does not match expected identity")
+        account, project_id = _lock_w2_publisher_grant_set(db, str(principal_id))
+        db.execute(
+            "UPDATE principal_credentials SET token_digest=pending_token_digest,"
+            "pending_token_digest=NULL,pending_expires_at=NULL WHERE principal_id=%s",
+            (principal_id,),
+        )
+        db.execute(
+            "UPDATE project_grants SET expires_at=clock_timestamp()+%s "
+            "WHERE principal_id=%s AND project_id=%s AND capability=ANY(%s)",
+            (W2_PUBLISHER_TTL, principal_id, project_id, list(W2_PUBLISHER_GRANTS)),
+        )
+        audit(db, project_id, "principal.w2_publisher.rotated", {
+            "principal_id": str(principal_id), "account": account,
+            "grants": list(W2_PUBLISHER_GRANTS),
+            "expires_in_seconds": int(W2_PUBLISHER_TTL.total_seconds()),
+        })
+    return {"principal_id": str(principal_id), "account": account,
+            "kind": "AGENT", "rotated": True}
 
 
 @app.get("/v1/principals/me/grants")

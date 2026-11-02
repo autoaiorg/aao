@@ -11,6 +11,9 @@ from pathlib import Path
 
 TARGETS = {"aao-impl-codex", "aao-pm"}
 TOKEN_NAME = "aao-publisher.token"
+# The PM coordinator token is a distinct principal; only aao-pm may hold it.
+TOKEN_NAMES = {"publisher": TOKEN_NAME, "pm": "aao-pm.token"}
+TOKEN_ACCOUNTS = {"publisher": TARGETS, "pm": {"aao-pm"}}
 RUNTIME_ROOT = Path("/run/user")
 
 
@@ -18,9 +21,11 @@ class TokenInstallError(RuntimeError):
     pass
 
 
-def target_path(account: str) -> Path:
+def target_path(account: str, token_kind: str = "publisher") -> Path:
     if account not in TARGETS:
         raise TokenInstallError("unsupported publisher account")
+    if account not in TOKEN_ACCOUNTS.get(token_kind, ()):
+        raise TokenInstallError("unsupported token kind for this account")
     try:
         entry = pwd.getpwnam(account)
     except KeyError:
@@ -38,7 +43,7 @@ def target_path(account: str) -> Path:
         raise TokenInstallError("role runtime directory ownership or mode is unsafe")
     if os.geteuid() != entry.pw_uid:
         raise TokenInstallError("must run as the selected publisher account")
-    return expected_runtime / TOKEN_NAME
+    return expected_runtime / TOKEN_NAMES[token_kind]
 
 
 def read_token() -> str:
@@ -91,6 +96,8 @@ def verify(path: Path, token: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--account", required=True, choices=sorted(TARGETS))
+    parser.add_argument("--token", choices=sorted(TOKEN_NAMES), default="publisher",
+                        help="publisher (default) or pm (aao-pm.token, aao-pm only)")
     parser.add_argument("--check", action="store_true", help="verify safe installation target is empty")
     parser.add_argument("--verify", action="store_true", help="verify installed token from stdin")
     parser.add_argument("--remove", action="store_true", help="remove only the matching token from stdin")
@@ -98,7 +105,7 @@ def main() -> int:
     if sum((args.check, args.verify, args.remove)) > 1:
         parser.error("--check, --verify, and --remove are mutually exclusive")
     try:
-        path = target_path(args.account)
+        path = target_path(args.account, args.token)
         if args.check:
             if path.exists() or path.is_symlink():
                 raise TokenInstallError("publisher token already exists; refusing overwrite")
@@ -111,7 +118,7 @@ def main() -> int:
                 path.unlink()
             else:
                 install(path, token)
-        print(f"Publisher token target verified for {args.account}; credential not displayed.")
+        print(f"{TOKEN_NAMES[args.token]} target verified for {args.account}; credential not displayed.")
         return 0
     except (TokenInstallError, OSError, UnicodeError) as exc:
         print(f"Publisher token operation failed: {exc}", file=sys.stderr)

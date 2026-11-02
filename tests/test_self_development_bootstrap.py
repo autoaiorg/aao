@@ -1,4 +1,8 @@
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.error import HTTPError
+
+import pytest
 
 from scripts import bootstrap_self_dev_agent as bootstrap
 
@@ -114,6 +118,52 @@ def test_request_json_explains_stale_api_method_mismatch(monkeypatch):
         assert "restart it from the current checkout" in str(exc)
     else:
         raise AssertionError("expected stale API method mismatch to fail closed")
+
+
+def test_request_json_ignores_proxy_env_and_refuses_redirects(monkeypatch):
+    hits = {"api": [], "proxy": []}
+
+    class Proxy(BaseHTTPRequestHandler):
+        def do_GET(self):
+            hits["proxy"].append(self.path)
+            self.send_response(502)
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    class Api(Proxy):
+        def do_GET(self):
+            hits["api"].append(self.path)
+            if self.path == "/redirect":
+                self.send_response(302)
+                self.send_header("Location", f"http://127.0.0.1:{proxy.server_port}/stolen")
+                self.end_headers()
+                return
+            body = b'{"ok": true}'
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    servers = [HTTPServer(("127.0.0.1", 0), cls) for cls in (Api, Proxy)]
+    api, proxy = servers
+    for server in servers:
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        for name in ("no_proxy", "NO_PROXY"):
+            monkeypatch.delenv(name, raising=False)
+        for name in ("http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"):
+            monkeypatch.setenv(name, f"http://127.0.0.1:{proxy.server_port}")
+        base = f"http://127.0.0.1:{api.server_port}"
+        assert bootstrap.request_json(base, "/ok", ceo_token="ceo-secret") == {"ok": True}
+        with pytest.raises(bootstrap.BootstrapError, match="HTTP 302"):
+            bootstrap.request_json(base, "/redirect", ceo_token="ceo-secret")
+    finally:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+    assert hits == {"api": ["/ok", "/redirect"], "proxy": []}
 
 
 def test_configured_ceo_token_refuses_inherited_override(monkeypatch):

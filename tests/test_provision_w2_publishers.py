@@ -103,6 +103,40 @@ def test_provision_failure_removes_token_files_and_revokes_issued_credentials(mo
     assert ("aao-pm", "secret-for-pm", "remove") in role_calls
 
 
+def test_provision_interrupt_still_removes_and_revokes(monkeypatch):
+    revoked = []
+    role_calls = []
+    grants = []
+    uids = {"aao-impl-codex": 2001, "aao-pm": 2002}
+    monkeypatch.setattr(provisioner.pwd, "getpwnam",
+                        lambda account: SimpleNamespace(pw_uid=uids[account]))
+
+    def fake_request(_url, path, *, method="GET", body=None, **_kwargs):
+        if path == "/v1/projects":
+            return [{"id": "project-1", "name": provisioner.PROJECT_NAME, "state": "ACTIVE"}]
+        if path.endswith("/grants") and method == "GET":
+            return list(grants)
+        if path.endswith("/grants"):
+            grants.append({**body, "kind": "AGENT", "credential_enabled": True})
+        if path == "/v1/principals/credentials":
+            return {"token": "secret-impl", "principal_id": body["principal_id"], "kind": "AGENT"}
+        if path.endswith("/revoke"):
+            revoked.append(path)
+        return {"ok": True}
+
+    def fake_helper(account, *, token, operation, **_kwargs):
+        role_calls.append((account, token, operation))
+        if operation == "install":
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(provisioner, "request_json", fake_request)
+    monkeypatch.setattr(provisioner, "_run_role_helper", fake_helper)
+    with pytest.raises(KeyboardInterrupt):
+        provisioner.provision("project-1", api_url="http://127.0.0.1:8001", ceo_token="ceo")
+    assert ("aao-impl-codex", "secret-impl", "remove") in role_calls
+    assert len(revoked) == 1
+
+
 def test_provision_refuses_non_self_development_project_before_sudo(monkeypatch):
     monkeypatch.setattr(provisioner, "_run_role_helper",
                         lambda *_args, **_kwargs: pytest.fail("must not run sudo helper"))

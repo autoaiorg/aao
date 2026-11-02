@@ -43,12 +43,11 @@ class _RefuseRedirects(HTTPRedirectHandler):
         return None  # the 3xx surfaces as HTTPError; credentials never follow a redirect
 
 
-# Ignore http_proxy/all_proxy etc.: the CEO bearer must only reach the loopback API.
-_OPENER = build_opener(ProxyHandler({}), _RefuseRedirects())
-
-
 def urlopen(request: Request, timeout: float):
-    return _OPENER.open(request, timeout=timeout)
+    # Ignore http_proxy/all_proxy etc.: the CEO bearer must only reach the loopback API.
+    # Built per call so proxy env is evaluated at request time (and testable).
+    opener = build_opener(ProxyHandler({}), _RefuseRedirects())
+    return opener.open(request, timeout=timeout)
 
 
 def request_json(base_url: str, path: str, *, method: str = "GET",

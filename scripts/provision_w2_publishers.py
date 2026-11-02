@@ -33,7 +33,7 @@ class ProvisionError(RuntimeError):
 def local_api_url(value: str) -> str:
     parsed = urlparse(value)
     if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
-        raise ProvisionError("W2 publisher provisioning is restricted to the loopback AAO API")
+        raise ProvisionError("credential provisioning is restricted to the loopback AAO API")
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ProvisionError("AAO API URL must not contain credentials or query data")
     return value.rstrip("/")

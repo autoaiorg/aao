@@ -284,14 +284,26 @@ def test_recent_unlisted_delivery_is_inconclusive_within_grace(monkeypatch):
     import aao.github_delivery_corroboration as module
     monkeypatch.setattr(module.time, 'time', lambda: 1000000)
     recent = payload()
-    recent['repository']['pushed_at'] = 1000000 - 30
+    recent['repository']['pushed_at'] = '1970-01-12T13:45:30Z'
     with pytest.raises(DeliveryCorroborationInconclusive, match='not listed yet'):
         corroborate(PagedOpener([filler(0)]), candidate=recent)
     old = payload()
-    old['repository']['pushed_at'] = 1000000 - module.NOT_FOUND_GRACE_SECONDS - 1
+    old['repository']['pushed_at'] = '1970-01-12T13:33:19Z'
     with pytest.raises(ValueError, match='GUID was not found') as caught:
         corroborate(PagedOpener([filler(0)]), candidate=old)
     assert not isinstance(caught.value, DeliveryCorroborationInconclusive)
+
+
+@pytest.mark.parametrize('pushed_at', [
+    '1970-01-12T13:45:30',  # timezone is required
+    'not-a-timestamp',
+    999970,  # not the RFC3339 shape GitHub sends
+])
+def test_unlisted_delivery_with_invalid_pushed_at_is_not_treated_as_recent(pushed_at):
+    recent = payload()
+    recent['repository']['pushed_at'] = pushed_at
+    with pytest.raises(ValueError, match='GUID was not found'):
+        corroborate(PagedOpener([filler(0)]), candidate=recent)
 
 
 @pytest.mark.parametrize('override', [

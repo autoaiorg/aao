@@ -14,6 +14,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 _GUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\Z")
@@ -189,6 +190,20 @@ def _positive_id(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
+def _is_recent_push_timestamp(value: Any, now: float) -> bool:
+    """Whether GitHub's RFC3339 repository.pushed_at is inside the retry window."""
+    if not isinstance(value, str):
+        return False
+    try:
+        pushed_at = datetime.fromisoformat(value)
+        if pushed_at.tzinfo is None or pushed_at.utcoffset() is None:
+            return False
+        pushed_epoch = pushed_at.timestamp()
+    except (OverflowError, ValueError):
+        return False
+    return abs(now - pushed_epoch) < NOT_FOUND_GRACE_SECONDS
+
+
 def _push_claims(payload: Any) -> tuple[int, str, int, str, str, str]:
     if not isinstance(payload, dict):
         raise TypeError("push payload is not an object")
@@ -241,8 +256,7 @@ def corroborate_push_delivery(*, token: str, trust: PushWebhookTrust,
     matched = _find_delivery(transport, base, endpoints, token, delivery_guid, max_pages)
     if not matched:
         pushed_at = relay_payload["repository"].get("pushed_at")
-        if (_positive_id(pushed_at)
-                and abs(time.time() - pushed_at) < NOT_FOUND_GRACE_SECONDS):
+        if _is_recent_push_timestamp(pushed_at, time.time()):
             raise DeliveryCorroborationInconclusive(
                 "recent GitHub delivery is not listed yet; retry later", NOT_FOUND_GRACE_SECONDS)
         raise ValueError("GitHub delivery GUID was not found")

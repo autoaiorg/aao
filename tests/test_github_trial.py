@@ -300,11 +300,12 @@ def test_permission_tables_match_p2_manifest_values():
     assert trial.EXPECTED_PERMISSIONS["aao-pm"] == {
         "issues": "write", "pull_requests": "write", "contents": "read", "metadata": "read",
     }
+    pm = trial.EXPECTED_PERMISSIONS["aao-pm"]
+    assert pm["contents"] == "read" and "workflows" not in pm
     expected_fork = {"contents": "write", "workflows": "write", "metadata": "read"}
     for role in ("aao-impl-codex", "aao-impl-claude", "aao-impl-agy"):
-        assert trial.EXPECTED_PERMISSIONS[role] == {
-            "contents": "write", "pull_requests": "write", "workflows": "write", "metadata": "read",
-        }
+        assert trial.EXPECTED_PERMISSIONS[role] == expected_fork
+        assert "pull_requests" not in trial.EXPECTED_PERMISSIONS[role]
         assert trial.FORK_PERMISSIONS[role] == expected_fork
         assert "pull_requests" not in trial.FORK_PERMISSIONS[role]
 

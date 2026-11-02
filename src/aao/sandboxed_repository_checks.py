@@ -202,6 +202,9 @@ def _build_command(repository: Path, check_id: str, site_packages: Path,
         "--nofile=64",
         "--",
         "/opt/aao-python/bin/python3",
+        # Load only the explicitly mounted candidate test environment through
+        # PYTHONPATH; do not shadow it with packages from the base interpreter.
+        "-S",
         "-B",
         "-m",
         "pytest",
@@ -221,9 +224,16 @@ def run_repository_check(repository: str | Path, check_id: str,
         raise RepositoryCheckError("candidate repository is unavailable")
     sha = _candidate_sha(root)
     site_packages = Path(sysconfig.get_paths()["purelib"])
-    command = _build_command(root, check_id, site_packages, extra_tests)
     started = time.monotonic()
+    staged_packages = tempfile.TemporaryDirectory(prefix="aao-repository-check-packages-")
     try:
+        package_mount = Path(staged_packages.name) / "site-packages"
+        # uv and some other installers populate site-packages with symlinks into
+        # a shared cache. Those targets are intentionally not mounted in the
+        # sandbox; materialize the trusted test environment into a private,
+        # temporary tree so its imports remain complete and self-contained.
+        shutil.copytree(site_packages, package_mount, symlinks=False)
+        command = _build_command(root, check_id, package_mount, extra_tests)
         with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
             result = subprocess.run(
                 command,
@@ -245,6 +255,10 @@ def run_repository_check(repository: str | Path, check_id: str,
             stderr = stderr_file.read().decode("utf-8", errors="replace")
     except subprocess.TimeoutExpired as exc:
         raise RepositoryCheckError("sandbox supervisor exceeded its hard timeout") from exc
+    except OSError as exc:
+        raise RepositoryCheckError("test dependency environment could not be isolated") from exc
+    finally:
+        staged_packages.cleanup()
     elapsed_ms = round((time.monotonic() - started) * 1000)
     if _candidate_sha(root) != sha:
         raise RepositoryCheckError("candidate revision changed while checks were running")

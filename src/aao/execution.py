@@ -6,6 +6,7 @@ explicitly establish safety before retrying an externally effectful operation.
 """
 import json
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -37,8 +38,19 @@ def connect(path: str):
     return db
 
 
+@contextmanager
+def connection(path: str):
+    """Yield a queue database connection and close it after commit or rollback."""
+    db = connect(path)
+    try:
+        with db:
+            yield db
+    finally:
+        db.close()
+
+
 def initialize(path: str):
-    with connect(path) as db:
+    with connection(path) as db:
         db.executescript("""
             CREATE TABLE IF NOT EXISTS execution_queue (
                 id TEXT PRIMARY KEY,
@@ -74,7 +86,7 @@ def record(db, execution_id, event, details):
 def enqueue(path: str, *, project_id: str, work_id: str, data: dict):
     if not project_id or not work_id:
         raise QueueConflict("Project and work IDs are required")
-    with connect(path) as db:
+    with connection(path) as db:
         db.execute("BEGIN IMMEDIATE")
         prior = db.execute(
             "SELECT id FROM execution_queue WHERE work_id=?", (work_id,)
@@ -95,7 +107,7 @@ def claim(path: str, *, worker_id: str, ttl_seconds: int = 60, now=None):
     if not worker_id or ttl_seconds < 1:
         raise QueueConflict("Worker identity and positive TTL required")
     at = now or utcnow()
-    with connect(path) as db:
+    with connection(path) as db:
         db.execute("BEGIN IMMEDIATE")
         row = db.execute(
             "SELECT id,attempt FROM execution_queue WHERE status='QUEUED' "
@@ -116,7 +128,7 @@ def claim(path: str, *, worker_id: str, ttl_seconds: int = 60, now=None):
 
 def complete(path: str, lease: Lease, result: dict, *, now=None):
     at = now or utcnow()
-    with connect(path) as db:
+    with connection(path) as db:
         db.execute("BEGIN IMMEDIATE")
         row = db.execute(
             "SELECT status,lease_token,lease_expires_at,worker_id "
@@ -135,7 +147,7 @@ def complete(path: str, lease: Lease, result: dict, *, now=None):
 
 def quarantine_expired(path: str, *, now=None) -> int:
     at = (now or utcnow()).isoformat()
-    with connect(path) as db:
+    with connection(path) as db:
         db.execute("BEGIN IMMEDIATE")
         rows = db.execute(
             "SELECT id FROM execution_queue WHERE status='RUNNING' "
@@ -151,7 +163,7 @@ def quarantine_expired(path: str, *, now=None) -> int:
 
 def reconcile(path: str, execution_id: str, *, safe_to_retry: bool):
     """Caller must supply independently verified evidence of safe retry."""
-    with connect(path) as db:
+    with connection(path) as db:
         db.execute("BEGIN IMMEDIATE")
         row = db.execute(
             "SELECT status FROM execution_queue WHERE id=?", (execution_id,)
@@ -168,6 +180,6 @@ def reconcile(path: str, execution_id: str, *, safe_to_retry: bool):
 
 
 def state(path: str, execution_id: str):
-    with connect(path) as db:
+    with connection(path) as db:
         row = db.execute("SELECT * FROM execution_queue WHERE id=?", (execution_id,)).fetchone()
         return dict(row) if row else None

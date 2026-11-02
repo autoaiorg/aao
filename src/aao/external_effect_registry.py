@@ -3,6 +3,7 @@ import hashlib
 import json
 from uuid import uuid4
 
+from aao.host_identity import HostIdentityError, current_host_id
 from aao.postgresql_connection import connect_postgres
 
 
@@ -35,6 +36,44 @@ def propose(*, execution_id: str, worker_id: str, lease_token: str,
             raise EffectConflict("Active agent credential required") from exc
         if principal_id != worker_id:
             raise EffectConflict("Credential does not match execution worker")
+
+        # Check host-worker binding and cutover fencing status (Finding A-07 / A-14)
+        has_table = db.execute(
+            "SELECT to_regclass('public.host_worker_bindings')"
+        ).fetchone()[0]
+        if not has_table:
+            raise EffectConflict("Host fencing registry unavailable; effect proposal rejected")
+        has_epoch_col = db.execute(
+            "SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='execution_queue' AND column_name='claim_fence_epoch'"
+        ).fetchone() is not None
+        if not has_epoch_col:
+            raise EffectConflict("Execution fencing epoch schema unavailable; effect proposal rejected")
+        host_row = None
+        if has_table:
+            host_rows = db.execute(
+                """
+                SELECT host_id, status, fence_epoch FROM host_worker_bindings
+                WHERE worker_id = %s
+                ORDER BY created_at DESC
+                FOR SHARE
+                """,
+                (worker_id,),
+            ).fetchall()
+            active_rows = [row for row in host_rows if row[1] == "ACTIVE"]
+            if len(active_rows) != 1:
+                raise EffectConflict(
+                    f"Worker '{worker_id}' must have exactly one active host binding; effect proposal rejected."
+                )
+            host_row = active_rows[0]
+            try:
+                local_host_id = current_host_id()
+            except HostIdentityError as exc:
+                raise EffectConflict("Trusted local host identity unavailable; effect proposal rejected") from exc
+            if host_row[0] != local_host_id:
+                raise EffectConflict("Active worker binding belongs to a different host; effect proposal rejected")
+            if host_row[2] is None:
+                raise EffectConflict("Host fencing epoch is missing; effect proposal rejected")
+
         execution = db.execute(
             "SELECT q.status,q.project_id,q.worker_id,q.lease_token,"
             "q.lease_expires_at,p.state,q.project_state_generation,"
@@ -45,6 +84,13 @@ def propose(*, execution_id: str, worker_id: str, lease_token: str,
         ).fetchone()
         if not execution:
             raise EffectConflict("Unknown execution")
+
+        if has_table and host_row:
+            epoch_row = db.execute(
+                "SELECT claim_fence_epoch FROM execution_queue WHERE id=%s", (execution_id,)
+            ).fetchone()
+            if not epoch_row or epoch_row[0] is None or host_row[2] != epoch_row[0]:
+                raise EffectConflict("Host fencing epoch is missing or changed; lease invalidated")
         (status, project_id, owner, current_token, expires_at, project_state,
          claimed_generation, current_generation) = execution
         if (status != "RUNNING" or owner != worker_id or str(current_token) != lease_token

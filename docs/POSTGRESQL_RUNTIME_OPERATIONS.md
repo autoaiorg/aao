@@ -18,47 +18,95 @@ never rerun an applied migration. The scripts are one-shot, not a general
 schema-repair or rollback tool. If an interrupted migration leaves ambiguous
 state, stop and inspect the database rather than rerunning it blindly.
 
+Migration 036 installs the host registry and execution-claim fencing; migration
+037 binds conversation-turn leases to host and fence epoch. It also expires
+legacy pending leases without host attribution so the new release can reclaim
+them safely. The integral bootstrap stops the API and recovery worker before
+the 037 migration and starts the API only after applying and verifying the
+schema. Migration 036 intentionally does not bind an agent identity to a host.
+Before enabling a worker or W2 GitHub publisher, an
+operator must register its exact principal and host with
+`aao-ops register-host-worker --worker-id <principal-id> --host-id <host-id>`.
+Claims, effect proposals and W2 remote publication fail closed until that
+explicit binding exists. Fence the old host before registering the identity on
+a new host; the unique active-binding constraint refuses an un-fenced
+reassignment. The publisher holds its binding row lock for the duration of the
+remote call and ledger commit; GitHub does not consume AAO's fencing epoch, so
+this serializes against AAO fencing but cannot guarantee cancellation of an
+already-issued remote request after a network partition.
+
+## Unified Schema Migration Engine (Single Source of Truth)
+
+AAO now incorporates a unified, atomic, and lock-protected migration subsystem
+at `src/aao/migrator.py` (CLI entrypoints: `aao-migrate` or `python scripts/migrate.py`).
+Manual shell loops are deprecated; both CI, host bootstrap, and day-to-day operations
+consume this identical engine.
+
+### Migration Management:
 ```sh
+# Install dependencies
 python -m pip install -e '.[postgres]'
-for migration in db/postgres/001_foundation.sql \
-  db/postgres/002_dev_identity.sql \
-  db/postgres/003_execution.sql \
-  db/postgres/004_execution_guards.sql \
-  db/postgres/005_principal_credentials.sql \
-  db/postgres/006_unified_execution_identity.sql \
-  db/postgres/007_fence_leases_across_project_state_changes.sql \
-  db/postgres/008_content_addressed_evidence.sql \
-  db/postgres/009_prevent_evidence_truncation.sql \
-  db/postgres/010_capability_registry.sql \
-  db/postgres/011_sha_bound_reviews_and_veto.sql \
-  db/postgres/012_patch_proposals.sql \
-  db/postgres/013_work_description.sql \
-  db/postgres/014_execution_retry.sql \
-  db/postgres/015_organization_profiles.sql \
-  db/postgres/016_project_conversations.sql \
-  db/postgres/017_ceo_browser_sessions.sql \
-  db/postgres/018_conversation_provider_metadata.sql \
-  db/postgres/019_project_conversation_turns.sql \
-  db/postgres/020_persistent_work_groups.sql \
-  db/postgres/021_conversation_turn_leases.sql \
-  db/postgres/022_work_item_assignments.sql \
-  db/postgres/023_work_group_consolidations.sql \
-  db/postgres/024_work_group_partial_reports.sql \
-  db/postgres/025_work_item_due_dates.sql \
-  db/postgres/026_capability_feedback_proposals.sql \
-  db/postgres/027_capability_feedback_review.sql \
-  db/postgres/028_capability_feedback_version_link.sql \
-  db/postgres/029_organization_profile_competencies.sql \
-  db/postgres/030_conversation_work_group_results.sql \
-  db/postgres/031_conversation_endpoint_metadata.sql \
-  db/postgres/032_work_item_required_competencies.sql \
-  db/postgres/033_protocol_instances.sql \
-  db/postgres/034_work_item_priority.sql; do
-  psql "$AAO_POSTGRES_URL" -v ON_ERROR_STOP=1 -f "$migration"
-done
-export AAO_CEO_TOKEN='locally-generated-secret'
-uvicorn aao.work_management_api:app --host 127.0.0.1 --port 8001
+
+# Check migration status (applied vs pending)
+python scripts/migrate.py --status
+
+# Apply pending migrations (001 to 038) with advisory locks and integrity verification
+python scripts/migrate.py --apply
+
+# Verify that all migrations in db/postgres/ are applied with intact SHA-256 checksums
+python scripts/migrate.py --verify
 ```
+
+### Full Migration Catalog (001 to 038):
+The current canonical catalog comprises 38 versioned migrations in `db/postgres/`:
+- `001_foundation`: Core tables (`schema_migrations`, `mandates`, `projects`, `principals`, `events`).
+- `002_dev_identity`: Relaxed UUID identities to text development identities.
+- `003_execution`: Execution queue and status lifecycle.
+- `004_execution_guards`: Constraints preventing unauthorized state transitions.
+- `005_principal_credentials`: Credential registry storing SHA-256 token digests.
+- `006_unified_execution_identity`: Consolidates legacy worker identities into `principal_credentials`.
+- `007_fence_leases_across_project_state_changes`: Project state triggers and fence generation numbers.
+- `008_content_addressed_evidence`: Content-addressed SHA-256 evidence artifact storage.
+- `009_prevent_evidence_truncation`: Guards ensuring complete immutable evidence recording.
+- `010_capability_registry`: Versioned, project-local capability definitions and contracts.
+- `011_sha_bound_reviews_and_veto`: SHA-bound reviews and independent auditor veto mechanisms.
+- `012_patch_proposals`: Code patch proposals, base SHA binding, and validation records.
+- `013_work_description`: Structured work item description and task criteria.
+- `014_execution_retry`: Partial index `ux_execution_queue_active_work` supporting execution retries.
+- `015_organization_profiles`: Canonical organizational units and member profiles (`/v1/organization`).
+- `016_project_conversations`: CEO conversation session and turn tracking.
+- `017_ceo_browser_sessions`: HTTP-only `__Host-aao_ceo_session` cookies and CSRF digests.
+- `018_conversation_provider_metadata`: Metadata recording model and provider details per conversation.
+- `019_project_conversation_turns`: Structured turn messages and assistant responses.
+- `020_persistent_work_groups`: Multi-task persistent work group hierarchy.
+- `021_conversation_turn_leases`: Turn lease timeout and heartbeat leases.
+- `022_work_item_assignments`: Work item assignment to specific agent principals.
+- `023_work_group_consolidations`: Aggregation and consolidation of work group child tasks.
+- `024_work_group_partial_reports`: Intermediate progress reporting for complex task trees.
+- `025_work_item_due_dates`: Scheduling, deadlines, and target completion timestamps.
+- `026_capability_feedback_proposals`: Feedback submission on registered capabilities.
+- `027_capability_feedback_review`: Review and dispositioning of capability feedback proposals.
+- `028_capability_feedback_version_link`: Version linking between feedback proposals and capability revisions.
+- `029_organization_profile_competencies`: Agent skills, competencies, and specialization tags.
+- `030_conversation_work_group_results`: Grounding conversation outcomes to persisted work group executions.
+- `031_conversation_endpoint_metadata`: Safe endpoint provenance for every provider-backed conversation turn.
+- `032_work_item_required_competencies`: Explicit skill requirements so PM routing can be checked against CEO profiles.
+- `033_protocol_instances`: Pinned protocol/version and request identity (revokes `PUBLIC` access; see below).
+- `034_work_item_priority`: CEO-controlled scheduling priority for unfinished work.
+- `035_project_routines`: Durable CEO-authorized routines and their occurrences (revokes `PUBLIC` access).
+- `036_host_worker_fencing`: Versioned host-worker binding registry, unique active worker binding, and execution claim fencing epoch (revokes `PUBLIC` access on `host_worker_bindings`). Renumbered from `031_host_worker_fencing` to avoid colliding with `031_conversation_endpoint_metadata`; a database that already recorded `031_host_worker_fencing` in `schema_migrations` needs ledger reconciliation by its owner before applying 036.
+- `037_conversation_turn_host_fencing`: Binds provider-backed conversation turn leases to the owning host and fence epoch.
+- `038_work_publication_effects`: Persists idempotency and recovery state for remote push and pull-request effects (revokes `PUBLIC` access; a non-owner runtime role needs an explicit grant).
+
+Databases upgraded from the pre-renumber host-bootstrap sequence may have recorded
+`031_host_worker_fencing` and `032_conversation_turn_host_fencing` (and, on any
+unpublished local build of the same line, `033_work_publication_effects`). Do not simply
+rename ledger rows or replay migrations based only on those names. The database
+owner must inspect the actual schema and application history, reconcile the
+ledger to the canonical migration set (including the independent canonical
+migrations 031 and 032), and record the reconciliation before applying any
+missing canonical migrations. This is a manual, database-specific operation;
+the migrator and preflight do not perform it.
 
 For an existing database, apply only migrations absent from
 `schema_migrations`, preserving the same order. The LIVE organization
@@ -82,18 +130,41 @@ an `AGENT` or `AUDITOR`, then send its one-time returned token as
 the project capabilities it needs. `AAO_WORK_TOKEN` and `AAO_REVIEW_TOKEN`
 are SQLite-prototype settings and are not accepted by this PostgreSQL API.
 
-### Pending runtime-role installation prerequisite
+### Runtime database role
 
-Migration `033_protocol_instances.sql` explicitly revokes all privileges on
-`protocol_instances` from `PUBLIC`; it does not grant access to the service
-role. Before a deployment uses this table, identify the effective PostgreSQL
-role used by the API and explicitly grant it only `SELECT` and `INSERT` on
-`protocol_instances`. The runtime role must not own the table or have elevated
-role flags; use a separate migration/owner identity for schema changes. Verify
-the effective role and its privileges in the deployment itself. The disposable
-database privilege test checks the intended boundary, but does not prove the
-deployment is configured this way. Until that installation check is complete,
-the real deployment's runtime identity and grants remain unverified.
+The host bootstrap separates three database identities: `aao_app` owns the
+schema and applies migrations; `aao_runtime` is used only by the API process;
+and `aao_recovery` is used only by the opt-in conversation-recovery worker. The
+API receives the `aao_runtime` DSN from `/etc/aao/aao-api.env`; recovery
+receives the restricted `aao_recovery` DSN from `/etc/aao/aao-recovery.env`.
+Neither service may fall back to `/etc/aao/aao-db.secret` or connect as the
+schema owner.
+Bootstrap applies `scripts/bootstrap/apply_api_grants.sql` and
+`scripts/bootstrap/apply_runtime_grants.sql` after migrations. Re-run both
+grant scripts after adding a migration that creates tables or changes either
+service's SQL contract.
+
+Neither service role may own the database, schema, tables, or triggers, and both
+must have no elevated role attributes or membership in the migration owner.
+`aao_recovery` is a recovery-only role: it has no access to
+`principal_credentials` or `project_grants`, and cannot issue credentials or
+modify project grants. Host-worker fencing is performed by the API identity,
+not by the recovery worker.
+`aao_runtime` has broader table privileges because application authorization is
+enforced by the API boundary; it is therefore a privileged service identity. It
+must run only as the dedicated `aao-api` systemd user and must not share its
+environment file or database credential with other services. The recovery
+worker runs as `aao-recovery` with its separate restricted DSN. Verify the
+effective role and grants in the deployment itself; disposable PostgreSQL tests
+do not prove host configuration. Migration, API, and recovery identities remain
+separate even when one machine hosts all three.
+
+Migration 033, 036, and 038 revoke `PUBLIC` access from protected tables. The
+API and recovery grant scripts explicitly grant the access each service needs
+on those tables, including `protocol_instances`, `host_worker_bindings`, and
+`work_publication_effects` where applicable. Host registration operations must still be
+authorized and audited at the application layer; broad ownership is not an
+acceptable shortcut.
 
 **Do not expose port 8001 beyond loopback.** Both secrets are development
 credentials, not a production identity system. PostgreSQL permissions,

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 import re
 import subprocess
@@ -23,7 +24,10 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
+from aao.host_identity import HostIdentityError, current_host_id
+
 _SHA = re.compile(r"^[0-9a-f]{40}$")
+_EFFECT_LEASE_SECONDS = 180
 
 
 class PublishError(RuntimeError):
@@ -69,114 +73,272 @@ def verify_candidate(store: Path, candidate_sha: str, base_sha: str, patch: byte
         raise PublishError("candidate tree does not match base + proposal patch")
 
 
-def _approved_candidate(work_id: str, credential: str, kind_of_step: str) -> dict:
+def _approved_candidate(db, work_id: str, credential: str, kind_of_step: str) -> dict:
     """Re-derive the approved candidate from the database; never from the agent's result_json."""
     from fastapi import HTTPException
 
     from aao.principal_credentials import PrincipalDenied
-    from aao.work_management_api import _authenticate_request_principal, require_grant, tx
+    from aao.work_management_api import _authenticate_request_principal, require_grant
 
     try:
         principal = _authenticate_request_principal(credential, "AGENT")
     except PrincipalDenied as exc:
         raise PublishError("active publisher credential required") from exc
-    with tx() as db:
-        work = db.execute("SELECT project_id,status,author_id,title FROM work_items WHERE id=%s FOR UPDATE",
-                          (work_id,)).fetchone()
-        if not work:
-            raise PublishError("work not found")
-        project_id, status, author_id, title = work
-        try:
-            require_grant(db, principal, project_id, "code.publish")
-        except HTTPException as exc:
-            raise PublishError(str(exc.detail)) from exc
-        if principal == author_id:
-            raise PublishError("the implementing agent cannot publish its own work")
-        review = db.execute("SELECT id,candidate_sha FROM reviews WHERE work_id=%s AND decision='APPROVE' "
-                            "ORDER BY created_at DESC LIMIT 1", (work_id,)).fetchone()
-        if not review:
-            raise PublishError("no approval recorded")
-        review_id, candidate_sha = str(review[0]), review[1]
-        # Idempotent per approved candidate: a later attempt (after a closed PR) gets its own push and PR.
-        events = {kind: details for kind, details in db.execute(
-            "SELECT kind,details FROM events WHERE subject_id=%s AND kind IN ('work.candidate_pushed','work.pr_opened') "
-            "AND details->>'candidate_sha'=%s AND created_at > COALESCE((SELECT max(created_at) FROM events "
-            "WHERE subject_id=%s AND kind='work.pr_closed'), '-infinity') ORDER BY created_at",
-            (work_id, candidate_sha, work_id)).fetchall()}
-        if kind_of_step in events:
-            return {"done": events[kind_of_step]}
-        if status != "VERIFIED":
-            raise PublishError("only VERIFIED work can be published")
-        if db.execute("SELECT 1 FROM reviews WHERE work_id=%s AND decision='VETO' LIMIT 1", (work_id,)).fetchone():
-            raise PublishError("an active veto blocks publication")
-        proposal = db.execute(
-            "SELECT p.id,p.base_sha,p.patch_bytes FROM execution_queue q JOIN patch_proposals p "
-            "ON p.id::text = q.result_json->>'proposal_id' AND p.work_id=q.work_id "
-            "WHERE q.work_id=%s AND q.status='SUCCEEDED' AND q.result_json->>'candidate_sha'=%s "
-            "ORDER BY q.created_at DESC LIMIT 1", (work_id, candidate_sha)).fetchone()
-        if not proposal:
-            raise PublishError("approved SHA has no succeeded execution with a proposal")
+    # Capture the decision and host fence briefly. Effect reservations are durable;
+    # never hold a database transaction across the remote GitHub call.
+    work = db.execute("SELECT project_id,status,author_id,title FROM work_items WHERE id=%s",
+                      (work_id,)).fetchone()
+    if not work:
+        raise PublishError("work not found")
+    project_id, status, author_id, title = work
+    try:
+        require_grant(db, principal, project_id, "code.publish")
+    except HTTPException as exc:
+        raise PublishError(str(exc.detail)) from exc
+    if principal == author_id:
+        raise PublishError("the implementing agent cannot publish its own work")
+    # A GitHub publisher is also an external-effect worker. Validate its current
+    # binding before authorizing each attempt. A later fence cannot revoke a call
+    # already dispatched to GitHub; it does prevent a retry/new effect.
+    registry = db.execute("SELECT to_regclass('public.host_worker_bindings')").fetchone()
+    if not registry or registry[0] is None:
+        raise PublishError("host fencing registry unavailable; publication rejected")
+    try:
+        local_host_id = current_host_id()
+    except HostIdentityError as exc:
+        raise PublishError("trusted local host identity unavailable; publication rejected") from exc
+    bindings = db.execute(
+        "SELECT host_id,status,fence_epoch FROM host_worker_bindings "
+        "WHERE worker_id=%s ORDER BY created_at DESC", (str(principal),)
+    ).fetchall()
+    active = [row for row in bindings if row[1] == "ACTIVE"]
+    if len(active) != 1:
+        raise PublishError("publisher must have exactly one active host binding")
+    host_id, _status, fence_epoch = active[0]
+    if host_id != local_host_id:
+        raise PublishError("publisher binding belongs to a different host")
+    if not isinstance(fence_epoch, int) or fence_epoch < 1:
+        raise PublishError("publisher host fencing epoch is invalid")
+    review = db.execute("SELECT id,candidate_sha FROM reviews WHERE work_id=%s AND decision='APPROVE' "
+                        "ORDER BY created_at DESC LIMIT 1", (work_id,)).fetchone()
+    if not review:
+        raise PublishError("no approval recorded")
+    review_id, candidate_sha = str(review[0]), review[1]
+    # Idempotent per approved candidate: a later attempt (after a closed PR) gets its own push and PR.
+    events = {kind: details for kind, details in db.execute(
+        "SELECT kind,details FROM events WHERE subject_id=%s AND kind IN ('work.candidate_pushed','work.pr_opened') "
+        "AND details->>'candidate_sha'=%s AND created_at > COALESCE((SELECT max(created_at) FROM events "
+        "WHERE subject_id=%s AND kind='work.pr_closed'), '-infinity') ORDER BY created_at",
+        (work_id, candidate_sha, work_id)).fetchall()}
+    if status != "VERIFIED":
+        raise PublishError("only VERIFIED work can be published")
+    if db.execute("SELECT 1 FROM reviews WHERE work_id=%s AND decision='VETO' LIMIT 1", (work_id,)).fetchone():
+        raise PublishError("an active veto blocks publication")
+    if kind_of_step in events:
+        return {"done": events[kind_of_step]}
+    proposal = db.execute(
+        "SELECT p.id,p.base_sha,p.patch_bytes FROM execution_queue q JOIN patch_proposals p "
+        "ON p.id::text = q.result_json->>'proposal_id' AND p.work_id=q.work_id "
+        "WHERE q.work_id=%s AND q.status='SUCCEEDED' AND q.result_json->>'candidate_sha'=%s "
+        "ORDER BY q.created_at DESC LIMIT 1", (work_id, candidate_sha)).fetchone()
+    if not proposal:
+        raise PublishError("approved SHA has no succeeded execution with a proposal")
     return {"principal": str(principal), "title": title, "candidate_sha": candidate_sha, "review_id": review_id,
             "proposal_id": str(proposal[0]), "base_sha": proposal[1], "patch": bytes(proposal[2]),
             "pushed": events.get("work.candidate_pushed")}
 
 
+def _effect_key(work_id: str, candidate_sha: str, operation: str) -> str:
+    stable = f"aao-publication:v1:{work_id}:{candidate_sha}:{operation}"
+    if len(stable) <= 200:
+        return stable
+    digest = hashlib.sha256(stable.encode()).hexdigest()
+    return f"aao-publication:v1:{digest}"
+
+
+def _reserve_effect(db, c: dict, work_id: str, operation: str) -> dict:
+    """Commit a durable attempt authorization before making a remote call."""
+    from uuid import uuid4
+
+    effect_key = _effect_key(work_id, c["candidate_sha"], operation)
+    row = db.execute(
+        "SELECT id,status,attempt_id,lease_expires_at,result,attempts FROM work_publication_effects "
+        "WHERE work_id=%s AND candidate_sha=%s AND operation=%s FOR UPDATE",
+        (work_id, c["candidate_sha"], operation),
+    ).fetchone()
+    if not row:
+        raise PublishError("publication effect reservation disappeared")
+    effect_id, status, _old_attempt, expiry, result, attempts = row
+    if status == "COMPLETED":
+        return {"completed": result}
+    if status == "IN_PROGRESS":
+        live = db.execute("SELECT %s > clock_timestamp()", (expiry,)).fetchone()[0]
+        if live:
+            return {"busy": True, "effect_key": effect_key}
+        db.execute(
+            "UPDATE work_publication_effects SET status='UNCERTAIN',attempt_id=NULL,lease_expires_at=NULL,"
+            "error_class=COALESCE(error_class,'AttemptLeaseExpired'),updated_at=clock_timestamp() WHERE id=%s",
+            (effect_id,),
+        )
+    attempt_id = str(uuid4())
+    db.execute(
+        "UPDATE work_publication_effects SET status='IN_PROGRESS',attempt_id=%s,attempts=attempts+1,"
+        "lease_expires_at=clock_timestamp()+(%s * interval '1 second'),error_class=NULL,"
+        "updated_at=clock_timestamp() WHERE id=%s",
+        (attempt_id, _EFFECT_LEASE_SECONDS, effect_id),
+    )
+    from aao.work_management_api import audit
+    audit(db, work_id, "work.publication_effect", {
+        "effect_key": effect_key, "operation": operation, "status": "IN_PROGRESS",
+        "attempt": attempts + 1, "candidate_sha": c["candidate_sha"],
+    })
+    return {"effect_id": str(effect_id), "attempt_id": attempt_id,
+            "effect_key": effect_key, "attempt": attempts + 1}
+
+
+def _finish_effect(work_id: str, operation: str, reservation: dict, *,
+                   result: dict | None = None, error: Exception | None = None) -> None:
+    """Record the known result in a new short transaction; ambiguity remains UNCERTAIN."""
+    from aao.work_management_api import audit, tx
+
+    final_status = "UNCERTAIN" if error is not None else "COMPLETED"
+    safe_result = result or {}
+    error_class = type(error).__name__ if error is not None else None
+    with tx() as db:
+        updated = db.execute(
+            "UPDATE work_publication_effects SET status=%s,attempt_id=NULL,lease_expires_at=NULL,"
+            "result=%s::jsonb,error_class=%s,updated_at=clock_timestamp() "
+            "WHERE id=%s AND status='IN_PROGRESS' AND attempt_id=%s RETURNING id",
+            (final_status, json.dumps(safe_result), error_class,
+             reservation["effect_id"], reservation["attempt_id"]),
+        ).fetchone()
+        if not updated:
+            existing = db.execute(
+                "SELECT status FROM work_publication_effects WHERE id=%s FOR UPDATE",
+                (reservation["effect_id"],),
+            ).fetchone()
+            if existing and existing[0] == "COMPLETED" and error is None:
+                return
+            raise PublishError("publication effect attempt was superseded before reconciliation")
+        audit(db, work_id, "work.publication_effect", {
+            "effect_key": reservation["effect_key"], "operation": operation,
+            "status": final_status, "attempt": reservation["attempt"],
+            "candidate_sha": safe_result.get("candidate_sha"),
+            "error_class": error_class,
+        })
+        if error is None:
+            event_kind = "work.candidate_pushed" if operation == "PUSH_CANDIDATE" else "work.pr_opened"
+            audit(db, work_id, event_kind, safe_result)
+
+
+def _prepare_effect(work_id: str, credential: str, operation: str) -> tuple[dict, dict]:
+    from uuid import uuid4
+
+    from aao.work_management_api import tx
+
+    kind = "work.candidate_pushed" if operation == "PUSH_CANDIDATE" else "work.pr_opened"
+    with tx() as db:
+        candidate = _approved_candidate(db, work_id, credential, kind)
+        if "done" in candidate:
+            return candidate, {"completed": candidate["done"]}
+        if operation == "OPEN_PULL_REQUEST":
+            pushed = candidate.get("pushed")
+            if not pushed or pushed["candidate_sha"] != candidate["candidate_sha"]:
+                raise PublishError("the approved candidate has not been pushed")
+        effect_key = _effect_key(work_id, candidate["candidate_sha"], operation)
+        db.execute(
+            "INSERT INTO work_publication_effects(id,work_id,candidate_sha,operation,effect_key,status) "
+            "VALUES (%s,%s,%s,%s,%s,'PENDING') ON CONFLICT (work_id,candidate_sha,operation) DO NOTHING",
+            (str(uuid4()), work_id, candidate["candidate_sha"], operation, effect_key),
+        )
+    # The durable PENDING intent commits independently. Re-authorize under fresh locks
+    # before transitioning to IN_PROGRESS and releasing the transaction for remote I/O.
+    with tx() as db:
+        candidate = _approved_candidate(db, work_id, credential, kind)
+        if "done" in candidate:
+            return candidate, {"completed": candidate["done"]}
+        if operation == "OPEN_PULL_REQUEST":
+            pushed = candidate.get("pushed")
+            if not pushed or pushed["candidate_sha"] != candidate["candidate_sha"]:
+                raise PublishError("the approved candidate has not been pushed")
+        reservation = _reserve_effect(db, candidate, work_id, operation)
+    return candidate, reservation
+
+
 def push_candidate(work_id: str, credential: str, *, store: str | Path,
                    push: Callable[[str, str], None]) -> dict:
     """Step 1 (implementer identity): verify the approved commit in the store and push exactly that SHA."""
-    from aao.work_management_api import audit, tx
+    from aao.work_management_api import tx
 
-    c = _approved_candidate(work_id, credential, "work.candidate_pushed")
+    with tx() as db:
+        c = _approved_candidate(db, work_id, credential, "work.candidate_pushed")
+        if "done" in c:
+            return {**c["done"], "status": "ALREADY_PUSHED"}
+        candidate_data = c
+    verify_candidate(Path(store).resolve(), candidate_data["candidate_sha"], candidate_data["base_sha"],
+                     candidate_data["patch"])
+    c, reservation = _prepare_effect(work_id, credential, "PUSH_CANDIDATE")
     if "done" in c:
         return {**c["done"], "status": "ALREADY_PUSHED"}
-    verify_candidate(Path(store).resolve(), c["candidate_sha"], c["base_sha"], c["patch"])
+    if "completed" in reservation:
+        return {**reservation["completed"], "status": "ALREADY_PUSHED"}
+    if reservation.get("busy"):
+        return {"status": "IN_PROGRESS", "effect_key": reservation["effect_key"],
+                "candidate_sha": c["candidate_sha"]}
     branch = f"aao/work-{work_id}-{c['candidate_sha'][:12]}"
     operation_id = _publish_operation_id("candidate-push", work_id, c["candidate_sha"])
     effect = {"operation_id": operation_id, "candidate_sha": c["candidate_sha"], "branch": branch,
               "pusher": c["principal"]}
-    _record_publish_event(work_id, "work.candidate_push_started", effect)
-    try:
-        push(c["candidate_sha"], branch)
-    except Exception as exc:
-        _record_publish_event(work_id, "work.candidate_push_uncertain", effect)
-        raise PublishError("candidate push outcome is uncertain; retry the same approved SHA to reconcile") from exc
     record = {"candidate_sha": c["candidate_sha"], "base_sha": c["base_sha"], "branch": branch,
               "proposal_id": c["proposal_id"], "review_id": c["review_id"], "pusher": c["principal"],
-              "operation_id": operation_id}
-    with tx() as db:
-        audit(db, work_id, "work.candidate_pushed", record)
+              "operation_id": operation_id, "effect_key": reservation["effect_key"]}
+    _record_publish_event(work_id, "work.candidate_push_started", effect)
+    try:
+        # Stable branch/SHA makes a retry after uncertain push reconcile idempotently.
+        push(c["candidate_sha"], branch)
+    except Exception as exc:
+        _finish_effect(work_id, "PUSH_CANDIDATE", reservation, error=exc)
+        _record_publish_event(work_id, "work.candidate_push_uncertain", effect)
+        raise PublishError("candidate push outcome is uncertain; retry the same approved SHA to reconcile") from exc
+    _finish_effect(work_id, "PUSH_CANDIDATE", reservation, result=record)
     return {**record, "status": "PUSHED"}
 
 
 def open_pull_request(work_id: str, credential: str, *, open_pr: Callable[[str, str, str], dict]) -> dict:
     """Step 2 (PM identity): open the PR for the branch pushed in step 1, if it still holds the approved SHA."""
-    from aao.work_management_api import audit, tx
-
-    c = _approved_candidate(work_id, credential, "work.pr_opened")
+    c, reservation = _prepare_effect(work_id, credential, "OPEN_PULL_REQUEST")
     if "done" in c:
         return {**c["done"], "status": "ALREADY_PUBLISHED"}
+    if "completed" in reservation:
+        return {**reservation["completed"], "status": "ALREADY_PUBLISHED"}
+    if reservation.get("busy"):
+        return {"status": "IN_PROGRESS", "effect_key": reservation["effect_key"],
+                "candidate_sha": c["candidate_sha"]}
     pushed = c["pushed"]
-    if not pushed or pushed["candidate_sha"] != c["candidate_sha"]:
-        raise PublishError("the approved candidate has not been pushed")
     operation_id = _publish_operation_id("pull-request", work_id, c["candidate_sha"])
     effect = {"operation_id": operation_id, "candidate_sha": c["candidate_sha"],
               "branch": pushed["branch"], "publisher": c["principal"]}
     _record_publish_event(work_id, "work.pr_open_started", effect)
     body = (f"AAO work `{work_id}`\n\n- candidate: `{c['candidate_sha']}` on base `{c['base_sha']}`\n"
             f"- proposal: `{c['proposal_id']}`\n- approval review: `{c['review_id']}`\n"
+            f"- effect key: `{reservation['effect_key']}`\n"
             f"- pushed by: `{pushed['pusher']}`; opened by: `{c['principal']}`\n")
     try:
+        # The adapter must look up this stable branch/key before creating a new PR.
         pr = open_pr(pushed["branch"], f"aao: {c['title']}", body)
     except Exception as exc:
+        _finish_effect(work_id, "OPEN_PULL_REQUEST", reservation, error=exc)
         _record_publish_event(work_id, "work.pr_open_uncertain", effect)
         raise PublishError("pull request outcome is uncertain; retry to reconcile the same branch") from exc
     if pr.get("head_sha") != c["candidate_sha"]:
         # The fork branch moved after the push: never record an unapproved head as this task's PR.
-        raise PublishError("opened pull request head is not the approved candidate")
-    record = {**pushed, "publisher": c["principal"], "pr_number": int(pr["number"]), "pr_url": str(pr["url"]),
-              "operation_id": operation_id}
-    with tx() as db:
-        audit(db, work_id, "work.pr_opened", record)
+        mismatch = PublishError("opened pull request head is not the approved candidate")
+        _finish_effect(work_id, "OPEN_PULL_REQUEST", reservation, error=mismatch)
+        raise mismatch
+    record = {**pushed, "publisher": c["principal"], "pr_number": int(pr["number"]),
+              "pr_url": str(pr["url"]), "operation_id": operation_id,
+              "effect_key": reservation["effect_key"]}
+    _finish_effect(work_id, "OPEN_PULL_REQUEST", reservation, result=record)
     return {**record, "status": "PUBLISHED"}
 
 
@@ -310,7 +472,9 @@ def github_publisher(store: str | Path) -> tuple[Callable[[str, str], None], Cal
         client = GitHubAppClient(os.environ["AAO_PUBLISH_PR_APP"])
         try:
             client.installation_token(owner, repo)
-            existing = client.request("GET", f"/repos/{base_repo}/pulls?state=open&head={head}")
+            # Include closed PRs: a lost response followed by a close must not
+            # create a duplicate for this deterministic branch/effect key.
+            existing = client.request("GET", f"/repos/{base_repo}/pulls?state=all&head={head}")
             if existing.status != 200 or not isinstance(existing.body, list):
                 raise PublishError(f"pull request lookup failed with HTTP {existing.status}")
             if existing.body:
@@ -376,7 +540,7 @@ def gh_publisher(store: str | Path, repo: str) -> tuple[Callable[[str, str], Non
             raise PublishError("git push failed")
 
     def open_pr(branch: str, title: str, body: str) -> dict:
-        existing = _json.loads(gh("pr", "list", "--repo", repo, "--head", branch, "--state", "open",
+        existing = _json.loads(gh("pr", "list", "--repo", repo, "--head", branch, "--state", "all",
                                   "--json", "number"))
         ref = str(existing[0]["number"]) if existing else gh(
             "pr", "create", "--repo", repo, "--base", "main", "--head", branch,

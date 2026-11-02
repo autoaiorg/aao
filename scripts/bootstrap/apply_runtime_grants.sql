@@ -1,40 +1,19 @@
--- Least-privilege PostgreSQL privileges for the API/runtime identity.
--- Run only after all migrations have been applied, as the schema owner.
+-- Least-privilege direct SQL grants for the opt-in conversation recovery worker.
+-- Run only after migrations, as the schema owner. The API uses aao_runtime.
 BEGIN;
 REVOKE CREATE, TEMPORARY ON DATABASE aao_prod FROM PUBLIC;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
-GRANT CONNECT ON DATABASE aao_prod TO aao_runtime;
-GRANT USAGE ON SCHEMA public TO aao_runtime;
-REVOKE ALL ON ALL TABLES IN SCHEMA public FROM aao_runtime, PUBLIC;
-REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM aao_runtime, PUBLIC;
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM aao_recovery, PUBLIC;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM aao_recovery, PUBLIC;
+GRANT CONNECT ON DATABASE aao_prod TO aao_recovery;
+GRANT USAGE ON SCHEMA public TO aao_recovery;
 
-GRANT SELECT ON TABLE schema_migrations TO aao_runtime;
-
-GRANT SELECT, INSERT ON TABLE
-  events, execution_journal, patch_proposals, patch_proposal_validations,
-  work_item_dependencies, work_group_partial_reports, protocol_instances,
-  routine_occurrences
-TO aao_runtime;
-
-GRANT SELECT, INSERT ON TABLE
-  reviews, evidence_artifacts, capability_versions, work_groups,
-  work_group_consolidations
-TO aao_runtime;
-GRANT UPDATE (created_at) ON TABLE
-  reviews, evidence_artifacts, capability_versions, work_groups,
-  work_group_consolidations
-TO aao_runtime;
-
-GRANT SELECT, INSERT, UPDATE ON TABLE
-  mandates, projects, work_items, execution_queue, external_effects,
-  principal_credentials, organization_units, organization_profiles,
-  project_conversations, project_conversation_messages,
-  project_conversation_turns, work_item_assignments,
-  capability_feedback_proposals, project_routines, work_publication_effects
-TO aao_runtime;
-
-GRANT SELECT, INSERT ON TABLE host_worker_bindings TO aao_runtime;
-GRANT SELECT, INSERT, DELETE ON TABLE project_grants TO aao_runtime;
-GRANT UPDATE (expires_at) ON TABLE project_grants TO aao_runtime;
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE ceo_browser_sessions TO aao_runtime;
+GRANT SELECT ON TABLE schema_migrations, projects, work_items, work_groups,
+  work_item_assignments, execution_queue, reviews, patch_proposal_validations,
+  patch_proposals, events, project_conversations, project_conversation_messages,
+  project_conversation_turns, host_worker_bindings
+TO aao_recovery;
+GRANT INSERT ON TABLE events, project_conversation_messages TO aao_recovery;
+GRANT UPDATE ON TABLE execution_queue, project_conversations,
+  project_conversation_turns, host_worker_bindings TO aao_recovery;
 COMMIT;

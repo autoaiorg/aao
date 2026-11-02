@@ -2,6 +2,7 @@
 # Initialize and compartment environment secrets for AAO services.
 # Conforms to CEO Condition 7: strict separation of service permissions and credentials.
 set -euo pipefail
+umask 077
 
 say() { echo "== [SECRETS] $*"; }
 die() { echo "FAIL [SECRETS]: $*" >&2; exit 1; }
@@ -15,7 +16,9 @@ chmod 0750 /etc/aao
 
 DB_SECRET_FILE="/etc/aao/aao-db.secret"
 RUNTIME_DB_SECRET_FILE="/etc/aao/aao-runtime-db.secret"
+RECOVERY_DB_SECRET_FILE="/etc/aao/aao-recovery-db.secret"
 API_ENV_FILE="/etc/aao/aao-api.env"
+RECOVERY_ENV_FILE="/etc/aao/aao-recovery.env"
 WORKER_ENV_FILE="/etc/aao/aao-worker.env"
 HOST_ID_FILE="/etc/aao/host-id"
 
@@ -36,8 +39,10 @@ if [[ ! -f "$DB_SECRET_FILE" ]]; then
 else
   DB_PASS=$(cat "$DB_SECRET_FILE")
 fi
-[[ -s "$RUNTIME_DB_SECRET_FILE" ]] || die "Runtime database credential is missing; run init_postgres.sh first."
+[[ -s "$RUNTIME_DB_SECRET_FILE" ]] || die "API runtime database credential is missing; run init_postgres.sh first."
 RUNTIME_DB_PASS=$(cat "$RUNTIME_DB_SECRET_FILE")
+[[ -s "$RECOVERY_DB_SECRET_FILE" ]] || die "Recovery database credential is missing; run init_postgres.sh first."
+RECOVERY_DB_PASS=$(cat "$RECOVERY_DB_SECRET_FILE")
 
 say "Configuring /etc/aao/aao-api.env..."
 if [[ -f "$API_ENV_FILE" ]]; then
@@ -109,6 +114,55 @@ if id aao-api >/dev/null 2>&1; then
 else
   chmod 0600 "$API_ENV_FILE"
 fi
+
+say "Configuring isolated /etc/aao/aao-recovery.env..."
+if [[ ! -f "$RECOVERY_ENV_FILE" ]]; then
+  cat > "$RECOVERY_ENV_FILE" <<EOF
+# Production environment for aao-conversation-recovery.service
+AAO_ENV=production
+AAO_POSTGRES_URL=postgresql://aao_recovery:${RECOVERY_DB_PASS}@127.0.0.1:5432/aao_prod
+AAO_CONVERSATION_RECOVERY_ENABLED=false
+EOF
+else
+  say "Reusing existing $RECOVERY_ENV_FILE"
+fi
+[[ ! -L "$RECOVERY_ENV_FILE" ]] || die "$RECOVERY_ENV_FILE must not be a symbolic link"
+AAO_RECOVERY_DB_PASS="$RECOVERY_DB_PASS" python3 - "$RECOVERY_ENV_FILE" <<'PY'
+import os
+import pathlib
+import tempfile
+import sys
+
+path = pathlib.Path(sys.argv[1])
+dsn = f"postgresql://aao_recovery:{os.environ['AAO_RECOVERY_DB_PASS']}@127.0.0.1:5432/aao_prod"
+lines = path.read_text().splitlines() if path.exists() else []
+replacement = f"AAO_POSTGRES_URL={dsn}"
+found = False
+updated = []
+for line in lines:
+    if line.startswith("AAO_POSTGRES_URL="):
+        if not found:
+            updated.append(replacement)
+            found = True
+    else:
+        updated.append(line)
+if not found:
+    updated.append(replacement)
+data = "\n".join(updated) + "\n"
+fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+try:
+    with os.fdopen(fd, "w") as stream:
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.chmod(0o640, temporary)
+    os.replace(temporary, path)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PY
+chown root:aao-recovery "$RECOVERY_ENV_FILE"
+chmod 0640 "$RECOVERY_ENV_FILE"
 
 say "Configuring /etc/aao/aao-worker.env..."
 if [[ -f "$WORKER_ENV_FILE" ]]; then

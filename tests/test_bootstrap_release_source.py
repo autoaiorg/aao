@@ -5,6 +5,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 STAGER = REPO_ROOT / "scripts/bootstrap/stage_release_source.sh"
+BOOTSTRAP = REPO_ROOT / "scripts/bootstrap"
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -56,3 +57,23 @@ def test_release_staging_rejects_dirty_code_and_excludes_local_files(tmp_path):
     assert (release / ".env.example").read_text() == "template\n"
     assert not (release / ".env").exists()
     assert not (release / "node_modules").exists()
+
+
+def test_api_and_recovery_use_distinct_database_roles_and_secrets():
+    api_unit = (REPO_ROOT / "deploy/systemd/aao-api.service").read_text()
+    recovery_unit = (REPO_ROOT / "deploy/systemd/aao-conversation-recovery.service").read_text()
+    secrets = (BOOTSTRAP / "init_secrets.sh").read_text()
+    identities = (BOOTSTRAP / "init_identities.sh").read_text()
+    recovery_grants = (BOOTSTRAP / "apply_runtime_grants.sql").read_text()
+    api_grants = (BOOTSTRAP / "apply_api_grants.sql").read_text()
+
+    assert "User=aao-api" in api_unit
+    assert "EnvironmentFile=-/etc/aao/aao-api.env" in api_unit
+    assert "User=aao-recovery" in recovery_unit
+    assert "EnvironmentFile=-/etc/aao/aao-recovery.env" in recovery_unit
+    assert "aao_runtime:${RUNTIME_DB_PASS}" in secrets
+    assert "aao_recovery:${RECOVERY_DB_PASS}" in secrets
+    assert "usermod -aG aao-host-id-read aao-api" in identities
+    assert "principal_credentials" not in recovery_grants
+    assert "project_grants" not in recovery_grants
+    assert "principal_credentials" in api_grants

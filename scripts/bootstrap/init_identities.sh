@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Provision product service account aao-api and ensure governance role identities.
+# Provision isolated API and recovery service accounts and governance identities.
 set -euo pipefail
 
 say() { echo "== [IDENTITIES] $*"; }
@@ -30,6 +30,18 @@ else
   say "User 'aao-api' already exists."
 fi
 
+say "Ensuring isolated conversation-recovery account 'aao-recovery'..."
+if ! id aao-recovery >/dev/null 2>&1; then
+  groupadd -r aao-recovery
+  useradd -r -g aao-recovery -s /usr/sbin/nologin -d /var/lib/aao-recovery -m aao-recovery
+  passwd -l aao-recovery >/dev/null 2>&1 || true
+  say "Created service user 'aao-recovery' (locked, nologin)."
+else
+  say "User 'aao-recovery' already exists."
+fi
+usermod -aG aao-host-id-read aao-recovery
+usermod -aG aao-host-id-read aao-api
+
 say "Setting directory permissions..."
 if [[ -d "/home/$CEO_USER" ]]; then
   chmod 0750 "/home/$CEO_USER"
@@ -37,6 +49,9 @@ fi
 mkdir -p /var/lib/aao-api /var/log/aao
 chown aao-api:aao-api /var/lib/aao-api
 chmod 0750 /var/lib/aao-api
+mkdir -p /var/lib/aao-recovery
+chown aao-recovery:aao-recovery /var/lib/aao-recovery
+chmod 0750 /var/lib/aao-recovery
 
 # Allow service accounts to write to logs
 chown -R root:aao-api /var/log/aao
@@ -44,7 +59,7 @@ chmod 0775 /var/log/aao
 
 say "Verifying governance and product identity compliance..."
 REQUIRED_USERS=(
-  aao-api aao-pm aao-impl-codex aao-impl-claude aao-impl-ag
+  aao-api aao-recovery aao-pm aao-impl-codex aao-impl-claude aao-impl-ag
   aao-auditor aao-auditor-alt aao-integrator aao-supervisor aao-notifier aao-trust
 )
 for u in "${REQUIRED_USERS[@]}"; do

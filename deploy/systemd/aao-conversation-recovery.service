@@ -5,15 +5,15 @@ Wants=network-online.target aao-api.service
 
 [Service]
 Type=oneshot
-User=aao-api
-Group=aao-api
+User=aao-recovery
+Group=aao-recovery
 UMask=0027
 WorkingDirectory=/opt/aao/repo
-EnvironmentFile=-/etc/aao/aao-api.env
+EnvironmentFile=-/etc/aao/aao-recovery.env
 ExecStart=/opt/aao/venv/bin/python scripts/run_conversation_recovery_worker.py
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=read-only
 ProtectSystem=strict
-ReadWritePaths=/var/log/aao /var/lib/aao-api
+ReadWritePaths=/var/lib/aao-recovery
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

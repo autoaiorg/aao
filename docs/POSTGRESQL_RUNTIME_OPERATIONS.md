@@ -132,27 +132,37 @@ are SQLite-prototype settings and are not accepted by this PostgreSQL API.
 
 ### Runtime database role
 
-The host bootstrap uses `aao_app` as the migration/schema-owner identity and
-`aao_runtime` as the shared API, worker, recovery, and publisher identity. The
-API must receive only the runtime DSN from `/etc/aao/aao-api.env`; application
-code must not fall back to `/etc/aao/aao-db.secret` or the migration-owner
-identity. The bootstrap applies `scripts/bootstrap/apply_runtime_grants.sql`
-after migrations. Re-run that grant script after adding a migration that creates
-tables or changes the runtime SQL contract.
+The host bootstrap separates three database identities: `aao_app` owns the
+schema and applies migrations; `aao_runtime` is used only by the API process;
+and `aao_recovery` is used only by the opt-in conversation-recovery worker. The
+API receives the `aao_runtime` DSN from `/etc/aao/aao-api.env`; recovery
+receives the restricted `aao_recovery` DSN from `/etc/aao/aao-recovery.env`.
+Neither service may fall back to `/etc/aao/aao-db.secret` or connect as the
+schema owner.
+Bootstrap applies `scripts/bootstrap/apply_api_grants.sql` and
+`scripts/bootstrap/apply_runtime_grants.sql` after migrations. Re-run both
+grant scripts after adding a migration that creates tables or changes either
+service's SQL contract.
 
-The runtime role must not own the database, schema, tables, or triggers, and
-must have no elevated role attributes or membership in the migration owner. Its
-row-lock-only `UPDATE(created_at)` grants on `capability_versions`,
-`work_groups`, and `work_group_consolidations` are paired with migration 038
-triggers that reject changes to those timestamps. Verify the effective role and
-the grants in the deployment itself; disposable PostgreSQL tests do not prove
-that the host is configured this way. Migration and runtime identities remain
-separate even when one machine hosts both.
+Neither service role may own the database, schema, tables, or triggers, and both
+must have no elevated role attributes or membership in the migration owner.
+`aao_recovery` is a recovery-only role: it has no access to
+`principal_credentials` or `project_grants`, and cannot issue credentials or
+modify project grants. Host-worker fencing is performed by the API identity,
+not by the recovery worker.
+`aao_runtime` has broader table privileges because application authorization is
+enforced by the API boundary; it is therefore a privileged service identity. It
+must run only as the dedicated `aao-api` systemd user and must not share its
+environment file or database credential with other services. The recovery
+worker runs as `aao-recovery` with its separate restricted DSN. Verify the
+effective role and grants in the deployment itself; disposable PostgreSQL tests
+do not prove host configuration. Migration, API, and recovery identities remain
+separate even when one machine hosts all three.
 
 Migration 033, 036, and 038 revoke `PUBLIC` access from protected tables. The
-runtime grant script explicitly grants the API/worker/recovery/publisher access
-needed on those tables, including `protocol_instances`, `host_worker_bindings`,
-and `work_publication_effects`. Host registration operations must still be
+API and recovery grant scripts explicitly grant the access each service needs
+on those tables, including `protocol_instances`, `host_worker_bindings`, and
+`work_publication_effects` where applicable. Host registration operations must still be
 authorized and audited at the application layer; broad ownership is not an
 acceptable shortcut.
 

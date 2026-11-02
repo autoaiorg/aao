@@ -1,14 +1,14 @@
 # Estado actual de AAO
 
-**Corte:** 2026-11-02 18:11 UTC. **Revisión:** `9ffea5c95cea60c19b08a8478c09a9560fa456fa` (`main` = `origin/main`). Este informe es un estado de coordinación, no una certificación de autonomía, despliegue o aceptación.
+**Corte:** 2026-11-02 21:09 UTC. **Revisión:** `197e69720c378748ac06431b051ec123258faf71` (`main` = `origin/main`). Este informe es un estado de coordinación, no una certificación de autonomía, despliegue o aceptación.
 
 ## 1. Evidencia de repositorio
 
 | Hecho | Estado | Evidencia |
 |---|---|---|
-| HEAD de `main` | `9ffea5c95cea60c19b08a8478c09a9560fa456fa` | `git rev-parse HEAD origin/main` |
-| CI post-merge de `main` | SUCCESS | Core checks run `41497218391`, concluido sobre el SHA anterior |
-| PRs abiertos | Ninguno | `gh pr list --state open -R autoaiorg/aao` |
+| HEAD de `main` | `197e69720c378748ac06431b051ec123258faf71` | `git rev-parse HEAD origin/main`; checkout limpio al corte |
+| CI post-merge de `main` | SUCCESS | Run `41510891908`, sobre el SHA exacto de `main`; jobs `test`, `frontend`, `push-relay-worker` |
+| PRs abiertos | #341, draft | `gh pr list --state open -R autoaiorg/aao`; head `de5da2b6b1c79d511ada3611fdc0f5c90c92478b`, mergeable y checks verdes al corte |
 | #327 bootstrap/migraciones | MERGED | PR #327, merge commit `1770974c60be729c9de95b537ed0eb4fb08ed0c7` |
 | #318 push relay | MERGED, opt-in; no acredita despliegue | PR #318, head `8d749e9de2f0ff2071fafdc470b25cd7d9e74f0c`; revisión independiente previa APPROVE WITH NITS |
 | #329 espejo/integrador vs git 2.56 | MERGED | PR #329, head `526f62ab58510a5f6d4c46ca94fb8767b20d1534`; revisión independiente previa APPROVE WITH NITS |
@@ -16,7 +16,7 @@
 | #251 y #330 | CLOSED, ramas/historial conservados | Verificación y comentario de cierre en issue #322 |
 | #299, #325 y #321 | CLOSED/sustituidos o integrados | #299 sustituido por #327; #325 cerrado como contenido en #327; #321 cerrado al integrarse B2 en #324 |
 
-Las fusiones y CI no equivalen a aceptación del piloto. La lista y estados se comprobaron en GitHub el 2026-11-02; el estado remoto puede cambiar después del corte.
+Las fusiones y CI no equivalen a aceptación del piloto. La lista y estados se comprobaron en GitHub el 2026-11-02 21:09 UTC; el estado remoto puede cambiar después del corte. Issue #322 está CLOSED (actualizado 18:23:23 UTC); su cierre administrativo no cierra los gates de aceptación.
 
 ## 2. Gates de aceptación del proyecto
 
@@ -36,7 +36,7 @@ La referencia de gates sigue siendo `docs/HANDOVER_ACCEPTANCE_MATRIX.md`, criter
 ## 3. Capacidades fusionadas y límites conocidos
 
 - **Bootstrap/fencing (#327):** integrado en `main`, incluidas migraciones 036–038 y endurecimiento posterior. CI verde acredita los jobs de CI, no un bootstrap limpio en el host real ni la operación con sus roles.
-- **Emisión y auto-rotación de credenciales (#324/#331):** código integrado. La auto-rotación AGENT usa fase pendiente y confirmación. No se afirma que la rotación automática de publishers W2 esté implementada; el diseño de #326 concluye que hoy requiere una capacidad de emisión delegada o intervención CEO.
+- **Emisión y auto-rotación de credenciales (#324/#331):** código integrado. La auto-rotación AGENT usa fase pendiente y confirmación. La emisión W2 delegada sigue en el PR #341, draft; su head publicado devuelve el token del implementador a la respuesta del coordinador PM y no debe fusionarse ni desplegarse así. Hay una modificación local sin commit en `.worktrees/w2-scoped-issuer` para corregir el límite de entrega; no forma parte aún del head publicado y requiere validación y reauditoría independiente.
 - **Push relay (#318):** integrado como transporte opt-in/prototipo. No se afirma que esté desplegado, conectado al supervisor o ejercitado contra GitHub/Worker/D1 reales. El informe de #322 registra como límites: trust multi-repo/forks no resuelto (forks se ponen en cuarentena), backoff de `retry_after` pendiente y procedimiento operativo para colas atascadas pendiente.
 - **Push del integrador (#329):** integrado con aislamiento frente a configuración del espejo; no prueba que el integrador esté instalado o encendido. La activación sigue separada.
 - **Proveedor ChatGPT:** el trabajo permanece en rama local WIP y bundles, sin push/PR ni autorización de proveedor registrada en este informe.
@@ -60,7 +60,7 @@ No incluir tokens, DSNs, claves privadas ni digests en este documento. Re-verifi
 
 ### No se requiere acción inmediata del CEO para continuar el trabajo técnico
 
-La coordinación de PRs abiertos quedó cerrada (issue #322); no hay PRs abiertos al corte. El siguiente avance autónomo es reconciliar la matriz de aceptación con evidencia de `main` y ejecutar los gates de integración que sean seguros y estén autorizados.
+La coordinación de #322 quedó cerrada y no hay una cola general de PRs: el único PR abierto es #341. El siguiente avance es corregir y auditar el límite de entrega de credenciales, actualizar la matriz con evidencia actual, y ejecutar los gates de integración seguros/autorizados. No se ha demostrado todavía autonomía plena ni aceptación del piloto.
 
 ### Decisiones que sí requieren al CEO
 
@@ -72,7 +72,7 @@ No se pide al CEO que ejecute comandos host en este momento. Si el siguiente gat
 
 ## 6. Próximos pasos recomendados
 
-1. Actualizar `HANDOVER_ACCEPTANCE_MATRIX.md` para reflejar los merges #318, #327, #329 y #331, separando “implementado” de “desplegado”, “ejercitado”, “auditado” y “aceptado”.
+1. Reconciliar `HANDOVER_ACCEPTANCE_MATRIX.md` con `main` `197e697`; el snapshot existente observa `f8f650d` y es obsoleto para el estado de CI/PR actual. Mantener separados “implementado”, “desplegado”, “ejercitado”, “auditado” y “aceptado”.
 2. Revalidar preflight sobre el `main` actual, por separado bajo `aao-pm` y `aao-impl-codex`; comprobar únicamente metadatos de credenciales, nunca leerlas.
 3. Identificar, mediante lectura autorizada de la BD, si existe candidato VERIFIED y SHA aprobado. No crear ni cambiar estados para fabricar un candidato.
 4. Reconciliar los roles de DB/host de #327 con el despliegue real y probarlos en entorno desechable antes de aplicar grants al host.
@@ -82,8 +82,8 @@ No se pide al CEO que ejecute comandos host en este momento. Si el siguiente gat
 
 ## 7. Fuentes y límites
 
-- Git: `git rev-parse HEAD origin/main`, ambos `9ffea5c95cea60c19b08a8478c09a9560fa456fa`.
-- GitHub: `gh pr list --state all --limit 30`, `gh run list --branch main --limit 5`; run principal `41497218391` SUCCESS.
-- Issue #322: comentario de cierre del 2026-11-02 18:11 UTC, que registra el cierre de #251/#330 y que la coordinación no equivale a aceptación.
+- Git: `git rev-parse HEAD origin/main`, ambos `197e69720c378748ac06431b051ec123258faf71`; árbol limpio al corte.
+- GitHub: `gh pr list --state open -R autoaiorg/aao`; único abierto #341 (draft). `gh run list --branch main -R autoaiorg/aao --limit 3`; run `41510891908` SUCCESS sobre el HEAD actual.
+- Issue #322: `gh issue view 322 -R autoaiorg/aao --json state,title,updatedAt,url`, CLOSED, actualizado `2026-11-02T18:23:23Z`.
 - Gates: `docs/HANDOVER_ACCEPTANCE_MATRIX.md`; debe actualizarse para el estado post-merge.
-- Este informe no ejecutó pruebas, consultas a la BD ni operaciones del host. No confirma vigencia de tokens, despliegue, permisos efectivos, estado del servicio PM, candidato VERIFIED ni aceptación final.
+- Esta actualización no ejecutó pruebas, consultas a la BD ni operaciones del host. No confirma vigencia de tokens, despliegue, permisos efectivos, estado actual de servicios, candidato VERIFIED ni aceptación final. El estado del host y de `aao_dev` requiere evidencia operativa separada.

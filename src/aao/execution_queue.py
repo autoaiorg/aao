@@ -166,11 +166,22 @@ def complete(execution_id: str, token: str, worker_id: str, result: dict,
     with connect_postgres() as db:
         verify_execution_principal(db, worker_id, agent_credential)
 
-        project_id = validate_live_lease(db, execution_id, worker_id, token, lock="update")
+        # Keep the specific diagnostics of each fail-closed check (assignment, project state,
+        # grant) and compare the claim epoch explicitly; the final UPDATE re-checks token/expiry.
+        host_fence_epoch = active_host_fence_epoch(db, worker_id)
         execution = db.execute(
-            "SELECT project_id,project_state_generation FROM execution_queue WHERE id=%s",
+            "SELECT project_id,project_state_generation FROM execution_queue "
+            "WHERE id=%s FOR UPDATE",
             (execution_id,),
         ).fetchone()
+        if not execution:
+            raise ExecutionConflict("Execution not found")
+        epoch_row = db.execute(
+            "SELECT claim_fence_epoch FROM execution_queue WHERE id=%s", (execution_id,)
+        ).fetchone()
+        if not epoch_row or epoch_row[0] is None or epoch_row[0] != host_fence_epoch:
+            raise ExecutionConflict("Host fencing epoch is missing or changed; lease invalidated")
+        project_id = execution[0]
         assignment = db.execute(
             "SELECT w.parent_work_id,a.principal_id FROM execution_queue q "
             "JOIN work_items w ON w.id=q.work_id "

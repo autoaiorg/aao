@@ -233,4 +233,4 @@ def test_start_endpoint_validates_lease_before_starting_work(monkeypatch):
         ok = client.post("/v1/agent/executions/execution-1/start", headers=headers,
                          json={"lease_token": "lease-1"})
         assert ok.status_code == 200, ok.text
-    assert started == [("work-1", "agent-1")]
+    assert started == [("work-1", principal)]

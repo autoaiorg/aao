@@ -4869,6 +4869,20 @@ def claim_agent_execution(
     return lease if lease is not None else {"status": "IDLE"}
 
 
+def _previous_failure(db, execution_id: str):
+    """Latest failed attempt of the exact same staged input, worker, work and project."""
+    # Exact staged input pins capability/version/base; never reuse another agent's or work item's output.
+    return db.execute(
+        "SELECT previous.id, previous.result_json FROM execution_queue previous "
+        "JOIN execution_queue current ON previous.work_id=current.work_id "
+        "AND previous.project_id=current.project_id AND previous.worker_id=current.worker_id "
+        "AND previous.input_json=current.input_json "
+        "WHERE current.id=%s AND previous.id<>current.id AND previous.status='FAILED' "
+        "AND previous.created_at<=current.created_at "
+        "ORDER BY previous.created_at DESC, previous.id DESC LIMIT 1", (execution_id,),
+    ).fetchone()
+
+
 @app.post("/v1/agent/executions/{execution_id}/context")
 def agent_execution_context(
     execution_id: str,
@@ -4904,16 +4918,7 @@ def agent_execution_context(
             selection = json.loads(selection)
         if not isinstance(selection, dict) or selection.get("type") != "aao.agent-patch.v1":
             raise HTTPException(409, "Execution does not contain an agent-patch selection")
-        # Exact staged input pins capability/version/base; never reuse another agent's or work item's output.
-        previous = db.execute(
-            "SELECT previous.id, previous.result_json FROM execution_queue previous "
-            "JOIN execution_queue current ON previous.work_id=current.work_id "
-            "AND previous.project_id=current.project_id AND previous.worker_id=current.worker_id "
-            "AND previous.input_json=current.input_json "
-            "WHERE current.id=%s AND previous.id<>current.id AND previous.status='FAILED' "
-            "AND previous.created_at<=current.created_at "
-            "ORDER BY previous.created_at DESC, previous.id DESC LIMIT 1", (execution_id,),
-        ).fetchone()
+        previous = _previous_failure(db, execution_id)
         return {
             "work_id": str(row[0]), "project_id": str(row[1]), "input": selection,
             "title": row[3], "description": row[4] or "",
@@ -4941,7 +4946,8 @@ def start_agent_execution(
         except ExecutionConflict as exc:
             raise HTTPException(409, str(exc)) from exc
         row = db.execute("SELECT work_id FROM execution_queue WHERE id=%s", (execution_id,)).fetchone()
-    ensure_agent_work_in_progress(str(row[0]), str(principal))
+    # The authenticated principal object, not its id: require_grant demands an individual credential.
+    ensure_agent_work_in_progress(str(row[0]), principal)
     return {"execution_id": execution_id, "work_id": str(row[0]), "status": "IN_PROGRESS"}
 
 

@@ -1112,8 +1112,18 @@ def test_group_assignment_routes_execution_without_creating_grants(monkeypatch):
         # No manual READY -> IN_PROGRESS call: the claimed worker must do it.
         assert client.post(path, headers=workers[0], json=payload).status_code == 409
 
+        from aao import inert_execution_worker
         from aao.inert_execution_worker import run_one
         from aao.patch_proposals import inspect_patch
+
+        # The worker reaches the authenticated API; route it through this test client.
+        def request_through_test_client(path, credential, *, body, method="POST"):
+            response = client.request(method, path, headers={"X-Agent-Token": credential}, json=body)
+            if response.status_code >= 400:
+                raise inert_execution_worker.WorkerAPIError(response.status_code, response.text[:200])
+            return response.json()
+
+        monkeypatch.setattr(inert_execution_worker, "_api_request", request_through_test_client)
 
         monkeypatch.setenv("AAO_AGENT_BACKEND", "fixture")
         monkeypatch.setenv("AAO_SELF_DEV_REPOSITORY", "/unused/mock-repository")
@@ -3506,7 +3516,8 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         assert execution_worker.run_one(identity, token, project_id=project, seconds=400)["status"] == "FAILED"
         monkeypatch.setattr(checks, "run_repository_check", real_check)
         # ...and attempt 3 reproduces the same patch: it reuses that proposal instead of failing on it.
-        assert client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run).status_code == 202
+        attempt3 = client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run)
+        assert attempt3.status_code == 202, attempt3.text
         outcome = execution_worker.run_one(identity, token, project_id=project, seconds=400)
         board = client.get(f"/v1/projects/{project}/board", headers=agent).json()
         last = next(i for i in board if i["id"] == work)["executions"][-1]["result"]

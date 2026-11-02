@@ -469,8 +469,8 @@ def test_scenario_10_fence_epoch_mismatch_fails_closed(monkeypatch):
             # Host binding currently has epoch 2 (incremented by host fencing)
             m.fetchall.return_value = [["host-1", "ACTIVE", 2]]
         elif "FROM execution_queue" in query and "claim_fence_epoch" in query:
-            # Execution (project, claim epoch, project generation) was claimed under epoch 1
-            m.fetchone.return_value = ["proj-1", 1, 0]
+            # Execution was claimed under epoch 1
+            m.fetchone.return_value = [1]
         elif "FROM execution_queue" in query:
             m.fetchone.return_value = ["proj-1", 1]
         elif "information_schema.columns" in query:
@@ -486,7 +486,7 @@ def test_scenario_10_fence_epoch_mismatch_fails_closed(monkeypatch):
          patch("aao.execution_queue.verify_execution_principal"):
         mock_conn.return_value.__enter__.return_value = mock_db
 
-        with pytest.raises(ExecutionConflict, match="fenced by a changed host epoch"):
+        with pytest.raises(ExecutionConflict, match="Host fencing epoch is missing or changed"):
             complete("exec-1", "token-1", "w-1", {"conclusion": "success"}, agent_credential="cred")
 
 

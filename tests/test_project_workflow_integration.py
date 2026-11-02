@@ -4598,6 +4598,7 @@ def test_revoked_assignee_is_persistently_blocked_and_pm_can_reassign_unclaimed_
         assert reassigned.status_code == 200, reassigned.text
         assert reassigned.json()["principal_id"] == new_agent_id
 
+    _register_test_worker(new_agent_id)
     lease = claim(new_agent_id, agent_credential=new_agent["X-Agent-Token"], project_id=project_id)
     assert lease and lease["execution_id"] == execution_id
     assert lease["worker_id"] == new_agent_id
@@ -4693,6 +4694,7 @@ def test_ceo_priority_change_is_persisted_and_controls_next_agent_claim(monkeypa
             "previous_priority": "NORMAL", "priority": "HIGH",
         }
 
+        _register_test_worker(principal_id)
         lease = claim(principal_id, agent_credential=token, project_id=project_id)
         assert lease and lease["execution_id"] == execution_ids[1]
         active_change = client.put(

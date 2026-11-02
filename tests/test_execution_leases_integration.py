@@ -439,6 +439,7 @@ def test_recovery_worker_process_quarantines_expired_lease_once(monkeypatch):
         assert staged.status_code == 202, staged.text
         execution_id = staged.json()["execution_id"]
 
+    _register_test_worker(worker_id)
     lease = claim(worker_id, agent_credential=token, project_id=project_id, seconds=3600)
     assert lease and lease["execution_id"] == execution_id
     with connect_postgres() as db:

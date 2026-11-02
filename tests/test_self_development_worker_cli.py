@@ -83,6 +83,8 @@ def test_worker_does_not_downgrade_production_environment(tmp_path, monkeypatch)
         return {"status": "SUCCEEDED", "execution_id": "exec-production"}
 
     monkeypatch.setattr("aao.inert_execution_worker.run_one", fake_run_one)
+    # The worker first submits any recovered result; keep this test offline.
+    monkeypatch.setattr("aao.work_management_api.submit_next_agent_result", lambda *args: None)
     result = worker.run("project-1", "agent-1")
 
     assert result["status"] == "SUCCEEDED"

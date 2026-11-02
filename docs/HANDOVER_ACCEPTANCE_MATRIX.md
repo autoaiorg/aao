@@ -3,16 +3,16 @@
 La matriz convierte los diez criterios de [CEO-DEC-AAO-CONSTRUCTION-2026-10-25](decisions/CEO-DEC-AAO-CONSTRUCTION-2026-10-25.md) en trabajo verificable. **No es certificación, no congela candidato y no habilita autonomía.** La auditoría independiente se hará una sola vez al final, por Antigravity u otro revisor que no haya construido el candidato. Actualizar evidencia y SHA al cerrar cada incremento.
 Estado inicial de esta matriz: revisión base `95d8427cea3d5748ca7041ee054cfc99ab5a8b72`; rama de construcción `feat/agents-office-aa-integration`. Las etiquetas «pendiente» significan trabajo de construcción/evidencia aún no resuelto, no fallo certificado.
 
-## Snapshot vigente de aceptación (2026-11-02)
+## Snapshot vigente de aceptación (2026-11-02 18:40 UTC)
 
-Este snapshot **prevalece sobre las etiquetas de estado de la tabla histórica siguiente**. La tabla de abajo y el registro de incrementos conservan evidencia de construcción de su fecha; no son una evaluación del estado actual. Revisión observada: `main` / `origin/main` en `d07f4aad25dede47200dfee4fd8e32de6bfb804b`; CI post-merge `41498856652` terminó SUCCESS. Estos hechos no constituyen candidato congelado, auditoría final ni aceptación. Ningún criterio de traspaso queda cerrado con la evidencia disponible en este corte.
+Este snapshot **prevalece sobre las etiquetas de estado de la tabla histórica siguiente**. La tabla de abajo y el registro de incrementos conservan evidencia de construcción de su fecha; no son una evaluación del estado actual. Revisión observada: `main` / `origin/main` en `8a53976f140c9a5eb18a69924157abeb32b12df5`; CI post-merge `41502358150` terminó SUCCESS. Estos hechos no constituyen candidato congelado, auditoría final ni aceptación. Ningún criterio de traspaso queda cerrado con la evidencia disponible en este corte.
 
 | Criterio | Estado de aceptación | Evidencia y trabajo que falta |
 |---:|---|---|
-| 1. Candidato y SHA exacto | ABIERTO | `d07f4aa` es el HEAD de construcción observado, no un candidato congelado ni aprobado para traspaso. Seleccionar y fijar una revisión después de completar los gates. |
+| 1. Candidato y SHA exacto | ABIERTO | `8a53976` es el HEAD de construcción observado, no un candidato congelado ni aprobado para traspaso. Seleccionar y fijar una revisión después de completar los gates. |
 | 2. Raíz de confianza | ABIERTO | No se verificó instalación y cadena de confianza sobre un candidato actual en este corte. Repetir la verificación sobre el SHA final. |
 | 3. Identidades, privilegio mínimo y aislamiento | ABIERTO | #327/#331 integran código de bootstrap/fencing y auto-rotación, pero el estado actual del host, las instalaciones de Apps, los permisos efectivos y los tokens no se revalidaron. El informe `docs/ESTADO_ACTUAL.md` califica esa evidencia como histórica; los publishers W2 reportados anteriormente ya expiraron. Ejecutar preflight actualizado por rol y verificar los roles de host/BD sin exponer secretos. |
-| 4. Protección del repositorio canónico | ABIERTO | No se verificó en este corte el estado efectivo de rulesets ni sus bypasses. Consultar las reglas actuales y comprobarlas contra el diseño de construcción/traspaso. |
+| 4. Protección del repositorio canónico | ABIERTO | Consultados los rulesets efectivos: está activa la protección provisional P de construcción (prohíbe borrar y non-fast-forward, exige PR y checks `test`/`frontend`, 0 aprobaciones, sin bypass) y C para tags (creación/actualización/borrado; bypass de integrator App 5447984). No son las reglas finales A/B ni acreditan cumplimiento del diseño de traspaso. |
 | 5. Ensayos P2/P3 y pruebas negativas | ABIERTO | Hay cobertura de componentes y regresiones en CI; no hay evidencia de que el ensayo integrado de aceptación §14 se haya completado en un entorno controlado. Ejecutar el recorrido completo, incluyendo fallos y recuperación. |
 | 6. Requisitos RA | ABIERTO | No existe en este snapshot un mapeo vigente y verificable de cada RA obligatorio a implementación, prueba y excepción autorizada. Preparar y revisar ese mapeo. |
 | 7. Auditoría independiente | ABIERTO | Las revisiones de PR no equivalen a auditoría formal de la revisión candidata completa. Solicitar GOV-REV-001 sobre el SHA congelado después de los gates. |
@@ -22,9 +22,10 @@ Este snapshot **prevalece sobre las etiquetas de estado de la tabla histórica s
 
 ### Base y límites del snapshot
 
-- Fuente de estado del proyecto: [`ESTADO_ACTUAL.md`](ESTADO_ACTUAL.md), corte declarado 2026-11-02 18:11 UTC, complementado por el comentario más reciente de [issue #322](https://github.com/autoaiorg/aao/issues/322#issuecomment-6584742920). El documento fuente identifica expresamente como históricos/no re-verificados los datos del host y de credenciales.
-- Repositorio/CI: `git rev-parse HEAD origin/main` = `d07f4aad25dede47200dfee4fd8e32de6bfb804b`; run `41498856652` SUCCESS en ese SHA; `gh pr list --state open` no mostró PRs abiertos al verificar.
-- No se consultaron en este snapshot el host, PostgreSQL, las reglas actuales de GitHub, los tokens, las claves privadas ni una instalación real de Apps. Esas evidencias siguen pendientes y no se deben inferir de CI, merges o los registros históricos.
+- Fuente de contexto: [`ESTADO_ACTUAL.md`](ESTADO_ACTUAL.md), corte declarado 2026-11-02 18:11 UTC, y [issue #322](https://github.com/autoaiorg/aao/issues/322), cerrado como coordinación; ambos son anteriores a este corte y no se usan como evidencia actual de host/credenciales.
+- Repositorio/CI: `git rev-parse origin/main` = `8a53976f140c9a5eb18a69924157abeb32b12df5`; run `41502358150` SUCCESS en ese SHA; `gh pr list --state open` devolvió `[]`.
+- Protección GitHub: `gh api repos/autoaiorg/aao/rulesets` devolvió activos los rulesets `25937576` (P main: construcción provisional) y `25937577` (C tags). La matriz conserva el criterio 4 ABIERTO porque la regla P no es el modelo final A/B.
+- No se consultaron en este corte el host, PostgreSQL, tokens, claves privadas ni el alcance de instalación de las Apps. Esas evidencias siguen pendientes y no se infieren de CI, merges ni registros históricos.
 - El snapshot no reemplaza el registro de incrementos que sigue a continuación; cada nuevo hecho operativo debe incluir fecha, SHA, método de verificación y límites.
 
 | # | Criterio | Estado de construcción | Evidencia conocida / SHA | Trabajo concreto siguiente |

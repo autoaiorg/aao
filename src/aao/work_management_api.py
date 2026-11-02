@@ -150,6 +150,12 @@ class ProjectStateRequest(BaseModel):
     action: str = Field(pattern=r"^(pause|resume|cancel)$")
 
 
+class W2PublisherRotationConfirmRequest(BaseModel):
+    expected_principal_id: str = Field(
+        min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$"
+    )
+
+
 class WorkRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     author_id: str = Field(min_length=1)
@@ -1009,6 +1015,7 @@ def stage_w2_publisher_rotation(
 
 @app.post("/v1/principals/me/w2-publisher/rotate/confirm")
 def confirm_w2_publisher_rotation(
+    request: W2PublisherRotationConfirmRequest,
     token: Annotated[str, Depends(require_pending_agent_token)],
 ):
     """Promote the target role's staged token and renew only its fixed W2 grants."""
@@ -1019,6 +1026,8 @@ def confirm_w2_publisher_rotation(
             principal_id = lock_pending_agent_rotation(db, token)
         except PrincipalDenied as exc:
             raise HTTPException(403, "Pending W2 publisher credential rejected") from exc
+        if str(principal_id) != request.expected_principal_id:
+            raise HTTPException(403, "Pending W2 publisher principal does not match expected identity")
         account, project_id = _lock_w2_publisher_grant_set(db, str(principal_id))
         db.execute(
             "UPDATE principal_credentials SET token_digest=pending_token_digest,"

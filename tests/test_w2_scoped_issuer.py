@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import stat
 from datetime import UTC, datetime, timedelta
@@ -14,6 +15,122 @@ needs_pg = pytest.mark.skipif(
     reason="Explicit disposable PostgreSQL database required",
 )
 CEO = {"X-CEO-Token": "w2-self-rotation-test-ceo"}
+
+
+@pytest.mark.parametrize(
+    "identity,grants",
+    [
+        (
+            {
+                "principal_id": "aao-publisher-pm-20261102123456-deadbeef",
+                "kind": "AGENT",
+                "enabled": True,
+            },
+            [],
+        ),
+        (
+            {
+                "principal_id": "aao-publisher-impl-20261102123456-deadbeef",
+                "kind": "AGENT",
+                "enabled": True,
+            },
+            [
+                {
+                    "principal_id": "aao-publisher-impl-20261102123456-deadbeef",
+                    "project_id": "p1",
+                    "capability": "project.read",
+                    "active": True,
+                    "expires_at": "future",
+                },
+                {
+                    "principal_id": "aao-publisher-impl-20261102123456-deadbeef",
+                    "project_id": "p1",
+                    "capability": "code.publish",
+                    "active": True,
+                    "expires_at": "future",
+                },
+                {
+                    "principal_id": "aao-publisher-impl-20261102123456-deadbeef",
+                    "project_id": "p1",
+                    "capability": "work.assign",
+                    "active": True,
+                    "expires_at": "future",
+                },
+            ],
+        ),
+        (
+            {
+                "principal_id": "aao-publisher-impl-20261102123456-deadbeef",
+                "kind": "AGENT",
+                "enabled": True,
+            },
+            [
+                {
+                    "principal_id": "aao-publisher-impl-20261102123456-deadbeef",
+                    "project_id": "p1",
+                    "capability": "project.read",
+                    "active": True,
+                    "expires_at": "future",
+                },
+                {
+                    "principal_id": "aao-publisher-impl-20261102123456-deadbeef",
+                    "project_id": "p2",
+                    "capability": "code.publish",
+                    "active": True,
+                    "expires_at": "future",
+                },
+            ],
+        ),
+    ],
+)
+def test_pending_recovery_identity_requires_exact_role_and_grant_scope(
+    monkeypatch, identity, grants
+):
+    from scripts import rotate_w2_publisher_token as rotation
+
+    monkeypatch.setattr(rotation, "_request", lambda *_args, **_kwargs: identity)
+    monkeypatch.setattr(rotation, "_request_grants", lambda *_args, **_kwargs: grants)
+    monkeypatch.setattr(
+        rotation,
+        "_request_projects",
+        lambda *_args, **_kwargs: [
+            {"id": "p1", "name": "AAO — Self Development", "state": "ACTIVE"}
+        ],
+    )
+    with pytest.raises(rotation.RotationError):
+        rotation._validate_w2_identity("http://127.0.0.1:8001", "opaque", "aao-impl-codex")
+
+
+def test_pending_recovery_identity_requires_active_self_development_project(monkeypatch):
+    from scripts import rotate_w2_publisher_token as rotation
+
+    principal_id = "aao-publisher-impl-20261102123456-deadbeef"
+    monkeypatch.setattr(
+        rotation,
+        "_request",
+        lambda *_args, **_kwargs: {"principal_id": principal_id, "kind": "AGENT", "enabled": True},
+    )
+    monkeypatch.setattr(
+        rotation,
+        "_request_grants",
+        lambda *_args, **_kwargs: [
+            {
+                "principal_id": principal_id,
+                "project_id": "p1",
+                "capability": cap,
+                "active": True,
+                "expires_at": "future",
+            }
+            for cap in ("project.read", "code.publish")
+        ],
+    )
+    monkeypatch.setattr(
+        rotation,
+        "_request_projects",
+        lambda *_args, **_kwargs: [{"id": "p1", "name": "Other", "state": "ACTIVE"}],
+    )
+    with pytest.raises(rotation.RotationError, match="Self Development"):
+        rotation._validate_w2_identity("http://127.0.0.1:8001", "opaque", "aao-impl-codex")
 
 
 def test_w2_publisher_rejects_unknown_and_malformed_id_before_database(monkeypatch):
@@ -224,6 +341,7 @@ def test_role_owned_helper_recovers_after_confirmation_before_atomic_install(mon
     confirmed = client.post(
         "/v1/principals/me/w2-publisher/rotate/confirm",
         headers={"X-Agent-Token": new_token},
+        json={"expected_principal_id": principal_id},
     )
     assert confirmed.status_code == 200, confirmed.text
 
@@ -235,11 +353,20 @@ def test_role_owned_helper_recovers_after_confirmation_before_atomic_install(mon
     live.chmod(0o600)
     pending.write_text(new_token + "\n", encoding="utf-8")
     pending.chmod(0o600)
+    identity = pending.with_name(pending.name + ".identity")
+    identity.write_text(
+        json.dumps({"account": "aao-impl-codex", "principal_id": principal_id}) + "\n",
+        encoding="utf-8",
+    )
+    identity.chmod(0o600)
     monkeypatch.setattr(rotation, "_paths", lambda _account: (live, pending))
 
-    def api_request(_base_url, path, *, method="GET", agent_token=None, **_kwargs):
+    def api_request(_base_url, path, *, method="GET", agent_token=None, body=None, **_kwargs):
         response = client.request(
-            method, path, headers={"X-Agent-Token": agent_token} if agent_token else {}
+            method,
+            path,
+            headers={"X-Agent-Token": agent_token} if agent_token else {},
+            json=body,
         )
         if response.status_code >= 400:
             from scripts.bootstrap_self_dev_agent import BootstrapError
@@ -251,9 +378,96 @@ def test_role_owned_helper_recovers_after_confirmation_before_atomic_install(mon
     rotation.rotate("aao-impl-codex")
     assert live.read_text(encoding="utf-8") == new_token + "\n"
     assert not pending.exists()
+    assert not identity.exists()
     assert _me(client, new_token).status_code == 200
     assert _me(client, old_token).status_code == 403
     assert principal_id.startswith("aao-publisher-impl-")
+
+
+@needs_pg
+def test_role_owned_helper_refuses_pending_token_bound_to_another_principal(monkeypatch, tmp_path):
+    from scripts import rotate_w2_publisher_token as rotation
+
+    client, _connect = _pg_fixture(monkeypatch)
+    project_id = _project(client)
+    principal_id, old_token = _publisher(client, project_id)
+    staged = client.post(
+        "/v1/principals/me/w2-publisher/rotate", headers={"X-Agent-Token": old_token}
+    )
+    assert staged.status_code == 200, staged.text
+    new_token = staged.json()["token"]
+
+    runtime = tmp_path / "runtime-mismatched-recovery"
+    runtime.mkdir(mode=0o700)
+    live = runtime / "aao-publisher.token"
+    pending = runtime / ".aao-publisher.token.pending"
+    live.write_text(old_token + "\n", encoding="utf-8")
+    live.chmod(0o600)
+    pending.write_text(new_token + "\n", encoding="utf-8")
+    pending.chmod(0o600)
+    identity = pending.with_name(pending.name + ".identity")
+    identity.write_text(
+        json.dumps(
+            {
+                "account": "aao-impl-codex",
+                "principal_id": "aao-publisher-impl-20261102123456-deadbeef",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    identity.chmod(0o600)
+    monkeypatch.setattr(rotation, "_paths", lambda _account: (live, pending))
+
+    def api_request(_base_url, path, *, method="GET", agent_token=None, body=None, **_kwargs):
+        response = client.request(
+            method,
+            path,
+            headers={"X-Agent-Token": agent_token} if agent_token else {},
+            json=body,
+        )
+        if response.status_code >= 400:
+            from scripts.bootstrap_self_dev_agent import BootstrapError
+
+            raise BootstrapError("AAO API request failed")
+        return response.json()
+
+    monkeypatch.setattr(rotation, "request_json", api_request)
+    with pytest.raises(rotation.RotationError, match="another W2 principal"):
+        rotation.rotate("aao-impl-codex")
+    assert live.read_text(encoding="utf-8") == old_token + "\n"
+    assert pending.read_text(encoding="utf-8") == new_token + "\n"
+    assert principal_id != "aao-publisher-impl-20261102123456-deadbeef"
+
+
+@needs_pg
+def test_w2_confirmation_rejects_wrong_expected_principal_without_promoting(monkeypatch):
+    from aao.principal_credentials import digest_token
+
+    client, connect = _pg_fixture(monkeypatch)
+    project_id = _project(client)
+    principal_id, old_token = _publisher(client, project_id)
+    staged = client.post(
+        "/v1/principals/me/w2-publisher/rotate", headers={"X-Agent-Token": old_token}
+    )
+    assert staged.status_code == 200, staged.text
+    new_token = staged.json()["token"]
+
+    refused = client.post(
+        "/v1/principals/me/w2-publisher/rotate/confirm",
+        headers={"X-Agent-Token": new_token},
+        json={"expected_principal_id": "aao-publisher-impl-other"},
+    )
+    assert refused.status_code == 403
+    assert _me(client, old_token).status_code == 200
+    assert _me(client, new_token).status_code == 403
+    with connect() as db:
+        row = db.execute(
+            "SELECT token_digest,pending_token_digest FROM principal_credentials "
+            "WHERE principal_id=%s",
+            (principal_id,),
+        ).fetchone()
+    assert row == (digest_token(old_token), digest_token(new_token))
 
 
 @needs_pg
@@ -277,6 +491,7 @@ def test_w2_confirmation_failure_rolls_back_promotion_and_preserves_old_bearer(m
     refused = client.post(
         "/v1/principals/me/w2-publisher/rotate/confirm",
         headers={"X-Agent-Token": new_token},
+        json={"expected_principal_id": principal_id},
     )
     assert refused.status_code == 403
     assert _me(client, old_token).status_code == 200
@@ -312,6 +527,7 @@ def test_w2_pending_expiry_refuses_confirmation_without_revoking_old_token(monke
     refused = client.post(
         "/v1/principals/me/w2-publisher/rotate/confirm",
         headers={"X-Agent-Token": new_token},
+        json={"expected_principal_id": principal_id},
     )
     assert refused.status_code == 403
     assert _me(client, old_token).status_code == 200

@@ -10,7 +10,7 @@ Do not use the legacy `scripts/self_development_cycle.py setup` publisher token 
 
 ### Rotate a publisher token without relaying it through the PM
 
-Once a role-scoped publisher principal exists, that role can rotate only its own token; the PM cannot issue or receive the implementer bearer. Run the helper as the target Linux account (not as PM), using a deployed checkout containing the matching API and helper revision:
+This helper only rotates the token of an already-issued W2 publisher principal. It does **not** create or issue publisher principals; initial issuance remains the separately authorized CEO provisioning step above. Once a role-scoped publisher principal exists, that role can rotate only its own token; the PM cannot issue or receive the implementer bearer. Run the helper as the target Linux account (not as PM), using a deployed checkout containing the matching API and helper revision:
 
 ```bash
 sudo -u aao-impl-codex -H env XDG_RUNTIME_DIR=/run/user/$(id -u aao-impl-codex) \
@@ -18,7 +18,7 @@ sudo -u aao-impl-codex -H env XDG_RUNTIME_DIR=/run/user/$(id -u aao-impl-codex) 
   /srv/aao/frozen/aao-pm/tree/scripts/rotate_w2_publisher_token.py --account aao-impl-codex
 ```
 
-Use `--account aao-pm` under `aao-pm` for its own credential. The helper authenticates with the role's existing `aao-publisher.token`, stages the pending token in that role's runtime directory with mode `0600`, confirms it with the API, then atomically replaces the file. It prints only a fixed success/failure message. The API allows only the exact active W2 principal namespace, the two fixed grants on the unique active Self Development project, and renews them for at most eight hours. The pending token expires after ten minutes. A crash after confirmation is recoverable from the staged file.
+Use `--account aao-pm` under `aao-pm` for its own credential. The helper authenticates with the role's existing `aao-publisher.token`, stages the pending token and non-secret identity binding (account and exact principal ID) in that role's runtime directory with mode `0600`, confirms it with the API while supplying that expected principal ID, then atomically replaces the file. The API rejects confirmation unless the pending token belongs to that exact principal. During recovery it requires the staged token to resolve to that exact principal and account, with exactly the active `project.read` and `code.publish` grants on the active `AAO — Self Development` project. It prints only a fixed success/failure message. The API allows only the exact active W2 principal namespace, the two fixed grants on the unique active Self Development project, and renews them for at most eight hours. The pending token expires after ten minutes. A crash after confirmation is recoverable from the staged file and identity binding.
 
 This is a manual helper, not a scheduled rotation service. Initial principal creation remains in the separately authorized CEO provisioning step above; this helper cannot create principals or restore a missing token. Do not run it until both API endpoints and helper are deployed at the same revision. No production run is implied by these instructions.
 

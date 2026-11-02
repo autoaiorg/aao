@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -27,6 +28,24 @@ class DiagnosticCheck:
     name: str
     status: str  # "PASS", "WARN", "FAIL"
     message: str
+
+
+def _fencer_database_url(path: Path = Path("/etc/aao/aao-fencer.env")) -> str:
+    """Read the root-only fencing DSN without consulting API runtime overrides."""
+    info = path.lstat()
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid != 0
+        or stat.S_IMODE(info.st_mode) != 0o600
+    ):
+        raise RuntimeError(f"{path} must be a root-owned regular file with mode 0600")
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("AAO_FENCER_POSTGRES_URL="):
+            dsn = line.split("=", 1)[1].strip().strip("\"'")
+            if dsn.startswith(("postgresql://", "postgres://")):
+                return dsn
+            break
+    raise RuntimeError("AAO_FENCER_POSTGRES_URL is missing or invalid")
 
 
 def check_postgres_health() -> DiagnosticCheck:
@@ -522,6 +541,8 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "fence-host":
         from aao.backup import apply_host_fencing
         try:
+            if os.geteuid() != 0:
+                raise HostIdentityError("Host fencing must run as root")
             local_host_id = current_host_id()
             if args.host_id is not None and args.host_id != local_host_id:
                 raise HostIdentityError("Host fencing must run on the host identified by protected /etc/aao/host-id")
@@ -529,24 +550,36 @@ def main(argv: list[str] | None = None) -> int:
             print(f"FENCING ERROR: {exc}", file=sys.stderr)
             return 1
         print(f"Applying targeted host fencing for '{local_host_id}'...")
-
-        # If systemd is available, stop and mask background workers
-        if shutil.which("systemctl"):
-            for unit in ("aao-worker-self-dev.service", "aao-conversation-recovery.timer", "aao-conversation-recovery.service"):
-                subprocess.run(["systemctl", "stop", unit], capture_output=True, check=False)
-                subprocess.run(["systemctl", "mask", unit], capture_output=True, check=False)
-            print("  [+] Masked and stopped local worker systemd units")
-
         try:
-            with connect_postgres() as db:
+            import psycopg
+        except ImportError:
+            print("FENCING ERROR: Install the postgres optional dependencies", file=sys.stderr)
+            return 1
+        try:
+            # This narrowly scoped credential is root-only. Do not use the API
+            # runtime DSN: it intentionally cannot perform fleet fencing.
+            with connect_postgres(_fencer_database_url()) as db:
                 actions = apply_host_fencing(db, host_identifier=local_host_id)
                 for a in actions:
                     print(f"  [+] {a}")
             print(f"PASS: Host '{local_host_id}' successfully fenced from cluster.")
-            return 0
-        except (RuntimeError, OSError) as exc:
+        except (RuntimeError, OSError, psycopg.Error) as exc:
             print(f"FENCING ERROR: {exc}", file=sys.stderr)
             return 1
+        # Do not stop local workers until database fencing committed. A failed
+        # database authorization or transaction must leave the host untouched.
+        if shutil.which("systemctl"):
+            failed = []
+            for unit in ("aao-worker-self-dev.service", "aao-conversation-recovery.timer", "aao-conversation-recovery.service"):
+                for verb in ("stop", "mask"):
+                    result = subprocess.run(["systemctl", verb, unit], capture_output=True, check=False)
+                    if result.returncode:
+                        failed.append(f"{verb} {unit}")
+            if failed:
+                print("FENCING WARNING: database fence committed, but systemd actions failed: " + ", ".join(failed), file=sys.stderr)
+                return 1
+            print("  [+] Masked and stopped local worker systemd units")
+        return 0
     return 0
 
 

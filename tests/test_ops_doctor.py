@@ -3,6 +3,7 @@
 import os
 import pwd
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -156,10 +157,12 @@ def test_host_worker_cli_rejects_identity_override(monkeypatch):
 def test_fence_host_cli_uses_protected_identity_and_rejects_worker_override(monkeypatch):
     from aao import backup
 
+    monkeypatch.setattr("aao.ops.os.geteuid", lambda: 0)
     monkeypatch.setattr("aao.ops.current_host_id", lambda: "protected-host-id")
     monkeypatch.setattr("aao.ops.shutil.which", lambda _name: None)
+    monkeypatch.setattr("aao.ops._fencer_database_url", lambda: "postgresql://fencer@localhost/db")
     db_context = MagicMock()
-    monkeypatch.setattr("aao.ops.connect_postgres", lambda: db_context)
+    monkeypatch.setattr("aao.ops.connect_postgres", lambda _dsn: db_context)
     fence = MagicMock(return_value=[])
     monkeypatch.setattr(backup, "apply_host_fencing", fence)
 
@@ -168,3 +171,55 @@ def test_fence_host_cli_uses_protected_identity_and_rejects_worker_override(monk
 
     with pytest.raises(SystemExit):
         main(["fence-host", "--worker-ids", "unbound-worker"])
+
+
+def test_fence_host_does_not_stop_units_when_database_fencing_fails(monkeypatch):
+    from aao import backup
+
+    monkeypatch.setattr("aao.ops.os.geteuid", lambda: 0)
+    monkeypatch.setattr("aao.ops.current_host_id", lambda: "protected-host-id")
+    monkeypatch.setattr("aao.ops._fencer_database_url", lambda: "postgresql://fencer@localhost/db")
+    monkeypatch.setattr("aao.ops.shutil.which", lambda _name: "/usr/bin/systemctl")
+    db_context = MagicMock()
+    monkeypatch.setattr("aao.ops.connect_postgres", lambda _dsn: db_context)
+    monkeypatch.setattr(backup, "apply_host_fencing", MagicMock(side_effect=RuntimeError("denied")))
+    run = MagicMock()
+    monkeypatch.setattr("aao.ops.subprocess.run", run)
+
+    assert main(["fence-host"]) == 1
+    run.assert_not_called()
+
+
+def test_fence_host_requires_root_before_reading_credentials(monkeypatch):
+    monkeypatch.setattr("aao.ops.os.geteuid", lambda: 1000)
+    read_dsn = MagicMock()
+    monkeypatch.setattr("aao.ops._fencer_database_url", read_dsn)
+
+    assert main(["fence-host"]) == 1
+    read_dsn.assert_not_called()
+
+
+def test_fencer_database_url_requires_private_root_owned_regular_file(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from aao.ops import _fencer_database_url
+
+    env_file = tmp_path / "fencer.env"
+    env_file.write_text("AAO_FENCER_POSTGRES_URL=postgresql://fencer@localhost/db\n")
+    env_file.chmod(0o600)
+
+    with pytest.raises(RuntimeError, match="root-owned regular file"):
+        _fencer_database_url(env_file)
+
+    original_lstat = Path.lstat
+    monkeypatch.setattr(
+        Path,
+        "lstat",
+        lambda path: SimpleNamespace(st_mode=original_lstat(path).st_mode, st_uid=0)
+        if path == env_file else original_lstat(path),
+    )
+    assert _fencer_database_url(env_file) == "postgresql://fencer@localhost/db"
+
+    env_file.chmod(0o640)
+    with pytest.raises(RuntimeError, match="root-owned regular file"):
+        _fencer_database_url(env_file)

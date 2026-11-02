@@ -29,12 +29,12 @@ def database_url() -> str:
 
 
 @contextmanager
-def connect_postgres():
+def connect_postgres(dsn: str | None = None):
     try:
         import psycopg
     except ImportError as exc:
         raise RuntimeError("Install the postgres optional dependencies") from exc
-    with psycopg.connect(database_url(), autocommit=False) as db:
+    with psycopg.connect(dsn or database_url(), autocommit=False) as db:
         yield db
 
 

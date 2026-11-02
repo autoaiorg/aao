@@ -367,6 +367,8 @@ PGPASSWORD="$DB_PASS" psql -h 127.0.0.1 -U aao_app -d aao_prod \
   -v ON_ERROR_STOP=1 -f "$SCRIPT_DIR/apply_runtime_grants.sql"
 PGPASSWORD="$DB_PASS" psql -h 127.0.0.1 -U aao_app -d aao_prod \
   -v ON_ERROR_STOP=1 -f "$SCRIPT_DIR/apply_api_grants.sql"
+PGPASSWORD="$DB_PASS" psql -h 127.0.0.1 -U aao_app -d aao_prod \
+  -v ON_ERROR_STOP=1 -f "$SCRIPT_DIR/apply_fencer_grants.sql"
 
 # ------------------------------------------------------------------------------
 # STEP 6: Control Center React Production Build

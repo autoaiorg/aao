@@ -17,6 +17,7 @@ chmod 0750 /etc/aao
 DB_SECRET_FILE="/etc/aao/aao-db.secret"
 RUNTIME_DB_SECRET_FILE="/etc/aao/aao-runtime-db.secret"
 RECOVERY_DB_SECRET_FILE="/etc/aao/aao-recovery-db.secret"
+FENCER_DB_SECRET_FILE="/etc/aao/aao-fencer-db.secret"
 API_ENV_FILE="/etc/aao/aao-api.env"
 RECOVERY_ENV_FILE="/etc/aao/aao-recovery.env"
 WORKER_ENV_FILE="/etc/aao/aao-worker.env"
@@ -43,6 +44,8 @@ fi
 RUNTIME_DB_PASS=$(cat "$RUNTIME_DB_SECRET_FILE")
 [[ -s "$RECOVERY_DB_SECRET_FILE" ]] || die "Recovery database credential is missing; run init_postgres.sh first."
 RECOVERY_DB_PASS=$(cat "$RECOVERY_DB_SECRET_FILE")
+[[ -s "$FENCER_DB_SECRET_FILE" ]] || die "Fencing database credential is missing; run init_postgres.sh first."
+FENCER_DB_PASS=$(cat "$FENCER_DB_SECRET_FILE")
 
 say "Configuring /etc/aao/aao-api.env..."
 if [[ -f "$API_ENV_FILE" ]]; then
@@ -163,6 +166,34 @@ finally:
 PY
 chown root:aao-recovery "$RECOVERY_ENV_FILE"
 chmod 0640 "$RECOVERY_ENV_FILE"
+
+say "Configuring root-only /etc/aao/aao-fencer.env..."
+FENCER_ENV_FILE="/etc/aao/aao-fencer.env"
+[[ ! -L "$FENCER_ENV_FILE" ]] || die "$FENCER_ENV_FILE must not be a symbolic link"
+AAO_FENCER_DB_PASS="$FENCER_DB_PASS" python3 - "$FENCER_ENV_FILE" <<'PY'
+import os
+import pathlib
+import tempfile
+import sys
+
+path = pathlib.Path(sys.argv[1])
+dsn = f"postgresql://aao_fencer:{os.environ['AAO_FENCER_DB_PASS']}@127.0.0.1:5432/aao_prod"
+data = f"AAO_FENCER_POSTGRES_URL={dsn}\n"
+fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+try:
+    with os.fdopen(fd, "w") as stream:
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.chown(temporary, 0, 0)
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PY
+chown root:root "$FENCER_ENV_FILE"
+chmod 0600 "$FENCER_ENV_FILE"
 
 say "Configuring /etc/aao/aao-worker.env..."
 if [[ -f "$WORKER_ENV_FILE" ]]; then

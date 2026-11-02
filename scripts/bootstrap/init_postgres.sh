@@ -11,6 +11,7 @@ die() { echo "FAIL [POSTGRES]: $*" >&2; exit 1; }
 SECRET_FILE="/etc/aao/aao-db.secret"
 RUNTIME_SECRET_FILE="/etc/aao/aao-runtime-db.secret"
 RECOVERY_SECRET_FILE="/etc/aao/aao-recovery-db.secret"
+FENCER_SECRET_FILE="/etc/aao/aao-fencer-db.secret"
 mkdir -p /etc/aao
 chmod 0750 /etc/aao
 
@@ -48,8 +49,14 @@ else
   RECOVERY_DB_PASS=$(openssl rand -hex 24)
   printf '%s' "$RECOVERY_DB_PASS" > "$RECOVERY_SECRET_FILE"
 fi
-chown root:root "$SECRET_FILE" "$RUNTIME_SECRET_FILE" "$RECOVERY_SECRET_FILE"
-chmod 0600 "$SECRET_FILE" "$RUNTIME_SECRET_FILE" "$RECOVERY_SECRET_FILE"
+if [[ -f "$FENCER_SECRET_FILE" ]]; then
+  FENCER_DB_PASS=$(cat "$FENCER_SECRET_FILE")
+else
+  FENCER_DB_PASS=$(openssl rand -hex 24)
+  printf '%s' "$FENCER_DB_PASS" > "$FENCER_SECRET_FILE"
+fi
+chown root:root "$SECRET_FILE" "$RUNTIME_SECRET_FILE" "$RECOVERY_SECRET_FILE" "$FENCER_SECRET_FILE"
+chmod 0600 "$SECRET_FILE" "$RUNTIME_SECRET_FILE" "$RECOVERY_SECRET_FILE" "$FENCER_SECRET_FILE"
 
 say "Configuring PostgreSQL role and database without SQL password interpolation..."
 runuser -u postgres -- psql -v ON_ERROR_STOP=1 <<'EOF'
@@ -70,6 +77,11 @@ BEGIN
   ELSE
     ALTER ROLE aao_recovery WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT CONNECTION LIMIT 10;
   END IF;
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'aao_fencer') THEN
+    CREATE ROLE aao_fencer WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT CONNECTION LIMIT 2;
+  ELSE
+    ALTER ROLE aao_fencer WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT CONNECTION LIMIT 2;
+  END IF;
 END $$;
 EOF
 
@@ -77,6 +89,7 @@ say "Setting application database password via secure encrypted channel..."
 printf "%s\n%s\n" "$DB_PASS" "$DB_PASS" | runuser -u postgres -- psql -v ON_ERROR_STOP=1 -c '\password aao_app'
 printf "%s\n%s\n" "$RUNTIME_DB_PASS" "$RUNTIME_DB_PASS" | runuser -u postgres -- psql -v ON_ERROR_STOP=1 -c '\password aao_runtime'
 printf "%s\n%s\n" "$RECOVERY_DB_PASS" "$RECOVERY_DB_PASS" | runuser -u postgres -- psql -v ON_ERROR_STOP=1 -c '\password aao_recovery'
+printf "%s\n%s\n" "$FENCER_DB_PASS" "$FENCER_DB_PASS" | runuser -u postgres -- psql -v ON_ERROR_STOP=1 -c '\password aao_fencer'
 
 # Create database if not exists
 if ! runuser -u postgres -- psql -tAc "SELECT 1 FROM pg_database WHERE datname='aao_prod'" | grep -q 1; then
@@ -91,8 +104,10 @@ GRANT ALL PRIVILEGES ON DATABASE aao_prod TO aao_app;
 GRANT ALL ON SCHEMA public TO aao_app;
 GRANT CONNECT ON DATABASE aao_prod TO aao_runtime;
 GRANT CONNECT ON DATABASE aao_prod TO aao_recovery;
+GRANT CONNECT ON DATABASE aao_prod TO aao_fencer;
 GRANT USAGE ON SCHEMA public TO aao_runtime;
 GRANT USAGE ON SCHEMA public TO aao_recovery;
+GRANT USAGE ON SCHEMA public TO aao_fencer;
 EOF
 
 say "Verifying PostgreSQL connection for aao_app..."
@@ -107,6 +122,10 @@ PGPASSWORD="$RUNTIME_DB_PASS" psql -h 127.0.0.1 -U aao_runtime -d aao_prod -c "S
 say "Verifying PostgreSQL connection for aao_recovery..."
 PGPASSWORD="$RECOVERY_DB_PASS" psql -h 127.0.0.1 -U aao_recovery -d aao_prod -c "SELECT 1" >/dev/null || \
   die "Failed to connect to aao_prod as aao_recovery."
+
+say "Verifying PostgreSQL connection for aao_fencer..."
+PGPASSWORD="$FENCER_DB_PASS" psql -h 127.0.0.1 -U aao_fencer -d aao_prod -c "SELECT 1" >/dev/null || \
+  die "Failed to connect to aao_prod as aao_fencer."
 
 say "PostgreSQL provisioned and verified successfully."
 exit 0

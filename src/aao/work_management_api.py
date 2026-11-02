@@ -473,7 +473,7 @@ class PrincipalCredentialRequest(BaseModel):
 
 class GrantRequest(BaseModel):
     principal_id: str = Field(min_length=1)
-    capability: str = Field(pattern=r"^(?:work\.(?:create|admit|review|progress|coordinate|assign)|project\.read|execution\.claim|execution\.reconcile|effect\.(?:propose|reconcile)|evidence\.submit|code\.(?:propose|publish)|credential\.issue_publisher)$")
+    capability: str = Field(pattern=r"^(?:work\.(?:create|admit|review|progress|coordinate|assign)|project\.read|execution\.claim|execution\.reconcile|effect\.(?:propose|reconcile)|evidence\.submit|code\.(?:propose|publish))$")
     expires_at: datetime | None = None
 
     @field_validator("expires_at")

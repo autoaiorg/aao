@@ -153,6 +153,41 @@ def _remove_orphan_pending_identity(path: Path) -> None:
     _fsync_dir(metadata.parent)
 
 
+def _unlink_private_runtime_entry(path: Path) -> None:
+    """Unlink a runtime entry without following it; never recursively remove dirs."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise RotationError("pending rotation entry cannot be inspected") from None
+    if stat.S_ISDIR(info.st_mode):
+        raise RotationError("pending rotation entry is a directory; refusing cleanup")
+    try:
+        path.unlink()
+    except OSError:
+        raise RotationError("pending rotation entry cannot be removed") from None
+
+
+def _discard_unusable_pending(api: str, account: str, live_token: str, pending: Path) -> None:
+    """Discard crash-partial state only after the live bearer proves its identity."""
+    principal_id = _validate_w2_identity(api, live_token, account)
+    identity = pending.with_name(pending.name + ".identity")
+    if identity.exists() or identity.is_symlink():
+        try:
+            recorded = _read_pending_identity(pending, account)
+        except RotationError:
+            # A malformed sidecar is not authority to bind a pending bearer.
+            recorded = None
+        if recorded is not None and recorded != principal_id:
+            # The pending state is stale or cross-bound; discard only this local
+            # transaction, then begin anew for the live principal.
+            pass
+    _unlink_private_runtime_entry(pending)
+    _unlink_private_runtime_entry(identity)
+    _fsync_dir(pending.parent)
+
+
 def _fsync_dir(path: Path) -> None:
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
@@ -256,65 +291,75 @@ def _rotate_locked(account: str, api_url: str) -> None:
     # Recover safely if an earlier run confirmed the new token but died before
     # replacing the live path. The target itself, not the PM, authenticates it.
     if pending.exists() or pending.is_symlink():
-        staged = _read_private(pending)
-        if pending_identity.exists() or pending_identity.is_symlink():
-            expected_principal = _read_pending_identity(pending, account)
+        try:
+            staged = _read_private(pending)
+        except RotationError:
+            # A crash during the write can leave an empty/truncated file. It
+            # cannot be confirmed: prove the active identity using the live
+            # bearer, remove only these local transaction files, then retry.
+            _discard_unusable_pending(api, account, old, pending)
+            staged = None
+        if staged is None:
+            pass
         else:
-            # Legacy/interrupted state without a sidecar is recoverable only
-            # while the live bearer proves the exact principal still active.
-            expected_principal = _validate_w2_identity(api, old, account)
-            _write_pending_identity(pending, account, expected_principal)
-        try:
-            staged_me = _request(api, "/v1/principals/me", token=staged)
-        except RotationError:
-            # A token which is not yet active can only be used at confirm.
-            staged_me = None
-        if staged_me is not None:
-            # An already-active token must be the exact principal recorded
-            # before rotation; never confirm a different active principal.
-            if staged_me.get("principal_id") != expected_principal:
-                raise RotationError("pending token belongs to another W2 principal")
-            staged_principal = _validate_w2_identity(api, staged, account)
-            if staged_principal != expected_principal:
-                raise RotationError("pending token belongs to another W2 principal")
-            os.replace(pending, live)
-            pending.with_name(pending.name + ".identity").unlink(missing_ok=True)
-            _fsync_dir(live.parent)
-            return
-        # Only a token which did not authenticate as an active identity reaches
-        # confirm. The response is still bound to the exact pre-rotation ID.
-        try:
-            confirmed = _request(
-                api,
-                "/v1/principals/me/w2-publisher/rotate/confirm",
-                token=staged,
-                method="POST",
-                body={"expected_principal_id": expected_principal},
-            )
-            if (
-                confirmed.get("rotated") is not True
-                or confirmed.get("principal_id") != expected_principal
-            ):
-                raise RotationError("AAO rejected pending-token recovery")
-            os.replace(pending, live)
-            pending.with_name(pending.name + ".identity").unlink(missing_ok=True)
-            _fsync_dir(live.parent)
-            return
-        except RotationError:
-            # A 403 from an expired pending token is recoverable only if the old
-            # bearer still authenticates. If the API is unavailable, retain the
-            # staged token and fail closed rather than guessing.
+            if pending_identity.exists() or pending_identity.is_symlink():
+                expected_principal = _read_pending_identity(pending, account)
+            else:
+                # Legacy/interrupted state without a sidecar is recoverable only
+                # while the live bearer proves the exact principal still active.
+                expected_principal = _validate_w2_identity(api, old, account)
+                _write_pending_identity(pending, account, expected_principal)
             try:
-                old_principal = _validate_w2_identity(api, old, account)
+                staged_me = _request(api, "/v1/principals/me", token=staged)
             except RotationError:
-                raise RotationError(
-                    "pending rotation recovery failed; staged file retained"
-                ) from None
-            if old_principal != expected_principal:
-                raise RotationError("pending rotation belongs to another W2 principal")
-            pending.unlink()
-            pending.with_name(pending.name + ".identity").unlink(missing_ok=True)
-            _fsync_dir(live.parent)
+                # A token which is not yet active can only be used at confirm.
+                staged_me = None
+            if staged_me is not None:
+                # An already-active token must be the exact principal recorded
+                # before rotation; never confirm a different active principal.
+                if staged_me.get("principal_id") != expected_principal:
+                    raise RotationError("pending token belongs to another W2 principal")
+                staged_principal = _validate_w2_identity(api, staged, account)
+                if staged_principal != expected_principal:
+                    raise RotationError("pending token belongs to another W2 principal")
+                os.replace(pending, live)
+                pending.with_name(pending.name + ".identity").unlink(missing_ok=True)
+                _fsync_dir(live.parent)
+                return
+            # Only a token which did not authenticate as an active identity reaches
+            # confirm. The response is still bound to the exact pre-rotation ID.
+            try:
+                confirmed = _request(
+                    api,
+                    "/v1/principals/me/w2-publisher/rotate/confirm",
+                    token=staged,
+                    method="POST",
+                    body={"expected_principal_id": expected_principal},
+                )
+                if (
+                    confirmed.get("rotated") is not True
+                    or confirmed.get("principal_id") != expected_principal
+                ):
+                    raise RotationError("AAO rejected pending-token recovery")
+                os.replace(pending, live)
+                pending.with_name(pending.name + ".identity").unlink(missing_ok=True)
+                _fsync_dir(live.parent)
+                return
+            except RotationError:
+                # A 403 from an expired pending token is recoverable only if the old
+                # bearer still authenticates. If the API is unavailable, retain the
+                # staged token and fail closed rather than guessing.
+                try:
+                    old_principal = _validate_w2_identity(api, old, account)
+                except RotationError:
+                    raise RotationError(
+                        "pending rotation recovery failed; staged file retained"
+                    ) from None
+                if old_principal != expected_principal:
+                    raise RotationError("pending rotation belongs to another W2 principal")
+                pending.unlink()
+                pending.with_name(pending.name + ".identity").unlink(missing_ok=True)
+                _fsync_dir(live.parent)
 
     principal_id = _validate_w2_identity(api, old, account)
     staged_response = _request(

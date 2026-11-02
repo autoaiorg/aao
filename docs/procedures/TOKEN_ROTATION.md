@@ -31,7 +31,7 @@ Además, `require_ceo` con cabecera `X-CEO-Token` solo funciona con `AAO_ENV` en
 
 La rotación W2 es de dos fases: el token vigente conserva validez mientras se guarda uno pendiente; el helper lo persiste localmente y confirma indicando el ID exacto esperado. La API rechaza la confirmación si el token pendiente pertenece a otro principal. Después el helper reemplaza el fichero activo. La recuperación valida el principal exacto, la cuenta Linux, el proyecto único y el conjunto exacto de grants antes de instalarlo. Una respuesta perdida no crea un principal nuevo.
 
-La recuperación local también cubre ambos cortes de escritura: el sidecar de identidad se persiste antes que el bearer pendiente, de modo que un sidecar huérfano (sin bearer pendiente) se puede eliminar tras validar su propietario y modo; si ya existe un bearer pendiente pero falta el sidecar, el helper solo reconstruye el ID esperado autenticando el bearer activo anterior y volviendo a comprobar cuenta, proyecto y grants. Si no puede demostrar esa identidad, falla cerrado y conserva el pendiente; no adivina ni cambia de principal.
+La recuperación local cubre cortes de escritura. El sidecar de identidad se persiste antes que el bearer pendiente. Un sidecar huérfano (sin bearer pendiente) se elimina tras validar su propietario y modo. Si el bearer pendiente está truncado o su metadata/contenido no es seguro, el helper solo elimina los ficheros de esa transacción local después de volver a autenticar el token activo y comprobar su cuenta, proyecto y grants exactos; luego puede iniciar otra rotación del mismo principal. Para un bearer pendiente válido sin sidecar, el helper reconstruye el ID esperado solo autenticando el bearer activo anterior y volviendo a comprobar cuenta, proyecto y grants. Si no puede demostrar la identidad del token activo, falla cerrado y no confirma ni sustituye el bearer.
 
 El helper también serializa ejecuciones simultáneas por cuenta con un lock exclusivo en el runtime privado (`/run/user/<uid>`). El lock evita que dos invocaciones sustituyan entre sí el sidecar o el bearer pendiente; un lock preexistente con propietario, tipo o modo inesperado se rechaza.
 
@@ -57,7 +57,7 @@ Riesgo de seguridad: quien robe el token puede rotarlo y dejar fuera al titular 
 
 ### B. Publicadores W2: delegación acotada en implementación
 
-La capacidad `credential.issue_publisher` no permite grants arbitrarios: el endpoint dedicado fija las cuentas destino, el proyecto, los grants y la caducidad. El CEO conserva la decisión de conceder o retirar ese grant al coordinador. La ruta no debe fusionarse ni desplegarse sin auditoría independiente (GOV-REV-001), pruebas de integración y un diseño de entrega segura al runtime de destino.
+**Estado del diseño anterior:** `credential.issue_publisher` no tiene consumidor implementado y no se acepta ya como valor válido de `GrantRequest`; no concederlo ni usarlo. No forma parte de la rotación descrita en este procedimiento. La rotación W2 se limita a un principal publisher existente, sin crear principals ni ampliar grants.
 
 ## Flujo de rotación una vez exista A (`scripts/rotate_role_token.py`, futuro)
 

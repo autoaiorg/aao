@@ -168,6 +168,60 @@ def test_rotation_cleans_orphan_identity_sidecar_before_starting_new_rotation(
     assert not identity.exists()
 
 
+def test_rotation_discards_crash_truncated_pending_after_live_identity_validation(
+    monkeypatch, tmp_path
+):
+    from scripts import rotate_w2_publisher_token as rotation
+
+    live = tmp_path / "aao-publisher.token"
+    pending = tmp_path / ".aao-publisher.token.pending"
+    identity = pending.with_name(pending.name + ".identity")
+    live.write_text("old-token\n", encoding="utf-8")
+    live.chmod(0o600)
+    # Simulate process death during the staged bearer write.
+    pending.write_text("partially-written", encoding="utf-8")
+    pending.chmod(0o600)
+    identity.write_text(
+        '{"account":"aao-impl-codex","principal_id":"aao-publisher-impl-exact"}\n',
+        encoding="utf-8",
+    )
+    identity.chmod(0o600)
+    monkeypatch.setattr(rotation, "_paths", lambda _account: (live, pending))
+    validation = []
+
+    def validate(_api, token, account):
+        validation.append((token, account))
+        assert token == "old-token"
+        assert account == "aao-impl-codex"
+        return "aao-publisher-impl-exact"
+
+    monkeypatch.setattr(rotation, "_validate_w2_identity", validate)
+
+    def request(_api, path, *, token, method="GET", body=None):
+        if path.endswith("/rotate") and not path.endswith("/confirm"):
+            assert token == "old-token"
+            return {
+                "principal_id": "aao-publisher-impl-exact",
+                "account": "aao-impl-codex",
+                "token": "replacement-token",
+            }
+        assert path.endswith("/confirm")
+        assert token == "replacement-token"
+        assert body == {"expected_principal_id": "aao-publisher-impl-exact"}
+        return {"principal_id": "aao-publisher-impl-exact", "rotated": True}
+
+    monkeypatch.setattr(rotation, "_request", request)
+    rotation.rotate("aao-impl-codex")
+
+    assert validation == [
+        ("old-token", "aao-impl-codex"),
+        ("old-token", "aao-impl-codex"),
+    ]
+    assert live.read_text(encoding="utf-8") == "replacement-token\n"
+    assert not pending.exists()
+    assert not identity.exists()
+
+
 def test_rotation_recovers_pending_token_without_sidecar_from_live_identity(monkeypatch, tmp_path):
     from scripts import rotate_w2_publisher_token as rotation
 

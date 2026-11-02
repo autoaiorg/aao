@@ -23,16 +23,6 @@ def database_url() -> str:
                         break
             except OSError:
                 pass
-    if not url:
-        secret_file = Path("/etc/aao/aao-db.secret")
-        if secret_file.is_file():
-            try:
-                db_pass = secret_file.read_text(encoding="utf-8").strip()
-                if db_pass:
-                    url = f"postgresql://aao_app:{db_pass}@127.0.0.1:5432/aao_prod"
-            except OSError:
-                pass
-
     if not url.startswith(("postgresql://", "postgres://")):
         raise RuntimeError("AAO_POSTGRES_URL must be an explicit PostgreSQL DSN")
     return url

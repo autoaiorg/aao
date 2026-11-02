@@ -14,6 +14,7 @@ chown root:aao-host-id-read /etc/aao
 chmod 0750 /etc/aao
 
 DB_SECRET_FILE="/etc/aao/aao-db.secret"
+RUNTIME_DB_SECRET_FILE="/etc/aao/aao-runtime-db.secret"
 API_ENV_FILE="/etc/aao/aao-api.env"
 WORKER_ENV_FILE="/etc/aao/aao-worker.env"
 HOST_ID_FILE="/etc/aao/host-id"
@@ -35,6 +36,8 @@ if [[ ! -f "$DB_SECRET_FILE" ]]; then
 else
   DB_PASS=$(cat "$DB_SECRET_FILE")
 fi
+[[ -s "$RUNTIME_DB_SECRET_FILE" ]] || die "Runtime database credential is missing; run init_postgres.sh first."
+RUNTIME_DB_PASS=$(cat "$RUNTIME_DB_SECRET_FILE")
 
 say "Configuring /etc/aao/aao-api.env..."
 if [[ -f "$API_ENV_FILE" ]]; then
@@ -44,7 +47,7 @@ else
   cat > "$API_ENV_FILE" <<EOF
 # Production environment for aao-api.service
 AAO_ENV=production
-AAO_POSTGRES_URL=postgresql://aao_app:${DB_PASS}@127.0.0.1:5432/aao_prod
+AAO_POSTGRES_URL=postgresql://aao_runtime:${RUNTIME_DB_PASS}@127.0.0.1:5432/aao_prod
 AAO_CEO_TOKEN=${CEO_TOKEN}
 AAO_STATIC_DIR=/opt/aao/frontend/dist
 AAO_SELF_DEV_REPOSITORY=/opt/aao/repo
@@ -60,6 +63,44 @@ EOF
     say "Provisioned CEO token for '$CEO_USER' at /etc/aao/aao-ceo.token"
   fi
 fi
+
+# Always switch an existing deployment from the migration owner to the runtime
+# identity, while preserving all other operator-managed environment values.
+[[ ! -L "$API_ENV_FILE" ]] || die "$API_ENV_FILE must not be a symbolic link"
+AAO_RUNTIME_DB_PASS="$RUNTIME_DB_PASS" python3 - "$API_ENV_FILE" <<'PY'
+import os
+import pathlib
+import tempfile
+import sys
+
+path = pathlib.Path(sys.argv[1])
+dsn = f"postgresql://aao_runtime:{os.environ['AAO_RUNTIME_DB_PASS']}@127.0.0.1:5432/aao_prod"
+lines = path.read_text().splitlines() if path.exists() else []
+replacement = f"AAO_POSTGRES_URL={dsn}"
+found = False
+updated = []
+for line in lines:
+    if line.startswith("AAO_POSTGRES_URL="):
+        if not found:
+            updated.append(replacement)
+            found = True
+    else:
+        updated.append(line)
+if not found:
+    updated.append(replacement)
+data = "\n".join(updated) + "\n"
+fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+try:
+    with os.fdopen(fd, "w") as stream:
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.chmod(0o640, temporary)
+    os.replace(temporary, path)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PY
 
 # Ensure permissions: owned by root:aao-api with 0640 (readable only by aao-api and root)
 if id aao-api >/dev/null 2>&1; then

@@ -129,7 +129,7 @@ rollback_release() {
         db_pass=$(cat /etc/aao/aao-db.secret)
         local test_dsn="postgresql://aao_app:${db_pass}@127.0.0.1:5432/aao_prod"
         say "Verifying strict schema compatibility for rolled-back release ($prev_dir)..."
-        if ! /opt/aao/venv/bin/python "$prev_dir/scripts/migrate.py" --verify --dsn "$test_dsn" >/dev/null 2>&1; then
+        if ! AAO_POSTGRES_URL="$test_dsn" /opt/aao/venv/bin/python "$prev_dir/scripts/migrate.py" --verify >/dev/null 2>&1; then
           rollback_errors+=("Database schema is incompatible with rolled-back release ($prev_dir). Forward recovery required; destructive downgrade rejected.")
         fi
       fi
@@ -361,8 +361,10 @@ say "Step 5: Applying database migrations..."
 DB_PASS=$(cat /etc/aao/aao-db.secret)
 export AAO_POSTGRES_URL="postgresql://aao_app:${DB_PASS}@127.0.0.1:5432/aao_prod"
 
-/opt/aao/venv/bin/python /opt/aao/current/scripts/migrate.py --apply --dsn "$AAO_POSTGRES_URL"
-/opt/aao/venv/bin/python /opt/aao/current/scripts/migrate.py --verify --dsn "$AAO_POSTGRES_URL"
+/opt/aao/venv/bin/python /opt/aao/current/scripts/migrate.py --apply
+/opt/aao/venv/bin/python /opt/aao/current/scripts/migrate.py --verify
+PGPASSWORD="$DB_PASS" psql -h 127.0.0.1 -U aao_app -d aao_prod \
+  -v ON_ERROR_STOP=1 -f "$SCRIPT_DIR/apply_runtime_grants.sql"
 
 # ------------------------------------------------------------------------------
 # STEP 6: Control Center React Production Build

@@ -22,6 +22,31 @@ CREATE INDEX IF NOT EXISTS ix_work_publication_effects_recovery
 -- Like 035/036: effect results carry remote PR URLs and failure classes; no implicit
 -- PUBLIC access. This grants nothing; a non-owner runtime role needs an explicit, reviewed grant.
 REVOKE ALL ON TABLE work_publication_effects FROM PUBLIC;
+
+-- These tables are row-locked by runtime reads. PostgreSQL requires UPDATE
+-- privilege for SELECT ... FOR SHARE/UPDATE; the runtime role receives only
+-- column-level UPDATE(created_at), so make that otherwise-unused column
+-- immutable even if a future grant accidentally widens the role.
+CREATE FUNCTION reject_created_at_rewrite() RETURNS trigger AS $$
+BEGIN
+    IF NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+        RAISE EXCEPTION 'created_at is immutable on %', TG_TABLE_NAME
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER capability_versions_created_at_immutable
+    BEFORE UPDATE OF created_at ON capability_versions
+    FOR EACH ROW EXECUTE FUNCTION reject_created_at_rewrite();
+CREATE TRIGGER work_groups_created_at_immutable
+    BEFORE UPDATE OF created_at ON work_groups
+    FOR EACH ROW EXECUTE FUNCTION reject_created_at_rewrite();
+CREATE TRIGGER work_group_consolidations_created_at_immutable
+    BEFORE UPDATE OF created_at ON work_group_consolidations
+    FOR EACH ROW EXECUTE FUNCTION reject_created_at_rewrite();
+
 INSERT INTO schema_migrations(version)
 VALUES ('038_work_publication_effects') ON CONFLICT DO NOTHING;
 COMMIT;

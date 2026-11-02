@@ -325,7 +325,8 @@ def test_schema_upgrade_drains_legacy_workers_and_restores_active_recovery_timer
 
     script = (REPO_ROOT / "scripts/bootstrap/aao_bootstrap.sh").read_text(encoding="utf-8")
     drain = script.index('say "Draining AAO API and conversation recovery before schema migration..."')
-    apply_migrations = script.index("--apply --dsn \"$AAO_POSTGRES_URL\"")
+    apply_migrations = script.index("migrate.py --apply")
+    assert '--dsn "$AAO_POSTGRES_URL"' not in script
     assert drain < apply_migrations
     assert "systemctl is-system-running" not in script
     assert "systemctl show --property=Version --value" in script

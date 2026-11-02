@@ -130,26 +130,31 @@ an `AGENT` or `AUDITOR`, then send its one-time returned token as
 the project capabilities it needs. `AAO_WORK_TOKEN` and `AAO_REVIEW_TOKEN`
 are SQLite-prototype settings and are not accepted by this PostgreSQL API.
 
-### Pending runtime-role installation prerequisite
+### Runtime database role
 
-Migration `033_protocol_instances.sql` explicitly revokes all privileges on
-`protocol_instances` from `PUBLIC`; it does not grant access to the service
-role. Before a deployment uses this table, identify the effective PostgreSQL
-role used by the API and explicitly grant it only `SELECT` and `INSERT` on
-`protocol_instances`. The runtime role must not own the table or have elevated
-role flags; use a separate migration/owner identity for schema changes. Verify
-the effective role and its privileges in the deployment itself. The disposable
-database privilege test checks the intended boundary, but does not prove the
-deployment is configured this way. Until that installation check is complete,
-the real deployment's runtime identity and grants remain unverified.
+The host bootstrap uses `aao_app` as the migration/schema-owner identity and
+`aao_runtime` as the shared API, worker, recovery, and publisher identity. The
+API must receive only the runtime DSN from `/etc/aao/aao-api.env`; application
+code must not fall back to `/etc/aao/aao-db.secret` or the migration-owner
+identity. The bootstrap applies `scripts/bootstrap/apply_runtime_grants.sql`
+after migrations. Re-run that grant script after adding a migration that creates
+tables or changes the runtime SQL contract.
 
-Migration `036_host_worker_fencing.sql` likewise revokes all privileges on
-`host_worker_bindings` from `PUBLIC` and grants nothing. Worker claims read the
-registry and `aao-ops` host registration/fencing writes it, so a non-owner
-runtime or operator role needs an explicit, owner-reviewed grant before use.
-Migration `038_work_publication_effects.sql` does the same for
-`work_publication_effects`: the W2 publishers read and write it, so a non-owner
-publisher/runtime role needs an explicit, owner-reviewed grant before use.
+The runtime role must not own the database, schema, tables, or triggers, and
+must have no elevated role attributes or membership in the migration owner. Its
+row-lock-only `UPDATE(created_at)` grants on `capability_versions`,
+`work_groups`, and `work_group_consolidations` are paired with migration 038
+triggers that reject changes to those timestamps. Verify the effective role and
+the grants in the deployment itself; disposable PostgreSQL tests do not prove
+that the host is configured this way. Migration and runtime identities remain
+separate even when one machine hosts both.
+
+Migration 033, 036, and 038 revoke `PUBLIC` access from protected tables. The
+runtime grant script explicitly grants the API/worker/recovery/publisher access
+needed on those tables, including `protocol_instances`, `host_worker_bindings`,
+and `work_publication_effects`. Host registration operations must still be
+authorized and audited at the application layer; broad ownership is not an
+acceptable shortcut.
 
 **Do not expose port 8001 beyond loopback.** Both secrets are development
 credentials, not a production identity system. PostgreSQL permissions,

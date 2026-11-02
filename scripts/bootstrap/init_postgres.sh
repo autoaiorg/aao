@@ -8,6 +8,7 @@ die() { echo "FAIL [POSTGRES]: $*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || die "Run as root."
 
 SECRET_FILE="/etc/aao/aao-db.secret"
+RUNTIME_SECRET_FILE="/etc/aao/aao-runtime-db.secret"
 mkdir -p /etc/aao
 chmod 0750 /etc/aao
 
@@ -32,18 +33,36 @@ else
   say "Generated new database password in $SECRET_FILE"
 fi
 
+say "Generating or reading restricted runtime database password..."
+if [[ -f "$RUNTIME_SECRET_FILE" ]]; then
+  RUNTIME_DB_PASS=$(cat "$RUNTIME_SECRET_FILE")
+else
+  RUNTIME_DB_PASS=$(openssl rand -hex 24)
+  printf '%s' "$RUNTIME_DB_PASS" > "$RUNTIME_SECRET_FILE"
+fi
+chown root:root "$SECRET_FILE" "$RUNTIME_SECRET_FILE"
+chmod 0600 "$SECRET_FILE" "$RUNTIME_SECRET_FILE"
+
 say "Configuring PostgreSQL role and database without SQL password interpolation..."
 runuser -u postgres -- psql -v ON_ERROR_STOP=1 <<'EOF'
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'aao_app') THEN
-    CREATE ROLE aao_app WITH LOGIN;
+    CREATE ROLE aao_app WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+  ELSE
+    ALTER ROLE aao_app WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+  END IF;
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'aao_runtime') THEN
+    CREATE ROLE aao_runtime WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT CONNECTION LIMIT 20;
+  ELSE
+    ALTER ROLE aao_runtime WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT CONNECTION LIMIT 20;
   END IF;
 END $$;
 EOF
 
 say "Setting application database password via secure encrypted channel..."
 printf "%s\n%s\n" "$DB_PASS" "$DB_PASS" | runuser -u postgres -- psql -v ON_ERROR_STOP=1 -c '\password aao_app'
+printf "%s\n%s\n" "$RUNTIME_DB_PASS" "$RUNTIME_DB_PASS" | runuser -u postgres -- psql -v ON_ERROR_STOP=1 -c '\password aao_runtime'
 
 # Create database if not exists
 if ! runuser -u postgres -- psql -tAc "SELECT 1 FROM pg_database WHERE datname='aao_prod'" | grep -q 1; then
@@ -56,12 +75,18 @@ fi
 runuser -u postgres -- psql -d aao_prod -v ON_ERROR_STOP=1 <<EOF
 GRANT ALL PRIVILEGES ON DATABASE aao_prod TO aao_app;
 GRANT ALL ON SCHEMA public TO aao_app;
+GRANT CONNECT ON DATABASE aao_prod TO aao_runtime;
+GRANT USAGE ON SCHEMA public TO aao_runtime;
 EOF
 
 say "Verifying PostgreSQL connection for aao_app..."
 PGPASSWORD="$DB_PASS" psql -h 127.0.0.1 -U aao_app -d aao_prod -c "SELECT 1" >/dev/null || \
 PGPASSWORD="$DB_PASS" psql -U aao_app -d aao_prod -c "SELECT 1" >/dev/null || \
   die "Failed to connect to aao_prod as aao_app."
+
+say "Verifying PostgreSQL connection for aao_runtime..."
+PGPASSWORD="$RUNTIME_DB_PASS" psql -h 127.0.0.1 -U aao_runtime -d aao_prod -c "SELECT 1" >/dev/null || \
+  die "Failed to connect to aao_prod as aao_runtime."
 
 say "PostgreSQL provisioned and verified successfully."
 exit 0

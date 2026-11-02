@@ -40,16 +40,84 @@ def local_api_url(value: str) -> str:
 
 
 def _run_role_helper(account: str, *, api_python: str, token: str | None,
-                     operation: str) -> None:
+                     operation: str, token_kind: str = "publisher") -> None:
     entry = pwd.getpwnam(account)
     runtime = f"/run/user/{entry.pw_uid}"
     args = ["sudo", "-u", account, "-H", "env", f"XDG_RUNTIME_DIR={runtime}",
-            api_python, str(INSTALLER), "--account", account, f"--{operation}"]
+            api_python, str(INSTALLER), "--account", account, "--token", token_kind]
+    # The installer installs by default; it has no --install flag.
+    if operation != "install":
+        args.append(f"--{operation}")
     try:
         subprocess.run(args, input=None if token is None else token + "\n", text=True,
                        check=True, timeout=120)
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         raise ProvisionError(f"role token helper failed for {account} ({operation})") from None
+
+
+def issue_agent_credential(api_url: str, principal: str, *, ceo_token: str) -> str:
+    """Create a new AGENT principal and return its token (never logged or printed)."""
+    credential = request_json(
+        api_url, "/v1/principals/credentials", method="POST", ceo_token=ceo_token,
+        body={"principal_id": principal, "kind": "AGENT"},
+    )
+    token = credential.get("token") if isinstance(credential, dict) else None
+    if (not isinstance(token, str) or not token
+            or credential.get("principal_id") != principal
+            or credential.get("kind") != "AGENT"):
+        raise ProvisionError("AAO returned an invalid publisher credential")
+    return token
+
+
+def grant_exactly(api_url: str, project_path: str, principal: str, grants: tuple[str, ...],
+                  expiry: str | None, *, ceo_token: str) -> None:
+    """Grant ``grants`` and re-read the inventory to prove exactly those grants exist."""
+    for grant in grants:
+        request_json(
+            api_url, f"/v1/projects/{project_path}/grants", method="POST",
+            ceo_token=ceo_token,
+            body={"principal_id": principal, "capability": grant, "expires_at": expiry},
+        )
+    grant_rows = request_json(api_url, f"/v1/projects/{project_path}/grants", ceo_token=ceo_token)
+    if not isinstance(grant_rows, list):
+        raise ProvisionError("project grant inventory response is invalid")
+    scoped = [row for row in grant_rows if row.get("principal_id") == principal]
+    actual_caps = {row.get("capability") for row in scoped}
+    actual_expiries = {row.get("expires_at") for row in scoped}
+    if (actual_caps != set(grants) or len(scoped) != len(grants)
+            or any(row.get("kind") != "AGENT" or not row.get("credential_enabled") for row in scoped)
+            or len(actual_expiries) != 1):
+        raise ProvisionError("could not verify the exact least-privilege publisher grants")
+    actual = next(iter(actual_expiries))
+    if expiry is None:
+        if actual is not None:
+            raise ProvisionError("grant expiry differs from the requested expiry")
+        return
+    try:
+        actual_expiry = datetime.fromisoformat(actual)
+    except (TypeError, ValueError):
+        raise ProvisionError("could not verify publisher grant expiry") from None
+    if actual_expiry.astimezone(UTC) != datetime.fromisoformat(expiry):
+        raise ProvisionError("publisher grant expiry differs from the requested expiry")
+
+
+def cleanup(api_url: str, issued: list[tuple[str, str, str]], *, ceo_token: str,
+            api_python: str, token_kind: str = "publisher") -> None:
+    """Best effort: remove matching token files, then revoke every issued principal."""
+    for account, _principal, token in reversed(issued):
+        if not token:
+            continue
+        try:
+            _run_role_helper(account, api_python=api_python, token=token, operation="remove",
+                             token_kind=token_kind)
+        except ProvisionError:
+            pass
+    for _account, principal, _token in reversed(issued):
+        try:
+            request_json(api_url, f"/v1/principals/{quote(principal, safe='')}/revoke",
+                         method="POST", ceo_token=ceo_token, body={})
+        except BootstrapError:
+            pass
 
 
 def provision(project_id: str, *, api_url: str, ceo_token: str,
@@ -80,55 +148,14 @@ def provision(project_id: str, *, api_url: str, ceo_token: str,
         for role, account in (("impl", ACCOUNTS[0]), ("pm", ACCOUNTS[1])):
             principal = f"aao-publisher-{role}-{stamp:%Y%m%d%H%M%S}-{nonce}"
             issued.append((account, principal, ""))
-            credential = request_json(
-                api_url, "/v1/principals/credentials", method="POST", ceo_token=ceo_token,
-                body={"principal_id": principal, "kind": "AGENT"},
-            )
-            token = credential.get("token") if isinstance(credential, dict) else None
-            if (not isinstance(token, str) or not token
-                    or credential.get("principal_id") != principal
-                    or credential.get("kind") != "AGENT"):
-                raise ProvisionError("AAO returned an invalid publisher credential")
+            token = issue_agent_credential(api_url, principal, ceo_token=ceo_token)
             issued[-1] = (account, principal, token)
-            for grant in GRANTS:
-                request_json(
-                    api_url, f"/v1/projects/{project_path}/grants", method="POST",
-                    ceo_token=ceo_token,
-                    body={"principal_id": principal, "capability": grant, "expires_at": expiry},
-                )
-            grant_rows = request_json(api_url, f"/v1/projects/{project_path}/grants", ceo_token=ceo_token)
-            if not isinstance(grant_rows, list):
-                raise ProvisionError("project grant inventory response is invalid")
-            scoped = [row for row in grant_rows if row.get("principal_id") == principal]
-            actual_caps = {row.get("capability") for row in scoped}
-            actual_expiries = {row.get("expires_at") for row in scoped}
-            if (actual_caps != set(GRANTS) or len(scoped) != len(GRANTS)
-                    or any(row.get("kind") != "AGENT" or not row.get("credential_enabled") for row in scoped)
-                    or len(actual_expiries) != 1):
-                raise ProvisionError("could not verify the exact least-privilege publisher grants")
-            try:
-                actual_expiry = datetime.fromisoformat(next(iter(actual_expiries)))
-            except (TypeError, ValueError):
-                raise ProvisionError("could not verify publisher grant expiry") from None
-            if actual_expiry.astimezone(UTC) != datetime.fromisoformat(expiry):
-                raise ProvisionError("publisher grant expiry differs from the requested eight-hour limit")
+            grant_exactly(api_url, project_path, principal, GRANTS, expiry, ceo_token=ceo_token)
             _run_role_helper(account, api_python=api_python, token=token, operation="install")
             _run_role_helper(account, api_python=api_python, token=token, operation="verify")
         return [(account, principal, expiry) for account, principal, _ in issued]
     except (BootstrapError, ProvisionError, OSError, ValueError) as exc:
-        for account, _principal, token in reversed(issued):
-            if not token:
-                continue
-            try:
-                _run_role_helper(account, api_python=api_python, token=token, operation="remove")
-            except ProvisionError:
-                pass
-        for _account, principal, _token in reversed(issued):
-            try:
-                request_json(api_url, f"/v1/principals/{quote(principal, safe='')}/revoke",
-                             method="POST", ceo_token=ceo_token, body={})
-            except BootstrapError:
-                pass
+        cleanup(api_url, issued, ceo_token=ceo_token, api_python=api_python)
         if isinstance(exc, ProvisionError):
             raise
         raise ProvisionError("publisher credential setup failed; issued credentials were revoked where possible") from None

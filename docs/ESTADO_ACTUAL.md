@@ -78,6 +78,7 @@ El principal PM no caduca: solo se retira revocando (`PM_TOKEN_PROVISIONING.md` 
 
 - Grants del principal PM por diseño (coinciden con la tabla): `project.read`, `work.coordinate`, `work.assign` (`PM_TOKEN_PROVISIONING.md` l.24).
 - **Hecho:** #324 se fusionó y se usó para emitir credenciales sin auditoría formal GOV-REV-001. Evidencia: título de #324 «needs independent audit»; cero reviews en el repo. Las credenciales emitidas dependen de código no revisado.
+- CEO aceptó, 2026-11-02 17:35 CET, los principales emitidos (PM y W2) sin auditoría GOV-REV-001 previa; la auditoría formal sigue pendiente. Fuente: mensaje del CEO, transmitido por el coordinador; no reverificado aquí.
 - Durante la regla de construcción vigente (memoria: merge de PRs en verde por el coordinador, CEO 2026-10-25) esto está permitido, pero no cuenta como revisión (matriz fila 7).
 
 ## 6. Bloqueos y dueño

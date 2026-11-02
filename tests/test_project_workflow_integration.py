@@ -2,6 +2,7 @@
 import json
 import os
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
@@ -23,6 +24,15 @@ def test_work_coordinate_is_an_explicit_project_capability():
     assert assignment_grant.capability == "work.assign"
     with pytest.raises(ValueError):
         GrantRequest(principal_id="aao-pm", capability="work.execute")
+
+
+def _register_test_worker(worker_id):
+    """Give integration workers an explicit host binding before exercising claims."""
+    from aao.backup import register_host_worker
+    from aao.postgresql_connection import connect_postgres
+
+    with connect_postgres() as db:
+        register_host_worker(db, "integration-test-host", worker_id)
 
 
 def test_agent_dispatch_rejects_a_declared_identity_that_disagrees_with_credential():
@@ -994,6 +1004,8 @@ def test_group_assignment_routes_execution_without_creating_grants(monkeypatch):
                 "principal_id": worker_id, "kind": "AGENT",
             }).json()["token"] for worker_id in worker_ids
         ]
+        for worker_id in worker_ids:
+            _register_test_worker(worker_id)
         workers = [
             {"X-Agent-Token": token} for token in worker_tokens
         ]
@@ -1100,8 +1112,18 @@ def test_group_assignment_routes_execution_without_creating_grants(monkeypatch):
         # No manual READY -> IN_PROGRESS call: the claimed worker must do it.
         assert client.post(path, headers=workers[0], json=payload).status_code == 409
 
+        from aao import inert_execution_worker
         from aao.inert_execution_worker import run_one
         from aao.patch_proposals import inspect_patch
+
+        # The worker reaches the authenticated API; route it through this test client.
+        def request_through_test_client(path, credential, *, body, method="POST"):
+            response = client.request(method, path, headers={"X-Agent-Token": credential}, json=body)
+            if response.status_code >= 400:
+                raise inert_execution_worker.WorkerAPIError(response.status_code, response.text[:200])
+            return response.json()
+
+        monkeypatch.setattr(inert_execution_worker, "_api_request", request_through_test_client)
 
         monkeypatch.setenv("AAO_AGENT_BACKEND", "fixture")
         monkeypatch.setenv("AAO_SELF_DEV_REPOSITORY", "/unused/mock-repository")
@@ -1476,6 +1498,10 @@ def test_ceo_project_conversation_persists_without_fabricating_aao_reply(monkeyp
         "AAO_CONVERSATION_API_URL",
         "https://user:ignored@gateway.example/v1/chat?api_key=" + provider_token,
     )
+    monkeypatch.setenv("AAO_TEST_HOST_ID", "conversation-integration-host")
+    from aao.backup import register_host_worker
+    with connect_postgres() as db:
+        register_host_worker(db, "conversation-integration-host", "conversation-integration-worker")
     ceo = {"X-CEO-Token": "conversation-ceo"}
     with TestClient(app) as client:
         assert client.post(
@@ -2344,6 +2370,7 @@ def test_organization_projection_respects_execution_lease_expiry(monkeypatch):
         token = client.post("/v1/principals/credentials", headers=ceo, json={
             "principal_id": worker_id, "kind": "AGENT",
         }).json()["token"]
+        _register_test_worker(worker_id)
         worker = {"X-Agent-Token": token}
         mandate = client.post("/v1/mandates", headers=ceo, json={
             "title": "Org lease " + str(uuid4()), "objective": "Check projection lease state",
@@ -2780,6 +2807,7 @@ def test_postgres_review_is_separate_from_author_and_required_for_done(monkeypat
         agent_id = "agent-" + str(uuid4())
         auditor_id = "auditor-" + str(uuid4())
         worker = {"X-Agent-Token": client.post("/v1/principals/credentials", headers=ceo, json={"principal_id": agent_id, "kind": "AGENT"}).json()["token"]}
+        _register_test_worker(agent_id)
         auditor = {"X-Auditor-Token": client.post("/v1/principals/credentials", headers=ceo, json={"principal_id": auditor_id, "kind": "AUDITOR"}).json()["token"]}
         m = client.post("/v1/mandates", headers=ceo, json={"title": str(uuid4()), "objective": "Review gate test"}).json()["id"]
         client.post(f"/v1/mandates/{m}/confirm", headers=ceo)
@@ -3257,6 +3285,7 @@ def test_registered_repository_check_requires_task_selection_before_queue_claim(
             "principal_id": identity, "kind": "AGENT",
         })
         assert issued.status_code == 201, issued.text
+        _register_test_worker(identity)
         agent = {"X-Agent-Token": issued.json()["token"]}
         mandate = client.post("/v1/mandates", headers=ceo, json={
             "title": "Repository check " + str(uuid4()), "objective": "Test bounded repo check",
@@ -3337,7 +3366,7 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
     exactly that SHA and opens the PR; the merged PR makes the task DONE; the activity feed shows each step."""
     import subprocess
 
-    from aao.inert_execution_worker import run_one
+    import aao.inert_execution_worker as execution_worker
     from aao.work_management_api import app
 
     # The fixture repository is this checkout's HEAD, so the sandboxed core-unit check has real tests to run.
@@ -3367,11 +3396,30 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
     monkeypatch.setenv("AAO_AGENT_BACKEND", "codex")
     monkeypatch.delenv("AAO_AGENT_PROVIDER", raising=False)
     monkeypatch.setenv("AAO_AGENT_FIXTURE_PATCH", str(failing))
+
+    # Exercise the real authenticated API routes while keeping this opt-in
+    # integration test isolated from a separately running host API service.
+    # The VM's production aao-api process correctly rejects development/test
+    # credentials, so pointing the worker at localhost would cross that boundary.
+    def request_through_test_client(path, credential, *, body, method="POST"):
+        response = client.request(
+            method, path,
+            headers={"X-Agent-Token": credential},
+            json=body,
+        )
+        if response.status_code >= 400:
+            raise execution_worker.WorkerAPIError(
+                response.status_code, "AAO worker API rejected the operation",
+            )
+        return response.json()
+
+    monkeypatch.setattr(execution_worker, "_api_request", request_through_test_client)
     ceo = {"X-CEO-Token": "agent-run-ceo"}
     with TestClient(app) as client:
         identity = "w1-agent-" + str(uuid4())
         auditor_id = "w2-auditor-" + str(uuid4())
         token = client.post("/v1/principals/credentials", headers=ceo, json={"principal_id": identity, "kind": "AGENT"}).json()["token"]
+        _register_test_worker(identity)
         agent = {"X-Agent-Token": token}
         auditor = {"X-Auditor-Token": client.post("/v1/principals/credentials", headers=ceo,
                                                   json={"principal_id": auditor_id, "kind": "AUDITOR"}).json()["token"]}
@@ -3443,7 +3491,7 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         assert client.post(f"/v1/work/{work}/progress", headers=agent).status_code == 200
 
         # Attempt 1: the candidate is committed and stored, but its own test fails, so the execution FAILED.
-        assert run_one(identity, token, project_id=project, seconds=400)["status"] == "FAILED"
+        assert execution_worker.run_one(identity, token, project_id=project, seconds=400)["status"] == "FAILED"
         # Recovery: the task can be re-run after a failed attempt.
         monkeypatch.setenv("AAO_AGENT_FIXTURE_PATCH", str(passing))
         # I5: attempt 1 spent an estimated 0.5 today; with a daily budget of 0.9 another 0.5 does not fit. The
@@ -3465,11 +3513,12 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         def broken(*_args, **_kwargs):
             raise checks.RepositoryCheckError("sandbox unavailable")
         monkeypatch.setattr(checks, "run_repository_check", broken)
-        assert run_one(identity, token, project_id=project, seconds=400)["status"] == "FAILED"
+        assert execution_worker.run_one(identity, token, project_id=project, seconds=400)["status"] == "FAILED"
         monkeypatch.setattr(checks, "run_repository_check", real_check)
         # ...and attempt 3 reproduces the same patch: it reuses that proposal instead of failing on it.
-        assert client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run).status_code == 202
-        outcome = run_one(identity, token, project_id=project, seconds=400)
+        attempt3 = client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run)
+        assert attempt3.status_code == 202, attempt3.text
+        outcome = execution_worker.run_one(identity, token, project_id=project, seconds=400)
         board = client.get(f"/v1/projects/{project}/board", headers=agent).json()
         last = next(i for i in board if i["id"] == work)["executions"][-1]["result"]
         print(last.get("check", {}).get("stderr"))  # shown by pytest only on failure
@@ -3596,6 +3645,28 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
                                json={"principal_id": pid, "capability": "code.publish"}).status_code == 201
         with pytest.raises(PublishError, match="cannot publish its own work"):
             push_candidate(work, token, store=store, push=push)
+        with pytest.raises(PublishError, match="exactly one active host binding"):
+            push_candidate(work, pusher, store=store, push=push)
+        with pytest.raises(PublishError, match="exactly one active host binding"):
+            open_pull_request(work, publisher, open_pr=open_pr)
+        from aao.backup import register_host_worker
+        from aao.postgresql_connection import connect_postgres
+        with connect_postgres() as db:
+            register_host_worker(db, "integration-test-host", pusher_id)
+            register_host_worker(db, "integration-test-host", publisher_id)
+        with connect_postgres() as db:
+            db.execute("UPDATE host_worker_bindings SET host_id='other-host' WHERE worker_id=%s", (pusher_id,))
+        with pytest.raises(PublishError, match="different host"):
+            push_candidate(work, pusher, store=store, push=push)
+        with connect_postgres() as db:
+            db.execute("UPDATE host_worker_bindings SET host_id='integration-test-host' WHERE worker_id=%s",
+                       (pusher_id,))
+            db.execute("UPDATE host_worker_bindings SET status='FENCED',fence_epoch=fence_epoch+1 "
+                       "WHERE worker_id=%s", (publisher_id,))
+        with pytest.raises(PublishError, match="exactly one active host binding"):
+            open_pull_request(work, publisher, open_pr=open_pr)
+        with connect_postgres() as db:
+            register_host_worker(db, "integration-test-host", publisher_id)
 
         # RST-7: changing the persisted execution candidate after approval must not let the old
         # review authorize a different SHA. Inject candidate drift in PostgreSQL and prove that
@@ -3717,7 +3788,7 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         # Attempts 2 and 3 share a patch but end differently (sandbox unavailable, then tested): that is progress.
         monkeypatch.setenv("AAO_AGENT_MAX_ATTEMPTS", "4")
         assert client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run).status_code == 202
-        assert run_one(identity, token, project_id=project, seconds=400)["status"] == "SUCCEEDED"
+        assert execution_worker.run_one(identity, token, project_id=project, seconds=400)["status"] == "SUCCEEDED"
         # Attempt 4 reproduced attempt 3 exactly (same patch, same tested outcome): no progress, so a fifth is
         # refused even below the attempt limit.
         monkeypatch.setenv("AAO_AGENT_MAX_ATTEMPTS", "10")
@@ -3729,8 +3800,37 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         assert client.post(f"/v1/work/{work}/reviews", headers=auditor, json={
             "decision": "APPROVE", "candidate_sha": candidate_sha, "evidence": [evidence_ref]}).status_code == 201
         assert push_candidate(work, pusher, store=store, push=push)["status"] == "PUSHED"
-        reopened = open_pull_request(work, publisher, open_pr=open_pr)
+        # A durable IN_PROGRESS reservation makes a concurrent request return promptly,
+        # without keeping a work row lock across the remote GitHub call.
+        effect_entered = threading.Event()
+        release_effect = threading.Event()
+
+        def blocking_open_pr(branch, title, body):
+            effect_entered.set()
+            assert release_effect.wait(timeout=10), "test did not release the simulated GitHub effect"
+            return open_pr(branch, title, body)
+
+        def publish_once():
+            return open_pull_request(work, publisher, open_pr=blocking_open_pr)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(publish_once)
+            assert effect_entered.wait(timeout=10)
+            second_result = pool.submit(publish_once).result(timeout=5)
+            assert second_result["status"] == "IN_PROGRESS"
+            # The CEO can mutate authority state while the injected remote call is
+            # still blocked; this proves no publication transaction/row lock spans it.
+            with connect_postgres() as db:
+                db.execute("DELETE FROM project_grants WHERE principal_id=%s AND project_id=%s "
+                           "AND capability='code.publish'", (publisher_id, project))
+            release_effect.set()
+            reopened = first.result(timeout=15)
         assert reopened["status"] == "PUBLISHED" and reopened["pr_number"] == 8
+        with pytest.raises(PublishError, match="Project grant required"):
+            open_pull_request(work, publisher, open_pr=open_pr)
+        with connect_postgres() as db:
+            db.execute("INSERT INTO project_grants(principal_id,project_id,capability) "
+                       "VALUES (%s,%s,'code.publish') ON CONFLICT DO NOTHING", (publisher_id, project))
         pr_state = {"state": "closed", "merged": True, "merge_commit_sha": None, "head_sha": candidate_sha}
         merge_sha = "e" * 40
         pr_state.update(merge_commit_sha=merge_sha)
@@ -3810,6 +3910,39 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         assert side_item["resolution"]["pr_number"] == 107 and side_item["resolution"]["agent_cycle"] is False
         last = client.get(f"/v1/projects/{project}/activity?limit=1", headers=ceo).json()[0]
         assert last["kind"] == "work.resolved_outside_cycle" and last["details"]["agent_cycle"] is False
+
+        # A valid lease is insufficient after the host fencing epoch changes or
+        # its binding is revoked. Exercise the real PostgreSQL-backed context path.
+        from aao.execution_queue import claim
+        from aao.postgresql_connection import connect_postgres
+        context_work = client.post(f"/v1/projects/{project}/work", headers=agent, json={
+            "title": "Fenced context", "author_id": identity, "acceptance_criteria": ["lease fenced"],
+        }).json()["id"]
+        assert client.post(f"/v1/projects/{project}/capability-evaluations", headers=agent, json={
+            "task_id": context_work,
+            "options": [{"choice": choice, "fit": score, "security": score, "cost": score,
+                         "time": score, "tokens": score, "maintenance": score}
+                        for choice, score in (("reuse", 5), ("adapt", 3), ("build", 1))],
+            "rationale": "Reuse the agent runner for fencing test.", "evidence": ["tests/test_agent_runner.py"],
+            "capability_id": "aao.agent-runner", "version": "1.0.0",
+        }).status_code == 201
+        assert client.post(f"/v1/work/{context_work}/admit", headers=agent).status_code == 200
+        staged_context = client.post(f"/v1/work/{context_work}/stage-agent-run", headers=agent, json=run)
+        assert staged_context.status_code == 202, staged_context.text
+        lease = claim(identity, agent_credential=token, project_id=project)
+        assert lease and lease["execution_id"] == staged_context.json()["execution_id"]
+        context_path = f"/v1/agent/executions/{lease['execution_id']}/context"
+        context_body = {"lease_token": lease["token"]}
+        assert client.post(context_path, headers=agent, json=context_body).status_code == 200
+        with connect_postgres() as db:
+            db.execute("UPDATE host_worker_bindings SET fence_epoch=fence_epoch+1 "
+                       "WHERE worker_id=%s AND status='ACTIVE'", (identity,))
+        assert client.post(context_path, headers=agent, json=context_body).status_code == 409
+        with connect_postgres() as db:
+            db.execute("UPDATE host_worker_bindings SET status='FENCED' "
+                       "WHERE worker_id=%s AND status='ACTIVE'", (identity,))
+        revoked_context = client.post(context_path, headers=agent, json=context_body)
+        assert revoked_context.status_code == 409
     assert subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True, check=True).stdout == ""
 
 
@@ -4583,6 +4716,7 @@ def test_revoked_assignee_is_persistently_blocked_and_pm_can_reassign_unclaimed_
         assert reassigned.status_code == 200, reassigned.text
         assert reassigned.json()["principal_id"] == new_agent_id
 
+    _register_test_worker(new_agent_id)
     lease = claim(new_agent_id, agent_credential=new_agent["X-Agent-Token"], project_id=project_id)
     assert lease and lease["execution_id"] == execution_id
     assert lease["worker_id"] == new_agent_id
@@ -4678,6 +4812,7 @@ def test_ceo_priority_change_is_persisted_and_controls_next_agent_claim(monkeypa
             "previous_priority": "NORMAL", "priority": "HIGH",
         }
 
+        _register_test_worker(principal_id)
         lease = claim(principal_id, agent_credential=token, project_id=project_id)
         assert lease and lease["execution_id"] == execution_ids[1]
         active_change = client.put(

@@ -8,6 +8,7 @@ t() { local name=$1; shift; if "$@"; then echo "TEST PASS  $name"; else echo "TE
 FAILED=0
 apt-get update -qq >/dev/null && apt-get install -y -qq openssl sudo acl python3 git >/dev/null 2>&1
 useradd -m alessbarb && chmod 750 /home/alessbarb && usermod -aG sudo alessbarb
+export CEO_USER=alessbarb
 mkdir -p /home/alessbarb/.config/gh && echo token > /home/alessbarb/.config/gh/hosts.yml && chown -R alessbarb: /home/alessbarb && chmod 600 /home/alessbarb/.config/gh/hosts.yml
 groupadd docker && touch /var/run/docker.sock && chown root:docker /var/run/docker.sock && chmod 660 /var/run/docker.sock
 snap() { { getent passwd | sort; getent group | sort; ls -1A /etc/sudoers.d; ls -d /var/lib/aao-* /srv/aao /home/aao-* 2>/dev/null; } > "$1"; }

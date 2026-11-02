@@ -72,7 +72,7 @@ se redactan para no publicar credenciales.
 La salida JSON contiene `PASS`, `MISSING` o `UNVERIFIED` y acciones concretas por comprobación;
 el código de salida es 1 mientras haya elementos pendientes. Es una fotografía, no una
 validación de autorización para ejecutar posteriormente. Comprueba un manifiesto local
-completo y sin números duplicados de migraciones 001..035,
+completo y sin números duplicados de migraciones 001..039,
 proyecto/mandato, credencial AGENT habilitada y grants vigentes (incluidos los sin caducidad
 que admite el backend). Los grants solo los concede el CEO. El rol de inspección, incluso
 si es un superusuario de desarrollo, **no** acredita el rol runtime. Si se especifica este,

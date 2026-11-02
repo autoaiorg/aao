@@ -43,6 +43,8 @@ def test_previous_failure_is_scoped_to_the_exact_retry_in_postgres(mismatch):
     import psycopg
     from psycopg.types.json import Jsonb
 
+    from aao.work_management_api import _previous_failure
+
     # All fixture rows roll back, including on assertion failure; never use an operational DB.
     with psycopg.connect(os.environ["AAO_TEST_POSTGRES_URL"]) as db:
         try:
@@ -65,7 +67,7 @@ def test_previous_failure_is_scoped_to_the_exact_retry_in_postgres(mismatch):
                         "SUCCEEDED" if mismatch == "status" else "FAILED", Jsonb(failed_input),
                         "other-agent" if mismatch == "worker" else "retry-agent", Jsonb(result),
                         1 if mismatch == "future" else -1))
-            found = worker._previous_failure(db, str(current))
+            found = _previous_failure(db, str(current))
             if mismatch is None:
                 assert found == (old, result)
                 # Prefer the latest compatible failed attempt, excluding newer irrelevant rows.
@@ -73,7 +75,7 @@ def test_previous_failure_is_scoped_to_the_exact_retry_in_postgres(mismatch):
                 db.execute("INSERT INTO execution_queue(id,work_id,project_id,status,input_json,worker_id,result_json,created_at) "
                            "VALUES (%s,%s,%s,'FAILED',%s,'retry-agent',%s,now()-interval '30 seconds')",
                            (newer, work, project, Jsonb(selection), Jsonb({"error": "newer failure"})))
-                assert worker._previous_failure(db, str(current)) == (newer, {"error": "newer failure"})
+                assert _previous_failure(db, str(current)) == (newer, {"error": "newer failure"})
             else:
                 assert found is None
         finally:

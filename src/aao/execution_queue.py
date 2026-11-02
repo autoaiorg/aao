@@ -7,6 +7,7 @@ import hmac
 import json
 from uuid import uuid4
 
+from aao.host_identity import HostIdentityError, current_host_id
 from aao.postgresql_connection import connect_postgres
 from aao.principal_credentials import digest_token
 from aao.protocol_instances import start_work_protocol
@@ -34,12 +35,70 @@ def verify_execution_principal(db, worker_id, agent_credential):
         raise ExecutionConflict("Individual agent credential invalid or revoked")
 
 
+def active_host_fence_epoch(db, worker_id: str) -> int:
+    """Return the local active binding epoch or fail closed for a worker."""
+    if not db.execute("SELECT to_regclass('public.host_worker_bindings')").fetchone()[0]:
+        raise ExecutionConflict("Host fencing registry unavailable; execution rejected")
+    if not db.execute(
+        "SELECT 1 FROM information_schema.columns WHERE table_schema='public' "
+        "AND table_name='execution_queue' AND column_name='claim_fence_epoch'"
+    ).fetchone():
+        raise ExecutionConflict("Execution fencing epoch schema unavailable; execution rejected")
+    rows = db.execute(
+        "SELECT host_id,status,fence_epoch FROM host_worker_bindings "
+        "WHERE worker_id=%s ORDER BY created_at DESC FOR SHARE", (worker_id,),
+    ).fetchall()
+    active = [row for row in rows if row[1] == "ACTIVE"]
+    if len(active) != 1:
+        raise ExecutionConflict(
+            f"Worker '{worker_id}' must have exactly one active host binding; execution rejected."
+        )
+    try:
+        local_host_id = current_host_id()
+    except HostIdentityError as exc:
+        raise ExecutionConflict("Trusted local host identity unavailable; execution rejected") from exc
+    host_id, _status, epoch = active[0]
+    if host_id != local_host_id:
+        raise ExecutionConflict("Active worker binding belongs to a different host; execution rejected")
+    if not isinstance(epoch, int) or epoch < 1:
+        raise ExecutionConflict("Host fencing epoch is missing or invalid; execution rejected")
+    return epoch
+
+
+def validate_live_lease(db, execution_id: str, worker_id: str, token: str, *, lock: str = "share"):
+    """Validate a live lease against the current host binding and fencing epoch.
+
+    Callers must use the returned project id for grant checks in this same transaction.
+    """
+    if lock not in {"share", "update"}:
+        raise ValueError("unsupported lease lock mode")
+    epoch = active_host_fence_epoch(db, worker_id)
+    suffix = " FOR UPDATE OF q" if lock == "update" else " FOR SHARE OF q"
+    row = db.execute(
+        "SELECT q.project_id,q.claim_fence_epoch,q.project_state_generation "
+        "FROM execution_queue q WHERE q.id=%s AND q.status='RUNNING' AND q.worker_id=%s "
+        "AND q.lease_token=%s AND q.lease_expires_at>clock_timestamp()" + suffix,
+        (execution_id, worker_id, token),
+    ).fetchone()
+    if not row or row[1] is None or row[1] != epoch:
+        raise ExecutionConflict("Execution lease is stale, not owned, or fenced by a changed host epoch")
+    project = db.execute(
+        "SELECT state,state_generation FROM projects WHERE id=%s FOR SHARE", (row[0],),
+    ).fetchone()
+    if not project or project[0] != "ACTIVE" or project[1] != row[2]:
+        raise ExecutionConflict("Execution lease project is inactive or changed")
+    return row[0]
+
+
 def claim(worker_id: str, *, agent_credential: str, project_id: str,
           seconds: int = 60):
     if not worker_id or not project_id or seconds < 1:
         raise ExecutionConflict("Worker and positive lease duration required")
     with connect_postgres() as db:
         verify_execution_principal(db, worker_id, agent_credential)
+
+        host_fence_epoch = active_host_fence_epoch(db, worker_id)
+
         grant = db.execute(
             "SELECT 1 FROM project_grants WHERE principal_id=%s AND project_id=%s "
             "AND capability='execution.claim' "
@@ -92,9 +151,9 @@ def claim(worker_id: str, *, agent_credential: str, project_id: str,
         expiry = db.execute(
             "UPDATE execution_queue SET status='RUNNING',lease_token=%s,"
             "worker_id=%s,lease_expires_at=clock_timestamp()+make_interval(secs => %s),"
-            "project_state_generation=%s,attempts=attempts+1 "
+            "project_state_generation=%s,attempts=attempts+1,claim_fence_epoch=%s "
             "WHERE id=%s RETURNING lease_expires_at",
-            (token, worker_id, seconds, project[1], eid),
+            (token, worker_id, seconds, project[1], host_fence_epoch, eid),
         ).fetchone()[0]
         journal(db, eid, "claimed", {"worker_id": worker_id})
     return {"execution_id": eid, "work_id": work_id, "input": input_data,
@@ -106,6 +165,10 @@ def complete(execution_id: str, token: str, worker_id: str, result: dict,
              *, agent_credential: str):
     with connect_postgres() as db:
         verify_execution_principal(db, worker_id, agent_credential)
+
+        # Keep the specific diagnostics of each fail-closed check (assignment, project state,
+        # grant) and compare the claim epoch explicitly; the final UPDATE re-checks token/expiry.
+        host_fence_epoch = active_host_fence_epoch(db, worker_id)
         execution = db.execute(
             "SELECT project_id,project_state_generation FROM execution_queue "
             "WHERE id=%s FOR UPDATE",
@@ -113,6 +176,12 @@ def complete(execution_id: str, token: str, worker_id: str, result: dict,
         ).fetchone()
         if not execution:
             raise ExecutionConflict("Execution not found")
+        epoch_row = db.execute(
+            "SELECT claim_fence_epoch FROM execution_queue WHERE id=%s", (execution_id,)
+        ).fetchone()
+        if not epoch_row or epoch_row[0] is None or epoch_row[0] != host_fence_epoch:
+            raise ExecutionConflict("Host fencing epoch is missing or changed; lease invalidated")
+        project_id = execution[0]
         assignment = db.execute(
             "SELECT w.parent_work_id,a.principal_id FROM execution_queue q "
             "JOIN work_items w ON w.id=q.work_id "
@@ -125,7 +194,7 @@ def complete(execution_id: str, token: str, worker_id: str, result: dict,
             raise ExecutionConflict("Execution worker does not own the work assignment")
         project = db.execute(
             "SELECT state,state_generation FROM projects WHERE id=%s FOR UPDATE",
-            (execution[0],),
+            (project_id,),
         ).fetchone()
         if not project or project[0] != "ACTIVE":
             raise ExecutionConflict("Project is not active")
@@ -135,7 +204,7 @@ def complete(execution_id: str, token: str, worker_id: str, result: dict,
             "SELECT 1 FROM project_grants WHERE principal_id=%s AND project_id=%s "
             "AND capability='execution.claim' "
             "AND (expires_at IS NULL OR expires_at > clock_timestamp()) FOR SHARE",
-            (worker_id, str(execution[0])),
+            (worker_id, str(project_id)),
         ).fetchone()
         if not grant:
             raise ExecutionConflict("Project execution claim grant revoked")

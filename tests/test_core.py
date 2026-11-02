@@ -45,7 +45,7 @@ def test_mandate_and_kanban_gates():
             assert client.post(f"/v1/work/{work}/reviews", json={"reviewer_id":"engineer-1","decision":"APPROVE","evidence":["proof"]},headers=reviewer).status_code == 409
             approval = client.post(f"/v1/work/{work}/reviews", json={"reviewer_id":"development-auditor","decision":"APPROVE","evidence":["proof"]},headers=reviewer)
             assert approval.status_code == 409
-            with main.connect(main.DB_PATH) as db:
+            with main.connection(main.DB_PATH) as db:
                 assert db.execute(
                     "SELECT count(*) FROM reviews WHERE work_id=? AND decision='APPROVE'",
                     (work,),

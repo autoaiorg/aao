@@ -29,3 +29,20 @@ provisioning. After a controlled deployment, validate a push through an actual
 GitHub delivery and confirm an attributed receipt under the supervisor identity.
 Unit tests of the receiver are not evidence of host deployment or successful
 GitHub delivery. Do not enable the integrator as part of this setup.
+
+## Pull relay and GitHub delivery corroboration (draft, not deployed)
+
+An alternative intake path (PR #318, `transport/push-relay/README.md`) lets an
+untrusted relay mailbox hold HMAC-signed GitHub push bodies that
+`aao.push_relay.drain_one` pulls one at a time, oldest first. The relay holds the
+webhook secret and can forge payloads, so before storing a receipt the supervisor
+corroborates each delivery against GitHub's hook delivery API
+(`aao.github_delivery_corroboration`): repository and hook IDs, delivery GUID, push
+event, sender ID + login in the persisted AAO identity map, and ref transition.
+Pushes from unconfigured repositories or unmapped senders are kept as signed
+PROVISIONAL quarantine records in `<push_receipts_dir>/quarantine/`. They are
+never read by `attribution` and grant no authority. Retryable GitHub conditions
+(rate limit, outage, bounded scan, list lag) leave the relay entry unacked.
+Nothing in this path is wired into `supervisor_service`, scheduled, or deployed.
+That requires separate CEO-approved provisioning of the relay, the GitHub API
+credential and the verified trust configuration.

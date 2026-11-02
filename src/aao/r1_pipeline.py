@@ -24,7 +24,7 @@ from urllib.parse import quote
 from aao.github_app_auth import GitHubAppClient
 from aao.governance_ledger import verify as verify_ledger
 from aao.identity_attribution import GitHubIdentityProvider
-from aao.integrator import TrustSources, promote
+from aao.integrator import TrustSources, isolated_push, promote
 
 CONFIG_PATH = Path("/etc/aao-integrator/config.json")
 CONFIG_SCHEMA = "aao.integrator-config.v1"
@@ -136,6 +136,12 @@ def _git(repo: Path, *args: str, token: str | Any | None = None) -> str:
         env["GIT_CONFIG_VALUE_1"] = f"AUTHORIZATION: basic {basic}"
     elif any("github.com" in arg.lower() for arg in args):
         raise RuntimeError("GitHub installation token is unavailable")
+    if args and args[0] == "push":
+        # Never push from the auditor mirror itself (#319).
+        result = isolated_push(repo, list(args[1:]), env)
+        if result.returncode:
+            raise subprocess.CalledProcessError(result.returncode, ["git", *args], result.stdout, result.stderr)
+        return result.stdout.strip()
     return subprocess.run(["git", "-C", str(repo), *args], check=True,
                           capture_output=True, text=True, env=env).stdout.strip()
 

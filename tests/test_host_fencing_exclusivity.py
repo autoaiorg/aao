@@ -1,0 +1,647 @@
+"""Tests for Host Fencing, Dual-Host Exclusivity and Anti-Split-Brain Protection.
+
+Validates finding A-07:
+1. Demonstrates real exclusivity between two hosts (Host A and Host B).
+2. Proves that fencing Host A targets only Host A credentials and leases without blanket revocation.
+3. Proves that Host A is strictly prevented from executing external effects post-cutover.
+4. Verifies network disconnection / communication recovery scenarios.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import uuid
+from unittest.mock import MagicMock
+
+import psycopg
+import pytest
+
+from aao.backup import apply_host_fencing, ensure_host_worker_registry, register_host_worker
+from aao.external_effect_registry import propose as propose_external_effect
+from aao.postgresql_connection import connect_postgres
+
+
+def test_apply_host_fencing_targeted_queries():
+    """Unit test: verify SQL execution targets only specific workers without blanket updates."""
+    mock_db = MagicMock()
+    mock_db.execute.return_value.fetchall.return_value = [("worker-host-a",)]
+    actions = apply_host_fencing(mock_db, host_identifier="host-a")
+
+    assert any("worker-host-a" in a for a in actions)
+    # Check that update targeted ANY(%s) with target_workers, not WHERE kind = 'AGENT'
+    calls = [str(c) for c in mock_db.execute.mock_calls]
+    assert any("principal_id = ANY" in c for c in calls)
+    assert not any("WHERE kind = 'AGENT' AND enabled = true" in c for c in calls)
+    assert any("worker_id = ANY" in c for c in calls)
+    assert any("host.fenced" in c for c in calls)
+
+
+def test_host_worker_bindings_and_automatic_fencing():
+    """Unit test: verify host_worker_bindings registry lookup and targeted fencing without explicit worker_ids."""
+    mock_db = MagicMock()
+    # Mock finding worker-node-1 bound to node-1
+    mock_db.execute.return_value.fetchall.return_value = [("worker-node-1",)]
+
+    register_host_worker(mock_db, "node-1", "worker-node-1")
+    # Verify table schema ensured and worker registered
+    calls = [str(c) for c in mock_db.execute.mock_calls]
+    assert any("host_worker_bindings" in c for c in calls)
+
+    # Now fence node-1 without passing worker_ids
+    mock_db.reset_mock()
+    mock_db.execute.return_value.fetchall.return_value = [("worker-node-1",)]
+    actions = apply_host_fencing(mock_db, host_identifier="node-1")
+
+    assert any("marked host 'node-1' bindings as FENCED" in a for a in actions)
+    assert any("worker-node-1" in a for a in actions)
+    fencing_calls = [str(c) for c in mock_db.execute.mock_calls]
+    assert any("UPDATE host_worker_bindings" in c and "FENCED" in c for c in fencing_calls)
+    assert any("principal_id = ANY" in c for c in fencing_calls)
+
+
+def test_registry_registration_refuses_unmigrated_schema():
+    from aao.backup import BackupError
+
+    db = MagicMock()
+    db.execute.return_value.fetchone.return_value = (None,)
+    with pytest.raises(BackupError, match="apply PostgreSQL migrations 036 and 037"):
+        register_host_worker(db, "node-1", "worker-node-1")
+
+
+def test_registry_registration_refuses_missing_conversation_fencing_column():
+    from aao.backup import BackupError
+
+    class PartialSchemaDB:
+        def execute(self, sql, _params=()):
+            result = MagicMock()
+            if "to_regclass" in sql:
+                result.fetchone.return_value = ("public.host_worker_bindings",)
+            elif "execution_queue" in sql:
+                result.fetchone.return_value = (1,)
+            else:
+                result.fetchone.return_value = None
+            return result
+
+    with pytest.raises(BackupError, match="migrations 036 and 037"):
+        register_host_worker(PartialSchemaDB(), "node-1", "worker-node-1")
+
+
+def test_dual_host_isolation_unit():
+    """Unit test: verify that Host A and Host B workers are segregated and Host B is never touched."""
+    mock_db = MagicMock()
+    # node-a only has worker-a
+    mock_db.execute.return_value.fetchall.return_value = [("worker-a",)]
+
+    actions = apply_host_fencing(mock_db, host_identifier="node-a")
+    calls = [str(c) for c in mock_db.execute.mock_calls]
+
+    # Verify worker-a was revoked
+    assert any("revoked credentials for host workers: ['worker-a']" in a for a in actions)
+    # Verify no blanket updates were performed
+    assert not any("worker-b" in c for c in calls)
+    assert not any("WHERE kind = 'AGENT' AND enabled = true" in c for c in calls)
+
+
+def test_active_worker_cannot_be_reassigned_before_old_host_is_fenced(clean_postgres):
+    """The DB constraint arbitrates host assignment races; a caller cannot make two active copies."""
+    with connect_postgres() as db:
+        register_host_worker(db, "fencing-reassign-a", "worker-fencing-reassign")
+        with pytest.raises(psycopg.errors.UniqueViolation), db.transaction():
+            register_host_worker(db, "fencing-reassign-b", "worker-fencing-reassign")
+
+        active = db.execute(
+            "SELECT host_id FROM host_worker_bindings "
+            "WHERE worker_id=%s AND status='ACTIVE'",
+            ("worker-fencing-reassign",),
+        ).fetchall()
+        assert active == [("fencing-reassign-a",)]
+
+
+def test_external_effect_propose_rejects_fenced_host_unit():
+    """Unit test: verify propose() queries host_worker_bindings and raises EffectConflict if fenced (Finding A-07)."""
+    from unittest.mock import patch
+
+    from aao.external_effect_registry import EffectConflict, propose
+
+    mock_db = MagicMock()
+
+    def fake_execute(query, params=None):
+        m = MagicMock()
+        q = str(query)
+        if "to_regclass" in q:
+            m.fetchone.return_value = ("public.host_worker_bindings",)
+        elif "information_schema.columns" in q:
+            m.fetchone.return_value = (1,)
+        if "FROM host_worker_bindings" in q:
+            m.fetchall.return_value = [("host-a", "FENCED", 2)]
+        elif "FROM principal_credentials" in q:
+            m.fetchone.return_value = ("worker-host-a",)
+        return m
+
+    mock_db.execute.side_effect = fake_execute
+
+    with patch("aao.external_effect_registry.connect_postgres") as mock_conn, \
+         patch("aao.principal_credentials.authenticate_in_transaction", return_value="worker-host-a"):
+        mock_conn.return_value.__enter__.return_value = mock_db
+
+        with pytest.raises(EffectConflict, match="exactly one active host binding"):
+            propose(
+                execution_id="exec-1",
+                worker_id="worker-host-a",
+                lease_token="lease-1",
+                agent_credential="cred-1",
+                idempotency_key="key-1",
+                capability="effect.propose",
+                request={"action": "test"},
+            )
+
+
+def test_execution_and_effect_routes_fail_closed_when_fencing_schema_is_missing():
+    from unittest.mock import patch
+
+    from aao.execution_queue import ExecutionConflict, claim, complete
+    from aao.external_effect_registry import EffectConflict, propose
+
+    db = MagicMock()
+    absent = MagicMock()
+    absent.fetchone.return_value = (None,)
+    db.execute.return_value = absent
+
+    with patch("aao.execution_queue.connect_postgres") as connect, \
+         patch("aao.execution_queue.verify_execution_principal"):
+        connect.return_value.__enter__.return_value = db
+        with pytest.raises(ExecutionConflict, match="registry unavailable"):
+            claim("worker", agent_credential="cred", project_id="project")
+        with pytest.raises(ExecutionConflict, match="registry unavailable"):
+            complete("execution", "lease", "worker", {}, agent_credential="cred")
+
+    with patch("aao.external_effect_registry.connect_postgres") as connect, \
+         patch("aao.principal_credentials.authenticate_in_transaction", return_value="worker"):
+        connect.return_value.__enter__.return_value = db
+        with pytest.raises(EffectConflict, match="registry unavailable"):
+            propose(
+                execution_id="execution", worker_id="worker", lease_token="lease",
+                agent_credential="cred", idempotency_key="key", capability="test", request={},
+            )
+
+
+def test_claim_complete_and_effect_proposal_reject_binding_for_another_host(monkeypatch):
+    """An agent token alone cannot use another host's active worker binding."""
+    from unittest.mock import patch
+
+    from aao.execution_queue import ExecutionConflict, claim, complete
+    from aao.external_effect_registry import EffectConflict, propose
+
+    monkeypatch.setenv("AAO_TEST_HOST_ID", "host-local")
+
+    def connected_module(module, error, action):
+        db = MagicMock()
+
+        def execute(query, params=None):
+            cursor = MagicMock()
+            query = str(query)
+            if "to_regclass" in query:
+                cursor.fetchone.return_value = ("public.host_worker_bindings",)
+            elif "information_schema.columns" in query:
+                cursor.fetchone.return_value = (1,)
+            elif "FROM host_worker_bindings" in query:
+                cursor.fetchall.return_value = [("host-remote", "ACTIVE", 4)]
+            return cursor
+
+        db.execute.side_effect = execute
+        with patch(f"{module}.connect_postgres") as connect, \
+             patch(f"{module}.current_host_id", return_value="host-local"):
+            connect.return_value.__enter__.return_value = db
+            action()
+
+    with patch("aao.execution_queue.verify_execution_principal"):
+        with pytest.raises(ExecutionConflict, match="different host"):
+            connected_module("aao.execution_queue", ExecutionConflict, lambda: claim(
+                "worker", agent_credential="agent-token", project_id="project"
+            ))
+        with pytest.raises(ExecutionConflict, match="different host"):
+            connected_module("aao.execution_queue", ExecutionConflict, lambda: complete(
+                "execution", "lease", "worker", {}, agent_credential="agent-token"
+            ))
+
+    with patch("aao.principal_credentials.authenticate_in_transaction", return_value="worker"), \
+         pytest.raises(EffectConflict, match="different host"):
+        connected_module("aao.external_effect_registry", EffectConflict, lambda: propose(
+            execution_id="execution", worker_id="worker", lease_token="lease",
+            agent_credential="agent-token", idempotency_key="key",
+            capability="effect.propose", request={},
+        ))
+
+
+@pytest.fixture
+def clean_postgres(monkeypatch):
+    """Ensure clean PostgreSQL tables before and after test."""
+    monkeypatch.setenv("AAO_ENV", "test")
+    test_dsn = os.environ.get("AAO_TEST_POSTGRES_URL")
+    if test_dsn and os.environ.get("AAO_TEST_DB_DISPOSABLE") == "yes":
+        # These integration tests use the runtime connection helper, which
+        # intentionally does not treat test-only DSNs as production defaults.
+        monkeypatch.setenv("AAO_POSTGRES_URL", test_dsn)
+    try:
+        with connect_postgres() as db:
+            db.execute("SELECT 1")
+    except (RuntimeError, OSError, psycopg.Error):
+        pytest.skip("PostgreSQL not accessible in test environment")
+
+    cleanup_sql = """
+        DELETE FROM events WHERE kind IN ('host.fenced', 'external.effect.proposed');
+        DELETE FROM external_effects WHERE execution_id IN (
+            SELECT id FROM execution_queue WHERE project_id IN (
+                '00000000-0000-0000-0000-0000000000a1',
+                '00000000-0000-0000-0000-0000000000b1'
+            )
+        );
+        DELETE FROM execution_journal WHERE execution_id IN (
+            SELECT id FROM execution_queue WHERE project_id IN (
+                '00000000-0000-0000-0000-0000000000a1',
+                '00000000-0000-0000-0000-0000000000b1'
+            )
+        );
+        DELETE FROM execution_queue WHERE project_id IN (
+            '00000000-0000-0000-0000-0000000000a1',
+            '00000000-0000-0000-0000-0000000000b1'
+        );
+        DELETE FROM work_items WHERE project_id IN (
+            '00000000-0000-0000-0000-0000000000a1',
+            '00000000-0000-0000-0000-0000000000b1'
+        );
+        DELETE FROM project_grants WHERE project_id IN (
+            '00000000-0000-0000-0000-0000000000a1',
+            '00000000-0000-0000-0000-0000000000b1'
+        );
+        DELETE FROM project_conversations WHERE project_id IN (
+            '00000000-0000-0000-0000-0000000000a1',
+            '00000000-0000-0000-0000-0000000000b1'
+        );
+        DELETE FROM host_worker_bindings WHERE worker_id IN (
+            'worker-host-a',
+            'worker-host-b',
+            'unrelated-agent',
+            'worker-fencing-reassign'
+        );
+        DELETE FROM projects WHERE id IN (
+            '00000000-0000-0000-0000-0000000000a1',
+            '00000000-0000-0000-0000-0000000000b1'
+        );
+        DELETE FROM mandates WHERE id IN (
+            '00000000-0000-0000-0000-0000000000a1',
+            '00000000-0000-0000-0000-0000000000b1'
+        );
+        DELETE FROM principal_credentials WHERE principal_id IN (
+            'worker-host-a',
+            'worker-host-b',
+            'unrelated-agent'
+        );
+    """
+    with connect_postgres() as db:
+        ensure_host_worker_registry(db)
+        db.execute(cleanup_sql)
+        db.commit()
+    yield
+    with connect_postgres() as db:
+        ensure_host_worker_registry(db)
+        db.execute(cleanup_sql)
+        db.commit()
+
+
+def _setup_dual_host_environment(db):
+    """Register distinct credentials and active work claims for Host A and Host B."""
+    token_a = "secret-token-host-a"
+    token_b = "secret-token-host-b"
+    token_unrelated = "secret-token-unrelated"
+
+    hash_a = hashlib.sha256(token_a.encode()).hexdigest()
+    hash_b = hashlib.sha256(token_b.encode()).hexdigest()
+    hash_unrelated = hashlib.sha256(token_unrelated.encode()).hexdigest()
+
+    # Register principal credentials
+    db.execute(
+        """
+        INSERT INTO principal_credentials (principal_id, kind, token_digest, enabled)
+        VALUES
+          ('worker-host-a', 'AGENT', %s, true),
+          ('worker-host-b', 'AGENT', %s, true),
+          ('unrelated-agent', 'AGENT', %s, true)
+        ON CONFLICT (principal_id) DO UPDATE SET enabled = true, token_digest = EXCLUDED.token_digest
+        """,
+        (hash_a, hash_b, hash_unrelated),
+    )
+
+    # Register projects
+    proj_a = "00000000-0000-0000-0000-0000000000a1"
+    proj_b = "00000000-0000-0000-0000-0000000000b1"
+    db.execute(
+        """
+        INSERT INTO mandates (id, title, objective, status)
+        VALUES
+          (%s, 'Mandate A', 'Objective A', 'CONFIRMED'),
+          (%s, 'Mandate B', 'Objective B', 'CONFIRMED')
+        ON CONFLICT (id) DO NOTHING;
+        """,
+        (proj_a, proj_b),
+    )
+    db.execute(
+        """
+        INSERT INTO projects (id, mandate_id, name, state)
+        VALUES
+          (%s, %s, 'Project A', 'ACTIVE'),
+          (%s, %s, 'Project B', 'ACTIVE')
+        ON CONFLICT (id) DO NOTHING;
+        """,
+        (proj_a, proj_a, proj_b, proj_b),
+    )
+
+    # Register explicit host-worker bindings
+    register_host_worker(db, "host-a", "worker-host-a")
+    register_host_worker(db, "host-b", "worker-host-b")
+    epoch_a = db.execute(
+        "SELECT fence_epoch FROM host_worker_bindings WHERE host_id='host-a' AND worker_id='worker-host-a'"
+    ).fetchone()[0]
+    epoch_b = db.execute(
+        "SELECT fence_epoch FROM host_worker_bindings WHERE host_id='host-b' AND worker_id='worker-host-b'"
+    ).fetchone()[0]
+
+    # Register project grants for effect proposal
+    db.execute(
+        """
+        INSERT INTO project_grants (principal_id, project_id, capability)
+        VALUES
+          ('worker-host-a', %s, 'effect.propose'),
+          ('worker-host-b', %s, 'effect.propose')
+        ON CONFLICT DO NOTHING;
+        """,
+        (proj_a, proj_b),
+    )
+
+    # Work item and claim for Host A
+    work_a = str(uuid.uuid4())
+    exec_a = str(uuid.uuid4())
+    lease_token_a = str(uuid.uuid4())
+    db.execute(
+        """
+        INSERT INTO work_items (id, project_id, title, status, author_id, acceptance_criteria)
+        VALUES (%s, %s, 'Work item A', 'IN_PROGRESS', 'worker-host-a', '[]'::jsonb);
+        """,
+        (work_a, proj_a),
+    )
+    db.execute(
+        """
+        INSERT INTO execution_queue (id, work_id, project_id, status, input_json, lease_token, worker_id, lease_expires_at, project_state_generation, claim_fence_epoch)
+        VALUES (%s, %s, %s, 'RUNNING', '{}'::jsonb, %s, 'worker-host-a', clock_timestamp() + INTERVAL '1 hour', 0, %s);
+        """,
+        (exec_a, work_a, proj_a, lease_token_a, epoch_a),
+    )
+
+    # Work item and claim for Host B
+    work_b = str(uuid.uuid4())
+    exec_b = str(uuid.uuid4())
+    lease_token_b = str(uuid.uuid4())
+    db.execute(
+        """
+        INSERT INTO work_items (id, project_id, title, status, author_id, acceptance_criteria)
+        VALUES (%s, %s, 'Work item B', 'IN_PROGRESS', 'worker-host-b', '[]'::jsonb);
+        """,
+        (work_b, proj_b),
+    )
+    db.execute(
+        """
+        INSERT INTO execution_queue (id, work_id, project_id, status, input_json, lease_token, worker_id, lease_expires_at, project_state_generation, claim_fence_epoch)
+        VALUES (%s, %s, %s, 'RUNNING', '{}'::jsonb, %s, 'worker-host-b', clock_timestamp() + INTERVAL '1 hour', 0, %s);
+        """,
+        (exec_b, work_b, proj_b, lease_token_b, epoch_b),
+    )
+    db.commit()
+
+    return {
+        "token_a": token_a,
+        "token_b": token_b,
+        "exec_a": exec_a,
+        "exec_b": exec_b,
+        "lease_token_a": lease_token_a,
+        "lease_token_b": lease_token_b,
+        "proj_a": proj_a,
+        "proj_b": proj_b,
+    }
+
+
+def test_targeted_host_fencing_avoids_blanket_revocation(clean_postgres):
+    """Prove that fencing Host A disables only Host A without affecting Host B or unrelated agents."""
+    with connect_postgres() as db:
+        env = _setup_dual_host_environment(db)
+
+        # Apply targeted fencing for Host A
+        actions = apply_host_fencing(db, host_identifier="host-a")
+        assert any("marked host 'host-a' bindings as FENCED" in a for a in actions)
+
+        # Verify credentials status
+        rows = dict(db.execute("SELECT principal_id, enabled FROM principal_credentials").fetchall())
+        assert rows["worker-host-a"] is False, "Host A worker credentials must be disabled"
+        assert rows["worker-host-b"] is True, "Host B worker credentials must remain active"
+        assert rows["unrelated-agent"] is True, "Unrelated agents must remain completely unaffected"
+
+        # Verify task status
+        exec_rows = dict(db.execute("SELECT id::text, status FROM execution_queue").fetchall())
+        assert exec_rows[env["exec_a"]] == "FAILED", "Host A task must be failed with lease revoked"
+        assert exec_rows[env["exec_b"]] == "RUNNING", "Host B task must remain running without disturbance"
+
+
+def test_targeted_fencing_revokes_only_conversation_leases_owned_by_host(clean_postgres, monkeypatch):
+    """An old provider heartbeat cannot renew a fenced host lease; other hosts are untouched."""
+    from aao.backup import BackupError, active_host_fence_epoch
+    from aao.conversation_turn_recovery import RecoveryConfiguration, claim_expired_turn
+
+    with connect_postgres() as db:
+        env = _setup_dual_host_environment(db)
+        conversation_ids = [str(uuid.uuid4()) for _ in range(4)]
+        turn_ids = [str(uuid.uuid4()) for _ in range(4)]
+        owner_ids = [str(uuid.uuid4()) for _ in range(4)]
+        for index, host in enumerate(("host-a", "host-b", None, "host-a")):
+            conversation_id = conversation_ids[index]
+            message_id = str(uuid.uuid4())
+            db.execute(
+                "INSERT INTO project_conversations(id,project_id,title,created_by) "
+                "VALUES (%s,%s,%s,'ceo')",
+                (conversation_id, env["proj_a"], f"fencing-{index}"),
+            )
+            db.execute(
+                "INSERT INTO project_conversation_messages(id,conversation_id,sender,body) "
+                "VALUES (%s,%s,'CEO','test turn')", (message_id, conversation_id),
+            )
+            db.execute(
+                "INSERT INTO project_conversation_turns(id,conversation_id,idempotency_key,"
+                "request_sha256,user_message_id,state,provider,model,lease_owner,lease_host_id,"
+                "lease_fence_epoch,lease_expires_at) "
+                "VALUES (%s,%s,%s,%s,%s,'PENDING','test','model',%s,%s,%s,"
+                "clock_timestamp()+(%s * interval '1 minute'))",
+                (turn_ids[index], conversation_id, str(uuid.uuid4()), hashlib.sha256(b"test turn").hexdigest(),
+                 message_id, owner_ids[index], host, 1 if host else None, -5 if index == 3 else 5),
+            )
+
+        apply_host_fencing(db, host_identifier="host-a")
+
+        rows = {
+            row[0]: row[1:]
+            for row in db.execute(
+                "SELECT id::text,lease_owner::text,lease_host_id,lease_fence_epoch,"
+                "lease_expires_at <= clock_timestamp() FROM project_conversation_turns "
+                "WHERE id = ANY(%s)", (turn_ids,),
+            ).fetchall()
+        }
+        assert rows[turn_ids[0]] == (None, "host-a", None, True)
+        assert rows[turn_ids[1]][0] == owner_ids[1]
+        assert rows[turn_ids[1]][1:] == ("host-b", 1, False)
+        assert rows[turn_ids[2]][0] == owner_ids[2]
+        assert rows[turn_ids[2]][1:] == (None, None, False)
+        assert rows[turn_ids[3]][0] is None
+        assert rows[turn_ids[3]][1] == "host-a"
+        assert rows[turn_ids[3]][2:] == (None, True)
+
+        # A fenced host cannot reacquire its own expired turns, while another
+        # active host can claim an expired turn under its current fence epoch.
+        with pytest.raises(BackupError, match="no active fencing registration"):
+            active_host_fence_epoch(db, "host-a")
+        host_b_epoch = active_host_fence_epoch(db, "host-b")
+        db.execute(
+            "UPDATE project_conversation_turns SET lease_expires_at=clock_timestamp()-interval '1 second' "
+            "WHERE id=%s", (turn_ids[1],),
+        )
+        host_b_claim = claim_expired_turn(
+            db, RecoveryConfiguration("test", "model"), lease_owner=str(uuid.uuid4()),
+            host_id="host-b", fence_epoch=host_b_epoch,
+        )
+        assert host_b_claim is not None
+        assert host_b_claim["lease_host_id"] == "host-b"
+        assert host_b_claim["lease_fence_epoch"] == host_b_epoch
+
+        # This is the heartbeat predicate used by the API/recovery worker. The
+        # fenced owner has been cleared, so an old process cannot revive it.
+        stale_renewal = db.execute(
+            "UPDATE project_conversation_turns SET lease_expires_at=clock_timestamp()+interval '5 minutes' "
+            "WHERE id=%s AND state='PENDING' AND lease_owner=%s AND lease_host_id=%s",
+            (turn_ids[0], owner_ids[0], "host-a"),
+        )
+        assert stale_renewal.rowcount == 0
+        stale_expired_renewal = db.execute(
+            "UPDATE project_conversation_turns SET lease_expires_at=clock_timestamp()+interval '5 minutes' "
+            "WHERE id=%s AND state='PENDING' AND lease_owner=%s AND lease_host_id=%s",
+            (turn_ids[3], owner_ids[3], "host-a"),
+        )
+        assert stale_expired_renewal.rowcount == 0
+        db.commit()
+
+        # Exercise the production recovery entrypoint: a surviving process on
+        # fenced A cannot reclaim even an expired turn after its lease was revoked.
+        from aao.conversation_turn_recovery import recover_one_turn
+        monkeypatch.setenv("AAO_TEST_HOST_ID", "host-a")
+        recovery_env = {
+            "AAO_CONVERSATION_RECOVERY_ENABLED": "true",
+            "AAO_CONVERSATION_PROVIDER": "openai-compatible",
+            "AAO_CONVERSATION_MODEL": "model",
+            "AAO_CONVERSATION_API_URL": "https://provider.invalid/v1/chat/completions",
+            "AAO_CONVERSATION_API_KEY": "not-a-real-secret",
+        }
+        assert recover_one_turn(recovery_env) == {"status": "HOST_FENCED"}
+
+
+def test_old_host_cannot_execute_external_effects_post_cutover(clean_postgres, monkeypatch):
+    """Prove that an old fenced host cannot produce external effects after cutover."""
+    from aao.external_effect_registry import EffectConflict
+    with connect_postgres() as db:
+        env = _setup_dual_host_environment(db)
+
+        # Host A is fenced during migration / cutover
+        apply_host_fencing(db, host_identifier="host-a")
+        db.commit()
+
+        # Old Host A attempts to propose an external effect with its credentials and lease
+        monkeypatch.setenv("AAO_TEST_HOST_ID", "host-a")
+        with pytest.raises(EffectConflict) as exc_info:
+            propose_external_effect(
+                execution_id=env["exec_a"],
+                worker_id="worker-host-a",
+                lease_token=env["lease_token_a"],
+                agent_credential=env["token_a"],
+                idempotency_key=str(uuid.uuid4()),
+                capability="effect.propose",
+                request={"branch": "feat/old-host-attempt"},
+            )
+        assert any(term in str(exc_info.value).lower() for term in ("fenced", "revoked", "credential", "lease", "conflict"))
+
+        # Meanwhile, Host B remains fully authorized and can propose external effects
+        monkeypatch.setenv("AAO_TEST_HOST_ID", "host-b")
+        res = propose_external_effect(
+            execution_id=env["exec_b"],
+            worker_id="worker-host-b",
+            lease_token=env["lease_token_b"],
+            agent_credential=env["token_b"],
+            idempotency_key=str(uuid.uuid4()),
+            capability="effect.propose",
+            request={"branch": "feat/host-b-authorized"},
+        )
+        assert res is not None
+        assert "id" in res
+
+
+def test_network_partition_and_zero_duplicate_effects(clean_postgres, monkeypatch):
+    """Prove that after cutover fencing and network reconnection, old host cannot create duplicate effects."""
+    from aao.external_effect_registry import EffectConflict
+    with connect_postgres() as db:
+        env = _setup_dual_host_environment(db)
+        # Apply cutover fencing to host-a
+        apply_host_fencing(db, host_identifier="host-a")
+        db.commit()
+
+        # Old host-a attempts to propose an effect after network recovery
+        shared_key = f"idemp-shared-{uuid.uuid4()}"
+        monkeypatch.setenv("AAO_TEST_HOST_ID", "host-a")
+        with pytest.raises(EffectConflict):
+            propose_external_effect(
+                execution_id=env["exec_a"],
+                worker_id="worker-host-a",
+                lease_token=env["lease_token_a"],
+                agent_credential=env["token_a"],
+                idempotency_key=shared_key,
+                capability="effect.propose",
+                request={"action": "publish_pr", "candidate": "sha-test"},
+            )
+
+        # Host B proposes the effect successfully
+        monkeypatch.setenv("AAO_TEST_HOST_ID", "host-b")
+        res = propose_external_effect(
+            execution_id=env["exec_b"],
+            worker_id="worker-host-b",
+            lease_token=env["lease_token_b"],
+            agent_credential=env["token_b"],
+            idempotency_key=shared_key,
+            capability="effect.propose",
+            request={"action": "publish_pr", "candidate": "sha-test"},
+        )
+        assert res is not None
+
+        # Verify exact single effect recorded in DB (zero duplicates)
+        count = db.execute("SELECT count(*) FROM external_effects WHERE idempotency_key = %s", (shared_key,)).fetchone()[0]
+        assert count == 1
+
+
+def test_fencing_audit_event_recorded(clean_postgres):
+    """Verify that an explicit host.fenced audit event is recorded in the events table."""
+    with connect_postgres() as db:
+        _setup_dual_host_environment(db)
+        actions = apply_host_fencing(db, host_identifier="host-a")
+        assert any("worker-host-a" in action for action in actions)
+
+        event = db.execute(
+            "SELECT kind, details FROM events WHERE kind = 'host.fenced' ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        assert event is not None
+        assert event[0] == "host.fenced"
+        details = event[1] if isinstance(event[1], dict) else json.loads(event[1])
+        assert details["host"] == "host-a"
+        assert "worker-host-a" in details["fenced_workers"]

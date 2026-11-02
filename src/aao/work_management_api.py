@@ -21,12 +21,14 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from aao.backup import BackupError, active_host_fence_epoch
 from aao.capability_contracts import missing_contract_fields, model_profile_errors
 from aao.capability_evaluation import recommend
 from aao.conversation_turns import (
     CONVERSATION_TURN_HEARTBEAT_SECONDS,
     CONVERSATION_TURN_LEASE_SECONDS,
 )
+from aao.host_identity import HostIdentityError, current_host_id
 from aao.planner import Admission, decide_admission
 from aao.protocol_instances import start_work_protocol
 from aao.review import evaluate_review
@@ -568,6 +570,25 @@ class AgentDispatchRequest(BaseModel):
     base_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
 
 
+class AgentExecutionClaimRequest(BaseModel):
+    project_id: str = Field(min_length=1)
+    seconds: int = Field(default=1800, ge=1, le=1800)
+
+
+class AgentExecutionContextRequest(BaseModel):
+    lease_token: str = Field(min_length=1, max_length=128)
+
+
+class AgentExecutionCompleteRequest(BaseModel):
+    lease_token: str = Field(min_length=1, max_length=128)
+    result: dict
+
+
+class AgentProposalLookupRequest(BaseModel):
+    base_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    patch_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class ExternalResolutionRequest(BaseModel):
     reason: str = Field(min_length=10, max_length=2000)
     pr_number: int = Field(ge=1)
@@ -725,28 +746,51 @@ def _authenticate_request_principal(token: str | None, kind: str):
 
 
 
+def _frontend_dist_dir() -> Path:
+    custom = os.environ.get("AAO_STATIC_DIR")
+    if custom:
+        custom_path = Path(custom)
+        if custom_path.is_dir():
+            return custom_path
+    built_dist = Path(__file__).resolve().parents[2] / "frontend" / "app" / "dist"
+    if built_dist.is_dir() and (built_dist / "index.html").is_file():
+        return built_dist
+    return Path(__file__).resolve().parents[2] / "frontend"
+
+
 @app.get("/", include_in_schema=False)
 def workboard_ui():
-    """Serve the workboard from the same origin as the PostgreSQL API."""
-    return FileResponse(Path(__file__).resolve().parents[2] / "frontend" / "index.html")
+    """Serve the Control Center UI from the same origin as the API."""
+    dist_dir = _frontend_dist_dir()
+    index_file = dist_dir / "index.html"
+    if not index_file.is_file():
+        index_file = Path(__file__).resolve().parents[2] / "frontend" / "index.html"
+    return FileResponse(index_file)
 
 
-@app.get("/assets/control-center.css", include_in_schema=False)
-def control_center_stylesheet():
-    """Serve the Control Center stylesheet from the same origin."""
-    return FileResponse(
-        Path(__file__).resolve().parents[2] / "frontend" / "control-center.css",
-        media_type="text/css",
-    )
+@app.get("/assets/{asset_name:path}", include_in_schema=False)
+def control_center_asset(asset_name: str):
+    """Serve built static assets from Control Center or legacy fallback."""
+    if ".." in asset_name or asset_name.startswith("/"):
+        raise HTTPException(status_code=400, detail="Invalid asset path")
 
+    dist_dir = _frontend_dist_dir()
+    candidate = dist_dir / "assets" / asset_name
+    if candidate.is_file():
+        return FileResponse(candidate)
 
-@app.get("/assets/control-center.js", include_in_schema=False)
-def control_center_script():
-    """Serve the Control Center client from the same origin."""
-    return FileResponse(
-        Path(__file__).resolve().parents[2] / "frontend" / "control-center.js",
-        media_type="text/javascript",
-    )
+    root_candidate = dist_dir / asset_name
+    if root_candidate.is_file():
+        return FileResponse(root_candidate)
+
+    legacy_file = Path(__file__).resolve().parents[2] / "frontend" / asset_name
+    if legacy_file.is_file():
+        media_type = "text/css" if asset_name.endswith(".css") else (
+            "text/javascript" if asset_name.endswith(".js") else None
+        )
+        return FileResponse(legacy_file, media_type=media_type)
+
+    raise HTTPException(status_code=404, detail="Asset not found")
 
 
 @app.get("/health")
@@ -3018,6 +3062,11 @@ def stream_project_conversation_turn(
     from aao.conversation_provider import ProviderUnavailable, safe_endpoint_metadata, stream_reply
     from aao.conversation_turn_recovery import build_conversation_prompt
 
+    try:
+        lease_host_id = current_host_id()
+    except HostIdentityError as exc:
+        raise HTTPException(503, "Trusted local host identity unavailable") from exc
+
     request_hash = hashlib.sha256(payload.body.encode("utf-8")).hexdigest()
     provider = os.getenv("AAO_CONVERSATION_PROVIDER", "openai-compatible")
     model = os.getenv("AAO_CONVERSATION_MODEL", "")
@@ -3028,6 +3077,10 @@ def stream_project_conversation_turn(
     turn_id: str | None = None
     prompt_messages: list[dict[str, str]] = []
     with tx() as db:
+        try:
+            lease_fence_epoch = active_host_fence_epoch(db, lease_host_id)
+        except BackupError as exc:
+            raise HTTPException(503, "Local host is fenced or unregistered") from exc
         row = db.execute(
             "SELECT p.state FROM project_conversations c JOIN projects p ON p.id=c.project_id "
             "WHERE c.id=%s AND c.project_id=%s FOR UPDATE OF c",
@@ -3055,11 +3108,13 @@ def stream_project_conversation_turn(
             if existing[1] == "PENDING":
                 claimed = db.execute(
                     "UPDATE project_conversation_turns SET lease_owner=%s,"
+                    "lease_host_id=%s,lease_fence_epoch=%s,"
                     "lease_expires_at=clock_timestamp()+(%s * interval '1 second'),"
                     "updated_at=clock_timestamp() "
                     "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING' "
                     "AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp()) RETURNING id",
-                    (lease_owner, CONVERSATION_TURN_LEASE_SECONDS, conversation_id,
+                    (lease_owner, lease_host_id, lease_fence_epoch,
+                     CONVERSATION_TURN_LEASE_SECONDS, conversation_id,
                      payload.idempotency_key),
                 ).fetchone()
                 if not claimed:
@@ -3084,10 +3139,11 @@ def stream_project_conversation_turn(
                 user_message_id = str(existing[5])
                 db.execute(
                     "UPDATE project_conversation_turns SET state='PENDING',error_code=NULL,"
-                    "lease_owner=%s,lease_expires_at=clock_timestamp()+(%s * interval '1 second'),"
+                    "lease_owner=%s,lease_host_id=%s,lease_fence_epoch=%s,"
+                    "lease_expires_at=clock_timestamp()+(%s * interval '1 second'),"
                     "updated_at=clock_timestamp() "
                     "WHERE conversation_id=%s AND idempotency_key=%s",
-                    (lease_owner, CONVERSATION_TURN_LEASE_SECONDS,
+                    (lease_owner, lease_host_id, lease_fence_epoch, CONVERSATION_TURN_LEASE_SECONDS,
                      conversation_id, payload.idempotency_key),
                 )
                 history = db.execute(
@@ -3106,11 +3162,12 @@ def stream_project_conversation_turn(
             )
             db.execute(
                 "INSERT INTO project_conversation_turns(id,conversation_id,idempotency_key,"
-                "request_sha256,user_message_id,state,provider,model,endpoint,lease_owner,lease_expires_at) "
-                "VALUES (%s,%s,%s,%s,%s,'PENDING',%s,%s,%s,%s,"
+                "request_sha256,user_message_id,state,provider,model,endpoint,lease_owner,lease_host_id,"
+                "lease_fence_epoch,lease_expires_at) "
+                "VALUES (%s,%s,%s,%s,%s,'PENDING',%s,%s,%s,%s,%s,%s,"
                 "clock_timestamp()+(%s * interval '1 second'))",
                 (turn_id, conversation_id, payload.idempotency_key, request_hash,
-                 user_message_id, provider, model, endpoint, lease_owner,
+                 user_message_id, provider, model, endpoint, lease_owner, lease_host_id, lease_fence_epoch,
                  CONVERSATION_TURN_LEASE_SECONDS),
             )
             history = db.execute(
@@ -3150,13 +3207,17 @@ def stream_project_conversation_turn(
             while not stop_heartbeat.wait(CONVERSATION_TURN_HEARTBEAT_SECONDS):
                 try:
                     with tx() as db:
+                        if active_host_fence_epoch(db, lease_host_id) != lease_fence_epoch:
+                            lease_lost.set()
+                            return
                         updated = db.execute(
                             "UPDATE project_conversation_turns SET lease_expires_at="
                             "clock_timestamp()+(%s * interval '1 second'),updated_at=clock_timestamp() "
                             "WHERE conversation_id=%s AND idempotency_key=%s "
-                            "AND lease_owner=%s AND state='PENDING'",
+                            "AND lease_owner=%s AND lease_host_id=%s AND lease_fence_epoch=%s "
+                            "AND state='PENDING'",
                             (CONVERSATION_TURN_LEASE_SECONDS, conversation_id,
-                             payload.idempotency_key, lease_owner),
+                             payload.idempotency_key, lease_owner, lease_host_id, lease_fence_epoch),
                         ).rowcount
                     if not updated:
                         lease_lost.set()
@@ -3181,11 +3242,14 @@ def stream_project_conversation_turn(
             body = "".join(answer).strip()
             if not body:
                 with tx() as db:
+                    current_epoch = active_host_fence_epoch(db, lease_host_id)
                     changed = db.execute(
                         "UPDATE project_conversation_turns SET state='FAILED',error_code='EMPTY_PROVIDER_RESPONSE',"
-                        "lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp() "
-                        "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING' AND lease_owner=%s",
-                        (conversation_id, payload.idempotency_key, lease_owner),
+                        "lease_owner=NULL,lease_expires_at=NULL,lease_fence_epoch=NULL,updated_at=clock_timestamp() "
+                        "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING' "
+                        "AND lease_owner=%s AND lease_host_id=%s AND lease_fence_epoch=%s",
+                        (conversation_id, payload.idempotency_key, lease_owner, lease_host_id,
+                         lease_fence_epoch if current_epoch == lease_fence_epoch else -1),
                     )
                     if changed.rowcount:
                         audit(db, conversation_id, "conversation.turn.failed", {
@@ -3196,6 +3260,7 @@ def stream_project_conversation_turn(
                 yield "event: error\ndata: {\"code\":\"EMPTY_PROVIDER_RESPONSE\"}\n\n"
                 return
             with tx() as db:
+                current_epoch = active_host_fence_epoch(db, lease_host_id)
                 db.execute(
                     "INSERT INTO project_conversation_messages(id,conversation_id,sender,body,provider,model,endpoint) "
                     "VALUES (%s,%s,'AAO',%s,%s,%s,%s)",
@@ -3203,9 +3268,11 @@ def stream_project_conversation_turn(
                 )
                 db.execute(
                     "UPDATE project_conversation_turns SET state='COMPLETED',assistant_message_id=%s,"
-                    "lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp() "
-                    "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING' AND lease_owner=%s",
-                    (response_id, conversation_id, payload.idempotency_key, lease_owner),
+                    "lease_owner=NULL,lease_expires_at=NULL,lease_fence_epoch=NULL,updated_at=clock_timestamp() "
+                    "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING' "
+                    "AND lease_owner=%s AND lease_host_id=%s AND lease_fence_epoch=%s",
+                    (response_id, conversation_id, payload.idempotency_key, lease_owner, lease_host_id,
+                     lease_fence_epoch if current_epoch == lease_fence_epoch else -1),
                 )
                 if not db.execute(
                     "SELECT 1 FROM project_conversation_turns WHERE id=%s AND state='COMPLETED' "
@@ -3221,11 +3288,17 @@ def stream_project_conversation_turn(
             yield f"event: done\ndata: {json_module.dumps({'message_id': response_id})}\n\n"
         except ProviderUnavailable as exc:
             with tx() as db:
+                try:
+                    current_epoch = active_host_fence_epoch(db, lease_host_id)
+                except BackupError:
+                    current_epoch = -1
                 changed = db.execute(
                     "UPDATE project_conversation_turns SET state='FAILED',error_code=%s,"
-                    "lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp() "
-                    "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING' AND lease_owner=%s",
-                    (exc.code, conversation_id, payload.idempotency_key, lease_owner),
+                    "lease_owner=NULL,lease_expires_at=NULL,lease_fence_epoch=NULL,updated_at=clock_timestamp() "
+                    "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING' "
+                    "AND lease_owner=%s AND lease_host_id=%s AND lease_fence_epoch=%s",
+                    (exc.code, conversation_id, payload.idempotency_key, lease_owner, lease_host_id,
+                     lease_fence_epoch if current_epoch == lease_fence_epoch else -1),
                 )
                 if changed.rowcount:
                     audit(db, conversation_id, "conversation.turn.failed", {
@@ -3236,11 +3309,17 @@ def stream_project_conversation_turn(
             yield f"event: error\ndata: {json_module.dumps({'code': exc.code, 'message': str(exc)})}\n\n"
         except Exception:  # noqa: BLE001 - persist every unexpected provider/stream failure durably.
             with tx() as db:
+                try:
+                    current_epoch = active_host_fence_epoch(db, lease_host_id)
+                except BackupError:
+                    current_epoch = -1
                 changed = db.execute(
                     "UPDATE project_conversation_turns SET state='FAILED',error_code='PROVIDER_ERROR',"
-                    "lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp() "
-                    "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING' AND lease_owner=%s",
-                    (conversation_id, payload.idempotency_key, lease_owner),
+                    "lease_owner=NULL,lease_expires_at=NULL,lease_fence_epoch=NULL,updated_at=clock_timestamp() "
+                    "WHERE conversation_id=%s AND idempotency_key=%s AND state='PENDING' "
+                    "AND lease_owner=%s AND lease_host_id=%s AND lease_fence_epoch=%s",
+                    (conversation_id, payload.idempotency_key, lease_owner, lease_host_id,
+                     lease_fence_epoch if current_epoch == lease_fence_epoch else -1),
                 )
                 if changed.rowcount:
                     audit(db, conversation_id, "conversation.turn.failed", {
@@ -4835,3 +4914,186 @@ def dispatch_next_agent_work(
             continue
         return {**staged, "work_id": work_id}
     return first_block
+
+
+@app.post("/v1/agent/executions/claim")
+def claim_agent_execution(
+    payload: AgentExecutionClaimRequest,
+    principal: str = Depends(require_worker),
+    x_agent_token: str | None = Header(None),
+):
+    """Claim staged work through the API's privileged database boundary."""
+    from aao.execution_queue import ExecutionConflict, claim
+
+    try:
+        lease = claim(
+            str(principal), agent_credential=x_agent_token or "",
+            project_id=payload.project_id, seconds=payload.seconds,
+        )
+    except ExecutionConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return lease if lease is not None else {"status": "IDLE"}
+
+
+def _previous_failure(db, execution_id: str):
+    """Latest failed attempt of the exact same staged input, worker, work and project."""
+    # Exact staged input pins capability/version/base; never reuse another agent's or work item's output.
+    return db.execute(
+        "SELECT previous.id, previous.result_json FROM execution_queue previous "
+        "JOIN execution_queue current ON previous.work_id=current.work_id "
+        "AND previous.project_id=current.project_id AND previous.worker_id=current.worker_id "
+        "AND previous.input_json=current.input_json "
+        "WHERE current.id=%s AND previous.id<>current.id AND previous.status='FAILED' "
+        "AND previous.created_at<=current.created_at "
+        "ORDER BY previous.created_at DESC, previous.id DESC LIMIT 1", (execution_id,),
+    ).fetchone()
+
+
+@app.post("/v1/agent/executions/{execution_id}/context")
+def agent_execution_context(
+    execution_id: str,
+    payload: AgentExecutionContextRequest,
+    principal: str = Depends(require_worker),
+):
+    """Return task context only for this principal's live execution lease."""
+    with tx() as db:
+        from aao.execution_queue import ExecutionConflict, validate_live_lease
+
+        try:
+            validate_live_lease(db, execution_id, str(principal), payload.lease_token)
+        except ExecutionConflict as exc:
+            raise HTTPException(409, str(exc)) from exc
+        row = db.execute(
+            "SELECT q.work_id,q.project_id,q.input_json,w.title,w.description,w.acceptance_criteria,"
+            "CASE WHEN w.parent_work_id IS NULL THEN w.author_id ELSE a.principal_id END,"
+            "c.contract->'model_profile' "
+            "FROM execution_queue q JOIN work_items w ON w.id=q.work_id "
+            "LEFT JOIN work_item_assignments a ON a.project_id=w.project_id AND a.work_id=w.id "
+            "LEFT JOIN capability_versions c ON c.project_id=q.project_id "
+            "AND c.capability_id=q.input_json->>'capability_id' "
+            "AND c.version=q.input_json->>'version' "
+            "WHERE q.id=%s AND q.status='RUNNING' AND q.worker_id=%s "
+            "AND q.lease_token=%s AND q.lease_expires_at>clock_timestamp()",
+            (execution_id, str(principal), payload.lease_token),
+        ).fetchone()
+        if not row:
+            raise HTTPException(409, "Execution lease is stale or not owned by this agent")
+        require_grant(db, principal, str(row[1]), "execution.claim")
+        selection = row[2]
+        if isinstance(selection, str):
+            selection = json.loads(selection)
+        if not isinstance(selection, dict) or selection.get("type") != "aao.agent-patch.v1":
+            raise HTTPException(409, "Execution does not contain an agent-patch selection")
+        previous = _previous_failure(db, execution_id)
+        return {
+            "work_id": str(row[0]), "project_id": str(row[1]), "input": selection,
+            "title": row[3], "description": row[4] or "",
+            "acceptance_criteria": row[5] or [], "author_id": str(row[6]),
+            "model_profile": row[7] if isinstance(row[7], dict) else None,
+            "previous_failure": (
+                {"execution_id": str(previous[0]), "result": previous[1]}
+                if previous and isinstance(previous[1], dict) else None
+            ),
+        }
+
+
+@app.post("/v1/agent/executions/{execution_id}/start")
+def start_agent_execution(
+    execution_id: str,
+    payload: AgentExecutionContextRequest,
+    principal: str = Depends(require_worker),
+):
+    """Start the leased work under work.progress before the worker invokes any model."""
+    from aao.execution_queue import ExecutionConflict, validate_live_lease
+
+    with tx() as db:
+        try:
+            validate_live_lease(db, execution_id, str(principal), payload.lease_token)
+        except ExecutionConflict as exc:
+            raise HTTPException(409, str(exc)) from exc
+        row = db.execute("SELECT work_id FROM execution_queue WHERE id=%s", (execution_id,)).fetchone()
+    # The authenticated principal object, not its id: require_grant demands an individual credential.
+    ensure_agent_work_in_progress(str(row[0]), principal)
+    return {"execution_id": execution_id, "work_id": str(row[0]), "status": "IN_PROGRESS"}
+
+
+@app.post("/v1/agent/executions/{execution_id}/complete")
+def complete_agent_execution(
+    execution_id: str,
+    payload: AgentExecutionCompleteRequest,
+    principal: str = Depends(require_worker),
+    x_agent_token: str | None = Header(None),
+):
+    """Complete an execution through the queue's fenced transition."""
+    from aao.execution_queue import ExecutionConflict, complete
+
+    try:
+        complete(
+            execution_id, payload.lease_token, str(principal), payload.result,
+            agent_credential=x_agent_token or "",
+        )
+    except ExecutionConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"execution_id": execution_id, "status": "COMPLETED"}
+
+
+@app.post("/v1/agent/work/{work_id}/patch-proposals/lookup")
+def lookup_agent_patch_proposal(
+    work_id: str,
+    payload: AgentProposalLookupRequest,
+    principal: str = Depends(require_worker),
+):
+    """Recover a proposal after a client lost the create response."""
+    with tx() as db:
+        work = db.execute(
+            "SELECT project_id,author_id,parent_work_id FROM work_items WHERE id=%s", (work_id,),
+        ).fetchone()
+        if not work:
+            raise HTTPException(404, "Work not found")
+        project_id, author_id, parent_work_id = work
+        require_grant(db, principal, str(project_id), "code.propose")
+        # Same owner rule as persist_patch_proposal: group subtasks belong to their assignee.
+        require_group_work_assignee(db, work_id, str(principal))
+        if parent_work_id is None and str(author_id) != str(principal):
+            raise HTTPException(403, "Only the assigned agent may inspect its proposal")
+        row = db.execute(
+            "SELECT id FROM patch_proposals WHERE work_id=%s AND base_sha=%s AND patch_sha256=%s",
+            (work_id, payload.base_sha, payload.patch_sha256),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Matching proposal not found")
+    return {"proposal_id": str(row[0]), "work_id": work_id, "status": "PROPOSED"}
+
+
+ALLOWED_SPA_ROUTES = {
+    "dashboard", "projects", "kanban", "decisions", "alerts", "audit",
+    "operations", "organization", "office", "settings", "mandates", "activity",
+}
+
+
+@app.get("/{client_route:path}", include_in_schema=False)
+def spa_route_fallback(client_route: str):
+    """Fallback handler for client-side React SPA routes (e.g. /kanban, /mandates)."""
+    clean_route = client_route.strip("/")
+    first_segment = clean_route.split("/")[0]
+
+    # Explicit allowed client routes return the SPA entrypoint
+    if first_segment in ALLOWED_SPA_ROUTES:
+        dist_dir = _frontend_dist_dir()
+        index_file = dist_dir / "index.html"
+        if not index_file.is_file():
+            index_file = Path(__file__).resolve().parents[2] / "frontend" / "index.html"
+        if index_file.is_file():
+            return FileResponse(index_file)
+
+    # Check if a public static file directly in dist exists (e.g. favicon, manifest)
+    dist_dir = _frontend_dist_dir()
+    candidate = dist_dir / clean_route
+    try:
+        resolved = candidate.resolve()
+        if resolved.is_relative_to(dist_dir.resolve()) and resolved.is_file():
+            return FileResponse(resolved)
+    except (ValueError, RuntimeError):
+        pass
+
+    raise HTTPException(status_code=404, detail="Not Found")

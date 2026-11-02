@@ -3,12 +3,13 @@ import importlib.util
 import json
 import os
 import stat
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from aao import auditor_dispatch, authorization_issuer, integrator, supervisor_service
+from aao import auditor_dispatch, authorization_issuer, integrator, r1_pipeline, supervisor_service
 from aao.protected_routes import load_document, route_map, routes_digest
 
 
@@ -66,6 +67,65 @@ def test_promote_push_uses_app_auth_header_only_in_git_environment(monkeypatch, 
     assert env["GIT_CONFIG_KEY_0"] == "credential.helper" and env["GIT_CONFIG_VALUE_0"] == ""
     assert env["GIT_TERMINAL_PROMPT"] == "0"
     assert env["GIT_CONFIG_NOSYSTEM"] == "1" and env["GIT_CONFIG_GLOBAL"] == "/dev/null"
+
+
+def _g(*args):
+    return subprocess.run(["git", *args], check=True, capture_output=True, text=True,
+                          env={**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
+                               "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+                               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"}
+                          ).stdout.strip()
+
+
+def test_pushes_never_touch_or_read_the_auditor_mirror(tmp_path, monkeypatch):
+    """#319: a push from the mirror must neither move its refs nor depend on its config.
+
+    git >= 2.56 updates the mirror's own refs/heads/main through remote.origin
+    (+refs/*:refs/*) when the push URL matches; the pushInsteadOf decoy makes the
+    config dependence observable on any git version.
+    """
+    work, remote, decoy, mirror = (tmp_path / name for name in ("work", "remote.git", "decoy.git", "mirror.git"))
+    _g("init", "-q", "-b", "main", str(work))
+    _g("-C", str(work), "commit", "-q", "--allow-empty", "-m", "base")
+    base = _g("-C", str(work), "rev-parse", "HEAD")
+    _g("-C", str(work), "commit", "-q", "--allow-empty", "-m", "next")
+    commit = _g("-C", str(work), "rev-parse", "HEAD")
+    for bare in (remote, decoy):
+        _g("init", "-q", "--bare", str(bare))
+    _g("-C", str(work), "push", "-q", str(remote), f"{base}:refs/heads/main")
+    _g("clone", "-q", "--mirror", str(remote), str(mirror))
+    _g("-C", str(work), "push", "-q", str(mirror), f"{commit}:refs/aao/candidate")
+    _g("-C", str(mirror), "config", f"url.{decoy}.pushInsteadOf", str(remote))
+    before = _g("-C", str(mirror), "for-each-ref")
+
+    template = tmp_path / "template"
+    hooks = template / "hooks"
+    hooks.mkdir(parents=True)
+    marker = tmp_path / "pre-push-ran"
+    hook = hooks / "pre-push"
+    hook.write_text(f"#!/bin/sh\nprintf ran > {marker}\n")
+    hook.chmod(0o755)
+    original_temporary_directory = integrator.tempfile.TemporaryDirectory
+
+    def temporary_directory(*args, **kwargs):
+        assert kwargs.get("ignore_cleanup_errors") is True
+        return original_temporary_directory(*args, **kwargs)
+
+    monkeypatch.setattr(integrator.tempfile, "TemporaryDirectory", temporary_directory)
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", f"'url.{decoy}.pushinsteadof'='{remote}'")
+    monkeypatch.setenv("GIT_TEMPLATE_DIR", str(template))
+
+    result = integrator._conditional_push(mirror, str(remote), "refs/heads/main", base, commit, None)
+    assert result.returncode == 0, result.stderr
+    r1_pipeline._git(mirror, "push", str(remote), f"{commit}:refs/heads/aao-staging/1-{commit}")
+    monkeypatch.delenv("GIT_CONFIG_PARAMETERS")
+    monkeypatch.delenv("GIT_TEMPLATE_DIR")
+
+    assert _g("-C", str(remote), "rev-parse", "refs/heads/main") == commit
+    assert _g("-C", str(remote), "rev-parse", f"refs/heads/aao-staging/1-{commit}") == commit
+    assert _g("-C", str(decoy), "for-each-ref") == ""
+    assert _g("-C", str(mirror), "for-each-ref") == before
+    assert not marker.exists()
 
 
 def test_dispatch_gate_path_and_file_are_group_readable_not_writable(tmp_path, monkeypatch):

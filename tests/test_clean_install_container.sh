@@ -135,11 +135,11 @@ fi
 
 assert_true "host identity is root-owned and readable only by the dedicated publisher/worker group" \
   test "$HOST_ID_PERMS" = "440 root:aao-host-id-read"
-for role in aao-pm aao-impl-codex aao-impl-ag; do
+for role in aao-pm aao-impl-codex aao-impl-ag aao-api aao-recovery; do
   assert_true "$role can read the host identity required for fencing" \
     runuser -u "$role" -- test -r /etc/aao/host-id
 done
-for role in aao-api aao-integrator aao-supervisor; do
+for role in aao-integrator aao-supervisor; do
   assert_true "$role cannot read the host identity" \
     bash -c "! runuser -u '$role' -- test -r /etc/aao/host-id"
 done

@@ -19,6 +19,7 @@ PROJECT_ID = "9d17d6c1-d644-424a-a425-fe7e084c3d91"
 ROOT = Path(__file__).resolve().parents[1]
 TRUST_TREE = Path("/srv/aao")
 REQUIRED_GRANTS = {"project.read", "work.assign", "work.coordinate"}
+SELFDEV_CYCLE_ISSUER_GRANT = "credential.issue_selfdev_cycle_roles"
 
 
 def result(check: str, status: str, detail: str, action: str = "") -> dict:
@@ -221,6 +222,14 @@ def database_checks(
                     "Identify registered PM and rerun with --principal-id",
                 )
             )
+            checks.append(
+                result(
+                    "db:pm-cycle-issuer-grant",
+                    "UNVERIFIED",
+                    "No persisted PM principal selected; scoped cycle-issuer grant not inspected",
+                    "Identify registered PM and rerun with --principal-id",
+                )
+            )
         else:
             identity = db.execute(
                 "SELECT kind, enabled FROM principal_credentials WHERE principal_id=%s",
@@ -232,6 +241,21 @@ def database_checks(
                     "PASS" if identity == ("AGENT", True) else "MISSING",
                     "Enabled AGENT required",
                     "CEO provision/enable dedicated PM identity if absent",
+                )
+            )
+            cycle_grant = db.execute(
+                "SELECT expires_at IS NOT NULL AND expires_at > clock_timestamp() AND expires_at <= clock_timestamp() + interval '30 days' FROM project_grants WHERE principal_id=%s AND project_id=%s AND capability=%s",
+                (principal_id, project_id, SELFDEV_CYCLE_ISSUER_GRANT),
+            ).fetchone()
+            cycle_grant_valid = cycle_grant == (True,) and identity == ("AGENT", True)
+            checks.append(
+                result(
+                    "db:pm-cycle-issuer-grant",
+                    "PASS" if cycle_grant_valid else "MISSING",
+                    "Live project-scoped cycle issuer grant expires within 30 days"
+                    if cycle_grant_valid
+                    else "Missing, expired, non-expiring or overlong cycle issuer grant; PM identity must be enabled",
+                    "CEO issue only credential.issue_selfdev_cycle_roles for this project, expiring within 30 days; never auto-grant",
                 )
             )
             rows = db.execute(

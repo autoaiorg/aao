@@ -1,14 +1,14 @@
 # Estado actual de AAO
 
-**Corte:** 2026-11-02 21:51 UTC. **Revisión:** `1a70bca5411191a479840a673478fc60fa3f9b6b` (`origin/main`; merge de #343). Este informe es un estado de coordinación, no una certificación de autonomía, despliegue o aceptación.
+**Corte de repositorio:** 2026-11-02 23:20 CET (22:20 UTC), `origin/main` = `b539f79bb59c967658cf9fa869d0aaf8c59f2232` (merge de #341). **Corte de host/BD:** 2026-11-02 21:51 UTC (sin re-verificar en esta actualización; ver §4). Este informe es un estado de coordinación, no una certificación de autonomía, despliegue o aceptación.
 
 ## 1. Evidencia de repositorio
 
 | Hecho | Estado | Evidencia |
 |---|---|---|
-| HEAD de `main` | `1a70bca5411191a479840a673478fc60fa3f9b6b` | `git rev-parse origin/main`; merge de #343 |
-| CI post-merge de `main` | SUCCESS | Run `41531435732` corresponde al SHA exacto de `main`; `gh run view` informa `completed/success` |
-| PRs abiertos | #341 y #342, ambos draft | `gh pr list --state open -R autoaiorg/aao`; #341 head `33bc64f2309d0a504127be6b581833864d3d34b5`; #342 actualiza este informe |
+| HEAD de `main` | `b539f79bb59c967658cf9fa869d0aaf8c59f2232` | `git rev-parse origin/main`; merge de #341 |
+| CI post-merge de `main` | SUCCESS | Run `41533724157` ("Core checks") sobre `b539f79`, `completed/success` (`gh run list --branch main`) |
+| PRs abiertos | Ninguno | `gh pr list --state open -R autoaiorg/aao` = `[]` a 2026-11-02 23:20 CET; #341 y #342 MERGED |
 | CI post-merge de #343 | SUCCESS | Run `41531435732` corresponde al SHA actual de `main`; `completed/success` |
 | #344 matriz de autorización | MERGED | Merge commit `eca67626e77a8c734230f9a431d5f0b77b177fde`, 2026-11-02T21:24:37Z; aclara que `VERIFIED` vía API no equivale a auditoría/aceptación independiente ni autoriza promoción |
 | #345 provisión de roles de ciclo Self Development | MERGED | Merge commit `9a91345facc7ed8f1c6c707479f1af19bf94b494`, 2026-11-02T21:43:29Z; permite aprovisionar identidades de ciclo con límites definidos, pero no acredita que se hayan provisionado ni que haya candidato |
@@ -16,9 +16,9 @@
 | #318 push relay | MERGED, opt-in; no acredita despliegue | PR #318, head `8d749e9de2f0ff2071fafdc470b25cd7d9e74f0c`; revisión independiente previa APPROVE WITH NITS |
 | #329 espejo/integrador vs git 2.56 | MERGED | PR #329, head `526f62ab58510a5f6d4c46ca94fb8767b20d1534`; revisión independiente previa APPROVE WITH NITS |
 | #331 autorrotación PM de dos fases | MERGED | PR #331, merge en el HEAD actual; reauditoría independiente condicional y CI verde según el comentario de cierre de #322 |
-| #341 autorrotación publisher W2 dirigida al rol | OPEN, draft; checks no verdes en los dos runs más recientes: un `test` FAILURE y otro `test` IN_PROGRESS; sin reviews GitHub registradas al corte | Head `33bc64f2309d0a504127be6b581833864d3d34b5`; requiere resolver el fallo, CI verde y revisión independiente del head vigente antes de considerar merge |
+| #341 autorrotación publisher W2 dirigida al rol | MERGED | Merge commit `b539f79bb59c967658cf9fa869d0aaf8c59f2232`, 2026-11-02T22:02:15Z; head previo al merge `f9d1442e765ec77ccbd5fd936b03b9c293c76351`. Al corte 21:51 UTC el `test` de un run había fallado (head `33bc64f`); no se ha comprobado aquí si el head final pasó revisión independiente |
 | #343 límites de privilegio runtime | MERGED | Head `d8d918101d3d4badf51f95ace7ad2086e399f0eb`; merge commit `1a70bca5411191a479840a673478fc60fa3f9b6b`, 2026-11-02T21:46:41Z. Auditoría previa APPROVE WITH NITS reportada; no equivale a despliegue ni aceptación |
-| #342 este estado | OPEN, draft | Head `ec23b0b94892606c18ad90b029d0a956bd62d2d8` antes de esta actualización; se mantiene draft |
+| #342 este estado | MERGED | Merge commit `253a63c33243c4d7b93c42c2ebc736a3c1f9d3a4`, 2026-11-02T21:54:35Z; head previo `86072044f89017f06740908069ec4d48e6f2e07b` |
 | #251 y #330 | CLOSED, ramas/historial conservados | Verificación y comentario de cierre en issue #322 |
 | #299, #325 y #321 | CLOSED/sustituidos o integrados | #299 sustituido por #327; #325 cerrado como contenido en #327; #321 cerrado al integrarse B2 en #324 |
 
@@ -86,7 +86,7 @@ No incluir tokens, DSNs, claves privadas ni digests en este documento. Re-verifi
 
 ### No se requiere acción inmediata del CEO para continuar el trabajo técnico
 
-La coordinación de #322 quedó cerrada; al corte siguen abiertos en draft #341 (rotación publisher W2) y #342 (este informe). #343 ya está fusionado, pero sus comprobaciones son parciales y no acreditan despliegue completo. El siguiente avance es investigar el fallo de `test` en uno de los runs de #341 (el otro sigue en curso), luego validar el límite de entrega de credenciales y los gates de integración seguros/autorizados. No se ha demostrado todavía autonomía plena ni aceptación del piloto.
+La coordinación de #322 quedó cerrada. A 2026-11-02 23:20 CET no quedan PRs abiertos: #341 y #342 se fusionaron (ver §1). #343 está fusionado, pero sus comprobaciones son parciales y no acreditan despliegue completo. Pendiente: verificar que el head final de #341 pasó CI y revisión independiente (no comprobado aquí), luego validar el límite de entrega de credenciales y los gates de integración seguros/autorizados. No se ha demostrado todavía autonomía plena ni aceptación del piloto.
 
 ### Decisiones que sí requieren al CEO
 

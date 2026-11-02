@@ -1636,15 +1636,21 @@ def issue_w2_publisher(
         if not project or project[0] != W2_PROJECT_NAME or project[1] != "ACTIVE":
             raise HTTPException(409, "W2 publisher issuance requires the active Self Development project")
         active = db.execute(
-            "SELECT 1 FROM project_grants g JOIN principal_credentials c "
+            "SELECT c.principal_id FROM project_grants g JOIN principal_credentials c "
             "ON c.principal_id=g.principal_id WHERE g.project_id=%s "
             "AND g.capability='code.publish' AND g.expires_at>clock_timestamp() "
             "AND c.kind='AGENT' AND c.enabled=true AND c.principal_id LIKE %s "
-            "LIMIT 1 FOR SHARE OF c",
+            "ORDER BY c.principal_id FOR UPDATE OF c",
             (project_id, f"aao-publisher-{account_slug}-%"),
-        ).fetchone()
-        if active:
-            raise HTTPException(409, "An unexpired W2 publisher credential already exists for this account")
+        ).fetchall()
+        for (previous_principal_id,) in active:
+            # A lost HTTP response must not strand a credential whose cleartext
+            # token the caller never received. Re-issuing atomically disables
+            # any prior credential for this role before creating its replacement.
+            db.execute(
+                "UPDATE principal_credentials SET enabled=false WHERE principal_id=%s",
+                (previous_principal_id,),
+            )
         db.execute(
             "INSERT INTO principal_credentials(principal_id,kind,token_digest,enabled) "
             "VALUES (%s,'AGENT',%s,true)",

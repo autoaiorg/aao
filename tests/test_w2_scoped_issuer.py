@@ -22,13 +22,16 @@ def test_w2_issuer_fixes_project_grants_ttl_and_audits(monkeypatch):
         def fetchone(self):
             return self.value
 
+        def fetchall(self):
+            return self.value or []
+
     class DB:
         def execute(self, sql, params=()):
             calls.append((sql, params))
             if "SELECT name,state FROM projects" in sql:
                 return Result(("AAO — Self Development", "ACTIVE"))
-            if "SELECT 1 FROM project_grants g JOIN principal_credentials" in sql:
-                return Result(None)
+            if "SELECT c.principal_id FROM project_grants g JOIN principal_credentials" in sql:
+                return Result([])
             if "SELECT clock_timestamp()+%s" in sql:
                 assert params == (timedelta(hours=8),)
                 return Result((expiry,))
@@ -71,6 +74,61 @@ def test_w2_issuer_fixes_project_grants_ttl_and_audits(monkeypatch):
     inserted = [params for sql, params in calls if sql.startswith("INSERT INTO project_grants")]
     assert [params[2] for params in inserted] == ["project.read", "code.publish"]
     assert all(params[3] == expiry for params in inserted)
+
+
+def test_w2_issuer_replaces_existing_credential_after_lost_response(monkeypatch):
+    """Retrying issuance recovers from a committed DB transaction/lost HTTP body."""
+    from aao.work_management_api import AuthenticatedPrincipal, app
+
+    issuer = AuthenticatedPrincipal("aao-pm-coordinator-test", "digest", "AGENT")
+    monkeypatch.setattr(
+        "aao.work_management_api._authenticate_request_principal", lambda *_: issuer
+    )
+    calls = []
+    expiry = datetime.now(UTC) + timedelta(hours=8)
+
+    class Result:
+        def __init__(self, value=None):
+            self.value = value
+
+        def fetchone(self):
+            return self.value
+
+        def fetchall(self):
+            return self.value or []
+
+    class DB:
+        def execute(self, sql, params=()):
+            calls.append((sql, params))
+            if "SELECT name,state FROM projects" in sql:
+                return Result(("AAO — Self Development", "ACTIVE"))
+            if "SELECT c.principal_id FROM project_grants g JOIN principal_credentials" in sql:
+                return Result([("aao-publisher-pm-orphaned",)])
+            if "SELECT clock_timestamp()+%s" in sql:
+                return Result((expiry,))
+            return Result()
+
+    @contextmanager
+    def fake_tx():
+        yield DB()
+
+    monkeypatch.setattr("aao.work_management_api.tx", fake_tx)
+    monkeypatch.setattr("aao.work_management_api.require_grant", lambda *_: None)
+    monkeypatch.setattr("aao.work_management_api.audit", lambda *_: None)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/projects/project-1/w2-publishers/aao-pm/issue",
+            headers={"X-Agent-Token": "pm-token"},
+        )
+
+    assert response.status_code == 201, response.text
+    disabled = [
+        params for sql, params in calls
+        if sql.startswith("UPDATE principal_credentials SET enabled=false")
+    ]
+    assert disabled == [("aao-publisher-pm-orphaned",)]
+    assert any(sql.startswith("INSERT INTO principal_credentials") for sql, _ in calls)
 
 
 def test_w2_issuer_rejects_non_pm_and_unknown_account_before_database(monkeypatch):

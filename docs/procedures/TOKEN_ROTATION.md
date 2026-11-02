@@ -29,7 +29,9 @@ Además, `require_ceo` con cabecera `X-CEO-Token` solo funciona con `AAO_ENV` en
 1. **Coordinador PM** (token sin caducidad, grants posiblemente sin caducidad): falta un endpoint de **auto-rotación** autenticado por la propia credencial AGENT vigente. Basta con esto: rotar el token no cambia grants ni identidad.
 2. **Publicadores W2** (principal nuevo y grants de 8 h por ejecución): la auto-rotación no basta. El diseño inicial deja de describir el estado actual: existe una ruta de emisión delegada en la rama de trabajo `feat/w2-scoped-issuer`, aún no fusionada ni desplegada. La ruta está limitada a los dos roles W2, al proyecto activo AAO — Self Development, a `project.read` + `code.publish` y a ocho horas como máximo. Exige el grant `credential.issue_publisher` en el token del coordinador PM. El grant lo concede el CEO una sola vez; la emisión de cada credencial ya no requiere su token.
 
-La ruta solo resuelve la emisión en la API. **No completa la rotación autónoma en el host**: falta el cliente periódico y el mecanismo acotado para entregar de forma segura el token al runtime privado de cada cuenta Linux. No se debe dar sudo general al servicio PM para cerrar ese hueco.
+La ruta solo resuelve la emisión en la API. Si la respuesta HTTP se pierde después del commit, el emisor puede repetir la petición: la transacción deshabilita el publisher W2 activo anterior para ese rol y emite uno nuevo, evitando dejar bloqueada la cuenta durante ocho horas. Por ello, una repetición también invalida cualquier token anterior que el cliente sí hubiera recibido; el cliente debe persistir inmediatamente el token nuevo y no reintentar tras recibir una respuesta completa.
+
+**No completa la rotación autónoma en el host**: falta el cliente periódico y el mecanismo acotado para entregar de forma segura el token al runtime privado de cada cuenta Linux. No se debe dar sudo general al servicio PM para cerrar ese hueco.
 
 ## Cambio mínimo de API propuesto
 

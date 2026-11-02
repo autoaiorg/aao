@@ -289,6 +289,61 @@ def runtime_checks(db, role: str | None) -> list[dict]:
     checks = [
         result("db:runtime-role", "PASS", "Non-elevated login role; credentials not inspected")
     ]
+    boundaries = db.execute(
+        """SELECT
+             has_database_privilege(%s, current_database(), 'CONNECT'),
+             has_database_privilege(%s, current_database(), 'CREATE'),
+             has_database_privilege(%s, current_database(), 'TEMP'),
+             has_schema_privilege(%s, 'public', 'USAGE'),
+             has_schema_privilege(%s, 'public', 'CREATE'),
+             EXISTS (
+               SELECT 1 FROM pg_auth_members m
+               JOIN pg_roles r ON r.oid = m.member OR r.oid = m.roleid
+               WHERE r.rolname = %s
+             ),
+             EXISTS (
+               SELECT 1 FROM pg_class c
+               JOIN pg_namespace n ON n.oid = c.relnamespace
+               WHERE n.nspname = 'public' AND pg_has_role(%s, c.relowner, 'USAGE')
+             ),
+             EXISTS (
+               SELECT 1 FROM pg_database d,
+                    LATERAL aclexplode(COALESCE(d.datacl, acldefault('d', d.datdba))) a
+               WHERE d.datname = current_database() AND a.grantee = 0
+                 AND a.privilege_type IN ('CREATE', 'TEMPORARY')
+             )""",
+        (role, role, role, role, role, role, role),
+    ).fetchone()
+    if boundaries is None:
+        checks.append(
+            result(
+                "db:runtime-boundaries", "UNVERIFIED", "Database privilege boundaries unavailable"
+            )
+        )
+    else:
+        (
+            connect,
+            db_create,
+            db_temp,
+            schema_usage,
+            schema_create,
+            membership,
+            owns_table,
+            public_unsafe,
+        ) = boundaries
+        safe = (
+            connect
+            and schema_usage
+            and not any((db_create, db_temp, schema_create, membership, owns_table, public_unsafe))
+        )
+        checks.append(
+            result(
+                "db:runtime-boundaries",
+                "PASS" if safe else "MISSING",
+                "Requires CONNECT and public USAGE only; no CREATE/TEMP, memberships, ownership, or PUBLIC CREATE/TEMP",
+                "Apply the reviewed runtime grants; revoke PUBLIC CREATE/TEMP and unexpected role memberships",
+            )
+        )
     for table, needed in (
         ("protocol_instances", "SELECT,INSERT"),
         ("project_routines", "SELECT,INSERT,UPDATE"),

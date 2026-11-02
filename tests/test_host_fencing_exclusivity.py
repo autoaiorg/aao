@@ -66,7 +66,7 @@ def test_registry_registration_refuses_unmigrated_schema():
 
     db = MagicMock()
     db.execute.return_value.fetchone.return_value = (None,)
-    with pytest.raises(BackupError, match="apply PostgreSQL migration 031"):
+    with pytest.raises(BackupError, match="apply PostgreSQL migration 036"):
         register_host_worker(db, "node-1", "worker-node-1")
 
 

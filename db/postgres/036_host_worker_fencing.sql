@@ -54,6 +54,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_host_worker_bindings_one_active_worker
     ON host_worker_bindings(worker_id) WHERE status = 'ACTIVE';
 ALTER TABLE execution_queue
     ADD COLUMN IF NOT EXISTS claim_fence_epoch bigint;
+-- Like 033/035: no implicit PUBLIC access to the fencing registry. This grants
+-- nothing; a non-owner runtime role needs an explicit, reviewed grant.
+REVOKE ALL ON TABLE host_worker_bindings FROM PUBLIC;
 INSERT INTO schema_migrations(version)
-    VALUES ('031_host_worker_fencing') ON CONFLICT DO NOTHING;
+    VALUES ('036_host_worker_fencing') ON CONFLICT DO NOTHING;
 COMMIT;

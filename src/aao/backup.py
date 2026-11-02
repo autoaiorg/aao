@@ -936,7 +936,7 @@ def ensure_host_worker_registry(db: Any) -> None:
         "AND table_name='execution_queue' AND column_name='claim_fence_epoch'"
     ).fetchone()
     if not registry or registry[0] is None or not epoch:
-        raise BackupError("Host fencing schema is unavailable; apply PostgreSQL migration 031")
+        raise BackupError("Host fencing schema is unavailable; apply PostgreSQL migration 036")
 
 
 def register_host_worker(db: Any, host_id: str, worker_id: str) -> None:

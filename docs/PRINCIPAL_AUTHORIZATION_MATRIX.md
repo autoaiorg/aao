@@ -23,8 +23,19 @@ not a claim of M2 acceptance.
 | `POST /v1/projects/{id}/capability-evaluations` | Individual AGENT bearer | `work.create`; credential and grant rechecked under `FOR SHARE`; group children are locked and limited to their assigned agent | Records a non-authorizing recommendation. Non-group tasks retain the existing grant contract; an agent with `work.create` cannot assess another agent's assigned group child. |
 | `POST /v1/work/{id}/admit` | Individual AGENT bearer | `work.admit`; credential and grant recheck under `FOR SHARE` | Deterministic admission call uses simulated capacity, budget, risk and emergency-stop inputs; not real resource admission. |
 | `POST /v1/work/{id}/progress` | Individual AGENT bearer | `work.progress`; credential and grant recheck under `FOR SHARE` | Advances READY-to-IN_PROGRESS and IN_PROGRESS-to-IN_REVIEW. VERIFIED-to-DONE is disabled even if a legacy APPROVE row exists, until independent approval verification is available. |
-| `POST /v1/work/{id}/reviews` | Individual AUDITOR bearer | `work.review`; individual AUDITOR credential and grant rows locked under `FOR SHARE`; locks work and its execution rows | Rejects the author and any principal ID in durable execution claim history. `APPROVE` fails closed with 409 because independent human identity and evidence references are not verified; it records no review and cannot set `VERIFIED`. `REJECT` may return work to `IN_PROGRESS`, including while execution is incomplete. This is only ID-level separation, not proof of independent human identity or evidence validity. |
+| `POST /v1/work/{id}/reviews` | Individual AUDITOR bearer | `work.review`; individual AUDITOR credential and grant rows locked under `FOR SHARE`; locks work and its execution rows | Rejects the author and any principal ID in durable execution claim history. For `APPROVE`, the route resolves content-addressed evidence, requires a linked successful execution for the candidate SHA, rejects active vetoes and running/uncertain executions, then records the review and sets `VERIFIED`. This is an API-level gate only: it proves neither auditor independence under GOV-REV-001 nor evidence truth/authorship. `REJECT` may return work to `IN_PROGRESS`, including while execution is incomplete. |
+
 | `POST /v1/work/{id}/stage-inert` | Individual AGENT bearer | Requires both `work.admit` and `execution.claim`; credential and grant rows locked under `FOR SHARE` | Feature-flagged staging of fixed inert payload only. No model/tool/external action. A negative integration case rejects an admitted agent without the execution capability. |
+
+**Approval boundary:** the `APPROVE` route currently sets `VERIFIED` when its
+application checks pass. The previous claim that the route itself fails closed
+for lack of independent human identity was inaccurate. A separate AUDITOR
+credential, project grant, execution separation and evidence-byte verification
+are useful controls, but do not establish the independent authority, protected
+review criteria, veto custody or tamper-evident attribution required by
+GOV-REV-001. Therefore API `VERIFIED` is not independent audit acceptance and
+does not authorize promotion, merge or external effects. Those remain subject
+to the applicable governance gates and evidence.
 
 The PostgreSQL API no longer accepts shared worker/reviewer tokens. SQLite
 prototype tokens are a separate path. Individual bearer authentication first

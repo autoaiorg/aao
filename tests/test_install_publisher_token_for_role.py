@@ -45,6 +45,27 @@ def test_pm_token_kind_maps_to_coordinator_file_only_for_aao_pm(monkeypatch, tmp
         install.target_path("aao-pm", "ceo")
 
 
+def test_selfdev_tokens_are_separate_and_bound_to_their_role(monkeypatch, tmp_path):
+    monkeypatch.setattr(install, "RUNTIME_ROOT", tmp_path / "run")
+    uid = os.getuid()
+    uids = {"aao-impl-codex": uid, "aao-auditor": uid + 1}
+    monkeypatch.setattr(install.pwd, "getpwnam", lambda name: SimpleNamespace(pw_uid=uids[name]))
+    monkeypatch.setattr(install.os, "geteuid", lambda: uid)
+    runtime = tmp_path / "run" / str(uid)
+    runtime.mkdir(parents=True, mode=0o700)
+    runtime.chmod(0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    assert install.target_path("aao-impl-codex", "selfdev-implementer") == (
+        runtime / "aao-self-development-agent.token"
+    )
+    with pytest.raises(install.TokenInstallError, match="unsupported token kind"):
+        install.target_path("aao-impl-codex", "selfdev-reviewer")
+    with pytest.raises(install.TokenInstallError, match="unsupported token kind"):
+        install.target_path("aao-auditor", "selfdev-implementer")
+    with pytest.raises(install.TokenInstallError, match="unsupported token kind"):
+        install.target_path("aao-auditor", "publisher")
+
+
 def test_target_path_rejects_other_account_and_other_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr(install, "RUNTIME_ROOT", tmp_path)
     with pytest.raises(install.TokenInstallError, match="unsupported"):

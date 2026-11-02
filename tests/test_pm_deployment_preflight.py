@@ -22,11 +22,12 @@ class Rows:
 
 
 class Database:
-    def __init__(self, *, identity=("AGENT", True), grants=None, elevated=False):
+    def __init__(self, *, identity=("AGENT", True), grants=None, elevated=False, boundaries=None):
         self.calls = []
         self.identity = identity
         self.grants = grants if grants is not None else preflight.REQUIRED_GRANTS
         self.elevated = elevated
+        self.boundaries = boundaries or (True, False, False, True, False, False, False, False)
 
     def transaction(self):
         return nullcontext()
@@ -36,7 +37,7 @@ class Database:
         if sql == "SET TRANSACTION READ ONLY":
             return Rows([])
         assert self.calls[0][0] == "SET TRANSACTION READ ONLY"
-        assert sql.startswith("SELECT ")
+        assert sql.lstrip().startswith("SELECT")
         assert "token_digest" not in sql
         if "schema_migrations" in sql:
             return Rows([(p.stem,) for p in (preflight.ROOT / "db/postgres").glob("*.sql")])
@@ -49,9 +50,11 @@ class Database:
             return Rows([(g,) for g in self.grants])
         if "current_user" in sql:
             return Rows([("developer", True)])
+        if "has_database_privilege" in sql:
+            return Rows([self.boundaries])
         if "rolcanlogin" in sql:
             return Rows([(self.elevated, False, False, False, False, True)])
-        if "FROM pg_class" in sql:
+        if "c.relname=%s" in sql:
             return Rows([(False, False, False)])
         if "has_table_privilege" in sql:
             return Rows([(len(params) == 3,)])
@@ -163,7 +166,27 @@ def test_runtime_table_privileges_checked_individually():
     for table in ("protocol_instances", "project_routines", "routine_occurrences"):
         assert rows[f"db:runtime:{table}"]["status"] == "PASS"
     assert rows["db:runtime-complete"]["status"] == "UNVERIFIED"
+    assert rows["db:runtime-boundaries"]["status"] == "PASS"
     assert any(params == ("runtime", "public.project_routines", "UPDATE") for _, params in db.calls)
+
+
+@pytest.mark.parametrize(
+    "boundaries",
+    [
+        (False, False, False, True, False, False, False, False),
+        (True, True, False, True, False, False, False, False),
+        (True, False, True, True, False, False, False, False),
+        (True, False, False, True, True, False, False, False),
+        (True, False, False, True, False, True, False, False),
+        (True, False, False, True, False, False, True, False),
+        (True, False, False, True, False, False, False, True),
+    ],
+)
+def test_runtime_boundary_drift_fails_preflight(boundaries):
+    db = Database(boundaries=boundaries)
+    db.execute("SET TRANSACTION READ ONLY")
+    rows = by_name(preflight.runtime_checks(db, "runtime"))
+    assert rows["db:runtime-boundaries"]["status"] == "MISSING"
 
 
 @pytest.mark.parametrize(
@@ -175,7 +198,7 @@ def test_runtime_rejects_delete_owner_or_public(unsafe):
     execute = db.execute
 
     def modified(sql, params=()):
-        if "FROM pg_class" in sql:
+        if "c.relname=%s" in sql:
             return Rows([unsafe])
         return execute(sql, params)
 
@@ -297,6 +320,6 @@ def test_runtime_public_acl_check_includes_truncate():
     db = Database()
     db.execute("SET TRANSACTION READ ONLY")
     preflight.runtime_checks(db, "runtime")
-    acl_queries = [sql for sql, _ in db.calls if "FROM pg_class" in sql]
+    acl_queries = [sql for sql, _ in db.calls if "c.relname=%s" in sql]
     assert len(acl_queries) == 3
     assert all("'TRUNCATE'" in sql.split("a.privilege_type IN", 1)[1] for sql in acl_queries)

@@ -27,9 +27,9 @@ Además, `require_ceo` con cabecera `X-CEO-Token` solo funciona con `AAO_ENV` en
 ## Qué falta exactamente
 
 1. **Coordinador PM** (token sin caducidad, grants posiblemente sin caducidad): falta un endpoint de **auto-rotación** autenticado por la propia credencial AGENT vigente. Basta con esto: rotar el token no cambia grants ni identidad.
-2. **Publicadores W2** (principal nuevo y grants de 8 h por ejecución): la auto-rotación **no basta**. El diseño actual crea un principal nuevo y le concede grants caducables cada vez; conceder grants es CEO-only. Falta además una de estas dos cosas (decisión reservada al CEO, ver abajo):
-   - (a) una capacidad delegada y acotada de emisión, p. ej. `credential.issue_publisher`, que permita a un principal operador emitir principals `aao-publisher-*` con exactamente los grants W2 fijos y caducidad ≤ 8 h; o
-   - (b) cambiar el modelo W2 a principals estables cuyo token se auto-rota y cuyos grants se renuevan por una regla fija, lo que también requiere una ruta no-CEO de renovación de grants.
+2. **Publicadores W2** (principal nuevo y grants de 8 h por ejecución): la auto-rotación no basta. El diseño inicial deja de describir el estado actual: existe una ruta de emisión delegada en la rama de trabajo `feat/w2-scoped-issuer`, aún no fusionada ni desplegada. La ruta está limitada a los dos roles W2, al proyecto activo AAO — Self Development, a `project.read` + `code.publish` y a ocho horas como máximo. Exige el grant `credential.issue_publisher` en el token del coordinador PM. El grant lo concede el CEO una sola vez; la emisión de cada credencial ya no requiere su token.
+
+La ruta solo resuelve la emisión en la API. **No completa la rotación autónoma en el host**: falta el cliente periódico y el mecanismo acotado para entregar de forma segura el token al runtime privado de cada cuenta Linux. No se debe dar sudo general al servicio PM para cerrar ese hueco.
 
 ## Cambio mínimo de API propuesto
 
@@ -49,9 +49,9 @@ Así se cumple «retirar el anterior solo después de verificar el nuevo».
 
 Riesgo de seguridad: quien robe el token puede rotarlo y dejar fuera al titular legítimo. No aumenta privilegios, pero convierte un robo en denegación de servicio; el evento auditado y el fallo de verificación del servicio legítimo lo hacen detectable. Mitigación opcional: límite de frecuencia por principal.
 
-### B. Publicadores W2: requiere decisión CEO
+### B. Publicadores W2: delegación acotada en implementación
 
-Crear una capacidad que emita credenciales o conceda grants a otro principal amplía la autoridad del sistema; según AGENTS.md (regla 2) y `docs/AGENT_OPERATING_RULES.md`, no se auto-concede. Se propone al CEO la opción (a): capacidad no transferible, lista blanca fija de grants W2, caducidad ≤ 8 h forzada en servidor, cuentas destino distintas del emisor y auditoría por emisión. Hasta esa decisión, la emisión W2 sigue siendo CEO-only.
+La capacidad `credential.issue_publisher` no permite grants arbitrarios: el endpoint dedicado fija las cuentas destino, el proyecto, los grants y la caducidad. El CEO conserva la decisión de conceder o retirar ese grant al coordinador. La ruta no debe fusionarse ni desplegarse sin auditoría independiente (GOV-REV-001), pruebas de integración y un diseño de entrega segura al runtime de destino.
 
 ## Flujo de rotación una vez exista A (`scripts/rotate_role_token.py`, futuro)
 

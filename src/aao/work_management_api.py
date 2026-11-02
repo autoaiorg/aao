@@ -463,7 +463,7 @@ class PrincipalCredentialRequest(BaseModel):
 
 class GrantRequest(BaseModel):
     principal_id: str = Field(min_length=1)
-    capability: str = Field(pattern=r"^(?:work\.(?:create|admit|review|progress|coordinate|assign)|project\.read|execution\.claim|execution\.reconcile|effect\.(?:propose|reconcile)|evidence\.submit|code\.(?:propose|publish))$")
+    capability: str = Field(pattern=r"^(?:work\.(?:create|admit|review|progress|coordinate|assign)|project\.read|execution\.claim|execution\.reconcile|effect\.(?:propose|reconcile)|evidence\.submit|code\.(?:propose|publish)|credential\.issue_publisher)$")
     expires_at: datetime | None = None
 
     @field_validator("expires_at")
@@ -1596,6 +1596,84 @@ def grant(project_id: str, payload: GrantRequest, _: str = Depends(require_ceo))
             "expires_at": payload.expires_at.isoformat() if payload.expires_at else None,
         },
     )
+
+
+W2_PUBLISHER_ACCOUNTS = {"aao-pm": "pm", "aao-impl-codex": "impl"}
+W2_PUBLISHER_GRANTS = ("project.read", "code.publish")
+W2_PUBLISHER_TTL = timedelta(hours=8)
+W2_PROJECT_NAME = "AAO — Self Development"
+
+
+@app.post("/v1/projects/{project_id}/w2-publishers/{account}/issue", status_code=201)
+def issue_w2_publisher(
+    project_id: str,
+    account: str,
+    issuer: Annotated[AuthenticatedPrincipal, Depends(require_worker)],
+):
+    """Issue one bounded W2 publisher credential to an authorized PM principal.
+
+    Authority is the explicit, CEO-granted `credential.issue_publisher` project
+    grant. The endpoint fixes the project, destination accounts, grants and TTL;
+    callers cannot select credentials, grants, principal IDs or expiry.
+    """
+    from aao.principal_credentials import digest_token
+
+    account_slug = W2_PUBLISHER_ACCOUNTS.get(account)
+    if account_slug is None:
+        raise HTTPException(404, "W2 publisher account not found")
+    if not issuer.startswith("aao-pm-coordinator-"):
+        raise HTTPException(403, "W2 publisher issuance requires the PM coordinator")
+
+    token = secrets.token_urlsafe(32)
+    principal_id = f"aao-publisher-{account_slug}-{uuid4().hex[:12]}"
+    with tx() as db:
+        require_grant(db, str(issuer), project_id, "credential.issue_publisher")
+        # Serialize issuers for this project. The active-credential check below
+        # must not race with another request issuing the same role's token.
+        project = db.execute(
+            "SELECT name,state FROM projects WHERE id=%s FOR UPDATE", (project_id,),
+        ).fetchone()
+        if not project or project[0] != W2_PROJECT_NAME or project[1] != "ACTIVE":
+            raise HTTPException(409, "W2 publisher issuance requires the active Self Development project")
+        active = db.execute(
+            "SELECT 1 FROM project_grants g JOIN principal_credentials c "
+            "ON c.principal_id=g.principal_id WHERE g.project_id=%s "
+            "AND g.capability='code.publish' AND g.expires_at>clock_timestamp() "
+            "AND c.kind='AGENT' AND c.enabled=true AND c.principal_id LIKE %s "
+            "LIMIT 1 FOR SHARE OF c",
+            (project_id, f"aao-publisher-{account_slug}-%"),
+        ).fetchone()
+        if active:
+            raise HTTPException(409, "An unexpired W2 publisher credential already exists for this account")
+        db.execute(
+            "INSERT INTO principal_credentials(principal_id,kind,token_digest,enabled) "
+            "VALUES (%s,'AGENT',%s,true)",
+            (principal_id, digest_token(token)),
+        )
+        expiry = db.execute(
+            "SELECT clock_timestamp()+%s", (W2_PUBLISHER_TTL,),
+        ).fetchone()[0]
+        for capability in W2_PUBLISHER_GRANTS:
+            db.execute(
+                "INSERT INTO project_grants(principal_id,project_id,capability,expires_at) "
+                "VALUES (%s,%s,%s,%s)",
+                (principal_id, project_id, capability, expiry),
+            )
+        audit(db, project_id, "principal.w2_publisher.issued", {
+            "issuer_principal_id": str(issuer),
+            "principal_id": principal_id,
+            "account": account,
+            "grants": list(W2_PUBLISHER_GRANTS),
+            "expires_at": expiry.isoformat(),
+        })
+    return {
+        "principal_id": principal_id,
+        "account": account,
+        "kind": "AGENT",
+        "grants": list(W2_PUBLISHER_GRANTS),
+        "expires_at": expiry.isoformat(),
+        "token": token,
+    }
 
 
 @app.delete("/v1/projects/{project_id}/grants/{principal_id}/{capability}", status_code=204)

@@ -6,6 +6,7 @@ SQLite API. No agent execution or external side effects are enabled.
 import hashlib
 import json
 import os
+import re
 import secrets
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
@@ -861,6 +862,13 @@ def current_principal(principal: Annotated[AuthenticatedPrincipal, Depends(requi
 
 
 SELF_ROTATION_PENDING_TTL = timedelta(minutes=10)
+W2_PUBLISHER_GRANTS = ("project.read", "code.publish")
+W2_PUBLISHER_TTL = timedelta(hours=8)
+W2_PUBLISHER_IDENTITIES = {
+    "aao-publisher-pm-": "aao-pm",
+    "aao-publisher-impl-": "aao-impl-codex",
+}
+W2_PROJECT_NAME = "AAO — Self Development"
 
 
 def require_pending_agent_token(x_agent_token: str | None = Header(None)) -> str:
@@ -922,6 +930,113 @@ def confirm_self_rotation(token: Annotated[str, Depends(require_pending_agent_to
         audit(db, str(uuid4()), "principal.credential.rotated",
               {"principal_id": principal_id, "kind": "AGENT", "self_service": True})
     return {"principal_id": principal_id, "kind": "AGENT", "rotated": True}
+
+
+def _w2_publisher_account(principal_id: str) -> str:
+    account = next(
+        (name for prefix, name in W2_PUBLISHER_IDENTITIES.items()
+         if principal_id.startswith(prefix)),
+        None,
+    )
+    prefix = next(
+        (prefix for prefix in W2_PUBLISHER_IDENTITIES if principal_id.startswith(prefix)),
+        None,
+    )
+    suffix = principal_id[len(prefix):] if prefix else ""
+    # Match the IDs provision_w2_publishers.py actually creates:
+    # YYYYmmddHHMMSS-<8 lowercase hex chars>.
+    if account is None or not re.fullmatch(r"\d{14}-[0-9a-f]{8}", suffix):
+        raise HTTPException(403, "W2 publisher self-rotation rejected")
+    return account
+
+
+def _lock_w2_publisher_grant_set(db, principal_id: str) -> tuple[str, str]:
+    """Lock and validate the exact, unexpired W2 publisher authority set."""
+    account = _w2_publisher_account(principal_id)
+    projects = db.execute(
+        "SELECT id FROM projects WHERE name=%s AND state='ACTIVE' ORDER BY id FOR UPDATE",
+        (W2_PROJECT_NAME,),
+    ).fetchall()
+    if len(projects) != 1:
+        raise HTTPException(409, "W2 publisher project is not uniquely active")
+    project_id = str(projects[0][0])
+    rows = db.execute(
+        "SELECT project_id,capability,expires_at,"
+        "expires_at>clock_timestamp() AS active FROM project_grants "
+        "WHERE principal_id=%s ORDER BY project_id,capability FOR UPDATE",
+        (principal_id,),
+    ).fetchall()
+    if ({(str(row[0]), row[1]) for row in rows}
+            != {(project_id, capability) for capability in W2_PUBLISHER_GRANTS}
+            or any(row[2] is None for row in rows)
+            or any(not row[3] for row in rows)):
+        raise HTTPException(403, "W2 publisher grant set is invalid or expired")
+    return account, project_id
+
+
+@app.post("/v1/principals/me/w2-publisher/rotate")
+def stage_w2_publisher_rotation(
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_worker)],
+):
+    """Stage a self-rotation for a W2 publisher; the PM never receives the token."""
+    from aao.principal_credentials import digest_token
+
+    _w2_publisher_account(str(principal))
+    token = secrets.token_urlsafe(32)
+    with tx() as db:
+        row = db.execute(
+            "SELECT kind FROM principal_credentials WHERE principal_id=%s "
+            "AND token_digest=%s AND kind='AGENT' AND enabled=true FOR UPDATE",
+            (principal, principal.token_digest),
+        ).fetchone()
+        if not row:
+            raise HTTPException(403, "Individual agent credential invalid or revoked")
+        account, project_id = _lock_w2_publisher_grant_set(db, str(principal))
+        expires_at = db.execute(
+            "UPDATE principal_credentials SET pending_token_digest=%s,"
+            "pending_expires_at=clock_timestamp()+%s WHERE principal_id=%s "
+            "RETURNING pending_expires_at",
+            (digest_token(token), SELF_ROTATION_PENDING_TTL, principal),
+        ).fetchone()[0]
+        audit(db, project_id, "principal.w2_publisher.rotation_pending", {
+            "principal_id": str(principal), "account": account,
+        })
+    return {
+        "principal_id": str(principal), "account": account, "kind": "AGENT",
+        "token": token, "pending_expires_at": expires_at.isoformat(),
+    }
+
+
+@app.post("/v1/principals/me/w2-publisher/rotate/confirm")
+def confirm_w2_publisher_rotation(
+    token: Annotated[str, Depends(require_pending_agent_token)],
+):
+    """Promote the target role's staged token and renew only its fixed W2 grants."""
+    from aao.principal_credentials import PrincipalDenied, lock_pending_agent_rotation
+
+    with tx() as db:
+        try:
+            principal_id = lock_pending_agent_rotation(db, token)
+        except PrincipalDenied as exc:
+            raise HTTPException(403, "Pending W2 publisher credential rejected") from exc
+        account, project_id = _lock_w2_publisher_grant_set(db, str(principal_id))
+        db.execute(
+            "UPDATE principal_credentials SET token_digest=pending_token_digest,"
+            "pending_token_digest=NULL,pending_expires_at=NULL WHERE principal_id=%s",
+            (principal_id,),
+        )
+        db.execute(
+            "UPDATE project_grants SET expires_at=clock_timestamp()+%s "
+            "WHERE principal_id=%s AND project_id=%s AND capability=ANY(%s)",
+            (W2_PUBLISHER_TTL, principal_id, project_id, list(W2_PUBLISHER_GRANTS)),
+        )
+        audit(db, project_id, "principal.w2_publisher.rotated", {
+            "principal_id": str(principal_id), "account": account,
+            "grants": list(W2_PUBLISHER_GRANTS),
+            "expires_in_seconds": int(W2_PUBLISHER_TTL.total_seconds()),
+        })
+    return {"principal_id": str(principal_id), "account": account,
+            "kind": "AGENT", "rotated": True}
 
 
 @app.get("/v1/principals/me/grants")
@@ -1599,96 +1714,6 @@ def grant(project_id: str, payload: GrantRequest, _: str = Depends(require_ceo))
             "expires_at": payload.expires_at.isoformat() if payload.expires_at else None,
         },
     )
-
-
-W2_PUBLISHER_ACCOUNTS = {"aao-pm": "pm", "aao-impl-codex": "impl"}
-W2_PUBLISHER_GRANTS = ("project.read", "code.publish")
-W2_PUBLISHER_TTL = timedelta(hours=8)
-W2_PROJECT_NAME = "AAO — Self Development"
-
-
-@app.post("/v1/projects/{project_id}/w2-publishers/{account}/issue", status_code=201)
-def issue_w2_publisher(
-    project_id: str,
-    account: str,
-    issuer: Annotated[AuthenticatedPrincipal, Depends(require_worker)],
-):
-    """Issue one bounded W2 publisher credential to an authorized PM principal.
-
-    Authority is the explicit, CEO-granted `credential.issue_publisher` project
-    grant. The endpoint fixes the project, destination accounts, grants and TTL;
-    callers cannot select credentials, grants, principal IDs or expiry.
-    """
-    from aao.principal_credentials import digest_token
-
-    account_slug = W2_PUBLISHER_ACCOUNTS.get(account)
-    if account_slug is None:
-        raise HTTPException(404, "W2 publisher account not found")
-    if not issuer.startswith("aao-pm-coordinator-"):
-        raise HTTPException(403, "W2 publisher issuance requires the PM coordinator")
-
-    token = secrets.token_urlsafe(32)
-    principal_id = f"aao-publisher-{account_slug}-{uuid4().hex[:12]}"
-    with tx() as db:
-        require_grant(db, issuer, project_id, "credential.issue_publisher")
-        # Serialize issuers for this project. The active-credential check below
-        # must not race with another request issuing the same role's token.
-        projects = db.execute(
-            "SELECT id,name,state FROM projects WHERE name=%s AND state='ACTIVE' "
-            "ORDER BY id FOR UPDATE",
-            (W2_PROJECT_NAME,),
-        ).fetchall()
-        if len(projects) != 1 or str(projects[0][0]) != project_id:
-            raise HTTPException(
-                409,
-                "W2 publisher issuance requires the unique active Self Development project",
-            )
-        active = db.execute(
-            "SELECT c.principal_id FROM project_grants g JOIN principal_credentials c "
-            "ON c.principal_id=g.principal_id WHERE g.project_id=%s "
-            "AND g.capability='code.publish' "
-            "AND (g.expires_at IS NULL OR g.expires_at>clock_timestamp()) "
-            "AND c.kind='AGENT' AND c.enabled=true AND c.principal_id LIKE %s "
-            "ORDER BY c.principal_id FOR UPDATE OF c",
-            (project_id, f"aao-publisher-{account_slug}-%"),
-        ).fetchall()
-        for (previous_principal_id,) in active:
-            # A lost HTTP response must not strand a credential whose cleartext
-            # token the caller never received. Re-issuing atomically disables
-            # any prior credential for this role before creating its replacement.
-            db.execute(
-                "UPDATE principal_credentials SET enabled=false WHERE principal_id=%s",
-                (previous_principal_id,),
-            )
-        db.execute(
-            "INSERT INTO principal_credentials(principal_id,kind,token_digest,enabled) "
-            "VALUES (%s,'AGENT',%s,true)",
-            (principal_id, digest_token(token)),
-        )
-        expiry = db.execute(
-            "SELECT clock_timestamp()+%s", (W2_PUBLISHER_TTL,),
-        ).fetchone()[0]
-        for capability in W2_PUBLISHER_GRANTS:
-            db.execute(
-                "INSERT INTO project_grants(principal_id,project_id,capability,expires_at) "
-                "VALUES (%s,%s,%s,%s)",
-                (principal_id, project_id, capability, expiry),
-            )
-        audit(db, project_id, "principal.w2_publisher.issued", {
-            "issuer_principal_id": str(issuer),
-            "principal_id": principal_id,
-            "account": account,
-            "grants": list(W2_PUBLISHER_GRANTS),
-            "expires_at": expiry.isoformat(),
-        })
-    return {
-        "principal_id": principal_id,
-        "account": account,
-        "kind": "AGENT",
-        "grants": list(W2_PUBLISHER_GRANTS),
-        "expires_at": expiry.isoformat(),
-        "token": token,
-    }
 
 
 @app.delete("/v1/projects/{project_id}/grants/{principal_id}/{capability}", status_code=204)

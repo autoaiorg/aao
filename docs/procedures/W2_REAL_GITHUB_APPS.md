@@ -8,6 +8,20 @@ The code path exists in `scripts/publish_candidate.py` and `src/aao/pr_publisher
 
 Do not use the legacy `scripts/self_development_cycle.py setup` publisher token for W2: it creates one publisher identity in the invoking user's runtime and cannot preserve the required split attribution.
 
+### Rotate a publisher token without relaying it through the PM
+
+Once a role-scoped publisher principal exists, that role can rotate only its own token; the PM cannot issue or receive the implementer bearer. Run the helper as the target Linux account (not as PM), using a deployed checkout containing the matching API and helper revision:
+
+```bash
+sudo -u aao-impl-codex -H env XDG_RUNTIME_DIR=/run/user/$(id -u aao-impl-codex) \
+  /srv/aao/frozen/aao-pm/venv/bin/python \
+  /srv/aao/frozen/aao-pm/tree/scripts/rotate_w2_publisher_token.py --account aao-impl-codex
+```
+
+Use `--account aao-pm` under `aao-pm` for its own credential. The helper authenticates with the role's existing `aao-publisher.token`, stages the pending token in that role's runtime directory with mode `0600`, confirms it with the API, then atomically replaces the file. It prints only a fixed success/failure message. The API allows only the exact active W2 principal namespace, the two fixed grants on the unique active Self Development project, and renews them for at most eight hours. The pending token expires after ten minutes. A crash after confirmation is recoverable from the staged file.
+
+This is a manual helper, not a scheduled rotation service. Initial principal creation remains in the separately authorized CEO provisioning step above; this helper cannot create principals or restore a missing token. Do not run it until both API endpoints and helper are deployed at the same revision. No production run is implied by these instructions.
+
 This provisioning script has only local unit-test coverage; it has not been executed against the host API or accounts. W2 remains unexercised until the CEO runs it, then completes the push/open steps below and verifies distinct principals in canonical project activity. Never copy one token to both accounts and do not create grants outside the active Self Development project.
 
 ### Provision the two role-scoped credentials

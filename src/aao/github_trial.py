@@ -32,11 +32,11 @@ EXPECTED_PERMISSIONS = {
     "aao-supervisor": {"contents": "read", "pull_requests": "read", "checks": "read", "actions": "read", "metadata": "read"},
     "aao-notifier": {"issues": "write", "metadata": "read"},
     "aao-pm": {"issues": "write", "pull_requests": "write", "contents": "read", "metadata": "read"},
-    # Implementer app defaults describe the manifest, but A-10 rejects installing
+    # Implementers: contents/workflows only, no pull_requests (P2 §4-bis; aao-pm opens PRs). A-10 rejects installing
     # these Apps on the canonical repository. Their fork installation is narrower.
-    "aao-impl-codex": {"contents": "write", "pull_requests": "write", "workflows": "write", "metadata": "read"},
-    "aao-impl-claude": {"contents": "write", "pull_requests": "write", "workflows": "write", "metadata": "read"},
-    "aao-impl-agy": {"contents": "write", "pull_requests": "write", "workflows": "write", "metadata": "read"},
+    "aao-impl-codex": {"contents": "write", "workflows": "write", "metadata": "read"},
+    "aao-impl-claude": {"contents": "write", "workflows": "write", "metadata": "read"},
+    "aao-impl-agy": {"contents": "write", "workflows": "write", "metadata": "read"},
     "aao-probe-noworkflows": {"contents": "write", "metadata": "read"},
 }
 FORK_PERMISSIONS = {

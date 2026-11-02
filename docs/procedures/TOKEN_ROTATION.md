@@ -31,6 +31,8 @@ Además, `require_ceo` con cabecera `X-CEO-Token` solo funciona con `AAO_ENV` en
 
 La rotación W2 es de dos fases: el token vigente conserva validez mientras se guarda uno pendiente; el helper lo persiste localmente y confirma indicando el ID exacto esperado. La API rechaza la confirmación si el token pendiente pertenece a otro principal. Después el helper reemplaza el fichero activo. La recuperación valida el principal exacto, la cuenta Linux, el proyecto único y el conjunto exacto de grants antes de instalarlo. Una respuesta perdida no crea un principal nuevo.
 
+La recuperación local también cubre ambos cortes de escritura: el sidecar de identidad se persiste antes que el bearer pendiente, de modo que un sidecar huérfano (sin bearer pendiente) se puede eliminar tras validar su propietario y modo; si ya existe un bearer pendiente pero falta el sidecar, el helper solo reconstruye el ID esperado autenticando el bearer activo anterior y volviendo a comprobar cuenta, proyecto y grants. Si no puede demostrar esa identidad, falla cerrado y conserva el pendiente; no adivina ni cambia de principal.
+
 **No completa la rotación autónoma en el host**: falta el cliente periódico y el mecanismo acotado para entregar de forma segura el token al runtime privado de cada cuenta Linux. No se debe dar sudo general al servicio PM para cerrar ese hueco.
 
 ## Cambio mínimo de API propuesto

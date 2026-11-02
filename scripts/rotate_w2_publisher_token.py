@@ -133,6 +133,25 @@ def _read_pending_identity(path: Path, account: str) -> str:
     return principal_id
 
 
+def _remove_orphan_pending_identity(path: Path) -> None:
+    """Remove only a safe identity sidecar when no pending bearer exists."""
+    metadata = path.with_name(path.name + ".identity")
+    try:
+        info = metadata.lstat()
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise RotationError("orphan pending identity metadata cannot be inspected") from None
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) != 0o600
+    ):
+        raise RotationError("orphan pending identity metadata is unsafe")
+    metadata.unlink()
+    _fsync_dir(metadata.parent)
+
+
 def _fsync_dir(path: Path) -> None:
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
@@ -228,12 +247,22 @@ def rotate(account: str, api_url: str = "http://127.0.0.1:8001") -> None:
     api = _loopback_url(api_url)
     live, pending = _paths(account)
     old = _read_private(live)
+    pending_identity = pending.with_name(pending.name + ".identity")
+
+    if not pending.exists() and not pending.is_symlink():
+        _remove_orphan_pending_identity(pending)
 
     # Recover safely if an earlier run confirmed the new token but died before
     # replacing the live path. The target itself, not the PM, authenticates it.
     if pending.exists() or pending.is_symlink():
         staged = _read_private(pending)
-        expected_principal = _read_pending_identity(pending, account)
+        if pending_identity.exists() or pending_identity.is_symlink():
+            expected_principal = _read_pending_identity(pending, account)
+        else:
+            # Legacy/interrupted state without a sidecar is recoverable only
+            # while the live bearer proves the exact principal still active.
+            expected_principal = _validate_w2_identity(api, old, account)
+            _write_pending_identity(pending, account, expected_principal)
         try:
             staged_me = _request(api, "/v1/principals/me", token=staged)
         except RotationError:
@@ -302,11 +331,12 @@ def rotate(account: str, api_url: str = "http://127.0.0.1:8001") -> None:
         or any(c.isspace() for c in new_token)
     ):
         raise RotationError("AAO returned an invalid pending rotation")
-    _write_pending(pending, new_token)
     try:
         _write_pending_identity(pending, account, principal_id)
+        _write_pending(pending, new_token)
     except BaseException:
         pending.unlink(missing_ok=True)
+        pending_identity.unlink(missing_ok=True)
         _fsync_dir(pending.parent)
         raise
     confirmed = _request(

@@ -133,6 +133,103 @@ def test_pending_recovery_identity_requires_active_self_development_project(monk
         rotation._validate_w2_identity("http://127.0.0.1:8001", "opaque", "aao-impl-codex")
 
 
+def test_rotation_cleans_orphan_identity_sidecar_before_starting_new_rotation(
+    monkeypatch, tmp_path
+):
+    from scripts import rotate_w2_publisher_token as rotation
+
+    live = tmp_path / "aao-publisher.token"
+    pending = tmp_path / ".aao-publisher.token.pending"
+    identity = pending.with_name(pending.name + ".identity")
+    live.write_text("old-token\n", encoding="utf-8")
+    live.chmod(0o600)
+    identity.write_text('{"account":"aao-impl-codex","principal_id":"aao-publisher-impl-x"}\n')
+    identity.chmod(0o600)
+    monkeypatch.setattr(rotation, "_paths", lambda _account: (live, pending))
+    monkeypatch.setattr(rotation, "_validate_w2_identity", lambda *_args: "aao-publisher-impl-x")
+
+    def request(_api, path, *, token, method="GET", body=None):
+        if path.endswith("/rotate") and not path.endswith("/confirm"):
+            return {
+                "principal_id": "aao-publisher-impl-x",
+                "account": "aao-impl-codex",
+                "token": "new-token",
+            }
+        assert path.endswith("/confirm")
+        assert body == {"expected_principal_id": "aao-publisher-impl-x"}
+        return {"principal_id": "aao-publisher-impl-x", "rotated": True}
+
+    monkeypatch.setattr(rotation, "_request", request)
+    rotation.rotate("aao-impl-codex")
+    assert live.read_text(encoding="utf-8") == "new-token\n"
+    assert not pending.exists()
+    assert not identity.exists()
+
+
+def test_rotation_recovers_pending_token_without_sidecar_from_live_identity(monkeypatch, tmp_path):
+    from scripts import rotate_w2_publisher_token as rotation
+
+    live = tmp_path / "aao-publisher.token"
+    pending = tmp_path / ".aao-publisher.token.pending"
+    identity = pending.with_name(pending.name + ".identity")
+    live.write_text("old-token\n", encoding="utf-8")
+    live.chmod(0o600)
+    pending.write_text("staged-token\n", encoding="utf-8")
+    pending.chmod(0o600)
+    monkeypatch.setattr(rotation, "_paths", lambda _account: (live, pending))
+
+    def validate(_api, token, account):
+        assert account == "aao-impl-codex"
+        if token == "old-token":
+            return "aao-publisher-impl-exact"
+        raise rotation.RotationError("pending token is not active yet")
+
+    monkeypatch.setattr(rotation, "_validate_w2_identity", validate)
+
+    def request(_api, path, *, token, method="GET", body=None):
+        if path.endswith("/principals/me"):
+            assert token == "staged-token"
+            raise rotation.RotationError("pending token is not active yet")
+        assert path.endswith("/confirm")
+        assert token == "staged-token"
+        assert body == {"expected_principal_id": "aao-publisher-impl-exact"}
+        return {"principal_id": "aao-publisher-impl-exact", "rotated": True}
+
+    monkeypatch.setattr(rotation, "_request", request)
+    rotation.rotate("aao-impl-codex")
+    assert live.read_text(encoding="utf-8") == "staged-token\n"
+    assert not pending.exists()
+    assert not identity.exists()
+
+
+def test_rotation_does_not_guess_identity_for_pending_token_without_sidecar(monkeypatch, tmp_path):
+    from scripts import rotate_w2_publisher_token as rotation
+
+    live = tmp_path / "aao-publisher.token"
+    pending = tmp_path / ".aao-publisher.token.pending"
+    live.write_text("old-token\n", encoding="utf-8")
+    live.chmod(0o600)
+    pending.write_text("staged-token\n", encoding="utf-8")
+    pending.chmod(0o600)
+    monkeypatch.setattr(rotation, "_paths", lambda _account: (live, pending))
+    monkeypatch.setattr(
+        rotation,
+        "_validate_w2_identity",
+        lambda *_args: (_ for _ in ()).throw(rotation.RotationError("unknown identity")),
+    )
+    monkeypatch.setattr(
+        rotation,
+        "_request",
+        lambda *_args, **_kwargs: pytest.fail("must not confirm an unbound pending token"),
+    )
+
+    with pytest.raises(rotation.RotationError, match="unknown identity"):
+        rotation.rotate("aao-impl-codex")
+
+    assert pending.read_text(encoding="utf-8") == "staged-token\n"
+    assert live.read_text(encoding="utf-8") == "old-token\n"
+
+
 def test_w2_publisher_rejects_unknown_and_malformed_id_before_database(monkeypatch):
     from aao.work_management_api import AuthenticatedPrincipal, app
 

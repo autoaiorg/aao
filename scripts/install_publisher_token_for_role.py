@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Install or verify a publisher token while running as its owning AAO role."""
+
 from __future__ import annotations
 
 import argparse
@@ -9,11 +10,21 @@ import stat
 import sys
 from pathlib import Path
 
-TARGETS = {"aao-impl-codex", "aao-pm"}
+TARGETS = {"aao-impl-codex", "aao-pm", "aao-auditor"}
 TOKEN_NAME = "aao-publisher.token"
 # The PM coordinator token is a distinct principal; only aao-pm may hold it.
-TOKEN_NAMES = {"publisher": TOKEN_NAME, "pm": "aao-pm.token"}
-TOKEN_ACCOUNTS = {"publisher": TARGETS, "pm": {"aao-pm"}}
+TOKEN_NAMES = {
+    "publisher": TOKEN_NAME,
+    "pm": "aao-pm.token",
+    "selfdev-implementer": "aao-self-development-agent.token",
+    "selfdev-reviewer": "aao-self-development-reviewer.token",
+}
+TOKEN_ACCOUNTS = {
+    "publisher": {"aao-impl-codex", "aao-pm"},
+    "pm": {"aao-pm"},
+    "selfdev-implementer": {"aao-impl-codex"},
+    "selfdev-reviewer": {"aao-auditor"},
+}
 RUNTIME_ROOT = Path("/run/user")
 
 
@@ -23,13 +34,13 @@ class TokenInstallError(RuntimeError):
 
 def target_path(account: str, token_kind: str = "publisher") -> Path:
     if account not in TARGETS:
-        raise TokenInstallError("unsupported publisher account")
+        raise TokenInstallError("unsupported role account")
     if account not in TOKEN_ACCOUNTS.get(token_kind, ()):
         raise TokenInstallError("unsupported token kind for this account")
     try:
         entry = pwd.getpwnam(account)
     except KeyError:
-        raise TokenInstallError("publisher account is unavailable") from None
+        raise TokenInstallError("role account is unavailable") from None
     expected_runtime = RUNTIME_ROOT / str(entry.pw_uid)
     configured_runtime = os.environ.get("XDG_RUNTIME_DIR")
     if configured_runtime != str(expected_runtime):
@@ -38,11 +49,14 @@ def target_path(account: str, token_kind: str = "publisher") -> Path:
         info = expected_runtime.lstat()
     except OSError:
         raise TokenInstallError("role runtime directory is unavailable") from None
-    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != entry.pw_uid
-            or stat.S_IMODE(info.st_mode) != 0o700):
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != entry.pw_uid
+        or stat.S_IMODE(info.st_mode) != 0o700
+    ):
         raise TokenInstallError("role runtime directory ownership or mode is unsafe")
     if os.geteuid() != entry.pw_uid:
-        raise TokenInstallError("must run as the selected publisher account")
+        raise TokenInstallError("must run as the selected role account")
     return expected_runtime / TOKEN_NAMES[token_kind]
 
 
@@ -86,8 +100,12 @@ def verify(path: Path, token: str) -> None:
         info = os.fstat(fd)
         with os.fdopen(fd, "r", encoding="utf-8") as stream:
             content = stream.read(4097)
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
-                or stat.S_IMODE(info.st_mode) != 0o600 or content != token + "\n"):
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or content != token + "\n"
+        ):
             raise TokenInstallError("publisher token file does not match the expected private file")
     except OSError:
         raise TokenInstallError("publisher token file is unavailable") from None
@@ -96,11 +114,19 @@ def verify(path: Path, token: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--account", required=True, choices=sorted(TARGETS))
-    parser.add_argument("--token", choices=sorted(TOKEN_NAMES), default="publisher",
-                        help="publisher (default) or pm (aao-pm.token, aao-pm only)")
-    parser.add_argument("--check", action="store_true", help="verify safe installation target is empty")
+    parser.add_argument(
+        "--token",
+        choices=sorted(TOKEN_NAMES),
+        default="publisher",
+        help="publisher (default) or pm (aao-pm.token, aao-pm only)",
+    )
+    parser.add_argument(
+        "--check", action="store_true", help="verify safe installation target is empty"
+    )
     parser.add_argument("--verify", action="store_true", help="verify installed token from stdin")
-    parser.add_argument("--remove", action="store_true", help="remove only the matching token from stdin")
+    parser.add_argument(
+        "--remove", action="store_true", help="remove only the matching token from stdin"
+    )
     args = parser.parse_args()
     if sum((args.check, args.verify, args.remove)) > 1:
         parser.error("--check, --verify, and --remove are mutually exclusive")
@@ -118,7 +144,9 @@ def main() -> int:
                 path.unlink()
             else:
                 install(path, token)
-        print(f"{TOKEN_NAMES[args.token]} target verified for {args.account}; credential not displayed.")
+        print(
+            f"{TOKEN_NAMES[args.token]} target verified for {args.account}; credential not displayed."
+        )
         return 0
     except (TokenInstallError, OSError, UnicodeError) as exc:
         print(f"Publisher token operation failed: {exc}", file=sys.stderr)

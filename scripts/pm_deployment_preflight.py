@@ -17,6 +17,7 @@ from uuid import UUID
 
 PROJECT_ID = "9d17d6c1-d644-424a-a425-fe7e084c3d91"
 ROOT = Path(__file__).resolve().parents[1]
+TRUST_TREE = Path("/srv/aao")
 REQUIRED_GRANTS = {"project.read", "work.assign", "work.coordinate"}
 
 
@@ -30,15 +31,21 @@ def path_check(
     """lstat only, including ancestors: never dereference a secret or read its bytes."""
     try:
         info = path.lstat()
-        ancestors = [p.lstat() for p in path.parents]
+        ancestors = [(p, p.lstat()) for p in path.parents]
     except FileNotFoundError:
         return result(name, "MISSING", "Path absent", f"Administrator provision {path}")
     except OSError:
         return result(name, "UNVERIFIED", "Path metadata inaccessible", f"Inspect {path} as owner")
     valid_type = stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
+    try:  # aao-trust owns /srv/aao/** ancestors by design; absent account stays uid-0-only
+        trust = pwd.getpwnam("aao-trust").pw_uid
+    except KeyError:
+        trust = 0
     safe = all(
-        not stat.S_ISLNK(p.st_mode) and not p.st_mode & 0o022 and p.st_uid in {0, uid}
-        for p in ancestors
+        not stat.S_ISLNK(i.st_mode)
+        and not i.st_mode & 0o022
+        and (i.st_uid in {0, uid} or (i.st_uid == trust and p.is_relative_to(TRUST_TREE)))
+        for p, i in ancestors
     )
     # A private runtime may live below /run/user, not a shared writable /tmp tree.
     valid_mode = (

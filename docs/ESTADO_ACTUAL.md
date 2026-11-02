@@ -65,8 +65,18 @@ Nota: #325 es renumeración de #251; relación de sustitución inferida del tít
 
 ## 5. Principales y credenciales emitidas hoy
 
-- IDs de principal y caducidades: **UNVERIFIED** en el repo; los emitió la sesión del coordinador y este documento no tiene acceso a ellos. El coordinador debe rellenar: principal PM (`aao-pm-coordinator-<ts>-<nonce>`, patrón de `PM_TOKEN_PROVISIONING.md` l.23), principales publisher W2 (`aao-publisher-*`), caducidad de cada uno. No se registran tokens ni digests.
-- Grants del principal PM por diseño: `project.read`, `work.coordinate`, `work.assign` (`PM_TOKEN_PROVISIONING.md` l.24).
+Fuente de la tabla: aportado por el coordinador el 2026-11-02, quien indica `principal_credentials` en `aao_dev` (solo lectura). Este documento no consultó la BD. Sin tokens ni digests.
+
+| Principal | Tipo / rol | Grants | Caducidad | Emitido | Estado |
+|---|---|---|---|---|---|
+| `aao-pm-coordinator-20261102101514-a0c6a5ce` | AGENT (PM) | `project.read`, `work.coordinate`, `work.assign` | ninguna (`--no-expiry`) | 2026-11-02 10:15 UTC | activo |
+| `aao-publisher-impl-20261102101736-876c2aab` | W2, `aao-impl-codex` | `project.read`, `code.publish` | 2026-11-02T18:17:36Z | 2026-11-02 (ts en el ID: 10:17:36) | activo |
+| `aao-publisher-pm-20261102101736-876c2aab` | W2, `aao-pm` | `project.read`, `code.publish` | 2026-11-02T18:17:36Z | idem | activo |
+| `aao-publisher-impl-20261102100124-fec37ecc` | W2 (intento fallido) | n/d | n/d | 2026-11-02 (ts en el ID: 10:01:24) | desactivado; limpieza OK |
+
+El principal PM no caduca: solo se retira revocando (`PM_TOKEN_PROVISIONING.md` l.29).
+
+- Grants del principal PM por diseño (coinciden con la tabla): `project.read`, `work.coordinate`, `work.assign` (`PM_TOKEN_PROVISIONING.md` l.24).
 - **Hecho:** #324 se fusionó y se usó para emitir credenciales sin auditoría formal GOV-REV-001. Evidencia: título de #324 «needs independent audit»; cero reviews en el repo. Las credenciales emitidas dependen de código no revisado.
 - Durante la regla de construcción vigente (memoria: merge de PRs en verde por el coordinador, CEO 2026-10-25) esto está permitido, pero no cuenta como revisión (matriz fila 7).
 
@@ -85,7 +95,10 @@ Nota: #325 es renumeración de #251; relación de sustitución inferida del tít
 
 ## 7. Preflight
 
-- Última pasada por rol, conteos PASS/MISSING/UNVERIFIED y revisión probada (`81cb877`, árbol congelado): **UNVERIFIED en este documento**; el coordinador ejecutó el preflight (aportado) pero no se pasó la salida. Rellenar con la tabla literal de `scripts/pm_deployment_preflight.py`.
+- Revisión probada: árbol congelado de `aao-pm` en `81cb877` (`/srv/aao/frozen/aao-pm/tree`; anterior en `tree.cfd485c-prev`). Fuente: coordinador; no reverificado aquí.
+- Ejecutado como `aao-pm` y como `aao-impl-codex`, con `--principal-id aao-pm-coordinator-20261102101514-a0c6a5ce`: **sin MISSING** (coordinador).
+- UNVERIFIED restantes (coordinador): `w2:aao-impl-codex:pem/json/publisher-token` (visto desde aao-pm), `w2:aao-pm:pem/json/publisher-token` (visto desde aao-impl-codex), `pm:service`, `w2:live`, `db:inspection`.
+- Conteos numéricos PASS/UNVERIFIED: no aportados; UNVERIFIED en este documento.
 - Salvedad documentada: ejecutado como usuario CEO, `pm:token` sale UNVERIFIED (no puede `lstat` en `/run/user/1001`); UNVERIFIED no es PASS (`PM_TOKEN_PROVISIONING.md` l.99).
 - El preflight no lee el token ni prueba que autentique (l.106).
 
@@ -103,10 +116,14 @@ Salida de `git worktree list` / `git branch -vv` a 81cb877.
 | Ramas locales con upstream `gone` (~20, p. ej. `feat/phase2-*`) | fusionadas/borradas en remoto; candidatas a limpieza, no borradas aquí | coordinador |
 | Archivo | `~/aao-archive/2026-11-02/`: UNVERIFIED (no comprobado desde este worktree) | coordinador |
 
+Servicios locales (coordinador, 2026-11-02): `aao-postgres-1` (dev, compose) arrancado de nuevo por la tarde (hora CET); API uvicorn en 8001 NO activa en ese momento (curl 000). No verificado aquí.
+
+Autorrotación: #326 (diseño) y un PR de implementación en curso; el CEO lo aprobó el 2026-11-02 (coordinador). Ninguno fusionado; el PR de implementación no figura en la lista de abiertos (sec. 4), número UNVERIFIED.
+
 ## 9. Actualización de este documento
 
 Dueño: coordinador. Actualizar en cada merge a main o cambio de gate; reescribir el SHA de la cabecera y de la sec. 1, y cada fila afectada con su fuente. Si no hay evidencia, marcar UNVERIFIED en vez de borrar la fila. README debe apuntar aquí (PR aparte).
 
 ## 10. Límites
 
-No verificado: log de cada run (solo conclusión de checks); CI de PRs más allá del `statusCheckRollup` de `gh`; comportamiento en runtime; GitHub Apps reales; privilegios de roles de BD; contenido de la BD (conteos de Self Development, de coordinador); principales y caducidades; salida del preflight; archivo en `~/aao-archive`; estado de #319. Tests y CI no son auditoría independiente (AGENTS.md).
+No verificado: log de cada run (solo conclusión de checks); CI de PRs más allá del `statusCheckRollup` de `gh`; comportamiento en runtime; GitHub Apps reales; privilegios de roles de BD; contenido de la BD (conteos de Self Development, de coordinador); conteos numéricos del preflight; archivo en `~/aao-archive`; estado de #319. Tests y CI no son auditoría independiente (AGENTS.md).

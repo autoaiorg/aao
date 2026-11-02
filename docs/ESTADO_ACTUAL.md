@@ -1,6 +1,6 @@
 # Estado actual de AAO
 
-**Corte:** 2026-11-02 21:09 UTC. **Revisión:** `197e69720c378748ac06431b051ec123258faf71` (`main` = `origin/main`). Este informe es un estado de coordinación, no una certificación de autonomía, despliegue o aceptación.
+**Corte:** 2026-11-02 21:14 UTC. **Revisión:** `197e69720c378748ac06431b051ec123258faf71` (`main` = `origin/main`). Este informe es un estado de coordinación, no una certificación de autonomía, despliegue o aceptación.
 
 ## 1. Evidencia de repositorio
 
@@ -8,7 +8,8 @@
 |---|---|---|
 | HEAD de `main` | `197e69720c378748ac06431b051ec123258faf71` | `git rev-parse HEAD origin/main`; checkout limpio al corte |
 | CI post-merge de `main` | SUCCESS | Run `41510891908`, sobre el SHA exacto de `main`; jobs `test`, `frontend`, `push-relay-worker` |
-| PRs abiertos | #341, draft | `gh pr list --state open -R autoaiorg/aao`; head `de5da2b6b1c79d511ada3611fdc0f5c90c92478b`, mergeable y checks verdes al corte |
+| PRs abiertos | #341, #342 y #343, todos draft | `gh pr list --state open -R autoaiorg/aao`; #341 head `de5da2b6b1c79d511ada3611fdc0f5c90c92478b`; #342 actualiza este informe; #343 head `d8d918101d3d4badf51f95ace7ad2086e399f0eb` |
+| #343 preflight de límites DB runtime | OPEN, draft; CI en curso | El head `d8d9181` añade comprobaciones read-only de privilegios de conexión/esquema; no acredita el conjunto completo de privilegios runtime ni el despliegue |
 | #327 bootstrap/migraciones | MERGED | PR #327, merge commit `1770974c60be729c9de95b537ed0eb4fb08ed0c7` |
 | #318 push relay | MERGED, opt-in; no acredita despliegue | PR #318, head `8d749e9de2f0ff2071fafdc470b25cd7d9e74f0c`; revisión independiente previa APPROVE WITH NITS |
 | #329 espejo/integrador vs git 2.56 | MERGED | PR #329, head `526f62ab58510a5f6d4c46ca94fb8767b20d1534`; revisión independiente previa APPROVE WITH NITS |
@@ -16,7 +17,7 @@
 | #251 y #330 | CLOSED, ramas/historial conservados | Verificación y comentario de cierre en issue #322 |
 | #299, #325 y #321 | CLOSED/sustituidos o integrados | #299 sustituido por #327; #325 cerrado como contenido en #327; #321 cerrado al integrarse B2 en #324 |
 
-Las fusiones y CI no equivalen a aceptación del piloto. La lista y estados se comprobaron en GitHub el 2026-11-02 21:09 UTC; el estado remoto puede cambiar después del corte. Issue #322 está CLOSED (actualizado 18:23:23 UTC); su cierre administrativo no cierra los gates de aceptación.
+Las fusiones y CI no equivalen a aceptación del piloto. La lista y estados se comprobaron en GitHub el 2026-11-02 21:14 UTC; el estado remoto puede cambiar después del corte. Issue #322 está CLOSED (actualizado 18:23:23 UTC); su cierre administrativo no cierra los gates de aceptación.
 
 ## 2. Gates de aceptación del proyecto
 
@@ -27,6 +28,7 @@ La referencia de gates sigue siendo `docs/HANDOVER_ACCEPTANCE_MATRIX.md`, criter
 | Candidato y SHA aceptado | ABIERTO | Candidato identificable, aprobado y verificado en la revisión exacta |
 | Raíz de confianza y protección del canónico | ABIERTO | Evidencia sobre el candidato; reglas finales y efectivas de protección |
 | Identidades, privilegios y host | ABIERTO | Ejercicio real de roles y límites efectivos en el host/BD destino |
+| Candidato W2 | ABIERTO / BLOQUEADO | Última consulta de solo lectura reportó 0 ítems VERIFIED elegibles; hace falta una cadena de aprobación/evidencia sobre SHA exacto, sin fabricar estados |
 | Flujo integrado de trabajo | ABIERTO | Ciclo completo reproducible, incluidos fallos, reintentos y efectos externos inciertos |
 | W2 / GitHub Apps | ABIERTO | Publicación real verificable con identidades separadas y evidencia sin token CEO |
 | Auditoría y aceptación | ABIERTO | Auditoría independiente aplicable a la revisión final y disposición formal del CEO |
@@ -54,6 +56,8 @@ Los siguientes datos son **históricos, aportados por el coordinador el 2026-11-
 - PostgreSQL de desarrollo se levantó durante la sesión; API local en `127.0.0.1:8001` fue reportada parada posteriormente. Estado actual: UNVERIFIED.
 - No se ha presentado evidencia de grants del rol runtime aplicados/verificados en el host. El PR documental #330 se cerró porque su diseño quedó desactualizado frente a la separación de roles de #327.
 
+Actualización operativa del 2026-11-02 (reportada por el operador y reflejada en el body de #343): en `aao_dev` se retiró el privilegio TEMPORARY de `PUBLIC`; se comprobó `aao_runtime CONNECT=true`, `TEMP=false`, `aao_dev TEMP=true` y ausencia de `PUBLIC CREATE/TEMP`. Esto es evidencia de una frontera de privilegios concreta en la base de desarrollo, no acredita el resto de privilegios de tablas, la autenticación runtime, `db:runtime-complete`, el host destino ni el piloto. El auditor independiente reportó APPROVE WITH NITS para #343; el nit de redacción se corrigió en el head `d8d9181`. A la hora del corte, los seis checks observados en los dos runs de PR estaban `in_progress` o `queued`; por tanto, CI aún no estaba verde.
+
 No incluir tokens, DSNs, claves privadas ni digests en este documento. Re-verificar mediante preflight por cuenta y consultas de solo metadatos antes de una operación real.
 
 ## 5. Acciones necesarias para avanzar
@@ -74,7 +78,7 @@ No se pide al CEO que ejecute comandos host en este momento. Si el siguiente gat
 
 1. Reconciliar `HANDOVER_ACCEPTANCE_MATRIX.md` con `main` `197e697`; el snapshot existente observa `f8f650d` y es obsoleto para el estado de CI/PR actual. Mantener separados “implementado”, “desplegado”, “ejercitado”, “auditado” y “aceptado”.
 2. Revalidar preflight sobre el `main` actual, por separado bajo `aao-pm` y `aao-impl-codex`; comprobar únicamente metadatos de credenciales, nunca leerlas.
-3. Identificar, mediante lectura autorizada de la BD, si existe candidato VERIFIED y SHA aprobado. No crear ni cambiar estados para fabricar un candidato.
+3. Identificar, mediante lectura autorizada de la BD, si existe candidato VERIFIED y SHA aprobado. La última búsqueda reportó cero; no crear ni cambiar estados para fabricar un candidato. Este sigue siendo un bloqueo del ensayo W2.
 4. Reconciliar los roles de DB/host de #327 con el despliegue real y probarlos en entorno desechable antes de aplicar grants al host.
 5. Cerrar los pendientes operativos de #318 (trust por repo/forks, backoff, operación de cuarentena y prueba real) antes de afirmar que el relay aporta disponibilidad.
 6. Ejecutar el piloto integrado §14 únicamente cuando exista candidato elegible y evidencia previa de identidades, App scopes, runtime y protección.
@@ -83,7 +87,8 @@ No se pide al CEO que ejecute comandos host en este momento. Si el siguiente gat
 ## 7. Fuentes y límites
 
 - Git: `git rev-parse HEAD origin/main`, ambos `197e69720c378748ac06431b051ec123258faf71`; árbol limpio al corte.
-- GitHub: `gh pr list --state open -R autoaiorg/aao`; único abierto #341 (draft). `gh run list --branch main -R autoaiorg/aao --limit 3`; run `41510891908` SUCCESS sobre el HEAD actual.
+- GitHub: `gh pr list --state open -R autoaiorg/aao`; #341, #342 y #343 draft. `gh run list --branch main -R autoaiorg/aao --limit 3`; run `41510891908` SUCCESS sobre el HEAD actual. `gh api repos/autoaiorg/aao/commits/d8d918101d3d4badf51f95ace7ad2086e399f0eb/check-runs`: seis checks de PR en `in_progress`/`queued` al corte.
+- #343: descripción del PR y actualización operativa del coordinador reportan retirada de `PUBLIC TEMP` y verificación de `aao_runtime TEMP=false`; el PR sigue en borrador. La reauditoría se reportó como APPROVE WITH NITS, con ajuste de wording en el head actual; no sustituye aceptación ni CI.
 - Issue #322: `gh issue view 322 -R autoaiorg/aao --json state,title,updatedAt,url`, CLOSED, actualizado `2026-11-02T18:23:23Z`.
 - Gates: `docs/HANDOVER_ACCEPTANCE_MATRIX.md`; debe actualizarse para el estado post-merge.
-- Esta actualización no ejecutó pruebas, consultas a la BD ni operaciones del host. No confirma vigencia de tokens, despliegue, permisos efectivos, estado actual de servicios, candidato VERIFIED ni aceptación final. El estado del host y de `aao_dev` requiere evidencia operativa separada.
+- Esta actualización no ejecutó pruebas, consultas a la BD ni operaciones del host. La evidencia de `aao_dev` se atribuye al operador/PR #343, no a una consulta independiente de este informe. No confirma vigencia de tokens, despliegue, privilegios completos runtime, estado actual de servicios ni aceptación final. El candidato W2 sigue sin estar identificado y reportado como VERIFIED.

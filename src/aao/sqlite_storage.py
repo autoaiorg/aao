@@ -16,8 +16,19 @@ def connect(db_path: str):
     return connection
 
 
+@contextmanager
+def connection(db_path: str):
+    """Yield a SQLite connection and always close it after the transaction scope."""
+    db = connect(db_path)
+    try:
+        with db:
+            yield db
+    finally:
+        db.close()
+
+
 def initialize(db_path: str):
-    with connect(db_path) as db:
+    with connection(db_path) as db:
         db.executescript("""
         CREATE TABLE IF NOT EXISTS mandates (
             id TEXT PRIMARY KEY,

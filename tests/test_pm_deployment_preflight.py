@@ -254,8 +254,6 @@ def test_trust_owned_ancestors_only_under_srv_aao(monkeypatch):
 
 
 @pytest.mark.parametrize("manifest", ["absent", "empty", "missing-038", "duplicate-038"])
-@pytest.mark.parametrize("manifest", ["absent", "empty", "missing-038", "duplicate-038"])
-@pytest.mark.parametrize("manifest", ["absent", "empty", "missing-038", "duplicate-038"])
 def test_incomplete_or_duplicate_local_migration_manifest_never_passes(
     monkeypatch, tmp_path, manifest
 ):

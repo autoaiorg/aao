@@ -27,7 +27,7 @@ def test_apply_host_fencing_targeted_queries():
     """Unit test: verify SQL execution targets only specific workers without blanket updates."""
     mock_db = MagicMock()
     mock_db.execute.return_value.fetchall.return_value = [("worker-host-a",)]
-    actions = apply_host_fencing(mock_db, host_identifier="host-a", worker_ids=["worker-host-a"])
+    actions = apply_host_fencing(mock_db, host_identifier="host-a")
 
     assert any("worker-host-a" in a for a in actions)
     # Check that update targeted ANY(%s) with target_workers, not WHERE kind = 'AGENT'
@@ -66,8 +66,26 @@ def test_registry_registration_refuses_unmigrated_schema():
 
     db = MagicMock()
     db.execute.return_value.fetchone.return_value = (None,)
-    with pytest.raises(BackupError, match="apply PostgreSQL migration 036"):
+    with pytest.raises(BackupError, match="apply PostgreSQL migrations 036 and 037"):
         register_host_worker(db, "node-1", "worker-node-1")
+
+
+def test_registry_registration_refuses_missing_conversation_fencing_column():
+    from aao.backup import BackupError
+
+    class PartialSchemaDB:
+        def execute(self, sql, _params=()):
+            result = MagicMock()
+            if "to_regclass" in sql:
+                result.fetchone.return_value = ("public.host_worker_bindings",)
+            elif "execution_queue" in sql:
+                result.fetchone.return_value = (1,)
+            else:
+                result.fetchone.return_value = None
+            return result
+
+    with pytest.raises(BackupError, match="migrations 036 and 037"):
+        register_host_worker(PartialSchemaDB(), "node-1", "worker-node-1")
 
 
 def test_dual_host_isolation_unit():
@@ -258,6 +276,10 @@ def clean_postgres(monkeypatch):
             '00000000-0000-0000-0000-0000000000a1',
             '00000000-0000-0000-0000-0000000000b1'
         );
+        DELETE FROM project_conversations WHERE project_id IN (
+            '00000000-0000-0000-0000-0000000000a1',
+            '00000000-0000-0000-0000-0000000000b1'
+        );
         DELETE FROM host_worker_bindings WHERE worker_id IN (
             'worker-host-a',
             'worker-host-b',
@@ -430,6 +452,104 @@ def test_targeted_host_fencing_avoids_blanket_revocation(clean_postgres):
         assert exec_rows[env["exec_b"]] == "RUNNING", "Host B task must remain running without disturbance"
 
 
+def test_targeted_fencing_revokes_only_conversation_leases_owned_by_host(clean_postgres, monkeypatch):
+    """An old provider heartbeat cannot renew a fenced host lease; other hosts are untouched."""
+    from aao.backup import BackupError, active_host_fence_epoch
+    from aao.conversation_turn_recovery import RecoveryConfiguration, claim_expired_turn
+
+    with connect_postgres() as db:
+        env = _setup_dual_host_environment(db)
+        conversation_ids = [str(uuid.uuid4()) for _ in range(4)]
+        turn_ids = [str(uuid.uuid4()) for _ in range(4)]
+        owner_ids = [str(uuid.uuid4()) for _ in range(4)]
+        for index, host in enumerate(("host-a", "host-b", None, "host-a")):
+            conversation_id = conversation_ids[index]
+            message_id = str(uuid.uuid4())
+            db.execute(
+                "INSERT INTO project_conversations(id,project_id,title,created_by) "
+                "VALUES (%s,%s,%s,'ceo')",
+                (conversation_id, env["proj_a"], f"fencing-{index}"),
+            )
+            db.execute(
+                "INSERT INTO project_conversation_messages(id,conversation_id,sender,body) "
+                "VALUES (%s,%s,'CEO','test turn')", (message_id, conversation_id),
+            )
+            db.execute(
+                "INSERT INTO project_conversation_turns(id,conversation_id,idempotency_key,"
+                "request_sha256,user_message_id,state,provider,model,lease_owner,lease_host_id,"
+                "lease_fence_epoch,lease_expires_at) "
+                "VALUES (%s,%s,%s,%s,%s,'PENDING','test','model',%s,%s,%s,"
+                "clock_timestamp()+(%s * interval '1 minute'))",
+                (turn_ids[index], conversation_id, str(uuid.uuid4()), hashlib.sha256(b"test turn").hexdigest(),
+                 message_id, owner_ids[index], host, 1 if host else None, -5 if index == 3 else 5),
+            )
+
+        apply_host_fencing(db, host_identifier="host-a")
+
+        rows = {
+            row[0]: row[1:]
+            for row in db.execute(
+                "SELECT id::text,lease_owner::text,lease_host_id,lease_fence_epoch,"
+                "lease_expires_at <= clock_timestamp() FROM project_conversation_turns "
+                "WHERE id = ANY(%s)", (turn_ids,),
+            ).fetchall()
+        }
+        assert rows[turn_ids[0]] == (None, "host-a", None, True)
+        assert rows[turn_ids[1]][0] == owner_ids[1]
+        assert rows[turn_ids[1]][1:] == ("host-b", 1, False)
+        assert rows[turn_ids[2]][0] == owner_ids[2]
+        assert rows[turn_ids[2]][1:] == (None, None, False)
+        assert rows[turn_ids[3]][0] is None
+        assert rows[turn_ids[3]][1] == "host-a"
+        assert rows[turn_ids[3]][2:] == (None, True)
+
+        # A fenced host cannot reacquire its own expired turns, while another
+        # active host can claim an expired turn under its current fence epoch.
+        with pytest.raises(BackupError, match="no active fencing registration"):
+            active_host_fence_epoch(db, "host-a")
+        host_b_epoch = active_host_fence_epoch(db, "host-b")
+        db.execute(
+            "UPDATE project_conversation_turns SET lease_expires_at=clock_timestamp()-interval '1 second' "
+            "WHERE id=%s", (turn_ids[1],),
+        )
+        host_b_claim = claim_expired_turn(
+            db, RecoveryConfiguration("test", "model"), lease_owner=str(uuid.uuid4()),
+            host_id="host-b", fence_epoch=host_b_epoch,
+        )
+        assert host_b_claim is not None
+        assert host_b_claim["lease_host_id"] == "host-b"
+        assert host_b_claim["lease_fence_epoch"] == host_b_epoch
+
+        # This is the heartbeat predicate used by the API/recovery worker. The
+        # fenced owner has been cleared, so an old process cannot revive it.
+        stale_renewal = db.execute(
+            "UPDATE project_conversation_turns SET lease_expires_at=clock_timestamp()+interval '5 minutes' "
+            "WHERE id=%s AND state='PENDING' AND lease_owner=%s AND lease_host_id=%s",
+            (turn_ids[0], owner_ids[0], "host-a"),
+        )
+        assert stale_renewal.rowcount == 0
+        stale_expired_renewal = db.execute(
+            "UPDATE project_conversation_turns SET lease_expires_at=clock_timestamp()+interval '5 minutes' "
+            "WHERE id=%s AND state='PENDING' AND lease_owner=%s AND lease_host_id=%s",
+            (turn_ids[3], owner_ids[3], "host-a"),
+        )
+        assert stale_expired_renewal.rowcount == 0
+        db.commit()
+
+        # Exercise the production recovery entrypoint: a surviving process on
+        # fenced A cannot reclaim even an expired turn after its lease was revoked.
+        from aao.conversation_turn_recovery import recover_one_turn
+        monkeypatch.setenv("AAO_TEST_HOST_ID", "host-a")
+        recovery_env = {
+            "AAO_CONVERSATION_RECOVERY_ENABLED": "true",
+            "AAO_CONVERSATION_PROVIDER": "openai-compatible",
+            "AAO_CONVERSATION_MODEL": "model",
+            "AAO_CONVERSATION_API_URL": "https://provider.invalid/v1/chat/completions",
+            "AAO_CONVERSATION_API_KEY": "not-a-real-secret",
+        }
+        assert recover_one_turn(recovery_env) == {"status": "HOST_FENCED"}
+
+
 def test_old_host_cannot_execute_external_effects_post_cutover(clean_postgres, monkeypatch):
     """Prove that an old fenced host cannot produce external effects after cutover."""
     from aao.external_effect_registry import EffectConflict
@@ -514,7 +634,8 @@ def test_fencing_audit_event_recorded(clean_postgres):
     """Verify that an explicit host.fenced audit event is recorded in the events table."""
     with connect_postgres() as db:
         _setup_dual_host_environment(db)
-        apply_host_fencing(db, host_identifier="node-01.dc1", worker_ids=["worker-host-a"])
+        actions = apply_host_fencing(db, host_identifier="host-a")
+        assert any("worker-host-a" in action for action in actions)
 
         event = db.execute(
             "SELECT kind, details FROM events WHERE kind = 'host.fenced' ORDER BY created_at DESC LIMIT 1"
@@ -522,5 +643,5 @@ def test_fencing_audit_event_recorded(clean_postgres):
         assert event is not None
         assert event[0] == "host.fenced"
         details = event[1] if isinstance(event[1], dict) else json.loads(event[1])
-        assert details["host"] == "node-01.dc1"
+        assert details["host"] == "host-a"
         assert "worker-host-a" in details["fenced_workers"]

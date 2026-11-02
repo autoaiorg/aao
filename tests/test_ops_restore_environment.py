@@ -24,9 +24,8 @@ def test_restore_uses_environment_for_dsn_values_without_command_arguments(monke
     monkeypatch.setattr(backup, "restore_backup", restore_backup)
 
     assert ops.main(["restore", str(archive), "--allow-non-empty", "--auth-file", "/tmp/auth.json"]) == 0
-    assert calls["verify"] == (archive, isolated_dsn)
+    assert "verify" not in calls
     path, dsn, kwargs = calls["restore"]
     assert (path, dsn) == (archive, target_dsn)
     assert kwargs["isolated_dsn"] == isolated_dsn
-    assert kwargs["pre_verified_isolated"] is True
     assert kwargs["restore_authorization"] == "/tmp/auth.json"

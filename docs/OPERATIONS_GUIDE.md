@@ -12,7 +12,7 @@ El despliegue productivo de AAO desacopla la gobernanza de la ejecución del pro
 |---|---|---|---|
 | **API & Control Center** | `aao-api.service` | `aao-api` | Servidor FastAPI loopback (127.0.0.1:8001) y servicio SPA del frontend React. |
 | **PostgreSQL 16** | `postgresql.service` | `postgres` | Datastore canónico de estado compartido, colas, eventos y auditoría. |
-| **Worker Self-Development** | `aao-worker-self-dev.service` | `aao-impl-ag` | Procesamiento supervisado de colas en modo `--watch` con leases y fencing. |
+| **Worker Self-Development** | `aao-worker-self-dev.service` | `aao-impl-ag` | Unidad instalada, deshabilitada por defecto; solo procesa cola con identidad/grant explícitos, token de runtime privado y fencing. No forma parte de la activación automática del bootstrap.
 | **Recuperación de Turnos** | `aao-conversation-recovery.timer` | `aao-api` | Recuperación periódica de turnos de conversación expirados. |
 | **Integrador** | `aao-integrator-tick.timer` | `aao-integrator` | **OFF (Enmascarado).** Solo el CEO con todas las RA en PASS puede habilitarlo. |
 
@@ -65,10 +65,15 @@ sudo journalctl -u aao-api.service -n 50 --no-pager
 
 ### Control del Worker de Desarrollo:
 ```bash
-sudo systemctl start aao-worker-self-dev.service
 sudo systemctl stop aao-worker-self-dev.service
 sudo journalctl -u aao-worker-self-dev.service -f
 ```
+
+La unidad permanece deshabilitada tras un bootstrap limpio. No la habilites ni la inicies hasta que exista un mandato CEO confirmado y un proyecto activo dentro de ese alcance. Un CEO provisiona el agente con `scripts/bootstrap_self_dev_agent.py` (que verifica el mandato confirmado y emite un grant acotado); no confirmes mandatos desde ese script. El bootstrap crea `/run/aao-worker-self-dev` mediante `systemd-tmpfiles` como directorio privado del usuario de servicio; configura `XDG_RUNTIME_DIR` allí. Ejecuta el helper como `aao-impl-ag` con `XDG_RUNTIME_DIR=/run/aao-worker-self-dev`, y guarda los IDs que imprime en `AAO_WORKER_PROJECT_ID` y `AAO_WORKER_PRINCIPAL_ID` de `/etc/aao/aao-worker.env`. El token no se guarda en el árbol de releases ni en una ruta persistente. Solo después inicia el servicio.
+
+Tras la provisión, configura los identificadores no secretos `AAO_WORKER_PROJECT_ID` y `AAO_WORKER_PRINCIPAL_ID` en `/etc/aao/aao-worker.env` (`root:aao-impl-ag`, modo `0640`) y arranca la unidad. Para bootstrap interactivo del token, ejecuta el script como `aao-impl-ag` con `XDG_RUNTIME_DIR=/run/aao-worker-self-dev`; el CEO token se solicita sin eco. El helper solo procede con el mandato ya confirmado, y no muestra el token del agente. Verifica luego `systemctl status` y los logs.
+
+El directorio `/run` es volátil: después de reinicio o parada explícita, el token desaparece. Antes de reaprovisionar, revoca la identidad/grant anterior por el procedimiento CEO autorizado; el helper se niega a crear un grant duplicado mientras detecte uno activo. La configuración no habilita el worker ni renueva automáticamente grants o credenciales. No uses el agente si la asociación de host/fencing no está registrada y vigente.
 
 ---
 

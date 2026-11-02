@@ -38,6 +38,9 @@ MARKER="# Managed by scripts/identity_separation.sh"
 
 # The only supplementary groups each role may have. Anything else is rejected.
 declare -A ALLOWED_GROUPS=(
+  [aao-pm]="aao-host-id-read"
+  [aao-impl-codex]="aao-host-id-read"
+  [aao-impl-ag]="aao-host-id-read"
   [aao-integrator]="aao-ledger-read"
   [aao-supervisor]="aao-ledger-read"
   [aao-notifier]="aao-events"
@@ -106,7 +109,7 @@ if [[ "$MODE" == --purge ]]; then
   fi
   rm -f "$SUDOERS"
   for u in "${ALL_USERS[@]}"; do id "$u" >/dev/null 2>&1 && { userdel -r "$u" 2>/dev/null || userdel "$u"; echo "+ removed $u"; }; done
-  for g in aao-ledger-read aao-events; do getent group "$g" >/dev/null && groupdel "$g" && echo "+ removed group $g"; done
+  for g in aao-ledger-read aao-events aao-host-id-read; do getent group "$g" >/dev/null && groupdel "$g" && echo "+ removed group $g"; done
   rm -rf /var/lib/aao-auditor /var/lib/aao-auditor-alt /var/lib/aao-supervisor /srv/aao
   echo "Purged. Restore evidence from $archive if needed."
   exit 0
@@ -215,6 +218,7 @@ ensure_dir() { run install -d -o "$2" -g "$3" -m "$4" "$1"; }  # path owner grou
 
 ensure_group aao-ledger-read
 ensure_group aao-events
+ensure_group aao-host-id-read
 for u in "${ALL_USERS[@]}"; do ensure_user "$u"; done
 for u in "${!ALLOWED_GROUPS[@]}"; do run usermod -aG "${ALLOWED_GROUPS[$u]}" "$u"; done
 

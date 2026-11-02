@@ -100,7 +100,7 @@ Para trasladar AAO de un Host A a un Host B de forma reproducible y segura:
 1. **Aplicar Fencing de Host (Exclusividad Efectiva):**
    Detener servicios de worker, enmascarar unidades locales, revocar credenciales de agentes activos en base de datos, expirar leases de turnos y registrar el evento de auditoría `host.fenced`:
    ```bash
-   sudo aao-ops fence-host --host-id "host-a-prod"
+   sudo aao-ops fence-host
    sudo systemctl stop aao-api.service
    ```
 

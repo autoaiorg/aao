@@ -18,12 +18,22 @@ never rerun an applied migration. The scripts are one-shot, not a general
 schema-repair or rollback tool. If an interrupted migration leaves ambiguous
 state, stop and inspect the database rather than rerunning it blindly.
 
-Migration 036 installs the fencing schema but intentionally does not bind an
-agent identity to a host. Before enabling a worker, an operator must register
-its exact principal and host with `aao-ops register-host-worker --worker-id
-<principal-id> --host-id <host-id>`. Claims fail closed until that explicit
-binding exists. Fence the old host before registering the worker on a new host;
-the unique active-binding constraint refuses an un-fenced reassignment.
+Migration 036 installs the host registry and execution-claim fencing; migration
+037 binds conversation-turn leases to host and fence epoch. It also expires
+legacy pending leases without host attribution so the new release can reclaim
+them safely. The integral bootstrap stops the API and recovery worker before
+the 037 migration and starts the API only after applying and verifying the
+schema. Migration 036 intentionally does not bind an agent identity to a host.
+Before enabling a worker or W2 GitHub publisher, an
+operator must register its exact principal and host with
+`aao-ops register-host-worker --worker-id <principal-id> --host-id <host-id>`.
+Claims, effect proposals and W2 remote publication fail closed until that
+explicit binding exists. Fence the old host before registering the identity on
+a new host; the unique active-binding constraint refuses an un-fenced
+reassignment. The publisher holds its binding row lock for the duration of the
+remote call and ledger commit; GitHub does not consume AAO's fencing epoch, so
+this serializes against AAO fencing but cannot guarantee cancellation of an
+already-issued remote request after a network partition.
 
 ## Unified Schema Migration Engine (Single Source of Truth)
 
@@ -86,10 +96,11 @@ The current canonical catalog comprises 38 versioned migrations in `db/postgres/
 - `035_project_routines`: Durable CEO-authorized routines and their occurrences (revokes `PUBLIC` access).
 - `036_host_worker_fencing`: Versioned host-worker binding registry, unique active worker binding, and execution claim fencing epoch (revokes `PUBLIC` access on `host_worker_bindings`). Renumbered from `031_host_worker_fencing` to avoid colliding with `031_conversation_endpoint_metadata`; a database that already recorded `031_host_worker_fencing` in `schema_migrations` needs ledger reconciliation by its owner before applying 036.
 - `037_conversation_turn_host_fencing`: Binds provider-backed conversation turn leases to the owning host and fence epoch.
-- `038_work_publication_effects`: Persists idempotency and recovery state for remote push and pull-request effects.
+- `038_work_publication_effects`: Persists idempotency and recovery state for remote push and pull-request effects (revokes `PUBLIC` access; a non-owner runtime role needs an explicit grant).
 
 Databases upgraded from the pre-renumber host-bootstrap sequence may have recorded
-`031_host_worker_fencing` and `032_conversation_turn_host_fencing`. Do not simply
+`031_host_worker_fencing` and `032_conversation_turn_host_fencing` (and, on any
+unpublished local build of the same line, `033_work_publication_effects`). Do not simply
 rename ledger rows or replay migrations based only on those names. The database
 owner must inspect the actual schema and application history, reconcile the
 ledger to the canonical migration set (including the independent canonical
@@ -136,6 +147,9 @@ Migration `036_host_worker_fencing.sql` likewise revokes all privileges on
 `host_worker_bindings` from `PUBLIC` and grants nothing. Worker claims read the
 registry and `aao-ops` host registration/fencing writes it, so a non-owner
 runtime or operator role needs an explicit, owner-reviewed grant before use.
+Migration `038_work_publication_effects.sql` does the same for
+`work_publication_effects`: the W2 publishers read and write it, so a non-owner
+publisher/runtime role needs an explicit, owner-reviewed grant before use.
 
 **Do not expose port 8001 beyond loopback.** Both secrets are development
 credentials, not a production identity system. PostgreSQL permissions,

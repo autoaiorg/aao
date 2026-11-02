@@ -19,6 +19,9 @@ CREATE TABLE IF NOT EXISTS work_publication_effects (
 );
 CREATE INDEX IF NOT EXISTS ix_work_publication_effects_recovery
     ON work_publication_effects(status,lease_expires_at) WHERE status IN ('IN_PROGRESS','UNCERTAIN');
+-- Like 035/036: effect results carry remote PR URLs and failure classes; no implicit
+-- PUBLIC access. This grants nothing; a non-owner runtime role needs an explicit, reviewed grant.
+REVOKE ALL ON TABLE work_publication_effects FROM PUBLIC;
 INSERT INTO schema_migrations(version)
 VALUES ('038_work_publication_effects') ON CONFLICT DO NOTHING;
 COMMIT;

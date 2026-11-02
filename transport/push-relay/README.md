@@ -26,9 +26,13 @@ D1 is only a transport mailbox, never AAO business state.
   Headers: `X-AAO-Timestamp`, `X-AAO-Signature` (lowercase hex); 300-second skew.
   WebCrypto performs signature verification. Replays are idempotent reads/acks;
   no arbitrary state mutations or execution are offered.
-- `aao.push_relay.drain_one` uses HTTPS without redirects; checks allowlist and
-  HMAC again via the EXISTING `store_push_receipt`; ACK only after durable signed
-  local receipt creation. Lost ack is safe to retry. Credentials never in URLs.
+- `aao.push_relay.drain_one` uses HTTPS without redirects and processes the head
+  in this order: (1) webhook HMAC over the exact relayed bytes, before any GitHub
+  call; (2) quarantine of non-attributable heads (below); (3) a head whose signed
+  local receipt already exists with identical content is only re-acked, without
+  a new GitHub lookup (lost-ack recovery); (4) GitHub delivery corroboration;
+  (5) durable signed receipt via the EXISTING `store_push_receipt`; (6) ACK.
+  Credentials never in URLs.
 
 A valid HMAC authenticates a payload, NOT an authorized AAO agent. Existing
 supervisor chain attribution and verified GitHub App/AAO identity correlation
@@ -36,16 +40,44 @@ remain mandatory. Unknown actors, missing chains or missing identity evidence
 must not gain authority. This prototype does not implement or claim that final
 identity correlation, live reconciliation, W2/R1 or B-2 acceptance has passed.
 
-Before authoritative attribution, the supervisor must independently corroborate
-against GitHub's delivery API: configured hook/repository, delivery GUID, immutable
-actor ID and exact before/after/ref transition, then correlate verified GitHub Apps
-with AAO's identity catalogue. This is a PENDING prerequisite, not implemented by
-this mailbox/client. A relay holding the webhook secret can forge both payload
-and sender, so raw HMAC plus sender.login alone is insufficient. GitHub deliveries
-outside its 3-day retention, unavailable corroboration, revoked identities or
-unknown mapping remain PROVISIONAL. Never invent historical recovery or infer
-identity authority from the mailbox. No new authoritative attribution source is
-wired into supervisor_service by this change.
+`aao.github_delivery_corroboration` IMPLEMENTS the independent check against
+GitHub's delivery API before a receipt is stored: configured hook and repository
+ID, exact delivery GUID (list, detail and `X-GitHub-Delivery`), push event
+(header and detail), immutable sender ID + login present in a caller-supplied
+persisted AAO identity map, and the exact ref/before/after transition. A relay
+holding the webhook secret can forge both payload and sender, so raw HMAC plus
+sender.login alone is insufficient. The caller must source the `PushWebhookTrust`
+(repository/hook IDs, identity map) from verified configuration and persisted AAO
+identities; that provisioning, live GitHub behaviour and scheduling are NOT done
+here. No new authoritative attribution source is wired into supervisor_service
+by this change. Never invent historical recovery or infer identity authority
+from the mailbox.
+
+Outcomes (all fail closed; only (a) and (b) ack):
+- (a) corroborated: signed receipt stored, then acked.
+- (b) quarantined: HMAC-valid push from a repository outside the verified
+  configuration (forks included) or from a sender without a persisted AAO
+  mapping (humans, `github-actions[bot]`, dependabot, renamed logins). A
+  supervisor-signed `aao.github-push-quarantine.v1` record with
+  `status: PROVISIONAL`, the reason, the exact raw body and webhook signature is
+  stored under `<receipts>/quarantine/`, then acked. It is never read as a push
+  receipt and grants no attribution; reconcile it later under an approved procedure.
+- (c) retryable `DeliveryCorroborationInconclusive` (not acked): the GUID is not
+  within the bounded scan (10 pages x 100 via the Link cursor; owner/name and
+  `/repositories/{id}` link forms are accepted, only the cursor is reused),
+  GitHub rate limiting (429, or 403 with `X-RateLimit-Remaining: 0`/`Retry-After`;
+  `retry_after` is the backoff hint for the scheduler), 5xx or network failure,
+  or a not-yet-listed delivery within 600 s of the payload's `pushed_at`.
+- (d) invalid (not acked, stalls the queue): bad HMAC, malformed body/list/link,
+  revoked credential, GUID absent from the exhausted list after the grace period,
+  or any GitHub mismatch (a forgery signal).
+
+PENDING design, not implemented: `drain_one` takes ONE `PushWebhookTrust`, i.e.
+one repository and hook. Pushes to W2 forks (which have their own repository
+and hook IDs) are therefore quarantined as `repository-not-configured` and never
+attributed through this path, even when listed in `REPOSITORIES_JSON`. Fork
+attribution needs a trust map keyed by repository ID; until then the raw fork
+deliveries are preserved in quarantine for later reconciliation.
 
 ## Persistence, failure and compromise
 
@@ -54,17 +86,19 @@ including acknowledged rows. At 10,000 total receipts or 50 MB total bodies the
 SQL trigger refuses new inserts, atomically, including concurrent writers.
 Retention/ack-only compaction is future explicit work, NOT an enabled job.
 A host outage leaves receipts pending remotely; restart pulls the oldest first.
-An invalid oldest receipt stalls collection (fail closed); do not silently ack
-or skip it. Investigate by a separately approved administrative procedure.
-Corroboration follows GitHub's delivery-list cursor up to 10 pages of 100. If the
-GUID is not listed within that bound, `DeliveryCorroborationInconclusive` (a
-retryable `ValueError`) is raised: nothing is stored or acked, and the receipt is
-not declared invalid. Because GitHub lists newest deliveries first, a stalled head
-can drift past the bound or the 3-day retention; that needs operator follow-up.
+An invalid oldest receipt (outcome (d)) stalls collection (fail closed); do not
+silently ack or skip it. Investigate by a separately approved administrative
+procedure. Because GitHub lists newest deliveries first, an inconclusive head
+can drift past the scan bound or the 3-day retention and become invalid; that
+also needs operator follow-up.
 
 Compromised receiver: because it holds the webhook secret, it can forge a valid
 GitHub HMAC as well as suppress/replay data or deny service. Host HMAC revalidation
 alone does NOT detect that fabrication; independent GitHub corroboration is required.
+Quarantine reasons are derived from relay-supplied claims that GitHub has not
+checked, so a compromised receiver can divert a genuine push into quarantine
+(suppression, already within this boundary). It cannot divert a push into
+attribution: that path always requires GitHub corroboration.
 Compromise of webhook secret can forge payloads: suspend intake, rotate the secret
 in GitHub and receiver and supervisor under CEO-approved procedure; reconcile
 with GitHub delivery records and AAO evidence before trusting affected intervals.

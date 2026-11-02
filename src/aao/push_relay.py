@@ -16,7 +16,7 @@ import urllib.request
 from pathlib import Path
 
 from aao.github_delivery_corroboration import PushWebhookTrust, corroborate_push_delivery
-from aao.push_receipts import store_push_receipt
+from aao.push_receipts import store_push_receipt, store_quarantine_record, validate_signature
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -28,7 +28,14 @@ def drain_one(*, endpoint: str, pull_secret: bytes, github_secret: bytes,
               github_api_token: str, webhook_trust: PushWebhookTrust,
               directory: Path, private_key: str, opener=None,
               github_opener=None) -> bool:
-    """Retrieve at most one receipt; failures never ack and may be retried idempotently."""
+    """Retrieve at most one receipt; failures never ack and may be retried idempotently.
+
+    Order: relay HMAC first (no GitHub call for unauthenticated bytes); an
+    HMAC-valid push from an unconfigured repository or an unmapped sender is
+    stored as a signed PROVISIONAL quarantine record and acked so it cannot
+    stall the queue; an already stored identical receipt is only re-acked;
+    everything else must be corroborated by GitHub before storage and ack.
+    """
     url = urllib.parse.urlsplit(endpoint)
     if (url.scheme != "https" or not url.hostname or url.username or url.password
             or url.path not in ("", "/") or url.query or url.fragment):
@@ -65,10 +72,35 @@ def drain_one(*, endpoint: str, pull_secret: bytes, github_secret: bytes,
     if not isinstance(row, dict):
         raise TypeError("invalid relay receipt")
     raw_body = base64.b64decode(row["body_base64"], validate=True)
+    delivery_id, signature = row.get("delivery_id"), row.get("signature")
+    if not validate_signature(github_secret, raw_body, signature):
+        raise ValueError("GitHub webhook signature is invalid")
     payload = json.loads(raw_body)
-    repository = payload.get("repository", {}).get("full_name")
+    if not isinstance(payload, dict) or not isinstance(payload.get("repository"), dict):
+        raise TypeError("relayed push payload is not an object")
+    webhook_trust.validate()
+    repository = payload["repository"].get("full_name")
+    sender = payload.get("sender") if isinstance(payload.get("sender"), dict) else {}
+    reason = None
     if repository != webhook_trust.repository:
-        raise ValueError("relay repository is not allowlisted by verified configuration")
+        reason = "repository-not-configured"
+    elif (sender.get("id"), sender.get("login")) not in webhook_trust.actor_map:
+        reason = "sender-not-mapped"
+    if reason:
+        store_quarantine_record(directory, delivery_id=delivery_id, reason=reason,
+            raw_body=raw_body, secret=github_secret, signature=signature,
+            private_key=private_key)
+        request("POST", f"/receipts/{delivery_id.lower()}/ack")
+        return True
+    try:  # Reacquired after a lost ack: an identical stored receipt needs no new GitHub lookup.
+        store_push_receipt(directory, payload, repository=repository, delivery_id=delivery_id,
+            raw_body=raw_body, secret=github_secret, signature=signature,
+            private_key=private_key, create=False)
+    except FileNotFoundError:
+        pass
+    else:
+        request("POST", f"/receipts/{delivery_id.lower()}/ack")
+        return True
     confirmed_payload = corroborate_push_delivery(
         token=github_api_token, trust=webhook_trust, delivery_guid=row.get("delivery_id"),
         relay_payload=payload, opener=github_opener)

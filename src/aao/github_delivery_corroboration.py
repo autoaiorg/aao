@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -22,13 +23,35 @@ _CURSOR = re.compile(r"[A-Za-z0-9_.:=+/-]{1,256}\Z")
 # ponytail: fixed bound of 10 x 100 deliveries; a pending relay head older than
 # that stays inconclusive until GitHub lists it within the bound or an operator acts.
 MAX_DELIVERY_PAGES = 10
+# A delivery GitHub has not listed yet (list lag) is retried for this long after
+# the payload's claimed repository.pushed_at; older absences are definitive.
+NOT_FOUND_GRACE_SECONDS = 600
 
 
 class DeliveryCorroborationInconclusive(ValueError):
-    """Retryable: the bounded delivery scan ended before the list was exhausted.
+    """Retryable: GitHub could not confirm or refute the delivery right now.
 
-    Not evidence that the delivery is invalid; the receipt must stay unacknowledged.
+    Raised for a bounded scan that ended before the list was exhausted, rate
+    limiting (``retry_after`` seconds is a backoff hint), 5xx/network failures,
+    and a not-yet-listed recent delivery. Not evidence that the delivery is
+    invalid; the receipt must stay unacknowledged and be retried later.
     """
+
+    def __init__(self, message: str, retry_after: int | None = None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+def _retry_after(headers: Any) -> int:
+    """Backoff hint from Retry-After or x-ratelimit-reset; 60 s when absent or malformed."""
+    headers = headers or {}
+    value = str(headers.get("Retry-After") or "")
+    if value.isdecimal():
+        return max(1, int(value))
+    reset = str(headers.get("X-RateLimit-Reset") or "")
+    if reset.isdecimal():
+        return max(1, int(reset) - int(time.time()))
+    return 60
 
 
 @dataclass(frozen=True)
@@ -91,13 +114,20 @@ def _json_request(opener: Any, path: str, token: str, *, with_link: bool = False
             body = response.read(25 * 1024 * 1024 + 1)
             link = response.headers.get("Link") if with_link else None
     except urllib.error.HTTPError as exc:
+        headers = exc.headers or {}
+        if exc.code == 429 or (exc.code == 403 and (
+                str(headers.get("X-RateLimit-Remaining")) == "0" or headers.get("Retry-After"))):
+            raise DeliveryCorroborationInconclusive(
+                "GitHub delivery corroboration is rate limited", _retry_after(headers)) from None
         if exc.code in (401, 403):
             raise ValueError("GitHub delivery credential is revoked or unauthorized") from None
-        if exc.code == 503 or exc.code == 502 or exc.code == 504:
-            raise ValueError("GitHub delivery corroboration is temporarily unavailable") from None
+        if 500 <= exc.code <= 599:
+            raise DeliveryCorroborationInconclusive(
+                "GitHub delivery corroboration is temporarily unavailable") from None
         raise ValueError("GitHub delivery lookup failed") from None
     except (urllib.error.URLError, TimeoutError, OSError):
-        raise ValueError("GitHub delivery corroboration request failed") from None
+        raise DeliveryCorroborationInconclusive(
+            "GitHub delivery corroboration request failed") from None
     if len(body) > 25 * 1024 * 1024:
         raise ValueError("GitHub delivery response is too large")
     try:
@@ -107,8 +137,12 @@ def _json_request(opener: Any, path: str, token: str, *, with_link: bool = False
     return (parsed, link) if with_link else parsed
 
 
-def _next_cursor(link: Any, base: str) -> str | None:
-    """Extract only the cursor of a same-endpoint rel="next" link; never follow the URL."""
+def _next_cursor(link: Any, endpoints: set[str]) -> str | None:
+    """Extract only the cursor of a same-endpoint rel="next" link; never follow the URL.
+
+    GitHub may express the endpoint by owner/name or by numeric repository ID;
+    ``endpoints`` holds both forms built from the verified repository and hook.
+    """
     if link is None:
         return None
     if not isinstance(link, str):
@@ -120,16 +154,16 @@ def _next_cursor(link: Any, base: str) -> str | None:
     query = urllib.parse.parse_qs(url.query, strict_parsing=True) if url.query else {}
     cursor = query.get("cursor", [])
     if (len(found) != 1 or url.scheme != "https" or url.netloc != "api.github.com"
-            or urllib.parse.unquote(url.path) != urllib.parse.unquote(base) or url.fragment
+            or urllib.parse.unquote(url.path) not in endpoints or url.fragment
             or not set(query) <= {"cursor", "per_page"} or len(cursor) != 1
             or not _CURSOR.fullmatch(cursor[0])):
         raise ValueError("GitHub delivery pagination link is malformed")
     return cursor[0]
 
 
-def _find_delivery(transport: Any, base: str, token: str, delivery_guid: str,
-                   max_pages: int) -> list[dict]:
-    """Scan delivery list pages until the GUID is found, the list ends, or the bound is hit."""
+def _find_delivery(transport: Any, base: str, endpoints: set[str], token: str,
+                   delivery_guid: str, max_pages: int) -> list[dict]:
+    """Scan list pages until the GUID is found ([] once the list is exhausted) or the bound is hit."""
     cursor: str | None = None
     seen_cursors: set[str] = set()
     for _ in range(max_pages):
@@ -141,9 +175,9 @@ def _find_delivery(transport: Any, base: str, token: str, delivery_guid: str,
         matched = [item for item in deliveries if item.get("guid") == delivery_guid]
         if matched:
             return matched
-        cursor = _next_cursor(link, base)
+        cursor = _next_cursor(link, endpoints)
         if cursor is None:
-            raise ValueError("GitHub delivery GUID was not found")
+            return []
         if cursor in seen_cursors:
             raise ValueError("GitHub delivery pagination link is malformed")
         seen_cursors.add(cursor)
@@ -202,7 +236,16 @@ def corroborate_push_delivery(*, token: str, trust: PushWebhookTrust,
     transport = opener or urllib.request.build_opener(_NoRedirect())
     base = "/repos/{}/{}/hooks/{}/deliveries".format(
         urllib.parse.quote(owner, safe=""), urllib.parse.quote(repo, safe=""), trust.hook_id)
-    matched = _find_delivery(transport, base, token, delivery_guid, max_pages)
+    endpoints = {urllib.parse.unquote(base),
+                 f"/repositories/{trust.repository_id}/hooks/{trust.hook_id}/deliveries"}
+    matched = _find_delivery(transport, base, endpoints, token, delivery_guid, max_pages)
+    if not matched:
+        pushed_at = relay_payload["repository"].get("pushed_at")
+        if (_positive_id(pushed_at)
+                and abs(time.time() - pushed_at) < NOT_FOUND_GRACE_SECONDS):
+            raise DeliveryCorroborationInconclusive(
+                "recent GitHub delivery is not listed yet; retry later", NOT_FOUND_GRACE_SECONDS)
+        raise ValueError("GitHub delivery GUID was not found")
 
     fetched_payloads = []
     seen_ids: set[int] = set()

@@ -70,7 +70,7 @@ export default {
       const payload = JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(body));
       const repository = payload.repository?.full_name;
       const allowed = JSON.parse(env.REPOSITORIES_JSON || '[]');
-      if (!allowed.includes(repository) || !payload.sender?.login || payload.deleted === true ||
+      if (!Array.isArray(allowed) || !allowed.includes(repository) || !payload.sender?.login || payload.deleted === true ||
           !/^refs\/heads\/.+/.test(payload.ref || '') || !/^[0-9a-f]{40}$/.test(payload.before || '') ||
           !/^[0-9a-f]{40}$/.test(payload.after || '')) return reply(400);
       const digest = hex(await crypto.subtle.digest('SHA-256', body));

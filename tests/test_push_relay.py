@@ -39,7 +39,7 @@ def setup(tmp_path, *, signature=None, fail_ack=False, relay_payload=None,
         'before': '0' * 40, 'after': 'a' * 40,
     }
     verified_payload = github_payload or payload
-    body = (json.dumps(payload, indent=2) + '\n ').encode()
+    body = payload if isinstance(payload, bytes) else (json.dumps(payload, indent=2) + '\n ').encode()
     rows = [{'delivery_id': delivery_guid, 'body_base64': base64.b64encode(body).decode(),
              'signature': signature or 'sha256=' + hmac.new(GITHUB, body, hashlib.sha256).hexdigest()}]
     relay_calls = []
@@ -57,7 +57,9 @@ def setup(tmp_path, *, signature=None, fail_ack=False, relay_payload=None,
                 return Response(json.dumps(rows).encode())
             assert path == f'/receipts/{delivery_guid.lower()}/ack'
             # ACK is impossible before a corroborated and durable receipt exists.
-            assert read_push_receipts(directory, repository='o/r', private_key=str(key))[0]['actor'] == 'app[bot]'
+            quarantined = list((directory / 'quarantine').glob('*.json'))
+            if not quarantined:
+                assert read_push_receipts(directory, repository='o/r', private_key=str(key))[0]['actor'] == 'app[bot]'
             if fail_ack:
                 raise OSError('simulated transport failure')
             return Response(b'', 204)
@@ -96,10 +98,11 @@ def test_corroborated_original_bytes_persist_before_ack(tmp_path):
 
 
 def test_invalid_webhook_hmac_never_acknowledged(tmp_path):
-    kwargs, relay_calls, _ = setup(tmp_path, signature='sha256=' + '0' * 64)
+    kwargs, relay_calls, github_calls = setup(tmp_path, signature='sha256=' + '0' * 64)
     with pytest.raises(ValueError, match='signature'):
         drain_one(**kwargs)
     assert relay_calls == ['GET']
+    assert github_calls == []  # HMAC is checked before any GitHub API call
 
 
 def test_valid_hmac_over_forged_transition_still_requires_github_match(tmp_path):
@@ -118,21 +121,70 @@ def test_valid_hmac_over_forged_transition_still_requires_github_match(tmp_path)
 
 
 def test_ack_failure_retries_without_losing_or_conflicting_receipt(tmp_path):
-    kwargs, relay_calls, _ = setup(tmp_path, fail_ack=True)
+    kwargs, relay_calls, github_calls = setup(tmp_path, fail_ack=True)
     for _ in range(2):
         with pytest.raises(ValueError, match='request failed'):
             drain_one(**kwargs)
     assert relay_calls == ['GET', 'POST', 'GET', 'POST']
     assert len(list(kwargs['directory'].glob('*.json'))) == 1
+    # The reacquired head matched the stored receipt: re-ack only, no second GitHub lookup.
+    assert len(github_calls) == 2
 
 
-def test_repo_not_in_verified_configuration_never_acknowledged(tmp_path):
-    kwargs, relay_calls, github_calls = setup(tmp_path)
-    kwargs['webhook_trust'] = PushWebhookTrust(
-        repository='other/repo', repository_id=8, hook_id=10,
-        actor_map={(55, 'app[bot]'): 'aao-impl-one'},
-    )
-    with pytest.raises(ValueError, match='allowlisted'):
+def test_reacquired_head_conflicting_with_stored_receipt_is_not_acked(tmp_path):
+    kwargs, relay_calls, _ = setup(tmp_path, fail_ack=True)
+    with pytest.raises(ValueError, match='request failed'):
+        drain_one(**kwargs)
+    stored = next(kwargs['directory'].glob('*.json'))
+    stored.write_bytes(stored.read_bytes().replace(b'app[bot]', b'app[xot]'))
+    with pytest.raises(ValueError, match='conflicts'):
+        drain_one(**kwargs)
+    assert relay_calls == ['GET', 'POST', 'GET']
+
+
+def quarantine_record(kwargs):
+    (path,) = (kwargs['directory'] / 'quarantine').glob('*.json')
+    return path, json.loads(path.read_bytes())
+
+
+@pytest.mark.parametrize('relay_payload, reason', [
+    # Fork / repository outside verified configuration.
+    ({'repository': {'id': 70, 'full_name': 'fork/r'}, 'sender': {'id': 55, 'login': 'app[bot]'},
+      'ref': 'refs/heads/x', 'before': '0' * 40, 'after': 'a' * 40}, 'repository-not-configured'),
+    # Human, github-actions[bot], dependabot or a renamed login: no persisted AAO mapping.
+    ({'repository': {'id': 7, 'full_name': 'o/r'}, 'sender': {'id': 99, 'login': 'some-human'},
+      'ref': 'refs/heads/x', 'before': '0' * 40, 'after': 'a' * 40}, 'sender-not-mapped'),
+    ({'repository': {'id': 7, 'full_name': 'o/r'}, 'sender': {'id': 55, 'login': 'renamed[bot]'},
+      'ref': 'refs/heads/x', 'before': '0' * 40, 'after': 'a' * 40}, 'sender-not-mapped'),
+])
+def test_non_attributable_head_is_quarantined_provisional_and_does_not_stall(
+        tmp_path, relay_payload, reason):
+    kwargs, relay_calls, github_calls = setup(tmp_path, relay_payload=relay_payload)
+    assert drain_one(**kwargs)
+    assert relay_calls == ['GET', 'POST']
+    assert github_calls == []
+    path, record = quarantine_record(kwargs)
+    assert record['status'] == 'PROVISIONAL' and record['reason'] == reason
+    assert record['schema'] == 'aao.github-push-quarantine.v1'
+    assert record['delivery_id'] == ID and record['signature_256'].startswith('sha256=')
+    assert json.loads(base64.b64decode(record['body_base64'])) == relay_payload
+    assert oct(path.stat().st_mode & 0o777) == '0o640'
+    # Quarantine grants no attribution: not visible as a push receipt.
+    assert read_push_receipts(kwargs['directory'], repository='o/r', private_key=kwargs['private_key']) == []
+    # Supervisor signature verifies over the canonical record.
+    from aao.integration_authorization import canonical
+    signature = base64.b64decode(record.pop('signature'))
+    (tmp_path / 'msg').write_bytes(canonical(record))
+    (tmp_path / 'sig').write_bytes(signature)
+    subprocess.run(['openssl', 'pkey', '-in', kwargs['private_key'], '-pubout', '-out', str(tmp_path / 'pub')],
+                   check=True, capture_output=True)
+    subprocess.run(['openssl', 'pkeyutl', '-verify', '-pubin', '-inkey', str(tmp_path / 'pub'), '-rawin',
+                    '-sigfile', str(tmp_path / 'sig'), '-in', str(tmp_path / 'msg')], check=True, capture_output=True)
+
+
+def test_non_dict_relayed_body_with_valid_hmac_fails_closed(tmp_path):
+    kwargs, relay_calls, github_calls = setup(tmp_path, relay_payload=b'[1, 2]')
+    with pytest.raises(TypeError, match='not an object'):
         drain_one(**kwargs)
     assert relay_calls == ['GET']
     assert github_calls == []

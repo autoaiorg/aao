@@ -36,27 +36,42 @@ class Response(io.BytesIO):
 
 
 class GithubOpener:
-    def __init__(self, fetched=None, *, status=None, guids=None, event='push', hook_id='20'):
+    def __init__(self, fetched=None, *, status=None, guids=None, event='push', hook_id='20',
+                 error=None, error_headers=None, response_status=200, detail_body=None, **detail):
         self.fetched = fetched or payload()
         self.status = status
         self.guids = guids or [GUID]
         self.event = event
         self.hook_id = hook_id
+        self.error = error
+        self.error_headers = error_headers
+        self.response_status = response_status
+        self.detail_body = detail_body
+        self.detail = detail  # single-field overrides: header_event, detail_event, header_guid, detail_guid
         self.calls = []
 
     def open(self, request, timeout):
         self.calls.append(request.full_url)
         assert request.get_header('Authorization') == 'Bearer independently-provisioned-token'
+        if self.error:
+            raise self.error
         if self.status:
-            raise urllib.error.HTTPError(request.full_url, self.status, 'simulated', None, io.BytesIO())
+            raise urllib.error.HTTPError(request.full_url, self.status, 'simulated',
+                                         self.error_headers or {}, io.BytesIO())
         if '?' in request.full_url:
-            return Response(json.dumps([
+            response = Response(json.dumps([
                 {'id': 123 + index, 'guid': guid} for index, guid in enumerate(self.guids)
             ]).encode())
+            response.status = self.response_status
+            return response
+        if self.detail_body is not None:
+            return Response(self.detail_body)
         detail = {
-            'guid': self.guids[0], 'event': self.event,
+            'guid': self.detail.get('detail_guid', self.guids[0]),
+            'event': self.detail.get('detail_event', self.event),
             'request': {'headers': {
-                'X-GitHub-Delivery': self.guids[0], 'X-GitHub-Event': self.event,
+                'X-GitHub-Delivery': self.detail.get('header_guid', self.guids[0]),
+                'X-GitHub-Event': self.detail.get('header_event', self.event),
                 'X-GitHub-Hook-ID': self.hook_id,
             }, 'payload': self.fetched},
         }
@@ -95,11 +110,38 @@ def test_fork_or_repository_id_mismatch_fails_closed():
 
 @pytest.mark.parametrize('status, message', [
     (401, 'revoked or unauthorized'), (403, 'revoked or unauthorized'),
-    (503, 'temporarily unavailable'),
 ])
-def test_revoked_credential_and_api_outage_fail_closed(status, message):
-    with pytest.raises(ValueError, match=message):
+def test_revoked_credential_fails_closed_and_is_not_retryable(status, message):
+    with pytest.raises(ValueError, match=message) as caught:
         corroborate(GithubOpener(status=status))
+    assert not isinstance(caught.value, DeliveryCorroborationInconclusive)
+
+
+@pytest.mark.parametrize('status, headers, message, retry_after', [
+    (429, {'Retry-After': '30'}, 'rate limited', 30),
+    (403, {'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset': '1000120'}, 'rate limited', 120),
+    (403, {'Retry-After': '5'}, 'rate limited', 5),
+    (429, {}, 'rate limited', 60),
+    (500, {}, 'temporarily unavailable', None),
+    (503, {}, 'temporarily unavailable', None),
+])
+def test_rate_limit_and_outage_are_retryable_inconclusive(monkeypatch, status, headers, message, retry_after):
+    import aao.github_delivery_corroboration as module
+    monkeypatch.setattr(module.time, 'time', lambda: 1000000)
+    with pytest.raises(DeliveryCorroborationInconclusive, match=message) as caught:
+        corroborate(GithubOpener(status=status, error_headers=headers))
+    assert caught.value.retry_after == retry_after
+
+
+def test_network_failure_is_retryable_inconclusive():
+    with pytest.raises(DeliveryCorroborationInconclusive, match='request failed'):
+        corroborate(GithubOpener(error=urllib.error.URLError('down')))
+
+
+def test_other_http_error_fails_closed_not_retryable():
+    with pytest.raises(ValueError, match='lookup failed') as caught:
+        corroborate(GithubOpener(status=404))
+    assert not isinstance(caught.value, DeliveryCorroborationInconclusive)
 
 
 def test_mismatched_identity_or_ref_transition_fails_closed():
@@ -217,3 +259,91 @@ def test_malformed_page_or_pagination_link_fails_closed(pages, link, error, mess
     with pytest.raises(error, match=message) as caught:
         corroborate(PagedOpener(pages, link=link))
     assert not isinstance(caught.value, DeliveryCorroborationInconclusive)
+
+
+def test_next_link_in_numeric_repository_form_is_accepted_by_cursor_only():
+    link = '<https://api.github.com/repositories/10/hooks/20/deliveries?per_page=100&cursor=v1>; rel="next"'
+    opener = PagedOpener([filler(0), [GUID]], link=link)
+    assert corroborate(opener) == payload()
+    # The link URL itself is never requested; only its cursor is reused on the verified path.
+    assert opener.calls[:2] == [f'{BASE}?per_page=100', f'{BASE}?per_page=100&cursor=v1']
+
+
+@pytest.mark.parametrize('path', [
+    '/repositories/11/hooks/20/deliveries',   # other repository ID
+    '/repositories/10/hooks/21/deliveries',   # other hook
+    '/repositories/10/hooks/20/deliveries/5',
+])
+def test_next_link_numeric_form_must_match_verified_repository_and_hook(path):
+    link = f'<https://api.github.com{path}?cursor=v1>; rel="next"'
+    with pytest.raises(ValueError, match='pagination link is malformed'):
+        corroborate(PagedOpener([filler(0), [GUID]], link=link))
+
+
+def test_recent_unlisted_delivery_is_inconclusive_within_grace(monkeypatch):
+    import aao.github_delivery_corroboration as module
+    monkeypatch.setattr(module.time, 'time', lambda: 1000000)
+    recent = payload()
+    recent['repository']['pushed_at'] = 1000000 - 30
+    with pytest.raises(DeliveryCorroborationInconclusive, match='not listed yet'):
+        corroborate(PagedOpener([filler(0)]), candidate=recent)
+    old = payload()
+    old['repository']['pushed_at'] = 1000000 - module.NOT_FOUND_GRACE_SECONDS - 1
+    with pytest.raises(ValueError, match='GUID was not found') as caught:
+        corroborate(PagedOpener([filler(0)]), candidate=old)
+    assert not isinstance(caught.value, DeliveryCorroborationInconclusive)
+
+
+@pytest.mark.parametrize('override', [
+    {'header_event': 'issues'}, {'detail_event': 'issues'},
+    {'header_guid': 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'},
+])
+def test_single_detail_header_or_event_mismatch_fails_closed(override):
+    with pytest.raises(ValueError, match='not the configured push webhook event'):
+        corroborate(GithubOpener(**override))
+
+
+def test_single_detail_guid_mismatch_fails_closed():
+    with pytest.raises(ValueError, match='detail GUID does not match'):
+        corroborate(GithubOpener(detail_guid='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'))
+
+
+def test_fetched_full_name_mismatch_alone_fails_closed():
+    fetched = payload()
+    fetched['repository']['full_name'] = 'owner/other'
+    with pytest.raises(ValueError, match='does not match relayed'):
+        corroborate(GithubOpener(fetched=fetched))
+
+
+def test_relay_full_name_mismatch_alone_fails_closed_before_api_call():
+    candidate = payload()
+    candidate['repository']['full_name'] = 'owner/other'
+    opener = GithubOpener()
+    with pytest.raises(ValueError, match='does not match verified repository'):
+        corroborate(opener, candidate=candidate)
+    assert opener.calls == []
+
+
+def test_non_200_success_status_fails_closed():
+    with pytest.raises(ValueError, match='unexpected status'):
+        corroborate(GithubOpener(response_status=201))
+
+
+def test_oversized_response_fails_closed():
+    with pytest.raises(ValueError, match='too large'):
+        corroborate(GithubOpener(detail_body=b' ' * (25 * 1024 * 1024 + 1)))
+
+
+@pytest.mark.parametrize('max_pages', [0, -1, True, '3', 1.5])
+def test_invalid_page_bound_fails_closed_before_api_call(max_pages):
+    opener = GithubOpener()
+    with pytest.raises(ValueError, match='page bound is invalid'):
+        corroborate_push_delivery(
+            token='independently-provisioned-token', trust=TRUST, delivery_guid=GUID,
+            relay_payload=payload(), opener=opener, max_pages=max_pages)
+    assert opener.calls == []
+
+
+def test_non_dict_relay_payload_fails_closed():
+    with pytest.raises(TypeError, match='not an object'):
+        corroborate(GithubOpener(), candidate=[payload()])

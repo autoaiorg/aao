@@ -51,6 +51,24 @@ test('private pull/ack require valid fresh HMAC',async()=>{
   assert.equal((await worker.fetch(new Request(`https://relay/receipts/${id}/ack`,{method:'POST'}),env)).status,401);
   assert.equal((await call(env,'/receipts','GET','1000000000')).status,401);
 });
+test('pull/ack with a fresh timestamp but wrong HMAC are rejected and change nothing',async()=>{
+  const {env,db}=setup(); assert.equal((await push(env)).status,202);
+  const now=String(Math.floor(Date.now()/1000));
+  for (const [path,method] of [['/receipts','GET'],[`/receipts/${id}/ack`,'POST']]) {
+    for (const signature of ['0'.repeat(64), await sign('x'.repeat(32),bytes(`${method}\n${path}\n${now}\n`))]) {
+      const response=await worker.fetch(new Request(`https://relay${path}`,{method,
+        headers:{'X-AAO-Timestamp':now,'X-AAO-Signature':signature}}),env);
+      assert.equal(response.status,401);
+    }
+  }
+  assert.equal(db.prepare('SELECT acknowledged FROM receipts').get().acknowledged,0);
+});
+test('REPOSITORIES_JSON must be an array, not a substring-matching string',async()=>{
+  const {env}=setup(); env.REPOSITORIES_JSON='"xo/rx"';
+  assert.equal((await push(env)).status,400);
+  env.REPOSITORIES_JSON='{"o/r":true}';
+  assert.equal((await push(env)).status,400);
+});
 test('unacknowledged data does not expire; capacity fails closed',async()=>{
   const {env,db}=setup(); await push(env);
   db.prepare("UPDATE receipts SET received_at='2000-01-01'").run();

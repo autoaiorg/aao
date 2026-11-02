@@ -1,6 +1,6 @@
 # Estado actual de AAO
 
-**Corte:** 2026-11-02 21:14 UTC. **Revisión:** `197e69720c378748ac06431b051ec123258faf71` (`main` = `origin/main`). Este informe es un estado de coordinación, no una certificación de autonomía, despliegue o aceptación.
+**Corte:** 2026-11-02 21:15 UTC. **Revisión:** `197e69720c378748ac06431b051ec123258faf71` (`main` = `origin/main`). Este informe es un estado de coordinación, no una certificación de autonomía, despliegue o aceptación.
 
 ## 1. Evidencia de repositorio
 
@@ -26,6 +26,7 @@ La referencia de gates sigue siendo `docs/HANDOVER_ACCEPTANCE_MATRIX.md`, criter
 | Área | Estado para aceptación | Qué falta demostrar |
 |---|---|---|
 | Candidato y SHA aceptado | ABIERTO | Candidato identificable, aprobado y verificado en la revisión exacta |
+| Revisión de trabajo elegible | BLOQUEADO | La consulta actual informa que los grants `work.review` de ambos auditores están expirados; además, la última búsqueda informó 0 candidatos VERIFIED. El endpoint admite APPROVE bajo sus precondiciones, pero no hay grant activo ni candidato elegible demostrado |
 | Raíz de confianza y protección del canónico | ABIERTO | Evidencia sobre el candidato; reglas finales y efectivas de protección |
 | Identidades, privilegios y host | ABIERTO | Ejercicio real de roles y límites efectivos en el host/BD destino |
 | Candidato W2 | ABIERTO / BLOQUEADO | Última consulta de solo lectura reportó 0 ítems VERIFIED elegibles; hace falta una cadena de aprobación/evidencia sobre SHA exacto, sin fabricar estados |
@@ -57,6 +58,20 @@ Los siguientes datos son **históricos, aportados por el coordinador el 2026-11-
 - No se ha presentado evidencia de grants del rol runtime aplicados/verificados en el host. El PR documental #330 se cerró porque su diseño quedó desactualizado frente a la separación de roles de #327.
 
 Actualización operativa del 2026-11-02 (reportada por el operador y reflejada en el body de #343): en `aao_dev` se retiró el privilegio TEMPORARY de `PUBLIC`; se comprobó `aao_runtime CONNECT=true`, `TEMP=false`, `aao_dev TEMP=true` y ausencia de `PUBLIC CREATE/TEMP`. Esto es evidencia de una frontera de privilegios concreta en la base de desarrollo, no acredita el resto de privilegios de tablas, la autenticación runtime, `db:runtime-complete`, el host destino ni el piloto. El auditor independiente reportó APPROVE WITH NITS para #343; el nit de redacción se corrigió en el head `d8d9181`. A la hora del corte, los seis checks observados en los dos runs de PR estaban `in_progress` o `queued`; por tanto, CI aún no estaba verde.
+
+**Bloqueo actual del reviewer (consulta operativa del coordinador, 2026-11-02 21:15 UTC):** `principal_credentials` junto a `project_grants` muestra que los dos principals `aao-auditor-*` tienen su grant `work.review` expirado (2026-10-25 y 2026-10-26). Eso explica el rechazo actual por falta de grant vigente. No se renovó ningún grant. La consulta no secreta para reproducir la comprobación es:
+
+```sql
+SELECT p.name, c.enabled, g.capability, g.expires_at,
+       (g.expires_at IS NOT NULL AND g.expires_at <= clock_timestamp()) AS expired
+FROM principal_credentials c
+JOIN principals p ON p.id::text = c.principal_id
+JOIN project_grants g ON g.principal_id = p.id
+WHERE p.name LIKE 'aao-auditor-%' AND g.capability = 'work.review'
+ORDER BY p.name;
+```
+
+La fuente de esta evidencia es la comprobación live informada por el coordinador; esta actualización documental no ejecutó la consulta. Renovar dichos grants requiere una operación autorizada del CEO/principal delegado; no se ha ejecutado ni se presume autorizado aquí. En `main` `197e697`, `POST /v1/work/{id}/reviews` pasa por `require_reviewer` y `require_grant(..., "work.review")`; permite `APPROVE` si el proyecto está ACTIVE, el trabajo IN_REVIEW, reviewer distinto del autor y de workers ejecutores, evidencia resuelta, SHA ligado a una ejecución SUCCEEDED, sin intentos activos y sin veto. Por tanto, la afirmación de `docs/PRINCIPAL_AUTHORIZATION_MATRIX.md` de que APPROVE falla siempre por identidad humana/evidencia no verificada parece desactualizada respecto a la ruta actual: el endpoint ya verifica referencias de evidencia y aplica separación por identidad de principal/ejecución, aunque no prueba por sí mismo identidad humana independiente ni verdad/autoria de la evidencia. Esto no es aceptación de una revisión real. Aun tras una renovación autorizada seguiría faltando un candidato VERIFIED y SHA elegible para el ensayo W2.
 
 No incluir tokens, DSNs, claves privadas ni digests en este documento. Re-verificar mediante preflight por cuenta y consultas de solo metadatos antes de una operación real.
 
@@ -91,4 +106,4 @@ No se pide al CEO que ejecute comandos host en este momento. Si el siguiente gat
 - #343: descripción del PR y actualización operativa del coordinador reportan retirada de `PUBLIC TEMP` y verificación de `aao_runtime TEMP=false`; el PR sigue en borrador. La reauditoría se reportó como APPROVE WITH NITS, con ajuste de wording en el head actual; no sustituye aceptación ni CI.
 - Issue #322: `gh issue view 322 -R autoaiorg/aao --json state,title,updatedAt,url`, CLOSED, actualizado `2026-11-02T18:23:23Z`.
 - Gates: `docs/HANDOVER_ACCEPTANCE_MATRIX.md`; debe actualizarse para el estado post-merge.
-- Esta actualización no ejecutó pruebas, consultas a la BD ni operaciones del host. La evidencia de `aao_dev` se atribuye al operador/PR #343, no a una consulta independiente de este informe. No confirma vigencia de tokens, despliegue, privilegios completos runtime, estado actual de servicios ni aceptación final. El candidato W2 sigue sin estar identificado y reportado como VERIFIED.
+- Esta actualización no ejecutó pruebas, consultas a la BD ni operaciones del host. La evidencia de `aao_dev` y de grants expirados se atribuye a la comprobación live del coordinador, no a una consulta independiente de este informe. No confirma vigencia de tokens, despliegue, privilegios completos runtime, estado actual de servicios ni aceptación final. El candidato W2 sigue sin estar identificado y reportado como VERIFIED; los grants no se renovaron.

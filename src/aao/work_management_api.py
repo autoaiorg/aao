@@ -111,9 +111,12 @@ def require_reviewer(
 def require_worker(
     x_agent_token: str | None = Header(None),
 ):
-    from aao.principal_credentials import PrincipalDenied
+    from aao.principal_credentials import PrincipalDenied, digest_token
     try:
-        return _authenticate_request_principal(x_agent_token, "AGENT")
+        principal_id = _authenticate_request_principal(x_agent_token, "AGENT")
+        # Keep the verified bearer digest attached to the principal so routes
+        # can re-check this exact credential inside their authorization txn.
+        return AuthenticatedPrincipal(principal_id, digest_token(x_agent_token), "AGENT")
     except PrincipalDenied as exc:
         raise HTTPException(403, "Individual agent credential rejected") from exc
 

@@ -2,6 +2,31 @@
 
 La matriz convierte los diez criterios de [CEO-DEC-AAO-CONSTRUCTION-2026-10-25](decisions/CEO-DEC-AAO-CONSTRUCTION-2026-10-25.md) en trabajo verificable. **No es certificación, no congela candidato y no habilita autonomía.** La auditoría independiente se hará una sola vez al final, por Antigravity u otro revisor que no haya construido el candidato. Actualizar evidencia y SHA al cerrar cada incremento.
 Estado inicial de esta matriz: revisión base `95d8427cea3d5748ca7041ee054cfc99ab5a8b72`; rama de construcción `feat/agents-office-aa-integration`. Las etiquetas «pendiente» significan trabajo de construcción/evidencia aún no resuelto, no fallo certificado.
+
+## Snapshot vigente de aceptación (2026-11-02)
+
+Este snapshot **prevalece sobre las etiquetas de estado de la tabla histórica siguiente**. La tabla de abajo y el registro de incrementos conservan evidencia de construcción de su fecha; no son una evaluación del estado actual. Revisión observada: `main` / `origin/main` en `d07f4aad25dede47200dfee4fd8e32de6bfb804b`; CI post-merge `41498856652` terminó SUCCESS. Estos hechos no constituyen candidato congelado, auditoría final ni aceptación. Ningún criterio de traspaso queda cerrado con la evidencia disponible en este corte.
+
+| Criterio | Estado de aceptación | Evidencia y trabajo que falta |
+|---:|---|---|
+| 1. Candidato y SHA exacto | ABIERTO | `d07f4aa` es el HEAD de construcción observado, no un candidato congelado ni aprobado para traspaso. Seleccionar y fijar una revisión después de completar los gates. |
+| 2. Raíz de confianza | ABIERTO | No se verificó instalación y cadena de confianza sobre un candidato actual en este corte. Repetir la verificación sobre el SHA final. |
+| 3. Identidades, privilegio mínimo y aislamiento | ABIERTO | #327/#331 integran código de bootstrap/fencing y auto-rotación, pero el estado actual del host, las instalaciones de Apps, los permisos efectivos y los tokens no se revalidaron. El informe `docs/ESTADO_ACTUAL.md` califica esa evidencia como histórica; los publishers W2 reportados anteriormente ya expiraron. Ejecutar preflight actualizado por rol y verificar los roles de host/BD sin exponer secretos. |
+| 4. Protección del repositorio canónico | ABIERTO | No se verificó en este corte el estado efectivo de rulesets ni sus bypasses. Consultar las reglas actuales y comprobarlas contra el diseño de construcción/traspaso. |
+| 5. Ensayos P2/P3 y pruebas negativas | ABIERTO | Hay cobertura de componentes y regresiones en CI; no hay evidencia de que el ensayo integrado de aceptación §14 se haya completado en un entorno controlado. Ejecutar el recorrido completo, incluyendo fallos y recuperación. |
+| 6. Requisitos RA | ABIERTO | No existe en este snapshot un mapeo vigente y verificable de cada RA obligatorio a implementación, prueba y excepción autorizada. Preparar y revisar ese mapeo. |
+| 7. Auditoría independiente | ABIERTO | Las revisiones de PR no equivalen a auditoría formal de la revisión candidata completa. Solicitar GOV-REV-001 sobre el SHA congelado después de los gates. |
+| 8. Auditoría, supervisión, integración y recuperación operativas | ABIERTO | Código fusionado no demuestra servicios instalados, activos y recuperables. Verificar host, roles, unidades, supervisión y recuperación; el relay sigue opt-in y sus límites operativos están documentados en `docs/ESTADO_ACTUAL.md`. |
+| 9. Ciclo R1 auténtico | ABIERTO | No se ha acreditado un ciclo real desde tarea elegible hasta integración registrada con Apps separadas. Primero identificar un candidato VERIFIED con APPROVE sobre el SHA exacto y sin veto; no alterar estados para fabricar uno. |
+| 10. Acta de aceptación del CEO | ABIERTO | No se ha emitido acta de traspaso para un candidato revisado. Decidir el alcance operativo solo después de la auditoría y del expediente final. |
+
+### Base y límites del snapshot
+
+- Fuente de estado del proyecto: [`ESTADO_ACTUAL.md`](ESTADO_ACTUAL.md), corte declarado 2026-11-02 18:11 UTC, complementado por el comentario más reciente de [issue #322](https://github.com/autoaiorg/aao/issues/322#issuecomment-6584742920). El documento fuente identifica expresamente como históricos/no re-verificados los datos del host y de credenciales.
+- Repositorio/CI: `git rev-parse HEAD origin/main` = `d07f4aad25dede47200dfee4fd8e32de6bfb804b`; run `41498856652` SUCCESS en ese SHA; `gh pr list --state open` no mostró PRs abiertos al verificar.
+- No se consultaron en este snapshot el host, PostgreSQL, las reglas actuales de GitHub, los tokens, las claves privadas ni una instalación real de Apps. Esas evidencias siguen pendientes y no se deben inferir de CI, merges o los registros históricos.
+- El snapshot no reemplaza el registro de incrementos que sigue a continuación; cada nuevo hecho operativo debe incluir fecha, SHA, método de verificación y límites.
+
 | # | Criterio | Estado de construcción | Evidencia conocida / SHA | Trabajo concreto siguiente |
 |---:|---|---|---|---|
 | 1 | Revisión candidata funcional con SHA exacto | Diferido al final; no congelar ahora | Construcción activa desde `95d8427`; no hay candidato declarado | Completar incrementos y preparar un único candidato al cierre |

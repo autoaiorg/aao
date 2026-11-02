@@ -172,27 +172,27 @@ def database_checks(
         manifest = [
             p
             for p in (ROOT / "db/postgres").glob("*.sql")
-            if p.name[:3].isdigit() and 1 <= int(p.name[:3]) <= 35
+            if p.name[:3].isdigit() and 1 <= int(p.name[:3]) <= 38
         ]
         numbers = [int(p.name[:3]) for p in manifest]
-        absent = sorted(set(range(1, 36)) - set(numbers))
+        absent = sorted(set(range(1, 39)) - set(numbers))
         duplicates = sorted({n for n in numbers if numbers.count(n) > 1})
         if absent or duplicates:
             checks.append(
                 result(
-                    "db:migrations-001-035",
+                    "db:migrations-001-038",
                     "UNVERIFIED",
                     f"Invalid local migration manifest; absent numbers: {absent}; duplicate numbers: {duplicates}",
-                    "Restore complete unique local manifest 001..035 before checking installation",
+                    "Restore complete unique local manifest 001..038 before checking installation",
                 )
             )
         else:
             missing = sorted({p.stem for p in manifest} - applied)
             checks.append(
                 result(
-                    "db:migrations-001-035",
+                    "db:migrations-001-038",
                     "MISSING" if missing else "PASS",
-                    "Missing: " + ", ".join(missing) if missing else "All 001..035 recorded",
+                    "Missing: " + ", ".join(missing) if missing else "All 001..038 recorded",
                     "Administrator apply missing migrations; preflight never applies them"
                     if missing
                     else "",

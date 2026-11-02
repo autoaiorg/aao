@@ -65,7 +65,7 @@ def by_name(rows):
 def test_readonly_sql_and_no_inferred_principal_or_runtime_role():
     db = Database()
     rows = by_name(preflight.database_checks(db, preflight.PROJECT_ID, None, None))
-    assert rows["db:migrations-001-035"]["status"] == "PASS"
+    assert rows["db:migrations-001-038"]["status"] == "PASS"
     assert rows["db:project"]["status"] == "PASS"
     assert rows["db:pm-identity-grants"]["status"] == "UNVERIFIED"
     assert rows["db:runtime-role"]["status"] == "UNVERIFIED"
@@ -195,8 +195,8 @@ def test_missing_migration_reported(monkeypatch):
 
     db.execute = modified
     rows = by_name(preflight.database_checks(db, preflight.PROJECT_ID, None, None))
-    assert rows["db:migrations-001-035"]["status"] == "MISSING"
-    assert "035_project_routines" in rows["db:migrations-001-035"]["detail"]
+    assert rows["db:migrations-001-038"]["status"] == "MISSING"
+    assert "038_work_publication_effects" in rows["db:migrations-001-038"]["detail"]
 
 
 def test_metadata_permissions_pass_and_fail(monkeypatch):
@@ -253,7 +253,9 @@ def test_trust_owned_ancestors_only_under_srv_aao(monkeypatch):
     assert _frozen(monkeypatch, ok, anc(998), trust=None) == "MISSING"
 
 
-@pytest.mark.parametrize("manifest", ["absent", "empty", "missing-035", "duplicate-035"])
+@pytest.mark.parametrize("manifest", ["absent", "empty", "missing-038", "duplicate-038"])
+@pytest.mark.parametrize("manifest", ["absent", "empty", "missing-038", "duplicate-038"])
+@pytest.mark.parametrize("manifest", ["absent", "empty", "missing-038", "duplicate-038"])
 def test_incomplete_or_duplicate_local_migration_manifest_never_passes(
     monkeypatch, tmp_path, manifest
 ):
@@ -261,16 +263,16 @@ def test_incomplete_or_duplicate_local_migration_manifest_never_passes(
     directory = tmp_path / "db/postgres"
     if manifest != "absent":
         directory.mkdir(parents=True)
-    if manifest in ("missing-035", "duplicate-035"):
-        for number in range(1, 36 if manifest == "duplicate-035" else 35):
+    if manifest in ("missing-038", "duplicate-038"):
+        for number in range(1, 39 if manifest == "duplicate-038" else 38):
             (directory / f"{number:03d}_migration.sql").touch()
-    if manifest == "duplicate-035":
-        (directory / "035_duplicate.sql").touch()
+    if manifest == "duplicate-038":
+        (directory / "038_duplicate.sql").touch()
     rows = by_name(preflight.database_checks(Database(), preflight.PROJECT_ID, None, None))
-    check = rows["db:migrations-001-035"]
+    check = rows["db:migrations-001-038"]
     assert check["status"] == "UNVERIFIED"
     assert "manifest" in check["detail"].lower()
-    assert "All 001..035 recorded" not in check["detail"]
+    assert "All 001..038 recorded" not in check["detail"]
 
 
 @pytest.mark.parametrize("table", ["protocol_instances", "project_routines", "routine_occurrences"])

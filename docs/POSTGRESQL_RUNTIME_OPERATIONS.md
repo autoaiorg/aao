@@ -40,15 +40,15 @@ python -m pip install -e '.[postgres]'
 # Check migration status (applied vs pending)
 python scripts/migrate.py --status
 
-# Apply pending migrations (001 to 036) with advisory locks and integrity verification
+# Apply pending migrations (001 to 038) with advisory locks and integrity verification
 python scripts/migrate.py --apply
 
 # Verify that all migrations in db/postgres/ are applied with intact SHA-256 checksums
 python scripts/migrate.py --verify
 ```
 
-### Full Migration Catalog (001 to 036):
-The current canonical catalog comprises 36 versioned migrations in `db/postgres/`:
+### Full Migration Catalog (001 to 038):
+The current canonical catalog comprises 38 versioned migrations in `db/postgres/`:
 - `001_foundation`: Core tables (`schema_migrations`, `mandates`, `projects`, `principals`, `events`).
 - `002_dev_identity`: Relaxed UUID identities to text development identities.
 - `003_execution`: Execution queue and status lifecycle.
@@ -85,6 +85,17 @@ The current canonical catalog comprises 36 versioned migrations in `db/postgres/
 - `034_work_item_priority`: CEO-controlled scheduling priority for unfinished work.
 - `035_project_routines`: Durable CEO-authorized routines and their occurrences (revokes `PUBLIC` access).
 - `036_host_worker_fencing`: Versioned host-worker binding registry, unique active worker binding, and execution claim fencing epoch (revokes `PUBLIC` access on `host_worker_bindings`). Renumbered from `031_host_worker_fencing` to avoid colliding with `031_conversation_endpoint_metadata`; a database that already recorded `031_host_worker_fencing` in `schema_migrations` needs ledger reconciliation by its owner before applying 036.
+- `037_conversation_turn_host_fencing`: Binds provider-backed conversation turn leases to the owning host and fence epoch.
+- `038_work_publication_effects`: Persists idempotency and recovery state for remote push and pull-request effects.
+
+Databases upgraded from the pre-renumber host-bootstrap sequence may have recorded
+`031_host_worker_fencing` and `032_conversation_turn_host_fencing`. Do not simply
+rename ledger rows or replay migrations based only on those names. The database
+owner must inspect the actual schema and application history, reconcile the
+ledger to the canonical migration set (including the independent canonical
+migrations 031 and 032), and record the reconciliation before applying any
+missing canonical migrations. This is a manual, database-specific operation;
+the migrator and preflight do not perform it.
 
 For an existing database, apply only migrations absent from
 `schema_migrations`, preserving the same order. The LIVE organization

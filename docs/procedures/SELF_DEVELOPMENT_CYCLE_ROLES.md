@@ -5,8 +5,9 @@ Self Development implementer and API lifecycle reviewer. It does not provision
 a publisher. The implementer receives only `project.read`, `work.create`,
 `work.admit`, `work.progress`, `execution.claim`, `code.propose`, and
 `evidence.submit`. The separate `aao-auditor` Linux account receives only
-`work.review`. Both principals are newly named, separate, and expire at the
-CEO-selected timestamp, no more than eight hours after invocation.
+`work.review`. Both principals are newly named and separate. Their project grants
+expire at the CEO-selected timestamp, no more than eight hours after invocation;
+the credentials themselves remain enabled until explicitly revoked.
 
 ## Boundary: API review is not formal independent audit
 
@@ -60,8 +61,33 @@ channel and remove only the matching role-owned token file.
 The token paths are `/run/user/<uid>/aao-self-development-agent.token` for
 `aao-impl-codex` and
 `/run/user/<uid>/aao-self-development-reviewer.token` for `aao-auditor`.
-They are ephemeral; reboot removes them. This script does not activate the PM
-service, provider, integrator, publisher, or any external effect.
+The files are ephemeral; reboot removes them. This script does not activate the
+PM service, provider, integrator, publisher, or any external effect.
+
+## End-of-cycle revocation (required)
+
+Grant expiry is not credential revocation: each principal remains enabled and
+may still authenticate (and potentially self-rotate) after the project grant
+expires. As soon as the lifecycle run is complete or abandoned:
+
+1. Record the two principal IDs printed by the provisioner.
+2. Using the approved CEO-only API administration channel, call
+   `POST /v1/principals/{principal_id}/revoke` for **both** IDs. Do not put the
+   CEO token in a command argument, environment, or chat. Check the API's
+   response/audit record confirms each credential is disabled. Grant rows are
+   retained but inert; they are not deleted by revoke.
+3. Remove the matching runtime token files using
+   `scripts/install_publisher_token_for_role.py` as each owning Linux user,
+   with `--remove`, the matching `--token` kind, and that file's contents on
+   stdin. The installer verifies the token matches before unlinking; do not
+   print or copy token contents. Then confirm both paths are absent and the
+   principals remain disabled.
+
+If API revocation fails, stop worker execution and escalate through the CEO
+administration channel; deleting local files alone does not revoke credentials.
+If local-file removal fails after API revocation, retry the role-owned removal;
+the disabled credential cannot authenticate, but retain the failure in the
+operator record until the file is removed.
 
 ## Can the current lifecycle produce an API-level candidate?
 

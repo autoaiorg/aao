@@ -185,19 +185,37 @@ def isolated_push(repo: Path, args: list[str], env: dict[str, str]) -> subproces
     matching configured remote; with a mirror's ``+refs/*:refs/*`` refspec that
     rewrites ``repo``'s own refs (#319). The temporary repository has no
     ``remote.*``/``url.*`` config and no hooks, so no git version can touch ``repo``.
-    Callers must pass ``GIT_CONFIG_NOSYSTEM=1`` and ``GIT_CONFIG_GLOBAL=/dev/null``.
+    Git environment variables are discarded except for the two explicit config
+    entries used by callers for credential isolation and GitHub App auth.
     """
+    safe_env = {key: value for key, value in env.items() if not key.startswith("GIT_")}
+    safe_env.update({
+        key: env[key]
+        for key in (
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0",
+            "GIT_CONFIG_KEY_1",
+            "GIT_CONFIG_VALUE_1",
+        )
+        if key in env
+    })
+    safe_env.update({
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_TERMINAL_PROMPT": "0",
+    })
     objects = subprocess.run(["git", "-C", str(repo), "rev-parse", "--path-format=absolute",
                               "--git-path", "objects"], check=True, capture_output=True,
-                             text=True, env=env).stdout.strip()
-    with tempfile.TemporaryDirectory(prefix="aao-push-") as directory:
-        subprocess.run(["git", "init", "--bare", "-q", directory], check=True, capture_output=True,
-                       text=True, env=env)
+                             text=True, env=safe_env).stdout.strip()
+    with tempfile.TemporaryDirectory(prefix="aao-push-", ignore_cleanup_errors=True) as directory:
+        subprocess.run(["git", "init", "--bare", "--template=", "-q", directory], check=True,
+                       capture_output=True, text=True, env=safe_env)
         alternates = Path(directory) / "objects" / "info" / "alternates"
         alternates.parent.mkdir(parents=True, exist_ok=True)
         alternates.write_text(objects + "\n")
         return subprocess.run(["git", "--git-dir", directory, "push", *args], check=False,
-                              capture_output=True, text=True, env=env)
+                              capture_output=True, text=True, env=safe_env)
 
 
 def _heartbeat(path: Path, registry: dict[str, Any], now: datetime,

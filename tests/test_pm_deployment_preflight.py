@@ -22,10 +22,19 @@ class Rows:
 
 
 class Database:
-    def __init__(self, *, identity=("AGENT", True), grants=None, elevated=False, boundaries=None):
+    def __init__(
+        self,
+        *,
+        identity=("AGENT", True),
+        grants=None,
+        cycle_grant=None,
+        elevated=False,
+        boundaries=None,
+    ):
         self.calls = []
         self.identity = identity
         self.grants = grants if grants is not None else preflight.REQUIRED_GRANTS
+        self.cycle_grant = cycle_grant
         self.elevated = elevated
         self.boundaries = boundaries or (True, False, False, True, False, False, False, False)
 
@@ -45,6 +54,9 @@ class Database:
             return Rows([("ACTIVE", "CONFIRMED")])
         if "principal_credentials" in sql:
             return Rows([self.identity] if self.identity else [])
+        if "project_grants" in sql and "expires_at IS NOT NULL" in sql:
+            assert params[2] == preflight.SELFDEV_CYCLE_ISSUER_GRANT
+            return Rows([] if self.cycle_grant is None else [(self.cycle_grant,)])
         if "project_grants" in sql:
             assert "expires_at IS NULL" in sql and "expires_at > clock_timestamp()" in sql
             return Rows([(g,) for g in self.grants])
@@ -71,6 +83,7 @@ def test_readonly_sql_and_no_inferred_principal_or_runtime_role():
     assert rows["db:migrations-001-040"]["status"] == "PASS"
     assert rows["db:project"]["status"] == "PASS"
     assert rows["db:pm-identity-grants"]["status"] == "UNVERIFIED"
+    assert rows["db:pm-cycle-issuer-grant"]["status"] == "UNVERIFIED"
     assert rows["db:runtime-role"]["status"] == "UNVERIFIED"
     assert not any("principal_credentials" in sql for sql, _ in db.calls)
     assert "NOT runtime" in rows["db:inspection-connection"]["detail"]
@@ -91,6 +104,27 @@ def test_live_grants_require_enabled_agent(identity, grants, status):
     rows = by_name(preflight.database_checks(db, preflight.PROJECT_ID, "registered-pm", None))
     assert rows["db:pm-grants"]["status"] == status
     assert all(not sql.startswith(("INSERT", "UPDATE", "DELETE", "GRANT")) for sql, _ in db.calls)
+
+
+@pytest.mark.parametrize(
+    "identity,cycle_grant,status",
+    [
+        (("AGENT", True), True, "PASS"),
+        (("AGENT", True), None, "MISSING"),
+        (("AGENT", True), False, "MISSING"),
+        (("AUDITOR", True), True, "MISSING"),
+        (("AGENT", False), True, "MISSING"),
+    ],
+)
+def test_cycle_issuer_grant_must_be_live_scoped_and_expire_within_30_days(
+    identity, cycle_grant, status
+):
+    db = Database(identity=identity, cycle_grant=cycle_grant)
+    rows = by_name(preflight.database_checks(db, preflight.PROJECT_ID, "registered-pm", None))
+    assert rows["db:pm-cycle-issuer-grant"]["status"] == status
+    grant_query = next(sql for sql, _ in db.calls if "expires_at IS NOT NULL" in sql)
+    assert "expires_at <= clock_timestamp() + interval '30 days'" in grant_query
+    assert "SET TRANSACTION READ ONLY" in [sql for sql, _ in db.calls]
 
 
 def test_elevated_runtime_role_rejected():

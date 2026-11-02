@@ -24,6 +24,8 @@ from aao.integration_authorization import canonical
 from aao.supervisor import _sign
 
 SCHEMA = "aao.github-push-receipt.v1"
+QUARANTINE_SCHEMA = "aao.github-push-quarantine.v1"
+QUARANTINE_DIR = "quarantine"
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _DELIVERY = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\Z")
 
@@ -57,14 +59,19 @@ def normalize_push(payload: Any, *, repository: str, delivery_id: str) -> dict[s
             "actor": sender["login"], "ref": ref, "before": before, "after": after}
 
 
-def _atomic_create(path: Path, data: bytes) -> None:
-    """Create a new mode-0640 receipt atomically; an identical redelivery is idempotent."""
+def _atomic_create(path: Path, data: bytes, *, create: bool = True) -> None:
+    """Create a new mode-0640 receipt atomically; an identical redelivery is idempotent.
+
+    With ``create=False`` only an existing identical file is accepted; a missing
+    file raises ``FileNotFoundError`` and nothing is written.
+    """
     path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
     parent = path.parent.lstat()
     if not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.geteuid() or parent.st_mode & 0o022:
         raise ValueError("push receipt directory is not protected")
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640)
+        fd = (os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640)
+              if create else None)
     except FileExistsError:
         fd = None
     if fd is None:
@@ -87,14 +94,41 @@ def _atomic_create(path: Path, data: bytes) -> None:
 
 
 def store_push_receipt(directory: Path, payload: Any, *, repository: str, delivery_id: str,
-                       raw_body: bytes, secret: bytes, signature: str, private_key: str) -> Path:
-    """Authenticate, normalize, supervisor-sign and durably store one webhook push."""
+                       raw_body: bytes, secret: bytes, signature: str, private_key: str,
+                       create: bool = True) -> Path:
+    """Authenticate, normalize, supervisor-sign and durably store one webhook push.
+
+    ``create=False`` only confirms that an identical signed receipt already exists.
+    """
     if not validate_signature(secret, raw_body, signature):
         raise ValueError("GitHub webhook signature is invalid")
     receipt = normalize_push(payload, repository=repository, delivery_id=delivery_id)
     signed = _sign(receipt, private_key)
     path = Path(directory) / f"{receipt['delivery_id']}.json"
-    _atomic_create(path, canonical(signed) + b"\n")
+    _atomic_create(path, canonical(signed) + b"\n", create=create)
+    return path
+
+
+def store_quarantine_record(directory: Path, *, delivery_id: str, reason: str, raw_body: bytes,
+                            secret: bytes, signature: str, private_key: str) -> Path:
+    """Durably keep an HMAC-valid but non-attributable push as a signed PROVISIONAL record.
+
+    The record lives in ``<directory>/quarantine`` (never read by
+    ``read_push_receipts``), preserves the exact relayed bytes and webhook
+    signature for later reconciliation, and grants no attribution authority.
+    """
+    if not validate_signature(secret, raw_body, signature):
+        raise ValueError("GitHub webhook signature is invalid")
+    if not isinstance(delivery_id, str) or not _DELIVERY.fullmatch(delivery_id):
+        raise ValueError("invalid webhook delivery id")
+    if reason not in {"repository-not-configured", "sender-not-mapped"}:
+        raise ValueError("unknown quarantine reason")
+    record = {"schema": QUARANTINE_SCHEMA, "status": "PROVISIONAL", "reason": reason,
+              "delivery_id": delivery_id.lower(), "signature_256": signature,
+              "body_base64": base64.b64encode(raw_body).decode()}
+    Path(directory).mkdir(mode=0o750, parents=True, exist_ok=True)
+    path = Path(directory) / QUARANTINE_DIR / f"{record['delivery_id']}.json"
+    _atomic_create(path, canonical(_sign(record, private_key)) + b"\n")
     return path
 
 

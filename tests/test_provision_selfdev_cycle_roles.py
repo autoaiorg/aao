@@ -39,9 +39,9 @@ def test_provision_separates_roles_and_grants(monkeypatch):
 
     monkeypatch.setattr(provisioner.common, "request_json", request)
     monkeypatch.setattr(
-        provisioner.common,
-        "_run_role_helper",
-        lambda account, **kw: role_calls.append((account, kw)),
+        provisioner,
+        "_run_token_helper",
+        lambda account, token_kind, operation, token=None: role_calls.append((account, token_kind, operation, token)),
     )
     result = provisioner.provision(
         "selfdev", api_url="http://127.0.0.1:8001", ceo_token="ceo-secret", expiry=_expiry()
@@ -108,13 +108,13 @@ def test_provision_rollback_removes_and_revokes_both_roles(monkeypatch):
             calls.append(("revoke", path))
         return {"ok": True}
 
-    def helper(account, *, operation, token_kind, **_kw):
+    def helper(account, token_kind, operation, token=None):
         calls.append((operation, account, token_kind))
         if account == provisioner.REVIEWER and operation == "install":
             raise provisioner.ProvisionError("injected failure")
 
     monkeypatch.setattr(provisioner.common, "request_json", request)
-    monkeypatch.setattr(provisioner.common, "_run_role_helper", helper)
+    monkeypatch.setattr(provisioner, "_run_token_helper", helper)
     with pytest.raises(provisioner.ProvisionError, match="issued credentials revoked"):
         provisioner.provision(
             "p", api_url="http://127.0.0.1:8001", ceo_token="ceo", expiry=_expiry()
@@ -182,16 +182,12 @@ def test_role_helper_sends_token_only_on_stdin(monkeypatch):
     seen = {}
     monkeypatch.setattr(provisioner.pwd, "getpwnam", lambda _name: SimpleNamespace(pw_uid=2020))
     monkeypatch.setattr(
-        provisioner.common.subprocess,
+        provisioner.subprocess,
         "run",
-        lambda args, **kwargs: seen.update(args=args, kwargs=kwargs),
+        lambda args, **kwargs: seen.update(args=args, kwargs=kwargs) or SimpleNamespace(returncode=0),
     )
-    provisioner.common._run_role_helper(
-        provisioner.REVIEWER,
-        api_python="/usr/bin/python3",
-        token="private-token",
-        operation="install",
-        token_kind="selfdev-reviewer",
+    provisioner._run_token_helper(
+        provisioner.REVIEWER, "selfdev-reviewer", "install", "private-token"
     )
     assert "private-token" not in seen["args"]
     assert seen["kwargs"]["input"] == "private-token\n"
@@ -207,8 +203,8 @@ def test_wrong_project_and_same_linux_identity_fail_before_install(monkeypatch):
         ],
     )
     monkeypatch.setattr(
-        provisioner.common,
-        "_run_role_helper",
+        provisioner,
+        "_run_token_helper",
         lambda *_a, **_kw: pytest.fail("installer should not run"),
     )
     with pytest.raises(provisioner.ProvisionError, match="active AAO Self Development"):
@@ -253,8 +249,8 @@ def test_malformed_issue_response_is_revoked_without_install(monkeypatch, bad_re
 
     monkeypatch.setattr(provisioner.common, "request_json", request)
     monkeypatch.setattr(
-        provisioner.common,
-        "_run_role_helper",
+        provisioner,
+        "_run_token_helper",
         lambda *a, **kw: calls.append(("helper", kw.get("operation"))),
     )
     with pytest.raises(provisioner.ProvisionError, match="issued credentials revoked"):
@@ -284,9 +280,9 @@ def test_issue_request_exception_attempts_principal_revocation(monkeypatch):
     monkeypatch.setattr(provisioner.common, "request_json", request)
     helper_ops = []
     monkeypatch.setattr(
-        provisioner.common,
-        "_run_role_helper",
-        lambda *a, **kw: helper_ops.append(kw["operation"]),
+        provisioner,
+        "_run_token_helper",
+        lambda _account, _token_kind, operation, _token=None: helper_ops.append(operation),
     )
     with pytest.raises(provisioner.ProvisionError, match="issued credentials revoked"):
         provisioner.provision(

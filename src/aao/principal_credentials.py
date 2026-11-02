@@ -32,7 +32,9 @@ def authenticate(token: str | None, *, kind: str) -> str:
     with connect_postgres() as db:
         rows = db.execute(
             "SELECT principal_id,token_digest FROM principal_credentials "
-            "WHERE kind=%s AND enabled=true", (kind,)
+            "WHERE kind=%s AND enabled=true "
+            "AND (expires_at IS NULL OR expires_at > clock_timestamp())",
+            (kind,),
         ).fetchall()
     for principal, stored_digest in rows:
         if hmac.compare_digest(digest, stored_digest):
@@ -48,7 +50,8 @@ def authenticate_in_transaction(db, token: str | None, *, kind: str) -> str:
         raise PrincipalDenied("Principal credential required")
     row = db.execute(
         "SELECT principal_id FROM principal_credentials "
-        "WHERE kind=%s AND token_digest=%s AND enabled=true FOR SHARE",
+        "WHERE kind=%s AND token_digest=%s AND enabled=true "
+        "AND (expires_at IS NULL OR expires_at > clock_timestamp()) FOR SHARE",
         (kind, digest_token(token)),
     ).fetchone()
     if not row:
@@ -69,7 +72,8 @@ def lock_pending_agent_rotation(db, token: str | None) -> str:
     row = db.execute(
         "SELECT principal_id FROM principal_credentials "
         "WHERE pending_token_digest=%s AND pending_expires_at>clock_timestamp() "
-        "AND kind='AGENT' AND enabled=true FOR UPDATE",
+        "AND kind='AGENT' AND enabled=true "
+        "AND (expires_at IS NULL OR expires_at>clock_timestamp()) FOR UPDATE",
         (digest_token(token),),
     ).fetchone()
     if not row:

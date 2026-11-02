@@ -27,7 +27,8 @@ def journal(db, execution_id: str, kind: str, details: dict):
 def verify_execution_principal(db, worker_id, agent_credential):
     row = db.execute(
         "SELECT token_digest,enabled FROM principal_credentials "
-        "WHERE principal_id=%s AND kind='AGENT' FOR SHARE", (worker_id,)
+        "WHERE principal_id=%s AND kind='AGENT' "
+        "AND (expires_at IS NULL OR expires_at>clock_timestamp()) FOR SHARE", (worker_id,)
     ).fetchone()
     if not row or not row[1] or not hmac.compare_digest(
         digest_token(agent_credential), row[0]

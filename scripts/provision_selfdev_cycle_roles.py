@@ -12,6 +12,7 @@ import argparse
 import getpass
 import os
 import pwd
+import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -43,7 +44,9 @@ ROLES = (
     ),
     (REVIEWER, "selfdev-reviewer", "AUDITOR", ("work.review",)),
 )
-MAX_LIFETIME = timedelta(hours=8)
+MAX_LIFETIME = timedelta(hours=2)
+ROOT_PYTHON = "/usr/bin/python3"
+FROZEN_WRAPPER = "/usr/local/libexec/aao/selfdev_role_token_helper.py"
 
 
 def parse_expiry(value: str) -> str:
@@ -56,7 +59,7 @@ def parse_expiry(value: str) -> str:
     now = datetime.now(UTC)
     expiry = expiry.astimezone(UTC)
     if expiry <= now or expiry > now + MAX_LIFETIME:
-        raise ProvisionError("expiry must be in the future and no more than 8 hours away")
+        raise ProvisionError("expiry must be in the future and no more than 2 hours away")
     return expiry.isoformat()
 
 
@@ -118,9 +121,31 @@ def _grant_and_verify(
         raise ProvisionError(f"could not verify exact {kind} grants and expiry for {principal}")
 
 
-def provision(
-    project_id: str, *, api_url: str, ceo_token: str, expiry: str, api_python: str = sys.executable
-):
+def _run_token_helper(account: str, token_kind: str, operation: str, token: str | None = None) -> None:
+    """Use only the root-owned frozen wrapper; never choose an interpreter at runtime."""
+    if account not in {IMPLEMENTER, REVIEWER}:
+        raise ProvisionError("unsupported role account")
+    if token_kind not in {"selfdev-implementer", "selfdev-reviewer"}:
+        raise ProvisionError("unsupported token kind")
+    if operation not in {"check", "install", "verify", "remove"}:
+        raise ProvisionError("unsupported token operation")
+    command = [
+        "/usr/bin/sudo", ROOT_PYTHON, FROZEN_WRAPPER,
+        "--account", account, "--token", token_kind, "--operation", operation,
+    ]
+    try:
+        result = subprocess.run(
+            command, input=(token + "\n") if token is not None else "", text=True,
+            capture_output=True, check=False, timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        raise ProvisionError("fixed role-token wrapper could not be run") from None
+    if result.returncode:
+        # Helper output is intentionally not propagated: it must never echo token material.
+        raise ProvisionError(f"fixed role-token helper failed for {account}/{operation}")
+
+
+def provision(project_id: str, *, api_url: str, ceo_token: str, expiry: str):
     api = common.local_api_url(api_url)
     expiry = parse_expiry(expiry)
     if not common.INSTALLER.is_file() or common.INSTALLER.is_symlink():
@@ -139,9 +164,7 @@ def provision(
     if len(set(uids)) != len(uids) or os.getuid() in uids:
         raise ProvisionError("implementer, reviewer and CEO must be distinct Linux identities")
     for account, token_kind, _kind, _grants in ROLES:
-        common._run_role_helper(
-            account, api_python=api_python, token=None, operation="check", token_kind=token_kind
-        )
+        _run_token_helper(account, token_kind, "check")
 
     project = quote(project_id, safe="")
     stamp = datetime.now(UTC)
@@ -156,13 +179,7 @@ def provision(
             issued[-1] = (account, token_kind, principal, token)
             _grant_and_verify(api, project, principal, kind, grants, expiry, ceo_token)
             for operation in ("install", "verify"):
-                common._run_role_helper(
-                    account,
-                    api_python=api_python,
-                    token=token,
-                    operation=operation,
-                    token_kind=token_kind,
-                )
+                _run_token_helper(account, token_kind, operation, token)
         return [
             (account, principal, kind, grants, expiry)
             for (account, _token_kind, principal, _token), (_a, _k, kind, grants) in zip(
@@ -174,13 +191,7 @@ def provision(
         for account, token_kind, principal, token in reversed(issued):
             if token:
                 try:
-                    common._run_role_helper(
-                        account,
-                        api_python=api_python,
-                        token=token,
-                        operation="remove",
-                        token_kind=token_kind,
-                    )
+                    _run_token_helper(account, token_kind, "remove", token)
                 except Exception:  # noqa: BLE001
                     cleanup_failures.append(f"token file for {account} was not removed")
             try:
@@ -210,10 +221,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project-id", required=True)
     parser.add_argument(
-        "--expires-at", required=True, help="timezone-aware ISO-8601 expiry, at most 8 hours away"
+        "--expires-at", required=True, help="timezone-aware ISO-8601 expiry, at most 2 hours away"
     )
     parser.add_argument("--api", default=os.environ.get("AAO_API", "http://127.0.0.1:8001"))
-    parser.add_argument("--python", default=sys.executable)
     args = parser.parse_args(argv)
     try:
         expiry = parse_expiry(args.expires_at)
@@ -222,7 +232,6 @@ def main(argv: list[str] | None = None) -> int:
             api_url=args.api,
             ceo_token=getpass.getpass("CEO token (input hidden): "),
             expiry=expiry,
-            api_python=args.python,
         )
     except (ProvisionError, BootstrapError, OSError, KeyError) as exc:
         print(f"Self Development role provisioning did not complete: {exc}", file=sys.stderr)

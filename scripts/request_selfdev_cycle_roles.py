@@ -13,6 +13,7 @@ import argparse
 import os
 import pwd
 import stat
+import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -42,6 +43,8 @@ ROLE_GRANTS = (
     {"work.review"},
 )
 MAX_LIFETIME_SECONDS = 2 * 60 * 60
+ROOT_PYTHON = "/usr/bin/python3"
+ROOT_WRAPPER = "/usr/local/libexec/aao/selfdev_role_token_helper.py"
 
 
 def read_pm_token() -> str:
@@ -67,6 +70,41 @@ def read_pm_token() -> str:
     return token
 
 
+def _run_token_helper(
+    account: str, token_kind: str, operation: str, token: str | None = None
+) -> None:
+    """Invoke the administrator-installed allowlist wrapper with no free command."""
+    if (account, token_kind) not in {
+        ("aao-impl-codex", "selfdev-implementer"),
+        ("aao-auditor", "selfdev-reviewer"),
+    } or operation not in {"check", "install", "verify", "remove"}:
+        raise ProvisionError("unsupported role-token operation")
+    command = [
+        "/usr/bin/sudo",
+        ROOT_PYTHON,
+        ROOT_WRAPPER,
+        "--account",
+        account,
+        "--token",
+        token_kind,
+        "--operation",
+        operation,
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            input="" if token is None else token + "\n",
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        raise ProvisionError("fixed role-token wrapper could not be run") from None
+    if result.returncode:
+        raise ProvisionError(f"fixed role-token wrapper failed for {account}/{operation}")
+
+
 def _call(api: str, path: str, *, token: str, method: str = "GET", body=None):
     return common.request_json(api, path, method=method, agent_token=token, body=body)
 
@@ -76,7 +114,6 @@ def provision(
     *,
     api_url: str,
     lifetime_seconds: int = MAX_LIFETIME_SECONDS,
-    api_python: str = sys.executable,
     token: str | None = None,
 ):
     """Issue, install and verify the fixed pair; revoke the known cycle on failure."""
@@ -90,9 +127,7 @@ def provision(
     if not installer.is_file() or installer.is_symlink():
         raise ProvisionError("role-token installer is missing or unsafe")
     for account, token_kind, _kind in ROLES:
-        common._run_role_helper(
-            account, api_python=api_python, token=None, operation="check", token_kind=token_kind
-        )
+        _run_token_helper(account, token_kind, "check")
 
     cycle_id = uuid4().hex
     project_path = quote(project_id, safe="")
@@ -141,32 +176,14 @@ def provision(
             ):
                 raise ProvisionError("AAO returned an invalid cycle role")
             installed.append((account, token_kind, record["token"]))
-            common._run_role_helper(
-                account,
-                api_python=api_python,
-                token=record["token"],
-                operation="install",
-                token_kind=token_kind,
-            )
-            common._run_role_helper(
-                account,
-                api_python=api_python,
-                token=record["token"],
-                operation="verify",
-                token_kind=token_kind,
-            )
+            _run_token_helper(account, token_kind, "install", record["token"])
+            _run_token_helper(account, token_kind, "verify", record["token"])
         return cycle_id, expires_at, [r["principal_id"] for r in roles]
     except BaseException as exc:
         failures = []
         for account, token_kind, role_token in reversed(installed):
             try:
-                common._run_role_helper(
-                    account,
-                    api_python=api_python,
-                    token=role_token,
-                    operation="remove",
-                    token_kind=token_kind,
-                )
+                _run_token_helper(account, token_kind, "remove", role_token)
             except Exception:  # noqa: BLE001
                 failures.append(f"token file for {account} was not removed")
         try:
@@ -194,14 +211,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--project-id", required=True)
     parser.add_argument("--lifetime-seconds", type=int, default=MAX_LIFETIME_SECONDS)
     parser.add_argument("--api", default=os.environ.get("AAO_API", "http://127.0.0.1:8001"))
-    parser.add_argument("--python", default=sys.executable)
     args = parser.parse_args(argv)
     try:
         cycle_id, expires_at, principals = provision(
             args.project_id,
             api_url=args.api,
             lifetime_seconds=args.lifetime_seconds,
-            api_python=args.python,
         )
     except (ProvisionError, BootstrapError, OSError, KeyError) as exc:
         print(f"Self Development cycle provisioning did not complete: {exc}", file=sys.stderr)

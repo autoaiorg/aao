@@ -931,15 +931,21 @@ def issue_selfdev_cycle_roles(
         if (not project or project[0] != SELFDEV_PROJECT_NAME or project[1] != "ACTIVE"
                 or len(active_projects) != 1 or str(active_projects[0][0]) != project_id):
             raise HTTPException(409, "Self Development project is not uniquely active")
+        existing_roles = db.execute(
+            "SELECT principal_id FROM principal_credentials WHERE principal_id=ANY(%s) FOR UPDATE",
+            ([principal_id for principal_id, _kind, _grants in roles],),
+        ).fetchall()
+        if existing_roles:
+            raise HTTPException(409, "Self Development cycle roles already exist")
         expires_at = db.execute(
             "SELECT clock_timestamp()+%s", (timedelta(seconds=payload.lifetime_seconds),),
         ).fetchone()[0]
         for principal_id, kind, grants in roles:
             token = secrets.token_urlsafe(32)
             db.execute(
-                "INSERT INTO principal_credentials(principal_id,kind,token_digest,enabled) "
-                "VALUES (%s,%s,%s,true)",
-                (principal_id, kind, digest_token(token)),
+                "INSERT INTO principal_credentials(principal_id,kind,token_digest,enabled,expires_at) "
+                "VALUES (%s,%s,%s,true,%s)",
+                (principal_id, kind, digest_token(token), expires_at),
             )
             for capability in grants:
                 db.execute(
@@ -971,6 +977,7 @@ def revoke_selfdev_cycle_roles(
         (f"aao-selfdev-impl-{cycle_id}", "AGENT", SELFDEV_IMPLEMENTER_GRANTS),
         (f"aao-selfdev-review-{cycle_id}", "AUDITOR", SELFDEV_REVIEWER_GRANTS),
     )
+    already_revoked = True
     with tx() as db:
         _require_selfdev_cycle_issuer(db, principal, project_id)
         project = db.execute(
@@ -989,6 +996,10 @@ def revoke_selfdev_cycle_roles(
                     or len(rows) != len(grants)
                     or any(row[0] != kind or str(row[2]) != project_id for row in rows)):
                 raise HTTPException(409, "Self Development cycle role set does not match")
+            if any(bool(row[1]) for row in rows):
+                already_revoked = False
+        if already_revoked:
+            return {"cycle_id": cycle_id, "revoked": True, "already_revoked": True}
         for principal_id, kind, _grants in expected:
             db.execute(
                 "UPDATE principal_credentials SET enabled=false,pending_token_digest=NULL,"
@@ -998,7 +1009,7 @@ def revoke_selfdev_cycle_roles(
                 "cycle_id": cycle_id, "principal_id": principal_id, "kind": kind,
                 "issuer_principal_id": str(principal),
             })
-    return {"cycle_id": cycle_id, "revoked": True}
+    return {"cycle_id": cycle_id, "revoked": True, "already_revoked": False}
 
 
 def require_pending_agent_token(x_agent_token: str | None = Header(None)) -> str:
@@ -1878,7 +1889,8 @@ def require_grant(db, principal: str, project_id: str, capability: str):
         raise HTTPException(403, "Individual principal credential required")
     row = db.execute(
         "SELECT kind,enabled FROM principal_credentials "
-        "WHERE principal_id=%s AND token_digest=%s FOR SHARE",
+        "WHERE principal_id=%s AND token_digest=%s "
+        "AND (expires_at IS NULL OR expires_at > clock_timestamp()) FOR SHARE",
         (principal, principal.token_digest),
     ).fetchone()
     expected_kind = "AUDITOR" if capability in {"work.review", "execution.reconcile", "effect.reconcile"} else "AGENT"

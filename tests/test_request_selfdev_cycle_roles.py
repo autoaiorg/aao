@@ -39,19 +39,15 @@ def _setup(monkeypatch, *, fail_verify=False):
     api_calls = []
     monkeypatch.setattr(provisioner, "read_pm_token", lambda: "pm-secret")
     monkeypatch.setattr(provisioner.common, "local_api_url", lambda value: value)
-    monkeypatch.setattr(
-        provisioner.common,
-        "INSTALLER",
-        SimpleNamespace(is_file=lambda: True, is_symlink=lambda: False),
-    )
     monkeypatch.setattr(provisioner, "uuid4", lambda: SimpleNamespace(hex="a" * 32))
 
-    def fake_role_helper(account, **kwargs):
+    def fake_role_helper(account, token_kind, operation, token=None):
+        kwargs = {"token_kind": token_kind, "operation": operation, "token": token}
         calls.append((account, kwargs))
-        if fail_verify and kwargs["operation"] == "verify":
+        if fail_verify and operation == "verify":
             raise RuntimeError("verify failed")
 
-    monkeypatch.setattr(provisioner.common, "_run_role_helper", fake_role_helper)
+    monkeypatch.setattr(provisioner, "_run_token_helper", fake_role_helper)
 
     def fake_call(api, path, *, token, method="GET", body=None):
         api_calls.append((api, path, token, method, body))
@@ -83,7 +79,7 @@ def test_request_uses_pm_authority_and_installs_fixed_pair(monkeypatch):
         "secret-implementer",
         "secret-reviewer",
     ]
-    assert all("secret-" not in str(call[1].get("api_python", "")) for call in calls)
+    assert all("secret-" not in str(call[0]) for call in calls)
 
 
 def test_rejects_overlong_lifetime_before_api_or_install(monkeypatch):
@@ -101,6 +97,37 @@ def test_install_failure_removes_installed_token_and_revokes_known_cycle(monkeyp
     assert any(args["operation"] == "remove" for _, args in calls)
     assert api_calls[-1][3] == "DELETE"
     assert api_calls[-1][1].endswith("/" + "a" * 32)
+
+
+def test_root_helper_uses_fixed_interpreter_and_token_only_on_stdin(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        provisioner.subprocess,
+        "run",
+        lambda args, **kwargs: (
+            seen.update(args=args, kwargs=kwargs) or SimpleNamespace(returncode=0)
+        ),
+    )
+    provisioner._run_token_helper(
+        "aao-impl-codex", "selfdev-implementer", "install", "secret-token"
+    )
+    assert seen["args"][:3] == ["/usr/bin/sudo", provisioner.ROOT_PYTHON, provisioner.ROOT_WRAPPER]
+    assert "secret-token" not in str(seen["args"])
+    assert seen["kwargs"]["input"] == "secret-token\n"
+
+
+def test_root_helper_rejects_non_allowlisted_target_before_subprocess(monkeypatch):
+    monkeypatch.setattr(
+        provisioner.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("must not run")
+    )
+    with pytest.raises(ProvisionError, match="unsupported role-token"):
+        provisioner._run_token_helper("root", "arbitrary", "install", "secret")
+
+
+def test_request_cli_rejects_arbitrary_interpreter_option():
+    with pytest.raises(SystemExit) as error:
+        provisioner.main(["--project-id", "p", "--python", "/tmp/evil"])
+    assert error.value.code == 2
 
 
 def test_response_with_extra_capability_fails_closed_and_revokes(monkeypatch):
@@ -165,6 +192,7 @@ class _FakeDb:
         self.project_rows = project_rows
         self.role_rows = role_rows or {}
         self.statements = []
+        self.inserted = set()
 
     def execute(self, sql, params=()):
         self.statements.append((sql, params))
@@ -177,6 +205,12 @@ class _FakeDb:
             return SimpleNamespace(fetchone=lambda: (datetime.now(UTC) + params[0],))
         if "SELECT c.kind,c.enabled,g.project_id,g.capability" in sql:
             return SimpleNamespace(fetchall=lambda: self.role_rows[params[0]])
+        if sql.startswith("INSERT INTO principal_credentials"):
+            principal_id = params[0]
+            if principal_id in self.inserted:
+                return SimpleNamespace(fetchone=lambda: None)
+            self.inserted.add(principal_id)
+            return SimpleNamespace(fetchone=lambda: (principal_id,))
         if "INSERT INTO" in sql or "UPDATE principal_credentials" in sql:
             return SimpleNamespace(fetchone=lambda: None, fetchall=list)
         return SimpleNamespace(fetchone=lambda: None, fetchall=list)
@@ -256,8 +290,9 @@ def test_api_revoke_requires_exact_grant_set_before_disabling(monkeypatch):
         (f"aao-selfdev-impl-{cycle_id}", "AGENT", api.SELFDEV_IMPLEMENTER_GRANTS),
         (f"aao-selfdev-review-{cycle_id}", "AUDITOR", api.SELFDEV_REVIEWER_GRANTS),
     )
+    expiry = datetime.now(UTC) + timedelta(hours=1)
     role_rows = {
-        principal_id: [(kind, True, project_id, cap) for cap in grants]
+        principal_id: [(kind, True, project_id, cap, expiry, expiry) for cap in grants]
         for principal_id, kind, grants in expected
     }
     db = _FakeDb(role_rows=role_rows)
@@ -270,12 +305,12 @@ def test_api_revoke_requires_exact_grant_set_before_disabling(monkeypatch):
         cycle_id,
         api.AuthenticatedPrincipal("aao-pm-coordinator-test", "digest", "AGENT"),
     )
-    assert result == {"cycle_id": cycle_id, "revoked": True}
+    assert result == {"cycle_id": cycle_id, "revoked": True, "already_revoked": False}
     disabled = [sql for sql, _params in db.statements if "UPDATE principal_credentials" in sql]
     assert len(disabled) == 2
     assert all("pending_token_digest=NULL" in sql for sql in disabled)
 
-    role_rows[expected[0][0]] = [("AGENT", True, project_id, "code.publish")]
+    role_rows[expected[0][0]] = [("AGENT", True, project_id, "code.publish", expiry, expiry)]
     db = _FakeDb(role_rows=role_rows)
     monkeypatch.setattr(api, "tx", lambda: _transaction(db))
     with pytest.raises(HTTPException) as error:

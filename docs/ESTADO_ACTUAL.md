@@ -8,21 +8,21 @@
 |---|---|---|
 | HEAD de `main` | `b539f79bb59c967658cf9fa869d0aaf8c59f2232` | `git rev-parse origin/main`; merge de #341 |
 | CI post-merge de `main` | SUCCESS | Run `41533724157` ("Core checks") sobre `b539f79`, `completed/success` (`gh run list --branch main`) |
-| PRs abiertos | Ninguno | `gh pr list --state open -R autoaiorg/aao` = `[]` a 2026-11-02 23:20 CET; #341 y #342 MERGED |
-| CI post-merge de #343 | SUCCESS | Run `41531435732` corresponde al SHA actual de `main`; `completed/success` |
+| PRs abiertos | #346, este informe, draft | `gh pr list --state open -R autoaiorg/aao` y `gh pr view 346`; no hay otros PR abiertos observados |
+| CI post-merge de #343 | SUCCESS | Run `41531435732` sobre `1a70bca` (merge de #343); no es el CI del HEAD actual |
 | #344 matriz de autorización | MERGED | Merge commit `eca67626e77a8c734230f9a431d5f0b77b177fde`, 2026-11-02T21:24:37Z; aclara que `VERIFIED` vía API no equivale a auditoría/aceptación independiente ni autoriza promoción |
 | #345 provisión de roles de ciclo Self Development | MERGED | Merge commit `9a91345facc7ed8f1c6c707479f1af19bf94b494`, 2026-11-02T21:43:29Z; permite aprovisionar identidades de ciclo con límites definidos, pero no acredita que se hayan provisionado ni que haya candidato |
 | #327 bootstrap/migraciones | MERGED | PR #327, merge commit `1770974c60be729c9de95b537ed0eb4fb08ed0c7` |
 | #318 push relay | MERGED, opt-in; no acredita despliegue | PR #318, head `8d749e9de2f0ff2071fafdc470b25cd7d9e74f0c`; revisión independiente previa APPROVE WITH NITS |
 | #329 espejo/integrador vs git 2.56 | MERGED | PR #329, head `526f62ab58510a5f6d4c46ca94fb8767b20d1534`; revisión independiente previa APPROVE WITH NITS |
 | #331 autorrotación PM de dos fases | MERGED | PR #331, merge en el HEAD actual; reauditoría independiente condicional y CI verde según el comentario de cierre de #322 |
-| #341 autorrotación publisher W2 dirigida al rol | MERGED | Merge commit `b539f79bb59c967658cf9fa869d0aaf8c59f2232`, 2026-11-02T22:02:15Z; head previo al merge `f9d1442e765ec77ccbd5fd936b03b9c293c76351`. Al corte 21:51 UTC el `test` de un run había fallado (head `33bc64f`); no se ha comprobado aquí si el head final pasó revisión independiente |
+| #341 autorrotación publisher W2 dirigida al rol | MERGED | Merge commit `b539f79bb59c967658cf9fa869d0aaf8c59f2232`, 2026-11-02T22:02:15Z; head `f9d1442e765ec77ccbd5fd936b03b9c293c76351`; auditoría independiente final reportó APPROVE condicionado a CI, y los seis checks de los dos runs terminaron SUCCESS. `gh pr view` no muestra reviews GitHub; la auditoría fue un informe de subagente |
 | #343 límites de privilegio runtime | MERGED | Head `d8d918101d3d4badf51f95ace7ad2086e399f0eb`; merge commit `1a70bca5411191a479840a673478fc60fa3f9b6b`, 2026-11-02T21:46:41Z. Auditoría previa APPROVE WITH NITS reportada; no equivale a despliegue ni aceptación |
 | #342 este estado | MERGED | Merge commit `253a63c33243c4d7b93c42c2ebc736a3c1f9d3a4`, 2026-11-02T21:54:35Z; head previo `86072044f89017f06740908069ec4d48e6f2e07b` |
 | #251 y #330 | CLOSED, ramas/historial conservados | Verificación y comentario de cierre en issue #322 |
 | #299, #325 y #321 | CLOSED/sustituidos o integrados | #299 sustituido por #327; #325 cerrado como contenido en #327; #321 cerrado al integrarse B2 en #324 |
 
-Las fusiones y CI no equivalen a aceptación del piloto. La lista y estados se comprobaron en GitHub el 2026-11-02 21:49 UTC; el estado remoto puede cambiar después del corte. Issue #322 está CLOSED; su cierre administrativo no cierra los gates de aceptación.
+Las fusiones y CI no equivalen a aceptación del piloto. La lista y estados se comprobaron en GitHub el 2026-11-02 22:22 UTC; el estado remoto puede cambiar después del corte. El único PR abierto observado es #346, este informe. Issue #322 está CLOSED; su cierre administrativo no cierra los gates de aceptación.
 
 ## 2. Gates de aceptación del proyecto
 
@@ -34,7 +34,7 @@ La referencia de gates sigue siendo `docs/HANDOVER_ACCEPTANCE_MATRIX.md`, criter
 | Revisión de trabajo elegible | BLOQUEADO | Consulta read-only en `aao_dev` al corte: los dos ítems `IN_REVIEW` no tienen review `APPROVE`. No se consultó/renovó grant en esta actualización; la elegibilidad de un reviewer no se da por demostrada |
 | Raíz de confianza y protección del canónico | ABIERTO | Evidencia sobre el candidato; reglas finales y efectivas de protección |
 | Identidades, privilegios y host | ABIERTO | Ejercicio real de roles y límites efectivos en el host/BD destino |
-| Candidato W2 | ABIERTO / BLOQUEADO | Consulta read-only en `aao_dev` a las 21:51 UTC: 0 ítems `VERIFIED`; los dos `IN_REVIEW` tienen 0 reviews `APPROVE`. No hay candidato elegible observado. No crear ni cambiar estados para fabricar uno. Aun si la API marca un ítem `VERIFIED`, eso no es por sí solo aceptación independiente bajo GOV-REV-001 |
+| Candidato W2 | ABIERTO / BLOQUEADO | Consulta read-only en `aao_dev` a las 22:22 UTC: 0 ítems `VERIFIED`; los dos `IN_REVIEW` tienen 0 reviews `APPROVE`. No hay candidato elegible observado. No crear ni cambiar estados para fabricar uno. Aun si la API marca un ítem `VERIFIED`, eso no es por sí solo aceptación independiente bajo GOV-REV-001 |
 | Flujo integrado de trabajo | ABIERTO | Ciclo completo reproducible, incluidos fallos, reintentos y efectos externos inciertos |
 | W2 / GitHub Apps | ABIERTO | Publicación real verificable con identidades separadas y evidencia sin token CEO |
 | Auditoría y aceptación | ABIERTO | Auditoría independiente aplicable a la revisión final y disposición formal del CEO |
@@ -44,7 +44,7 @@ La referencia de gates sigue siendo `docs/HANDOVER_ACCEPTANCE_MATRIX.md`, criter
 ## 3. Capacidades fusionadas y límites conocidos
 
 - **Bootstrap/fencing (#327):** integrado en `main`, incluidas migraciones 036–038 y endurecimiento posterior. CI verde acredita los jobs de CI, no un bootstrap limpio en el host real ni la operación con sus roles.
-- **Emisión y auto-rotación de credenciales (#324/#331/#345):** código integrado. La auto-rotación AGENT usa fase pendiente y confirmación. #345 añade aprovisionamiento acotado para roles del ciclo Self Development, pero la presencia del código no demuestra que las identidades se hayan provisionado. #341 sigue abierto en draft con autorrotación publisher dirigida al rol; el head `33bc64f` no tiene review GitHub registrada al corte y sus dos runs más recientes muestran `test` FAILURE e IN_PROGRESS. No se debe tratar como aprobado ni fusionable hasta resolver el fallo, obtener CI verde y completar revisión independiente. No se reporta entrega de un token de implementador al coordinador como diseño aceptado.
+- **Emisión y auto-rotación de credenciales (#324/#331/#345/#341):** código integrado. La auto-rotación AGENT usa fase pendiente y confirmación; #341 añade auto-rotación publisher dirigida al rol. La auditoría independiente final de #341 reportó APPROVE condicionado a CI; los seis checks de los dos runs observados terminaron SUCCESS. `gh pr view` no muestra reviews GitHub, por lo que se conserva como evidencia separada el informe del auditor, no como review registrada. #345 añade aprovisionamiento acotado para roles del ciclo Self Development, pero la presencia del código no demuestra que las identidades se hayan provisionado. No se reporta entrega de un token de implementador al coordinador como diseño aceptado.
 - **Límites DB runtime (#343):** el código de preflight está integrado. Añade comprobaciones read-only concretas de privilegios de conexión/esquema; no demuestra todos los grants runtime, una instalación en host limpio, ni un ciclo completo del servicio.
 - **Push relay (#318):** integrado como transporte opt-in/prototipo. No se afirma que esté desplegado, conectado al supervisor o ejercitado contra GitHub/Worker/D1 reales. El informe de #322 registra como límites: trust multi-repo/forks no resuelto (forks se ponen en cuarentena), backoff de `retry_after` pendiente y procedimiento operativo para colas atascadas pendiente.
 - **Push del integrador (#329):** integrado con aislamiento frente a configuración del espejo; no prueba que el integrador esté instalado o encendido. La activación sigue separada.
@@ -52,7 +52,7 @@ La referencia de gates sigue siendo `docs/HANDOVER_ACCEPTANCE_MATRIX.md`, criter
 
 ## 4. Host, base de datos y credenciales
 
-Los siguientes datos se verificaron en el host el 2026-11-02 21:45 UTC, en modo de solo lectura. No se leyeron claves ni tokens:
+Datos anteriores se verificaron en el host el 2026-11-02 21:45 UTC. En una actualización read-only a las 22:22 UTC, se verificaron el estado de la API y el preflight como administrador; no se leyeron claves ni tokens:
 
 - `frozen:tree` y `frozen:venv` de `aao-pm` pasaron en el preflight; árbol congelado en `cfd485c`, anterior al `main` actual.
 - Linger estaba `yes` para `aao-pm` y `aao-impl-codex`; los runtimes aparecieron en PASS.
@@ -60,14 +60,14 @@ Los siguientes datos se verificaron en el host el 2026-11-02 21:45 UTC, en modo 
 - Se emitió el principal PM `aao-pm-coordinator-20261102101514-a0c6a5ce` sin expiración, y dos principals publisher W2 con expiración `2026-11-02T18:17:36Z`. Esta expiración ya pasó; **no se afirma que sigan válidos ni que se hayan rotado**. El CEO aceptó los principales emitidos aunque la auditoría formal previa no se había completado.
 - La unidad de usuario del coordinador existe como `aao-pm:aao-pm`, modo 0644. `systemctl --machine=aao-pm@.host --user is-active aao-project-coordinator@9d17d6c1-d644-424a-a425-fe7e084c3d91.service` devolvió `inactive`; no se inició ni habilitó.
 - `loginctl show-user` devolvió `Linger=yes` para `aao-pm` y `aao-impl-codex`.
-- `aao-postgres-1` está `Up 5 hours (healthy)`. `GET http://127.0.0.1:8001/health` devolvió HTTP 200 y `{"service":"postgres-dev","autonomous_execution":false}`; la API está activa, pero declara explícitamente `autonomous_execution=false`.
+- `aao-postgres-1` estaba `Up 5 hours (healthy)` en la comprobación previa. Ahora `aao-api-dev.service` está `active`; `/health` devuelve `{"service":"postgres-dev","autonomous_execution":false}` y `/ready` devuelve `{"status":"ready","database":"available"}`. La API está lista, pero declara explícitamente `autonomous_execution=false`.
 - Búsqueda de solo metadatos de ficheros `*.token` en los directorios runtime de los roles (UID 1001–1006) no encontró ninguno. No se leyó ningún fichero. Esto significa que no hay tokens runtime observables para usar el flujo en esta comprobación; no prueba por sí solo el estado de credenciales en la base de datos.
 - Consulta PostgreSQL `BEGIN READ ONLY ... ROLLBACK` a Self Development: `DONE=3` (3 APPROVE asociados), `INBOX=1`, `IN_PROGRESS=1`, `IN_REVIEW=2` (0 APPROVE), `VERIFIED=0`. Los dos ítems IN_REVIEW son `0614ff49-8e8a-4f97-95fc-3499266fb60b` y `96fcff4e-c45f-48c0-9814-0242aaf8c08b`; ninguno tiene review APPROVE. No se alteraron datos.
 - No se ha presentado evidencia de grants del rol runtime aplicados/verificados en el host. El PR documental #330 se cerró porque su diseño quedó desactualizado frente a la separación de roles de #327.
 
 Actualización operativa del 2026-11-02 (reportada por el operador y reflejada en el body de #343): en `aao_dev` se retiró el privilegio TEMPORARY de `PUBLIC`; se comprobó `aao_runtime CONNECT=true`, `TEMP=false`, `aao_dev TEMP=true` y ausencia de `PUBLIC CREATE/TEMP`. Esto es evidencia de una frontera de privilegios concreta en la base de desarrollo, no acredita el resto de privilegios de tablas, la autenticación runtime, `db:runtime-complete`, el host destino ni el piloto. El auditor independiente reportó APPROVE WITH NITS para #343; el nit de redacción se corrigió en el head `d8d9181`. Se observaron seis checks SUCCESS en cada uno de los dos runs consultados.
 
-**Bloqueo actual del reviewer/candidato (consulta read-only en `aao_dev`, 2026-11-02 21:51 UTC):** hay dos ítems `IN_REVIEW` y ninguno tiene review `APPROVE`; hay 0 ítems `VERIFIED`. Hay tres reviews `APPROVE` en ítems `DONE`, por lo que no faltan APPROVE globalmente, sino en los ítems actualmente `IN_REVIEW`. Esta actualización no consultó ni renovó ningún grant de reviewer. Consulta no secreta reproducible (sin leer tokens ni digests):
+**Bloqueo actual del reviewer/candidato (consulta read-only en `aao_dev`, 2026-11-02 22:22 UTC):** hay dos ítems `IN_REVIEW` y ninguno tiene review `APPROVE`; hay 0 ítems `VERIFIED`. Hay tres reviews `APPROVE` en ítems `DONE`, por lo que no faltan APPROVE globalmente, sino en los ítems actualmente `IN_REVIEW`. Esta actualización no consultó ni renovó ningún grant de reviewer. Consulta no secreta reproducible (sin leer tokens ni digests):
 
 ```sql
 SELECT w.status, count(DISTINCT w.id) AS work_items,
@@ -84,9 +84,9 @@ No incluir tokens, DSNs, claves privadas ni digests en este documento. Re-verifi
 
 ## 5. Acciones necesarias para avanzar
 
-### No se requiere acción inmediata del CEO para continuar el trabajo técnico
+### Acción humana mínima para desbloquear el ciclo de trabajo
 
-La coordinación de #322 quedó cerrada. A 2026-11-02 23:20 CET no quedan PRs abiertos: #341 y #342 se fusionaron (ver §1). #343 está fusionado, pero sus comprobaciones son parciales y no acreditan despliegue completo. Pendiente: verificar que el head final de #341 pasó CI y revisión independiente (no comprobado aquí), luego validar el límite de entrega de credenciales y los gates de integración seguros/autorizados. No se ha demostrado todavía autonomía plena ni aceptación del piloto.
+La coordinación de #322 quedó cerrada. El único PR abierto observado es #346, este informe; #341 y #342 se fusionaron (ver §1). #343 está fusionado, pero sus comprobaciones son parciales y no acreditan despliegue completo. La API local responde y está lista, pero los tokens runtime no existen en `/run/user` y el proyecto no tiene ítems `VERIFIED`. Para crear y verificar un candidato mediante el ciclo normal hacen falta identidades de ciclo provisionadas y una sesión de proveedor aislada; el CEO debe introducir el token de emisión en el prompt local sin compartirlo. No se ha demostrado todavía autonomía plena ni aceptación del piloto.
 
 ### Decisiones que sí requieren al CEO
 
@@ -98,9 +98,9 @@ No se pide al CEO que ejecute comandos host en este momento. Si el siguiente gat
 
 ## 6. Próximos pasos recomendados
 
-1. Reconciliar `HANDOVER_ACCEPTANCE_MATRIX.md` con `main` `1a70bca`; mantener separados “implementado”, “desplegado”, “ejercitado”, “auditado” y “aceptado”.
-2. Revalidar preflight sobre el `main` actual, por separado bajo `aao-pm` y `aao-impl-codex`; comprobar únicamente metadatos de credenciales, nunca leerlas.
-3. Identificar, mediante lectura autorizada de la BD, si existe candidato VERIFIED y SHA aprobado. La última búsqueda reportó cero; no crear ni cambiar estados para fabricar un candidato. Este sigue siendo un bloqueo del ensayo W2.
+1. Provisionar las identidades de ciclo Self Development (implementador y reviewer de trabajo) con caducidad corta, y las identidades publisher W2; solo el titular introduce el token CEO cuando el provisioner lo solicita. Nunca compartirlo con el coordinador.
+2. Revalidar preflight bajo `aao-pm` y `aao-impl-codex`; comprobar únicamente metadatos de credenciales, nunca leerlas.
+3. Ejecutar el ciclo de trabajo con proveedor en HOME aislado para producir un candidato verificable; el reviewer debe emitir la decisión normal sobre el SHA y la evidencia exactos. No crear ni cambiar estados a mano. `VERIFIED` no reemplaza GOV-REV-001.
 4. Reconciliar los roles de DB/host de #327 con el despliegue real y probarlos en entorno desechable antes de aplicar grants al host.
 5. Cerrar los pendientes operativos de #318 (trust por repo/forks, backoff, operación de cuarentena y prueba real) antes de afirmar que el relay aporta disponibilidad.
 6. Ejecutar el piloto integrado §14 únicamente cuando exista candidato elegible y evidencia previa de identidades, App scopes, runtime y protección.
@@ -108,9 +108,9 @@ No se pide al CEO que ejecute comandos host en este momento. Si el siguiente gat
 
 ## 7. Fuentes y límites
 
-- Git: `git rev-parse origin/main` = `1a70bca5411191a479840a673478fc60fa3f9b6b`; #343 está MERGED y su merge commit coincide con ese SHA. El worktree de este PR se actualizó incorporando `origin/main`; la rama del PR sigue separada de `main`.
-- GitHub: `gh pr list --state open -R autoaiorg/aao` a 21:51 UTC mostró solo #341 (`33bc64f`) y #342 (head previo `ec23b0b`), ambos draft. `gh pr view 341` confirmó el head `33bc64f2309d0a504127be6b581833864d3d34b5`; `gh run view 41531685699` (PR, 21:48:24Z) terminó FAILURE: `test` falló y `frontend`/`push-relay-worker` pasaron. `gh run view 41531674897` (push, 21:48:20Z) sigue IN_PROGRESS: `test` sigue ejecutándose y los otros dos jobs pasaron. `gh api repos/autoaiorg/aao/pulls/341/reviews` devolvió lista vacía al corte. `gh run list --branch main -R autoaiorg/aao --limit 3`: run `41531435732` sobre `1a70bca` está `completed/success`. `gh pr view` confirmó #318, #327 y #343 MERGED; #345 MERGED a `9a91345` a las 21:43:29Z.
-- Host/API/DB: `curl -sS -w 'http=%{http_code}' http://127.0.0.1:8001/health` devolvió HTTP 200 y `{"service":"postgres-dev","autonomous_execution":false}`. `docker ps` informó PostgreSQL healthy. Consulta a Self Development dentro de `BEGIN READ ONLY ... ROLLBACK`: DONE=3/3 APPROVE, INBOX=1, IN_PROGRESS=1, IN_REVIEW=2/0 APPROVE, VERIFIED=0. La consulta no alteró DB. Un intento exploratorio read-only de ordenar por `work_items.created_at` falló porque esa columna no existe; se repitió la consulta corregida, solo lectura, y los conteos anteriores sí proceden de esta última.
+- Git: `git rev-parse origin/main` = `b539f79bb59c967658cf9fa869d0aaf8c59f2232`; #341 está MERGED en ese SHA. El worktree de este PR está separado de `main` y basado en la rama del PR.
+- GitHub: a las 22:22 UTC, `gh pr list --state open` muestra solo #346 (este borrador). #341 está MERGED, head `f9d1442e765ec77ccbd5fd936b03b9c293c76351`; su reauditoría independiente reportó APPROVE condicionado a CI y los dos runs mostraron `test`, `frontend` y `push-relay-worker` SUCCESS. `gh pr view 341` no registra reviews GitHub. Run `41533724157` sobre `b539f79` está `completed/success`. #342 y #343 están MERGED; #345 está MERGED.
+- Host/API/DB: `systemctl is-active aao-api-dev.service` devolvió `active`; `/health` y `/ready` devolvieron los JSON indicados en §4. `sudo -n env PYTHONPATH=src .venv/bin/python scripts/pm_deployment_preflight.py` fue read-only: PASS para cuentas, árboles congelados, runtimes, Apps config, entorno/unidad PM y migraciones 001–039; MISSING para los dos tokens publisher y token PM en `/run/user`; UNVERIFIED para pm:service, w2:live, identidad PM/grants y runtime-role. Consulta a Self Development dentro de `BEGIN READ ONLY ... ROLLBACK`: DONE=3/3 APPROVE, INBOX=1, IN_PROGRESS=1, IN_REVIEW=2/0 APPROVE, VERIFIED=0. La consulta no alteró DB.
 - Runtime: `loginctl show-user` devolvió Linger=yes para aao-pm y aao-impl-codex; la unidad de usuario del PM existe con propietario/modo esperados pero está `inactive`. No se inició ni habilitó. La búsqueda de metadata para `*.token` en runtimes UID 1001–1006 no encontró ficheros; no se leyó contenido ni se infiere el estado DB de credenciales.
 - #343: el PR describe la retirada de `PUBLIC TEMP` y la verificación `aao_runtime TEMP=false`; quedó MERGED como `1a70bca`. La auditoría independiente se reportó como APPROVE WITH NITS, con ajuste de wording antes de merge; no sustituye aceptación ni acredita límites completos runtime.
 - #344: merge `eca67626` actualiza la matriz para hacer explícito que `VERIFIED` de API no equivale a aceptación independiente GOV-REV-001 ni autoriza promoción/merge/efectos externos.

@@ -230,3 +230,65 @@ def test_wrong_project_and_same_linux_identity_fail_before_install(monkeypatch):
         provisioner.provision(
             "p", api_url="http://127.0.0.1:8001", ceo_token="ceo", expiry=_expiry()
         )
+
+
+@pytest.mark.parametrize(
+    "bad_response", [None, {}, {"principal_id": "wrong", "kind": "AGENT", "token": "secret"}]
+)
+def test_malformed_issue_response_is_revoked_without_install(monkeypatch, bad_response):
+    calls = []
+    uids = {provisioner.IMPLEMENTER: 2001, provisioner.REVIEWER: 2002}
+    monkeypatch.setattr(
+        provisioner.pwd, "getpwnam", lambda name: SimpleNamespace(pw_uid=uids[name])
+    )
+
+    def request(_api, path, *, method="GET", body=None, **_kwargs):
+        if path == "/v1/projects":
+            return [{"id": "p", "name": provisioner.PROJECT_NAME, "state": "ACTIVE"}]
+        if path == "/v1/principals/credentials":
+            return bad_response
+        if path.endswith("/revoke"):
+            calls.append(("revoke", path))
+        return {"ok": True}
+
+    monkeypatch.setattr(provisioner.common, "request_json", request)
+    monkeypatch.setattr(
+        provisioner.common,
+        "_run_role_helper",
+        lambda *a, **kw: calls.append(("helper", kw.get("operation"))),
+    )
+    with pytest.raises(provisioner.ProvisionError, match="issued credentials revoked"):
+        provisioner.provision(
+            "p", api_url="http://127.0.0.1:8001", ceo_token="ceo", expiry=_expiry()
+        )
+    assert len([call for call in calls if call[0] == "revoke"]) == 1
+    assert not [call for call in calls if call[0] == "helper" and call[1] == "install"]
+
+
+def test_issue_request_exception_attempts_principal_revocation(monkeypatch):
+    calls = []
+    uids = {provisioner.IMPLEMENTER: 2001, provisioner.REVIEWER: 2002}
+    monkeypatch.setattr(
+        provisioner.pwd, "getpwnam", lambda name: SimpleNamespace(pw_uid=uids[name])
+    )
+
+    def request(_api, path, *, method="GET", body=None, **_kwargs):
+        if path == "/v1/projects":
+            return [{"id": "p", "name": provisioner.PROJECT_NAME, "state": "ACTIVE"}]
+        if path == "/v1/principals/credentials":
+            raise OSError("simulated lost response after issue request")
+        if path.endswith("/revoke"):
+            calls.append(path)
+        return {"ok": True}
+
+    monkeypatch.setattr(provisioner.common, "request_json", request)
+    monkeypatch.setattr(
+        provisioner.common,
+        "_run_role_helper",
+        lambda *a, **kw: pytest.fail("installer must not run"),
+    )
+    with pytest.raises(provisioner.ProvisionError, match="issued credentials revoked"):
+        provisioner.provision(
+            "p", api_url="http://127.0.0.1:8001", ceo_token="ceo", expiry=_expiry()
+        )
+    assert len(calls) == 1

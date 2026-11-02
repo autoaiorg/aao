@@ -43,11 +43,11 @@ From a terminal with the current approved checkout/environment, invoke:
 ```sh
 python scripts/provision_selfdev_cycle_roles.py \
   --project-id '<Self Development project UUID>' \
-  --expires-at '2026-11-02T18:00:00+00:00'
+  --expires-at "$(date -u -d '+2 hours' '+%Y-%m-%dT%H:%M:%S+00:00')"
 ```
 
-Choose an expiry in the future and within eight hours; the example timestamp is
-illustrative, not a recommendation. The operator enters the CEO token at the
+The command computes a UTC expiry two hours ahead; choose any expiry in the
+future and within eight hours. The operator enters the CEO token at the
 hidden prompt. Do not pass it in an argument or environment variable, and do
 not paste it into chat. The command creates exactly one AGENT and one AUDITOR
 principal, grants/readbacks the fixed capabilities, installs each credential

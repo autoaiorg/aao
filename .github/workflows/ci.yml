@@ -74,3 +74,12 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npx tsc --noEmit -p .
       - run: npx vitest run
+  push-relay-worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run push-relay Worker tests
+        run: node --experimental-sqlite --test transport/push-relay/test.mjs

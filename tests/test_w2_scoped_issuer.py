@@ -290,10 +290,10 @@ def test_w2_issuer_replaces_orphaned_credential_after_lost_response(monkeypatch)
                 "WHERE principal_id IN (%s,%s) ORDER BY principal_id,capability",
                 (first_body["principal_id"], second_body["principal_id"]),
             ).fetchall()
-        assert credentials == [
-            (first_body["principal_id"], False),
-            (second_body["principal_id"], True),
-        ]
+        assert dict(credentials) == {
+            first_body["principal_id"]: False,
+            second_body["principal_id"]: True,
+        }
         assert len(grants) == 4
         assert {row[1] for row in grants} == {"project.read", "code.publish"}
         assert all(row[2] <= datetime.now(UTC) + timedelta(hours=8) for row in grants)

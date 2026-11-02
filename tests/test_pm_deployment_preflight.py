@@ -215,6 +215,44 @@ def test_metadata_permissions_pass_and_fail(monkeypatch):
     assert preflight.path_check("token", path, 1001, 0o600)["status"] == "MISSING"
 
 
+def _frozen(monkeypatch, path, ancestor, leaf_uid=0, trust=998):
+    import stat
+    from types import SimpleNamespace
+
+    leaf = SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=leaf_uid)
+    sysdir = SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0)
+    monkeypatch.setattr(
+        Path,
+        "lstat",
+        lambda p: leaf if p == path else sysdir if p in {Path("/"), Path("/srv")} else ancestor,
+    )
+
+    def getpwnam(name):
+        if trust is None:
+            raise KeyError(name)
+        return SimpleNamespace(pw_uid=trust)
+
+    monkeypatch.setattr(preflight.pwd, "getpwnam", getpwnam)
+    return preflight.path_check("t", path, 0, directory=True)["status"]
+
+
+def test_trust_owned_ancestors_only_under_srv_aao(monkeypatch):
+    import stat
+    from types import SimpleNamespace
+
+    def anc(uid, mode=stat.S_IFDIR | 0o755):
+        return SimpleNamespace(st_mode=mode, st_uid=uid)
+
+    ok = Path("/srv/aao/frozen/aao-pm/tree")
+    assert _frozen(monkeypatch, ok, anc(998)) == "PASS"
+    assert _frozen(monkeypatch, Path("/opt/x/tree"), anc(998)) == "MISSING"
+    assert _frozen(monkeypatch, ok, anc(998, stat.S_IFDIR | 0o775)) == "MISSING"
+    assert _frozen(monkeypatch, ok, anc(998, stat.S_IFLNK | 0o755)) == "MISSING"
+    assert _frozen(monkeypatch, ok, anc(998), leaf_uid=998) == "MISSING"
+    assert _frozen(monkeypatch, ok, anc(1234)) == "MISSING"
+    assert _frozen(monkeypatch, ok, anc(998), trust=None) == "MISSING"
+
+
 @pytest.mark.parametrize("manifest", ["absent", "empty", "missing-035", "duplicate-035"])
 def test_incomplete_or_duplicate_local_migration_manifest_never_passes(
     monkeypatch, tmp_path, manifest

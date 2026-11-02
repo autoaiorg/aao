@@ -473,7 +473,7 @@ class PrincipalCredentialRequest(BaseModel):
 
 class GrantRequest(BaseModel):
     principal_id: str = Field(min_length=1)
-    capability: str = Field(pattern=r"^(?:work\.(?:create|admit|review|progress|coordinate|assign)|project\.read|execution\.claim|execution\.reconcile|effect\.(?:propose|reconcile)|evidence\.submit|code\.(?:propose|publish))$")
+    capability: str = Field(pattern=r"^(?:work\.(?:create|admit|review|progress|coordinate|assign)|project\.read|execution\.claim|execution\.reconcile|effect\.(?:propose|reconcile)|evidence\.submit|code\.(?:propose|publish)|credential\.issue_selfdev_cycle_roles)$")
     expires_at: datetime | None = None
 
     @field_validator("expires_at")
@@ -492,6 +492,11 @@ class GrantRequest(BaseModel):
                 raise ValueError("code.propose grants require an explicit expiry")
             if self.expires_at > datetime.now(UTC) + timedelta(hours=24):
                 raise ValueError("code.propose grants may not exceed 24 hours")
+        if self.capability == "credential.issue_selfdev_cycle_roles":
+            if self.expires_at is None:
+                raise ValueError("Self Development cycle issuer grants require an explicit expiry")
+            if self.expires_at > datetime.now(UTC) + timedelta(days=30):
+                raise ValueError("Self Development cycle issuer grants may not exceed 30 days")
         return self
 
 
@@ -875,6 +880,125 @@ W2_PUBLISHER_IDENTITIES = {
     "aao-publisher-impl-": "aao-impl-codex",
 }
 W2_PROJECT_NAME = "AAO — Self Development"
+SELFDEV_PROJECT_NAME = W2_PROJECT_NAME
+SELFDEV_CYCLE_ISSUER_CAPABILITY = "credential.issue_selfdev_cycle_roles"
+SELFDEV_CYCLE_TTL = timedelta(hours=2)
+SELFDEV_CYCLE_ISSUER_GRANT_TTL = timedelta(days=30)
+SELFDEV_IMPLEMENTER_GRANTS = (
+    "project.read", "work.create", "work.admit", "work.progress",
+    "execution.claim", "code.propose", "evidence.submit",
+)
+SELFDEV_REVIEWER_GRANTS = ("work.review",)
+
+
+class SelfDevCycleIssueRequest(BaseModel):
+    cycle_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    lifetime_seconds: int = Field(ge=1, le=int(SELFDEV_CYCLE_TTL.total_seconds()))
+
+
+def _require_selfdev_cycle_issuer(db, principal: AuthenticatedPrincipal, project_id: str) -> None:
+    """Require an individual PM agent with the separately CEO-granted scope."""
+    if not str(principal).startswith("aao-pm-coordinator-"):
+        raise HTTPException(403, "Self Development cycle issuer must be the PM coordinator")
+    require_grant(db, principal, project_id, "work.coordinate")
+    require_grant(db, principal, project_id, SELFDEV_CYCLE_ISSUER_CAPABILITY)
+
+
+@app.post("/v1/projects/{project_id}/selfdev-cycle-roles", status_code=201)
+def issue_selfdev_cycle_roles(
+    project_id: str,
+    payload: SelfDevCycleIssueRequest,
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_worker)],
+):
+    """Issue only the fixed, short-lived implementer/reviewer pair for Self Development."""
+    from aao.principal_credentials import digest_token
+
+    cycle_id = payload.cycle_id
+    roles = (
+        (f"aao-selfdev-impl-{cycle_id}", "AGENT", SELFDEV_IMPLEMENTER_GRANTS),
+        (f"aao-selfdev-review-{cycle_id}", "AUDITOR", SELFDEV_REVIEWER_GRANTS),
+    )
+    issued = []
+    with tx() as db:
+        _require_selfdev_cycle_issuer(db, principal, project_id)
+        project = db.execute(
+            "SELECT name,state FROM projects WHERE id=%s FOR UPDATE", (project_id,),
+        ).fetchone()
+        active_projects = db.execute(
+            "SELECT id FROM projects WHERE name=%s AND state='ACTIVE' FOR UPDATE",
+            (SELFDEV_PROJECT_NAME,),
+        ).fetchall()
+        if (not project or project[0] != SELFDEV_PROJECT_NAME or project[1] != "ACTIVE"
+                or len(active_projects) != 1 or str(active_projects[0][0]) != project_id):
+            raise HTTPException(409, "Self Development project is not uniquely active")
+        expires_at = db.execute(
+            "SELECT clock_timestamp()+%s", (timedelta(seconds=payload.lifetime_seconds),),
+        ).fetchone()[0]
+        for principal_id, kind, grants in roles:
+            token = secrets.token_urlsafe(32)
+            db.execute(
+                "INSERT INTO principal_credentials(principal_id,kind,token_digest,enabled) "
+                "VALUES (%s,%s,%s,true)",
+                (principal_id, kind, digest_token(token)),
+            )
+            for capability in grants:
+                db.execute(
+                    "INSERT INTO project_grants(principal_id,project_id,capability,expires_at) "
+                    "VALUES (%s,%s,%s,%s)",
+                    (principal_id, project_id, capability, expires_at),
+                )
+            audit(db, project_id, "principal.selfdev_cycle_role.issued", {
+                "cycle_id": cycle_id, "principal_id": principal_id, "kind": kind,
+                "grants": list(grants), "expires_at": expires_at.isoformat(),
+                "issuer_principal_id": str(principal),
+            })
+            issued.append({"principal_id": principal_id, "kind": kind,
+                           "grants": list(grants), "token": token})
+    return {"cycle_id": cycle_id, "project_id": project_id,
+            "expires_at": expires_at.isoformat(), "roles": issued}
+
+
+@app.delete("/v1/projects/{project_id}/selfdev-cycle-roles/{cycle_id}")
+def revoke_selfdev_cycle_roles(
+    project_id: str,
+    cycle_id: str,
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_worker)],
+):
+    """Disable exactly the two principals from a cycle issued by this scoped API."""
+    if not re.fullmatch(r"[0-9a-f]{32}", cycle_id):
+        raise HTTPException(404, "Self Development cycle not found")
+    expected = (
+        (f"aao-selfdev-impl-{cycle_id}", "AGENT", SELFDEV_IMPLEMENTER_GRANTS),
+        (f"aao-selfdev-review-{cycle_id}", "AUDITOR", SELFDEV_REVIEWER_GRANTS),
+    )
+    with tx() as db:
+        _require_selfdev_cycle_issuer(db, principal, project_id)
+        project = db.execute(
+            "SELECT name,state FROM projects WHERE id=%s FOR UPDATE", (project_id,),
+        ).fetchone()
+        if not project or project[0] != SELFDEV_PROJECT_NAME:
+            raise HTTPException(404, "Self Development project not found")
+        for principal_id, kind, grants in expected:
+            rows = db.execute(
+                "SELECT c.kind,c.enabled,g.project_id,g.capability FROM principal_credentials c "
+                "JOIN project_grants g ON g.principal_id=c.principal_id "
+                "WHERE c.principal_id=%s ORDER BY g.project_id,g.capability FOR UPDATE OF c,g",
+                (principal_id,),
+            ).fetchall()
+            if ({row[3] for row in rows} != set(grants)
+                    or len(rows) != len(grants)
+                    or any(row[0] != kind or str(row[2]) != project_id for row in rows)):
+                raise HTTPException(409, "Self Development cycle role set does not match")
+        for principal_id, kind, _grants in expected:
+            db.execute(
+                "UPDATE principal_credentials SET enabled=false,pending_token_digest=NULL,"
+                "pending_expires_at=NULL WHERE principal_id=%s", (principal_id,),
+            )
+            audit(db, project_id, "principal.selfdev_cycle_role.revoked", {
+                "cycle_id": cycle_id, "principal_id": principal_id, "kind": kind,
+                "issuer_principal_id": str(principal),
+            })
+    return {"cycle_id": cycle_id, "revoked": True}
 
 
 def require_pending_agent_token(x_agent_token: str | None = Header(None)) -> str:

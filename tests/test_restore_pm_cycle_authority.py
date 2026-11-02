@@ -82,8 +82,14 @@ def _setup(monkeypatch, *, install_fails=False, recovery_fails=False):
             return path
         return original_resolve(path, strict=strict)
 
+    checked_paths = {
+        parent
+        for executable in (restore_pm.SUDO, restore_pm.ROLE_PYTHON, restore_pm.ROLE_INSTALLER)
+        for parent in (executable, *executable.parents)
+    }
+
     def stat(path, *args, **kwargs):
-        if path in {restore_pm.SUDO, restore_pm.ROLE_PYTHON, restore_pm.ROLE_INSTALLER}:
+        if path in checked_paths:
             return SimpleNamespace(st_mode=0o100755, st_uid=0)
         return original_stat(path, *args, **kwargs)
 

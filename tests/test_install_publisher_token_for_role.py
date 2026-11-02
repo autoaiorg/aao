@@ -26,6 +26,25 @@ def test_target_path_requires_exact_role_owned_private_runtime(monkeypatch, tmp_
         install.target_path("aao-pm")
 
 
+def test_pm_token_kind_maps_to_coordinator_file_only_for_aao_pm(monkeypatch, tmp_path):
+    monkeypatch.setattr(install, "RUNTIME_ROOT", tmp_path / "run")
+    uid = os.getuid()
+    runtime = tmp_path / "run" / str(uid)
+    runtime.mkdir(parents=True, mode=0o700)
+    runtime.chmod(0o700)
+    monkeypatch.setattr(install.pwd, "getpwnam", lambda _name: SimpleNamespace(pw_uid=uid))
+    monkeypatch.setattr(install.os, "geteuid", lambda: uid)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+
+    assert install.target_path("aao-pm", "pm") == runtime / "aao-pm.token"
+    assert install.target_path("aao-pm", "publisher") == runtime / "aao-publisher.token"
+    assert install.target_path("aao-impl-codex") == runtime / "aao-publisher.token"
+    with pytest.raises(install.TokenInstallError, match="unsupported token kind"):
+        install.target_path("aao-impl-codex", "pm")
+    with pytest.raises(install.TokenInstallError, match="unsupported token kind"):
+        install.target_path("aao-pm", "ceo")
+
+
 def test_target_path_rejects_other_account_and_other_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr(install, "RUNTIME_ROOT", tmp_path)
     with pytest.raises(install.TokenInstallError, match="unsupported"):

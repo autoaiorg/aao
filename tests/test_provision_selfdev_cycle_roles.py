@@ -282,13 +282,15 @@ def test_issue_request_exception_attempts_principal_revocation(monkeypatch):
         return {"ok": True}
 
     monkeypatch.setattr(provisioner.common, "request_json", request)
+    helper_ops = []
     monkeypatch.setattr(
         provisioner.common,
         "_run_role_helper",
-        lambda *a, **kw: pytest.fail("installer must not run"),
+        lambda *a, **kw: helper_ops.append(kw["operation"]),
     )
     with pytest.raises(provisioner.ProvisionError, match="issued credentials revoked"):
         provisioner.provision(
             "p", api_url="http://127.0.0.1:8001", ceo_token="ceo", expiry=_expiry()
         )
     assert len(calls) == 1
+    assert helper_ops == ["check", "check"]

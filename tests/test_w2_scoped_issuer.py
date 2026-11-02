@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import stat
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -230,6 +232,52 @@ def test_rotation_does_not_guess_identity_for_pending_token_without_sidecar(monk
     assert live.read_text(encoding="utf-8") == "old-token\n"
 
 
+def test_rotation_serializes_concurrent_invocations_for_same_account(monkeypatch, tmp_path):
+    from scripts import rotate_w2_publisher_token as rotation
+
+    live = tmp_path / "aao-publisher.token"
+    pending = tmp_path / ".aao-publisher.token.pending"
+    live.write_text("old-token\n", encoding="utf-8")
+    live.chmod(0o600)
+    monkeypatch.setattr(rotation, "_paths", lambda _account: (live, pending))
+    entered = threading.Event()
+    release_first = threading.Event()
+    second_entered = threading.Event()
+    active = 0
+    max_active = 0
+    guard = threading.Lock()
+
+    def rotate_locked(_account, _api):
+        nonlocal active, max_active
+        with guard:
+            active += 1
+            max_active = max(max_active, active)
+            if entered.is_set():
+                second_entered.set()
+            else:
+                entered.set()
+        if not release_first.wait(timeout=2):
+            pytest.fail("test did not release first rotation")
+        with guard:
+            active -= 1
+
+    monkeypatch.setattr(rotation, "_rotate_locked", rotate_locked)
+    first = threading.Thread(target=rotation.rotate, args=("aao-impl-codex",))
+    second = threading.Thread(target=rotation.rotate, args=("aao-impl-codex",))
+    first.start()
+    assert entered.wait(timeout=2)
+    second.start()
+    time.sleep(0.05)
+    assert not second_entered.is_set()
+    release_first.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert not first.is_alive() and not second.is_alive()
+    assert second_entered.is_set()
+    assert max_active == 1
+
+
 def test_w2_publisher_rejects_unknown_and_malformed_id_before_database(monkeypatch):
     from aao.work_management_api import AuthenticatedPrincipal, app
 
@@ -366,9 +414,7 @@ def test_role_owned_helper_rotates_end_to_end_without_pm_or_process_disclosure(
             method, path, headers={"X-Agent-Token": agent_token} if agent_token else {}, json=body
         )
         if response.status_code >= 400:
-            from scripts.bootstrap_self_dev_agent import BootstrapError
-
-            raise BootstrapError(
+            raise rotation.BootstrapError(
                 f"AAO API rejected the bootstrap request (HTTP {response.status_code})"
             )
         return response.json()
@@ -395,9 +441,13 @@ def test_role_owned_helper_rotates_end_to_end_without_pm_or_process_disclosure(
     assert new_token not in " ".join(__import__("sys").argv)
     assert new_token not in repr(dict(os.environ))
     assert digest_token(new_token) not in repr(calls)
-    assert calls[0][0] == "/v1/principals/me"
-    assert calls[1][0] == "/v1/principals/me/w2-publisher/rotate"
-    assert calls[2][0] == "/v1/principals/me/w2-publisher/rotate/confirm"
+    assert [call[0] for call in calls] == [
+        "/v1/principals/me",
+        "/v1/principals/me/grants",
+        "/v1/projects",
+        "/v1/principals/me/w2-publisher/rotate",
+        "/v1/principals/me/w2-publisher/rotate/confirm",
+    ]
     assert all("credential.issue_publisher" not in path for path, *_ in calls)
 
     with connect() as db:
@@ -459,6 +509,8 @@ def test_role_owned_helper_recovers_after_confirmation_before_atomic_install(mon
     monkeypatch.setattr(rotation, "_paths", lambda _account: (live, pending))
 
     def api_request(_base_url, path, *, method="GET", agent_token=None, body=None, **_kwargs):
+        # Pending tokens are intentionally not authenticated by /me before
+        # confirmation. Model that expected 403 separately from API failure.
         response = client.request(
             method,
             path,
@@ -466,9 +518,7 @@ def test_role_owned_helper_recovers_after_confirmation_before_atomic_install(mon
             json=body,
         )
         if response.status_code >= 400:
-            from scripts.bootstrap_self_dev_agent import BootstrapError
-
-            raise BootstrapError("AAO API request failed")
+            raise rotation.BootstrapError("AAO API request failed")
         return response.json()
 
     monkeypatch.setattr(rotation, "request_json", api_request)
@@ -524,9 +574,7 @@ def test_role_owned_helper_refuses_pending_token_bound_to_another_principal(monk
             json=body,
         )
         if response.status_code >= 400:
-            from scripts.bootstrap_self_dev_agent import BootstrapError
-
-            raise BootstrapError("AAO API request failed")
+            raise rotation.BootstrapError("AAO API request failed")
         return response.json()
 
     monkeypatch.setattr(rotation, "request_json", api_request)

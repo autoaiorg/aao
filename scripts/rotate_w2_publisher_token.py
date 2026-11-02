@@ -8,6 +8,7 @@ new publisher principals.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import pwd
@@ -243,7 +244,7 @@ def _validate_w2_identity(api: str, token: str, account: str) -> str:
     return principal_id
 
 
-def rotate(account: str, api_url: str = "http://127.0.0.1:8001") -> None:
+def _rotate_locked(account: str, api_url: str) -> None:
     api = _loopback_url(api_url)
     live, pending = _paths(account)
     old = _read_private(live)
@@ -351,6 +352,31 @@ def rotate(account: str, api_url: str = "http://127.0.0.1:8001") -> None:
     os.replace(pending, live)
     pending.with_name(pending.name + ".identity").unlink(missing_ok=True)
     _fsync_dir(live.parent)
+
+
+def rotate(account: str, api_url: str = "http://127.0.0.1:8001") -> None:
+    live, _pending = _paths(account)
+    lock_path = live.with_name(f".{TOKEN_NAME}.lock")
+    try:
+        fd = os.open(
+            lock_path,
+            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+    except OSError:
+        raise RotationError("rotation lock is unavailable") from None
+    try:
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o600
+        ):
+            raise RotationError("rotation lock metadata is unsafe")
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        _rotate_locked(account, api_url)
+    finally:
+        os.close(fd)
 
 
 def main(argv: list[str] | None = None) -> int:

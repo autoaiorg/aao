@@ -33,6 +33,8 @@ La rotación W2 es de dos fases: el token vigente conserva validez mientras se g
 
 La recuperación local también cubre ambos cortes de escritura: el sidecar de identidad se persiste antes que el bearer pendiente, de modo que un sidecar huérfano (sin bearer pendiente) se puede eliminar tras validar su propietario y modo; si ya existe un bearer pendiente pero falta el sidecar, el helper solo reconstruye el ID esperado autenticando el bearer activo anterior y volviendo a comprobar cuenta, proyecto y grants. Si no puede demostrar esa identidad, falla cerrado y conserva el pendiente; no adivina ni cambia de principal.
 
+El helper también serializa ejecuciones simultáneas por cuenta con un lock exclusivo en el runtime privado (`/run/user/<uid>`). El lock evita que dos invocaciones sustituyan entre sí el sidecar o el bearer pendiente; un lock preexistente con propietario, tipo o modo inesperado se rechaza.
+
 **No completa la rotación autónoma en el host**: falta el cliente periódico y el mecanismo acotado para entregar de forma segura el token al runtime privado de cada cuenta Linux. No se debe dar sudo general al servicio PM para cerrar ese hueco.
 
 ## Cambio mínimo de API propuesto

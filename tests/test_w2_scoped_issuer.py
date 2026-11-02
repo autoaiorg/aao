@@ -37,8 +37,8 @@ def test_w2_issuer_fixes_project_grants_ttl_and_audits(monkeypatch):
     class DB:
         def execute(self, sql, params=()):
             calls.append((sql, params))
-            if "SELECT name,state FROM projects" in sql:
-                return Result(("AAO — Self Development", "ACTIVE"))
+            if "SELECT id,name,state FROM projects" in sql:
+                return Result([("project-1", "AAO — Self Development", "ACTIVE")])
             if "SELECT c.principal_id FROM project_grants g JOIN principal_credentials" in sql:
                 return Result([])
             if "SELECT clock_timestamp()+%s" in sql:
@@ -109,8 +109,8 @@ def test_w2_issuer_replaces_existing_credential_after_lost_response(monkeypatch)
     class DB:
         def execute(self, sql, params=()):
             calls.append((sql, params))
-            if "SELECT name,state FROM projects" in sql:
-                return Result(("AAO — Self Development", "ACTIVE"))
+            if "SELECT id,name,state FROM projects" in sql:
+                return Result([("project-1", "AAO — Self Development", "ACTIVE")])
             if "SELECT c.principal_id FROM project_grants g JOIN principal_credentials" in sql:
                 return Result([("aao-publisher-pm-orphaned",)])
             if "SELECT clock_timestamp()+%s" in sql:
@@ -203,6 +203,43 @@ def test_w2_issuer_requires_explicit_grant_and_does_not_issue_on_denial(monkeypa
     assert not any(sql.startswith("INSERT INTO") for sql in calls)
 
 
+def test_w2_issuer_rejects_ambiguous_self_development_projects(monkeypatch):
+    from aao.work_management_api import AuthenticatedPrincipal, app
+
+    issuer = AuthenticatedPrincipal("aao-pm-coordinator-test", "digest", "AGENT")
+    monkeypatch.setattr(
+        "aao.work_management_api._authenticate_request_principal", lambda *_: issuer
+    )
+    calls = []
+
+    class Result:
+        def fetchall(self):
+            return [
+                ("project-1", "AAO — Self Development", "ACTIVE"),
+                ("project-2", "AAO — Self Development", "ACTIVE"),
+            ]
+
+    class DB:
+        def execute(self, sql, params=()):
+            calls.append(sql)
+            return Result()
+
+    @contextmanager
+    def fake_tx():
+        yield DB()
+
+    monkeypatch.setattr("aao.work_management_api.tx", fake_tx)
+    monkeypatch.setattr("aao.work_management_api.require_grant", lambda *_: None)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/projects/project-1/w2-publishers/aao-pm/issue",
+            headers={"X-Agent-Token": "pm-token"},
+        )
+
+    assert response.status_code == 409
+    assert not any(sql.startswith("INSERT INTO") for sql in calls)
+
+
 def test_grant_request_accepts_scoped_issuer_capability():
     from aao.work_management_api import GrantRequest
 
@@ -280,20 +317,57 @@ def test_w2_issuer_replaces_orphaned_credential_after_lost_response(monkeypatch)
         assert second_body["token"] != first_body["token"]
 
         with connect_postgres() as db:
+            orphan_id = "aao-publisher-pm-orphaned-" + uuid4().hex[:8]
+            db.execute(
+                "INSERT INTO principal_credentials(principal_id,kind,token_digest,enabled) "
+                "VALUES (%s,'AGENT','orphaned-token-digest',true)",
+                (orphan_id,),
+            )
+            db.execute(
+                "INSERT INTO project_grants(principal_id,project_id,capability,expires_at) "
+                "VALUES (%s,%s,'code.publish',NULL)",
+                (orphan_id, project_id),
+            )
+            # Re-issue once more to exercise cleanup of an active, non-expiring
+            # legacy credential. It must be disabled just like timed grants.
+            db.commit()
+
+        third = client.post(endpoint, headers=headers)
+        assert third.status_code == 201, third.text
+        third_body = third.json()
+
+        with connect_postgres() as db:
             credentials = db.execute(
                 "SELECT principal_id,enabled FROM principal_credentials "
-                "WHERE principal_id IN (%s,%s) ORDER BY principal_id",
-                (first_body["principal_id"], second_body["principal_id"]),
+                "WHERE principal_id IN (%s,%s,%s,%s) ORDER BY principal_id",
+                (
+                    orphan_id,
+                    first_body["principal_id"],
+                    second_body["principal_id"],
+                    third_body["principal_id"],
+                ),
             ).fetchall()
             grants = db.execute(
                 "SELECT principal_id,capability,expires_at FROM project_grants "
-                "WHERE principal_id IN (%s,%s) ORDER BY principal_id,capability",
-                (first_body["principal_id"], second_body["principal_id"]),
+                "WHERE principal_id IN (%s,%s,%s,%s) ORDER BY principal_id,capability",
+                (
+                    orphan_id,
+                    first_body["principal_id"],
+                    second_body["principal_id"],
+                    third_body["principal_id"],
+                ),
             ).fetchall()
         assert dict(credentials) == {
+            orphan_id: False,
             first_body["principal_id"]: False,
-            second_body["principal_id"]: True,
+            second_body["principal_id"]: False,
+            third_body["principal_id"]: True,
         }
-        assert len(grants) == 4
+        assert len(grants) == 7
         assert {row[1] for row in grants} == {"project.read", "code.publish"}
-        assert all(row[2] <= datetime.now(UTC) + timedelta(hours=8) for row in grants)
+        assert any(row[0] == orphan_id and row[2] is None for row in grants)
+        assert all(
+            row[2] <= datetime.now(UTC) + timedelta(hours=8)
+            for row in grants
+            if row[2] is not None
+        )

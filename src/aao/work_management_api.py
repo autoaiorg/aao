@@ -1633,15 +1633,21 @@ def issue_w2_publisher(
         require_grant(db, issuer, project_id, "credential.issue_publisher")
         # Serialize issuers for this project. The active-credential check below
         # must not race with another request issuing the same role's token.
-        project = db.execute(
-            "SELECT name,state FROM projects WHERE id=%s FOR UPDATE", (project_id,),
-        ).fetchone()
-        if not project or project[0] != W2_PROJECT_NAME or project[1] != "ACTIVE":
-            raise HTTPException(409, "W2 publisher issuance requires the active Self Development project")
+        projects = db.execute(
+            "SELECT id,name,state FROM projects WHERE name=%s AND state='ACTIVE' "
+            "ORDER BY id FOR UPDATE",
+            (W2_PROJECT_NAME,),
+        ).fetchall()
+        if len(projects) != 1 or str(projects[0][0]) != project_id:
+            raise HTTPException(
+                409,
+                "W2 publisher issuance requires the unique active Self Development project",
+            )
         active = db.execute(
             "SELECT c.principal_id FROM project_grants g JOIN principal_credentials c "
             "ON c.principal_id=g.principal_id WHERE g.project_id=%s "
-            "AND g.capability='code.publish' AND g.expires_at>clock_timestamp() "
+            "AND g.capability='code.publish' "
+            "AND (g.expires_at IS NULL OR g.expires_at>clock_timestamp()) "
             "AND c.kind='AGENT' AND c.enabled=true AND c.principal_id LIKE %s "
             "ORDER BY c.principal_id FOR UPDATE OF c",
             (project_id, f"aao-publisher-{account_slug}-%"),

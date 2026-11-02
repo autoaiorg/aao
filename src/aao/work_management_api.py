@@ -813,6 +813,70 @@ def current_principal(principal: Annotated[AuthenticatedPrincipal, Depends(requi
     return {"principal_id": str(principal), "kind": "AGENT", "enabled": True}
 
 
+SELF_ROTATION_PENDING_TTL = timedelta(minutes=10)
+
+
+def require_pending_agent_token(x_agent_token: str | None = Header(None)) -> str:
+    """Pass the presented token to the confirm transaction, which locks and checks it."""
+    from aao.principal_credentials import _development_credentials_enabled
+
+    if not _development_credentials_enabled() or not x_agent_token:
+        raise HTTPException(403, "Pending agent credential rejected")
+    return x_agent_token
+
+
+@app.post("/v1/principals/me/rotate")
+def self_rotate_principal(principal: Annotated[AuthenticatedPrincipal, Depends(require_worker)]):
+    """Stage a new token for the authenticated AGENT; the current token stays valid.
+
+    The new token only works on /rotate/confirm until confirmed. Calling this again
+    while a rotation is pending replaces the pending token (recovers a lost response).
+    """
+    from aao.principal_credentials import digest_token
+
+    token = secrets.token_urlsafe(32)
+    with tx() as db:
+        row = db.execute(
+            "SELECT kind FROM principal_credentials WHERE principal_id=%s "
+            "AND token_digest=%s AND kind='AGENT' AND enabled=true FOR UPDATE",
+            (principal, principal.token_digest),
+        ).fetchone()
+        if not row:
+            raise HTTPException(403, "Individual agent credential invalid or revoked")
+        expires_at = db.execute(
+            "UPDATE principal_credentials SET pending_token_digest=%s,"
+            "pending_expires_at=clock_timestamp()+%s WHERE principal_id=%s "
+            "RETURNING pending_expires_at",
+            (digest_token(token), SELF_ROTATION_PENDING_TTL, principal),
+        ).fetchone()[0]
+        audit(db, str(uuid4()), "principal.credential.rotation_pending",
+              {"principal_id": str(principal), "kind": "AGENT"})
+    return {
+        "principal_id": str(principal), "kind": "AGENT", "token": token,
+        "pending_expires_at": expires_at.isoformat(),
+    }
+
+
+@app.post("/v1/principals/me/rotate/confirm")
+def confirm_self_rotation(token: Annotated[str, Depends(require_pending_agent_token)]):
+    """Promote the pending token (presented as X-Agent-Token); the old token stops working."""
+    from aao.principal_credentials import PrincipalDenied, lock_pending_agent_rotation
+
+    with tx() as db:
+        try:
+            principal_id = lock_pending_agent_rotation(db, token)
+        except PrincipalDenied as exc:
+            raise HTTPException(403, "Pending agent credential rejected") from exc
+        db.execute(
+            "UPDATE principal_credentials SET token_digest=pending_token_digest,"
+            "pending_token_digest=NULL,pending_expires_at=NULL WHERE principal_id=%s",
+            (principal_id,),
+        )
+        audit(db, str(uuid4()), "principal.credential.rotated",
+              {"principal_id": principal_id, "kind": "AGENT", "self_service": True})
+    return {"principal_id": principal_id, "kind": "AGENT", "rotated": True}
+
+
 @app.get("/v1/principals/me/grants")
 def current_principal_grants(
     principal: Annotated[AuthenticatedPrincipal, Depends(require_worker)],
@@ -887,7 +951,8 @@ def revoke_principal(principal_id: str, _: str = Depends(require_ceo)):
         # taking locks in the opposite order could deadlock. A new assignment
         # to this principal will observe the disabled credential and fail.
         row = db.execute(
-            "UPDATE principal_credentials SET enabled=false "
+            "UPDATE principal_credentials SET enabled=false,"
+            "pending_token_digest=NULL,pending_expires_at=NULL "
             "WHERE principal_id=%s AND enabled=true RETURNING kind",
             (principal_id,),
         ).fetchone()
@@ -965,7 +1030,8 @@ def rotate_principal(principal_id: str, _: str = Depends(require_ceo)):
     token = secrets.token_urlsafe(32)
     with tx() as db:
         row = db.execute(
-            "UPDATE principal_credentials SET token_digest=%s "
+            "UPDATE principal_credentials SET token_digest=%s,"
+            "pending_token_digest=NULL,pending_expires_at=NULL "
             "WHERE principal_id=%s AND enabled=true RETURNING kind",
             (digest_token(token), principal_id),
         ).fetchone()

@@ -54,3 +54,24 @@ def authenticate_in_transaction(db, token: str | None, *, kind: str) -> str:
     if not row:
         raise PrincipalDenied("Principal credential invalid or revoked")
     return row[0]
+
+
+def lock_pending_agent_rotation(db, token: str | None) -> str:
+    """Resolve and lock the AGENT whose unexpired pending digest matches ``token``.
+
+    Only the self-rotation confirm path may call this; pending tokens never
+    authenticate anything else.
+    """
+    if not _development_credentials_enabled():
+        raise PrincipalDenied("Development principal credentials are unavailable")
+    if not token:
+        raise PrincipalDenied("Principal credential required")
+    row = db.execute(
+        "SELECT principal_id FROM principal_credentials "
+        "WHERE pending_token_digest=%s AND pending_expires_at>clock_timestamp() "
+        "AND kind='AGENT' AND enabled=true FOR UPDATE",
+        (digest_token(token),),
+    ).fetchone()
+    if not row:
+        raise PrincipalDenied("Pending rotation invalid or expired")
+    return row[0]

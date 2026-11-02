@@ -83,6 +83,23 @@ BEGIN
     ALTER ROLE aao_fencer WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT CONNECTION LIMIT 2;
   END IF;
 END $$;
+-- A reused database may already contain role memberships. NOINHERIT prevents
+-- automatic privilege inheritance, but does not prevent SET ROLE. Keep the
+-- dedicated fencer isolated from every parent role before granting table access.
+DO $$
+DECLARE
+  parent_role name;
+BEGIN
+  FOR parent_role IN
+    SELECT parent.rolname
+      FROM pg_auth_members membership
+      JOIN pg_roles member ON member.oid = membership.member
+      JOIN pg_roles parent ON parent.oid = membership.roleid
+     WHERE member.rolname = 'aao_fencer'
+  LOOP
+    EXECUTE format('REVOKE %I FROM aao_fencer', parent_role);
+  END LOOP;
+END $$;
 EOF
 
 say "Setting application database password via secure encrypted channel..."

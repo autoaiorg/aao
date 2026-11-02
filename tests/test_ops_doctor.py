@@ -129,7 +129,7 @@ def test_valid_key_in_replaceable_parent_directory_remains_unverified(tmp_path, 
 def test_host_worker_cli_defaults_to_protected_identity(monkeypatch):
     from aao import backup
 
-    monkeypatch.setattr("aao.ops.current_host_id", lambda: "protected-host-id")
+    monkeypatch.setattr("aao.ops.current_host_id", lambda **_kwargs: "protected-host-id")
     db_context = MagicMock()
     monkeypatch.setattr("aao.ops.connect_postgres", lambda: db_context)
     register = MagicMock()
@@ -144,7 +144,7 @@ def test_host_worker_cli_defaults_to_protected_identity(monkeypatch):
 
 
 def test_host_worker_cli_rejects_identity_override(monkeypatch):
-    monkeypatch.setattr("aao.ops.current_host_id", lambda: "protected-host-id")
+    monkeypatch.setattr("aao.ops.current_host_id", lambda **_kwargs: "protected-host-id")
     connect = MagicMock()
     monkeypatch.setattr("aao.ops.connect_postgres", connect)
 
@@ -158,7 +158,8 @@ def test_fence_host_cli_uses_protected_identity_and_rejects_worker_override(monk
     from aao import backup
 
     monkeypatch.setattr("aao.ops.os.geteuid", lambda: 0)
-    monkeypatch.setattr("aao.ops.current_host_id", lambda: "protected-host-id")
+    identity = MagicMock(return_value="protected-host-id")
+    monkeypatch.setattr("aao.ops.current_host_id", identity)
     monkeypatch.setattr("aao.ops.shutil.which", lambda _name: None)
     monkeypatch.setattr("aao.ops._fencer_database_url", lambda: "postgresql://fencer@localhost/db")
     db_context = MagicMock()
@@ -167,6 +168,7 @@ def test_fence_host_cli_uses_protected_identity_and_rejects_worker_override(monk
     monkeypatch.setattr(backup, "apply_host_fencing", fence)
 
     assert main(["fence-host"]) == 0
+    identity.assert_called_once_with(allow_test_override=False)
     fence.assert_called_once_with(db_context.__enter__.return_value, host_identifier="protected-host-id")
 
     with pytest.raises(SystemExit):
@@ -177,7 +179,7 @@ def test_fence_host_does_not_stop_units_when_database_fencing_fails(monkeypatch)
     from aao import backup
 
     monkeypatch.setattr("aao.ops.os.geteuid", lambda: 0)
-    monkeypatch.setattr("aao.ops.current_host_id", lambda: "protected-host-id")
+    monkeypatch.setattr("aao.ops.current_host_id", lambda **_kwargs: "protected-host-id")
     monkeypatch.setattr("aao.ops._fencer_database_url", lambda: "postgresql://fencer@localhost/db")
     monkeypatch.setattr("aao.ops.shutil.which", lambda _name: "/usr/bin/systemctl")
     db_context = MagicMock()

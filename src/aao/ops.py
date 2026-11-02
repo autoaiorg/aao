@@ -543,7 +543,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             if os.geteuid() != 0:
                 raise HostIdentityError("Host fencing must run as root")
-            local_host_id = current_host_id()
+            local_host_id = current_host_id(allow_test_override=False)
             if args.host_id is not None and args.host_id != local_host_id:
                 raise HostIdentityError("Host fencing must run on the host identified by protected /etc/aao/host-id")
         except HostIdentityError as exc:

@@ -18,10 +18,10 @@ class HostIdentityError(RuntimeError):
     pass
 
 
-def current_host_id() -> str:
+def current_host_id(*, allow_test_override: bool = True) -> str:
     """Return the protected local host ID; fail closed if unavailable or unsafe."""
     mode = os.getenv("AAO_ENV", "development").lower()
-    if mode != "production":
+    if allow_test_override and mode != "production":
         configured = os.getenv("AAO_TEST_HOST_ID")
         if configured:
             return _validate(configured)

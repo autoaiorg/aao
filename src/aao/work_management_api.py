@@ -4620,6 +4620,44 @@ def stage_agent_run(work_id: str, payload: AgentRunRequest, principal: str = Dep
     return {"execution_id": execution_id, "status": "QUEUED", "capability_id": payload.capability_id, "version": payload.version}
 
 
+def _record_agent_dispatch_block(db, work_id: str, payload: AgentDispatchRequest, principal: str, reason: str) -> None:
+    """Persist a deduplicated blockage under the caller's checked transaction."""
+    latest_block = db.execute(
+        "SELECT details FROM events WHERE subject_id=%s AND kind='work.dispatch_blocked' "
+        "ORDER BY created_at DESC,id DESC LIMIT 1",
+        (work_id,),
+    ).fetchone()
+    last_details = latest_block[0] if latest_block and isinstance(latest_block[0], dict) else {}
+    if (last_details.get("principal_id") != str(principal)
+            or last_details.get("reason") != reason):
+        blockage_id = str(uuid4())
+        next_action = (
+            "Resolve the persisted precondition through an existing authorized operation; "
+            "if no competent actor is known, escalate to the CEO."
+        )
+        protocol_instance_id = start_work_protocol(
+            db,
+            protocol_id="blockage-escalation",
+            work_id=work_id,
+            started_by=str(principal),
+            subject_type="work_item",
+            idempotency_key=f"blockage-escalation:work_item:{work_id}:{blockage_id}",
+            request={
+                "blockage_id": blockage_id,
+                "project_id": payload.project_id,
+                "reason": reason,
+                "reported_by": str(principal),
+            },
+        )
+        audit(db, work_id, "work.dispatch_blocked", {
+            "project_id": payload.project_id, "work_id": work_id,
+            "principal_id": str(principal), "reason": reason,
+            "blockage_id": blockage_id,
+            "protocol_instance_id": protocol_instance_id,
+            "next_action": next_action,
+        })
+
+
 @app.post("/v1/agent/dispatch-next", status_code=202)
 def dispatch_next_agent_work(
     payload: AgentDispatchRequest,
@@ -4670,9 +4708,9 @@ def dispatch_next_agent_work(
         # Prefer work that can create an attempt over replaying an active one:
         # otherwise a high-priority queued/running child starves ready siblings.
         # With no other candidate, retain the existing idempotent active replay.
-        selected = next((row for row in eligible if row[6] not in {"QUEUED", "RUNNING"}),
-                        eligible[0] if eligible else None)
-        if selected is None:
+        candidates = ([row for row in eligible if row[6] not in {"QUEUED", "RUNNING"}]
+                      + [row for row in eligible if row[6] in {"QUEUED", "RUNNING"}])
+        if not candidates:
             first = rows[0]
             if first[7] or first[6] == "SUCCEEDED":
                 reason = "A successful execution is awaiting downstream review or reconciliation"
@@ -4683,42 +4721,11 @@ def dispatch_next_agent_work(
             else:
                 reason = "A capability evaluation selecting a registered version is required"
             work_id = str(first[0])
-            latest_block = db.execute(
-                "SELECT details FROM events WHERE subject_id=%s AND kind='work.dispatch_blocked' "
-                "ORDER BY created_at DESC,id DESC LIMIT 1",
-                (work_id,),
-            ).fetchone()
-            last_details = latest_block[0] if latest_block and isinstance(latest_block[0], dict) else {}
-            if (last_details.get("principal_id") != str(principal)
-                    or last_details.get("reason") != reason):
-                blockage_id = str(uuid4())
-                next_action = (
-                    "Resolve the persisted precondition through an existing authorized operation; "
-                    "if no competent actor is known, escalate to the CEO."
-                )
-                protocol_instance_id = start_work_protocol(
-                    db,
-                    protocol_id="blockage-escalation",
-                    work_id=work_id,
-                    started_by=str(principal),
-                    subject_type="work_item",
-                    idempotency_key=f"blockage-escalation:work_item:{work_id}:{blockage_id}",
-                    request={
-                        "blockage_id": blockage_id,
-                        "project_id": payload.project_id,
-                        "reason": reason,
-                        "reported_by": str(principal),
-                    },
-                )
-                audit(db, work_id, "work.dispatch_blocked", {
-                    "project_id": payload.project_id, "work_id": work_id,
-                    "principal_id": str(principal), "reason": reason,
-                    "blockage_id": blockage_id,
-                    "protocol_instance_id": protocol_instance_id,
-                    "next_action": next_action,
-                })
+            _record_agent_dispatch_block(db, work_id, payload, principal, reason)
             return {"status": "BLOCKED", "execution_id": None,
                     "work_id": work_id, "reason": reason}
+    first_block = None
+    for selected in candidates:
         (
             work_id,
             status,
@@ -4731,28 +4738,34 @@ def dispatch_next_agent_work(
         ) = selected
         work_id = str(work_id)
 
-    # Reuse the same identity-scoped operations as an interactive worker. The
-    # admission endpoint rechecks project, mandate, assignment and dependencies;
-    # staging rechecks capability registration, provider activation, budget,
-    # retry limit and execution grants in its own transaction.
-    if status == "INBOX":
+        # Reuse admission and staging rather than replacing their authorization,
+        # assignment, provider, budget and retry gates. A local 409
+        # is not permission to retry this work or to change its assignment;
+        # persist it and try another independent eligible child instead.
         try:
-            admit(work_id, principal)
+            if status == "INBOX":
+                admit(work_id, principal)
+            staged = stage_agent_run(
+                work_id,
+                AgentRunRequest(capability_id=capability_id, version=version,
+                                base_sha=payload.base_sha),
+                principal,
+            )
         except HTTPException as exc:
-            if exc.status_code == 409:
-                return {"status": "BLOCKED", "execution_id": None,
-                        "work_id": work_id, "reason": str(exc.detail)}
-            raise
-    try:
-        staged = stage_agent_run(
-            work_id,
-            AgentRunRequest(capability_id=capability_id, version=version,
-                            base_sha=payload.base_sha),
-            principal,
-        )
-    except HTTPException as exc:
-        if exc.status_code == 409:
-            return {"status": "BLOCKED", "execution_id": None,
-                    "work_id": work_id, "reason": str(exc.detail)}
-        raise
-    return {**staged, "work_id": work_id}
+            if exc.status_code != 409:
+                raise
+            reason = str(exc.detail)
+            with tx() as db:
+                # Revalidate grants and assignment before writing the blockage:
+                # authorization may have changed since selection or staging.
+                require_grant(db, principal, payload.project_id, "work.admit")
+                require_grant(db, principal, payload.project_id, "execution.claim")
+                db.execute("SELECT id FROM work_items WHERE id=%s FOR UPDATE", (work_id,)).fetchone()
+                require_group_work_assignee(db, work_id, str(principal))
+                _record_agent_dispatch_block(db, work_id, payload, principal, reason)
+            if first_block is None:
+                first_block = {"status": "BLOCKED", "execution_id": None,
+                               "work_id": work_id, "reason": reason}
+            continue
+        return {**staged, "work_id": work_id}
+    return first_block

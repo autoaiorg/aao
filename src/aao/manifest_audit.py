@@ -519,6 +519,12 @@ def verify_promotion(
             reasons.append("candidate has a recorded audit veto")
         if not entries or entries[-1].get("report_sha256") != _sha(raw):
             reasons.append("report is not the latest recorded decision for this candidate")
+    if promoted_sha is not None and _is_sha(promoted_sha):
+        # A promoted commit absent from the audited repository has no verdict: raise (the caller fails
+        # closed and publishes no check) before any check below can return a publishable "not conformant".
+        # Without this, the outcome depended on check order: git 2.56 (not 2.43) moves the mirror's target
+        # ref on the integrator's push-by-URL, so _derive answered first and a check was published.
+        _git(Path(manifest["repository"]), "cat-file", "-e", f"{promoted_sha}^{{commit}}")
     with tempfile.TemporaryDirectory(prefix="aao-manifest-gate-") as temporary:
         try:
             clone = Path(temporary) / "repo"

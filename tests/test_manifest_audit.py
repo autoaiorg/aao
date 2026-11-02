@@ -293,6 +293,16 @@ def test_target_moving_after_audit_blocks_the_gate(env):
     assert not ok and "target ref no longer points to the manifest target_sha" in reasons
 
 
+def test_absent_promoted_commit_raises_even_after_target_moved(env):
+    # Callers publish a check for any (ok, reasons) answer; an absent commit must raise instead, whatever
+    # other check would fail first (git 2.56 moves the mirror target on push-by-URL, git 2.43 does not).
+    path, _ = manifest(env)
+    audit(env, path)
+    commit(env["repo"], {"src/third.py": "Z = 1\n"}, "concurrent push")
+    with pytest.raises(subprocess.CalledProcessError):
+        gate(env, path, promoted="f" * 40)
+
+
 @pytest.mark.nt("NT-03-3")
 @pytest.mark.nt("NT-03-5")
 def test_promoted_commit_must_carry_the_audited_tree_and_parents(env):

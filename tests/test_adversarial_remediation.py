@@ -472,10 +472,16 @@ def test_scenario_11_lease_timeout_quarantined():
     """
     mock_db = MagicMock()
     mock_cursor = MagicMock()
-    mock_cursor.fetchall.return_value = [("exec-expired-1",), ("exec-expired-2",)]
+    # RETURNING id,work_id,project_id,worker_id,attempts (main's escalation episode shape).
+    mock_cursor.fetchall.return_value = [
+        ("exec-expired-1", "work-1", "project-1", "w-1", 1),
+        ("exec-expired-2", "work-2", "project-1", "w-2", 1),
+    ]
     mock_db.execute.return_value = mock_cursor
 
-    with patch("aao.execution_queue.connect_postgres") as mock_conn:
+    with patch("aao.execution_queue.connect_postgres") as mock_conn, \
+         patch("aao.execution_queue.start_work_protocol", return_value="protocol-1"), \
+         patch("aao.execution_queue.journal"):
         mock_conn.return_value.__enter__.return_value = mock_db
 
         count = quarantine_expired()

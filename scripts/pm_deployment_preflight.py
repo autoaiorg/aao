@@ -340,7 +340,7 @@ def runtime_checks(db, role: str | None) -> list[dict]:
             result(
                 "db:runtime-boundaries",
                 "PASS" if safe else "MISSING",
-                "Requires CONNECT and public USAGE only; no CREATE/TEMP, memberships, ownership, or PUBLIC CREATE/TEMP",
+                "Requires CONNECT and public USAGE; no CREATE/TEMP, role memberships, public relation ownership, or PUBLIC CREATE/TEMP",
                 "Apply the reviewed runtime grants; revoke PUBLIC CREATE/TEMP and unexpected role memberships",
             )
         )

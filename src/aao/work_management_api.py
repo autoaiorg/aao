@@ -1630,7 +1630,7 @@ def issue_w2_publisher(
     token = secrets.token_urlsafe(32)
     principal_id = f"aao-publisher-{account_slug}-{uuid4().hex[:12]}"
     with tx() as db:
-        require_grant(db, str(issuer), project_id, "credential.issue_publisher")
+        require_grant(db, issuer, project_id, "credential.issue_publisher")
         # Serialize issuers for this project. The active-credential check below
         # must not race with another request issuing the same role's token.
         project = db.execute(

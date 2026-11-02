@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -17,8 +18,12 @@ def test_control_center_served_at_root():
     with TestClient(app) as client:
         response = client.get("/")
     assert response.status_code == 200
+    assert '<html lang="es">' in response.text
     assert "AAO Control Center" in response.text
-    assert "Consola de Operaciones Organizativas" in response.text
+    # The API serves the current Vite app when its build exists, and the legacy
+    # static page as a fallback in environments that do not build the app.
+    assert "<title>AAO Control Center" in response.text
+    assert 'id="root"' in response.text or "Consola de Operaciones Organizativas" in response.text
 
 
 def test_control_center_navigation_and_views_present():
@@ -266,12 +271,15 @@ def test_control_center_git_lifecycle_veto_and_unaccredited_promotions():
 def test_control_center_assets_are_separate_same_origin_resources():
     with TestClient(app) as client:
         page = client.get("/")
-        stylesheet = client.get("/assets/control-center.css")
-        script = client.get("/assets/control-center.js")
+        script_path = re.search(r'<script[^>]+src="([^"]+)"', page.text)
+        stylesheet_path = re.search(r'<link[^>]+href="([^"]+\.css)"', page.text)
+        assert script_path and stylesheet_path
+        script_url = "/" + script_path.group(1).removeprefix("./").lstrip("/")
+        stylesheet_url = "/" + stylesheet_path.group(1).removeprefix("./").lstrip("/")
+        stylesheet = client.get(stylesheet_url)
+        script = client.get(script_url)
 
     assert page.status_code == stylesheet.status_code == script.status_code == 200
-    assert 'href="/assets/control-center.css"' in page.text
-    assert 'src="/assets/control-center.js" defer' in page.text
     assert "text/css" in stylesheet.headers["content-type"]
     assert "javascript" in script.headers["content-type"]
     assert "<style" not in page.text

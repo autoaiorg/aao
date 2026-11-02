@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -173,9 +174,30 @@ def _conditional_push(repo: Path, remote_url: str, ref: str, base: str, commit: 
            "GIT_CONFIG_KEY_1": "http.https://github.com/.extraheader",
            "GIT_CONFIG_VALUE_1": ("AUTHORIZATION: basic " +
                base64.b64encode(f"x-access-token:{token}".encode()).decode("ascii")) if token else ""}
-    return subprocess.run(["git", "-C", str(repo), "push", "--atomic",
-        f"--force-with-lease={ref}:{base}", remote_url, f"{commit}:{ref}"], check=False,
-        capture_output=True, text=True, env=env)
+    return isolated_push(repo, ["--atomic", f"--force-with-lease={ref}:{base}", remote_url,
+                                f"{commit}:{ref}"], env)
+
+
+def isolated_push(repo: Path, args: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    """Run ``git push`` from an empty, config-free repository borrowing ``repo``'s objects.
+
+    Since git 2.56 a push to a URL updates the remote-tracking ref of a uniquely
+    matching configured remote; with a mirror's ``+refs/*:refs/*`` refspec that
+    rewrites ``repo``'s own refs (#319). The temporary repository has no
+    ``remote.*``/``url.*`` config and no hooks, so no git version can touch ``repo``.
+    Callers must pass ``GIT_CONFIG_NOSYSTEM=1`` and ``GIT_CONFIG_GLOBAL=/dev/null``.
+    """
+    objects = subprocess.run(["git", "-C", str(repo), "rev-parse", "--path-format=absolute",
+                              "--git-path", "objects"], check=True, capture_output=True,
+                             text=True, env=env).stdout.strip()
+    with tempfile.TemporaryDirectory(prefix="aao-push-") as directory:
+        subprocess.run(["git", "init", "--bare", "-q", directory], check=True, capture_output=True,
+                       text=True, env=env)
+        alternates = Path(directory) / "objects" / "info" / "alternates"
+        alternates.parent.mkdir(parents=True, exist_ok=True)
+        alternates.write_text(objects + "\n")
+        return subprocess.run(["git", "--git-dir", directory, "push", *args], check=False,
+                              capture_output=True, text=True, env=env)
 
 
 def _heartbeat(path: Path, registry: dict[str, Any], now: datetime,

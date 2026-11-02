@@ -7,7 +7,7 @@ import subprocess
 
 import pytest
 
-from aao.github_delivery_corroboration import PushWebhookTrust
+from aao.github_delivery_corroboration import DeliveryCorroborationInconclusive, PushWebhookTrust
 from aao.push_receipts import read_push_receipts
 from aao.push_relay import drain_one
 
@@ -25,10 +25,11 @@ class Response(io.BytesIO):
     def __init__(self, body, status=200):
         super().__init__(body)
         self.status = status
+        self.headers = {}
 
 
 def setup(tmp_path, *, signature=None, fail_ack=False, relay_payload=None,
-          github_payload=None, delivery_guid=ID):
+          github_payload=None, delivery_guid=ID, listed_guids=None):
     key = tmp_path / 'key.pem'
     subprocess.run(['openssl', 'genpkey', '-algorithm', 'Ed25519', '-out', str(key)],
                    check=True, capture_output=True)
@@ -67,7 +68,8 @@ def setup(tmp_path, *, signature=None, fail_ack=False, relay_payload=None,
             assert req.get_header('Authorization') == f'Bearer {API_TOKEN}'
             assert req.full_url.startswith('https://api.github.com/repos/o/r/hooks/9/deliveries')
             if '?' in req.full_url:
-                return Response(json.dumps([{'id': 123, 'guid': delivery_guid}]).encode())
+                guids = listed_guids if listed_guids is not None else [delivery_guid]
+                return Response(json.dumps([{'id': 123 + n, 'guid': g} for n, g in enumerate(guids)]).encode())
             detail = {
                 'id': 123, 'guid': delivery_guid, 'event': 'push',
                 'request': {'headers': {
@@ -153,3 +155,28 @@ def test_relay_origin_restricted(tmp_path, endpoint):
         drain_one(**kwargs)
     assert relay_calls == []
     assert github_calls == []
+
+
+def test_inconclusive_corroboration_neither_stores_nor_acks_and_recovers_on_retry(tmp_path):
+    listed = ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa']
+    kwargs, relay_calls, github_calls = setup(tmp_path, listed_guids=listed)
+    opener = kwargs['github_opener']
+    original_open = opener.open
+
+    def paged_open(req, timeout):
+        response = original_open(req, timeout)
+        if '?' in req.full_url:  # every list page claims another page exists
+            response.headers = {'Link': f'<https://api.github.com/repos/o/r/hooks/9/deliveries'
+                                        f'?per_page=100&cursor=c{len(github_calls)}>; rel="next"'}
+        return response
+
+    opener.open = paged_open
+    with pytest.raises(DeliveryCorroborationInconclusive):
+        drain_one(**kwargs)
+    assert relay_calls == ['GET']
+    assert len(github_calls) == 10
+    assert not list(kwargs['directory'].glob('*.json'))
+    # Retry once GitHub lists the delivery within the bound: stored, then acked.
+    listed[:] = [ID]
+    assert drain_one(**kwargs)
+    assert relay_calls == ['GET', 'GET', 'POST']

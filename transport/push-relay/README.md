@@ -56,6 +56,11 @@ Retention/ack-only compaction is future explicit work, NOT an enabled job.
 A host outage leaves receipts pending remotely; restart pulls the oldest first.
 An invalid oldest receipt stalls collection (fail closed); do not silently ack
 or skip it. Investigate by a separately approved administrative procedure.
+Corroboration follows GitHub's delivery-list cursor up to 10 pages of 100. If the
+GUID is not listed within that bound, `DeliveryCorroborationInconclusive` (a
+retryable `ValueError`) is raised: nothing is stored or acked, and the receipt is
+not declared invalid. Because GitHub lists newest deliveries first, a stalled head
+can drift past the bound or the 3-day retention; that needs operator follow-up.
 
 Compromised receiver: because it holds the webhook secret, it can forge a valid
 GitHub HMAC as well as suppress/replay data or deny service. Host HMAC revalidation

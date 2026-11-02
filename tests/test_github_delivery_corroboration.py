@@ -1,10 +1,15 @@
 import io
 import json
 import urllib.error
+import urllib.parse
 
 import pytest
 
-from aao.github_delivery_corroboration import PushWebhookTrust, corroborate_push_delivery
+from aao.github_delivery_corroboration import (
+    DeliveryCorroborationInconclusive,
+    PushWebhookTrust,
+    corroborate_push_delivery,
+)
 
 GUID = '11111111-1111-4111-8111-111111111111'
 TRUST = PushWebhookTrust(
@@ -24,6 +29,10 @@ def payload(*, repository_id=10, sender_id=30, login='impl-app[bot]',
 
 class Response(io.BytesIO):
     status = 200
+
+    def __init__(self, body, headers=None):
+        super().__init__(body)
+        self.headers = headers or {}
 
 
 class GithubOpener:
@@ -126,3 +135,85 @@ def test_no_redirects_are_configured_for_default_https_transport(monkeypatch):
     corroborate_push_delivery(token='independently-provisioned-token', trust=TRUST,
         delivery_guid=GUID, relay_payload=payload())
     assert captured['handler'].__class__.__name__ == '_NoRedirect'
+
+
+OTHER = 'aaaaaaaa-aaaa-4aaa-8aaa-{:012x}'
+BASE = 'https://api.github.com/repos/owner/repo/hooks/20/deliveries'
+
+
+class PagedOpener(GithubOpener):
+    """Cursor-paginated delivery list; page N links to cursor vN until the last page."""
+
+    def __init__(self, pages, *, link=None, **kwargs):
+        super().__init__(**kwargs)
+        self.pages = pages
+        self.link = link
+
+    def open(self, request, timeout):
+        if '?' not in request.full_url:
+            return super().open(request, timeout)
+        self.calls.append(request.full_url)
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(request.full_url).query)
+        index = int(query.get('cursor', ['v0'])[0][1:])
+        page = self.pages[index]
+        if not isinstance(page, list):
+            return Response(json.dumps(page).encode())
+        items = [{'id': 1000 * index + n, 'guid': guid} if isinstance(guid, str) else guid
+                 for n, guid in enumerate(page)]
+        link = self.link
+        if link is None and index + 1 < len(self.pages):
+            link = f'<{BASE}?per_page=100&cursor=v{index + 1}>; rel="next"'
+        return Response(json.dumps(items).encode(), headers={'Link': link} if link else {})
+
+
+def filler(page):
+    return [OTHER.format(page * 100 + n) for n in range(100)]
+
+
+def test_delivery_on_first_page_does_not_fetch_further_pages():
+    opener = PagedOpener([filler(0)[:50] + [GUID], filler(1)])
+    assert corroborate(opener) == payload()
+    assert opener.calls == [f'{BASE}?per_page=100', f'{BASE}/50']
+
+
+def test_delivery_on_third_page_is_found_by_cursor():
+    opener = PagedOpener([filler(0), filler(1), [OTHER.format(999), GUID]])
+    assert corroborate(opener) == payload()
+    assert opener.calls == [
+        f'{BASE}?per_page=100', f'{BASE}?per_page=100&cursor=v1',
+        f'{BASE}?per_page=100&cursor=v2', f'{BASE}/2001',
+    ]
+
+
+def test_delivery_beyond_page_bound_is_retryable_inconclusive_not_invalid():
+    opener = PagedOpener([filler(0), filler(1), filler(2), [GUID]])
+    with pytest.raises(DeliveryCorroborationInconclusive, match='bounded delivery scan'):
+        corroborate_push_delivery(
+            token='independently-provisioned-token', trust=TRUST, delivery_guid=GUID,
+            relay_payload=payload(), opener=opener, max_pages=3)
+    assert len(opener.calls) == 3
+    # The same delivery is accepted once it is listed within the bound.
+    assert corroborate(PagedOpener([filler(0), filler(1), filler(2), [GUID]])) == payload()
+
+
+def test_guid_absent_from_exhausted_list_is_not_found_not_inconclusive():
+    with pytest.raises(ValueError, match='GUID was not found') as caught:
+        corroborate(PagedOpener([filler(0), filler(1)]))
+    assert not isinstance(caught.value, DeliveryCorroborationInconclusive)
+
+
+@pytest.mark.parametrize('pages, link, error, message', [
+    ([filler(0), {'message': 'not a list'}], None, TypeError, 'list is malformed'),
+    ([filler(0), [42, GUID]], None, TypeError, 'list is malformed'),
+    ([filler(0), [GUID]], '<https://evil.example/repos/owner/repo/hooks/20/deliveries?cursor=v1>; rel="next"',
+     ValueError, 'pagination link is malformed'),
+    ([filler(0), [GUID]], '<https://api.github.com/repos/other/repo/hooks/20/deliveries?cursor=v1>; rel="next"',
+     ValueError, 'pagination link is malformed'),
+    ([filler(0), [GUID]], f'<{BASE}?per_page=100>; rel="next"', ValueError, 'pagination link is malformed'),
+    ([filler(0), [GUID]], f'<{BASE}?cursor=v1&page=2>; rel="next"', ValueError, 'pagination link is malformed'),
+    ([filler(0), filler(1)], f'<{BASE}?cursor=v1>; rel="next"', ValueError, 'pagination link is malformed'),
+])
+def test_malformed_page_or_pagination_link_fails_closed(pages, link, error, message):
+    with pytest.raises(error, match=message) as caught:
+        corroborate(PagedOpener(pages, link=link))
+    assert not isinstance(caught.value, DeliveryCorroborationInconclusive)

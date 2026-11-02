@@ -45,7 +45,6 @@ ROLES = (
     (REVIEWER, "selfdev-reviewer", "AUDITOR", ("work.review",)),
 )
 MAX_LIFETIME = timedelta(hours=2)
-ROOT_PYTHON = "/usr/bin/python3"
 FROZEN_WRAPPER = "/usr/local/libexec/aao/selfdev_role_token_helper.py"
 
 
@@ -130,7 +129,7 @@ def _run_token_helper(account: str, token_kind: str, operation: str, token: str 
     if operation not in {"check", "install", "verify", "remove"}:
         raise ProvisionError("unsupported token operation")
     command = [
-        "/usr/bin/sudo", ROOT_PYTHON, FROZEN_WRAPPER,
+        "/usr/bin/sudo", FROZEN_WRAPPER,
         "--account", account, "--token", token_kind, "--operation", operation,
     ]
     try:

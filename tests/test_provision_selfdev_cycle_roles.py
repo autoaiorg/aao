@@ -189,6 +189,8 @@ def test_role_helper_sends_token_only_on_stdin(monkeypatch):
     provisioner._run_token_helper(
         provisioner.REVIEWER, "selfdev-reviewer", "install", "private-token"
     )
+    assert seen["args"][:2] == ["/usr/bin/sudo", provisioner.FROZEN_WRAPPER]
+    assert "/usr/bin/python3" not in seen["args"]
     assert "private-token" not in seen["args"]
     assert seen["kwargs"]["input"] == "private-token\n"
     assert "env" not in seen["kwargs"]

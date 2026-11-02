@@ -61,10 +61,14 @@ This is a one-time administrative enablement, not a routine cycle step:
    path ancestor, and never runs code from the frozen tree as root. It accepts
    only the fixed account, token-kind and `check|install|verify|remove`
    allowlist, then calls `/usr/sbin/runuser` and the root-installed fixed
-   installer with a minimal environment. Configure sudoers for only `/usr/bin/python3` with this exact wrapper path;
-   both invoking scripts use that fixed root-owned interpreter and wrapper, and
-   the wrapper argument parser enforces the allowlist. Do not grant
-   arbitrary `sudo`, shells, interpreters, installer or commands. Validate the
+   installer with a minimal environment. Configure sudoers for only the
+   installed wrapper executable, for example:
+   `aao-pm ALL=(root) NOPASSWD: /usr/local/libexec/aao/selfdev_role_token_helper.py *`.
+   The `*` is limited by the wrapper's strict account/token/operation allowlist;
+   do not allow `/usr/bin/python3` itself, since that would permit arbitrary
+   root Python code. The wrapper's fixed `#!/usr/bin/python3` shebang selects
+   the interpreter internally. Do not grant arbitrary `sudo`, shells,
+   interpreters, installer or commands. Validate the
    rule with `visudo -cf` before enabling the PM workflow.
 4. Keep the PM token at `/run/user/<aao-pm uid>/aao-pm.token`, owned by
    `aao-pm`, regular, single-link, mode `0600`; the runtime directory must be

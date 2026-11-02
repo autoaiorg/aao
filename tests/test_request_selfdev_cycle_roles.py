@@ -111,7 +111,8 @@ def test_root_helper_uses_fixed_interpreter_and_token_only_on_stdin(monkeypatch)
     provisioner._run_token_helper(
         "aao-impl-codex", "selfdev-implementer", "install", "secret-token"
     )
-    assert seen["args"][:3] == ["/usr/bin/sudo", provisioner.ROOT_PYTHON, provisioner.ROOT_WRAPPER]
+    assert seen["args"][:2] == ["/usr/bin/sudo", provisioner.ROOT_WRAPPER]
+    assert "/usr/bin/python3" not in seen["args"]
     assert "secret-token" not in str(seen["args"])
     assert seen["kwargs"]["input"] == "secret-token\n"
 

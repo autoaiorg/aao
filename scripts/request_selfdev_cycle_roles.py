@@ -43,7 +43,6 @@ ROLE_GRANTS = (
     {"work.review"},
 )
 MAX_LIFETIME_SECONDS = 2 * 60 * 60
-ROOT_PYTHON = "/usr/bin/python3"
 ROOT_WRAPPER = "/usr/local/libexec/aao/selfdev_role_token_helper.py"
 
 
@@ -81,7 +80,6 @@ def _run_token_helper(
         raise ProvisionError("unsupported role-token operation")
     command = [
         "/usr/bin/sudo",
-        ROOT_PYTHON,
         ROOT_WRAPPER,
         "--account",
         account,

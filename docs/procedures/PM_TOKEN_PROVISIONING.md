@@ -54,8 +54,9 @@ Especificación implementada:
 4. `POST /v1/principals/credentials` (`kind=AGENT`), validando `principal_id`/`kind` de la respuesta.
 5. Conceder exactamente los grants elegidos con la caducidad decidida por el CEO; releer `GET /v1/projects/{id}/grants` y exigir conjunto exacto, `AGENT`, credencial habilitada y caducidad igual a la pedida.
 6. Instalar por stdin (`--token pm`) y `--verify`.
-7. **Ante cualquier fallo:** `--remove` con el token emitido y `POST /v1/principals/{id}/revoke`. No existe endpoint para borrar grants: las filas quedan, inertes, porque el principal queda deshabilitado (el preflight marcará `db:pm-identity`/`db:pm-grants` como `MISSING`). No afirmar que los grants se eliminan.
-8. Imprimir solo `principal_id`, grants y caducidad (no secretos), para `AAO_PM_PRINCIPAL_ID` en el `.env` del servicio.
+7. **Ante cualquier fallo:** `--remove` con el token emitido y `POST /v1/principals/{id}/revoke`. No existe endpoint para borrar grants: las filas quedan, inertes, porque el principal queda deshabilitado (el preflight marcará `db:pm-identity`/`db:pm-grants` como `MISSING`). No afirmar que los grants se eliminan. Incluye interrupciones (`Ctrl-C` durante `sudo`) y respuestas mal formadas de la API. Si la limpieza no se completa (no se pudo borrar el fichero o revocar), el emisor sale con código distinto de cero e imprime en stderr `CLEANUP INCOMPLETE` con el `principal_id` (nunca el token) para que el CEO lo revoque a mano.
+8. Imprimir solo `principal_id`, grants y caducidad (no secretos), para `AAO_PM_PRINCIPAL_ID` en el `.env` del servicio, y avisar de que el emisor no toca principales PM anteriores: el CEO debe revocar o rotar cualquier `aao-pm-coordinator-*` previo.
+9. Las peticiones a la API (`request_json`, compartido con `bootstrap_self_dev_agent.py`) ignoran `http_proxy`/`all_proxy` y rechazan redirecciones, para que el token CEO solo llegue a la API loopback.
 
 Tests unitarios con API y `sudo` simulados: `tests/test_provision_pm_coordinator_token.py`. B2 sigue abierto en la parte de emisión hasta que el emisor pase auditoría independiente y el CEO lo ejecute.
 

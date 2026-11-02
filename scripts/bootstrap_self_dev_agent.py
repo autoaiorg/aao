@@ -19,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 MANDATE_TITLE = "AAO — Self Development"
 MANDATE_OBJECTIVE = (
@@ -36,6 +36,19 @@ GRANT_LIFETIME = timedelta(hours=8)
 
 class BootstrapError(RuntimeError):
     pass
+
+
+class _RefuseRedirects(HTTPRedirectHandler):
+    def redirect_request(self, *_args, **_kwargs):
+        return None  # the 3xx surfaces as HTTPError; credentials never follow a redirect
+
+
+# Ignore http_proxy/all_proxy etc.: the CEO bearer must only reach the loopback API.
+_OPENER = build_opener(ProxyHandler({}), _RefuseRedirects())
+
+
+def urlopen(request: Request, timeout: float):
+    return _OPENER.open(request, timeout=timeout)
 
 
 def request_json(base_url: str, path: str, *, method: str = "GET",

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -13,17 +13,34 @@ API = "http://127.0.0.1:8001"
 CEO = "ceo-secret-value"
 TOKEN = "pm-coordinator-secret-value"
 EXPIRY = (datetime.now(UTC) + timedelta(days=7)).replace(microsecond=0).isoformat()
+# Same instant as EXPIRY, different string: only the "one distinct expiry" check rejects it.
+EXPIRY_SAME_INSTANT = (
+    datetime.fromisoformat(EXPIRY).astimezone(timezone(timedelta(hours=1))).isoformat()
+)
 
 
 class FakeApi:
     """In-memory AAO API; ``fail`` maps a (method, path-suffix) to an exception or mutator."""
 
-    def __init__(self, *, credential=None, extra_grant=None, grant_expiry=None, fail=None):
+    def __init__(
+        self,
+        *,
+        credential=None,
+        credential_kind="AGENT",
+        extra_grant=None,
+        grant_expiry=None,
+        rows=None,
+        projects=None,
+        fail=None,
+    ):
         self.calls: list[tuple[str, str, dict | None]] = []
         self.grants: list[dict] = []
         self.credential = credential
+        self.credential_kind = credential_kind
         self.extra_grant = extra_grant
         self.grant_expiry = grant_expiry
+        self.rows = rows or (lambda rows: rows)
+        self.projects = projects or [{"id": "project/1", "name": "Any", "state": "ACTIVE"}]
         self.fail = fail or {}
 
     def __call__(self, url, path, *, method="GET", ceo_token=None, body=None):
@@ -33,11 +50,12 @@ class FakeApi:
             if method == fail_method and path.endswith(suffix):
                 raise exc
         if path == "/v1/projects":
-            return [{"id": "project/1", "name": "Any", "state": "ACTIVE"}]
+            return self.projects
         if path == "/v1/principals/credentials":
             if self.credential is not None:
                 return self.credential
-            return {"token": TOKEN, "principal_id": body["principal_id"], "kind": "AGENT"}
+            kind = self.credential_kind
+            return {"token": TOKEN, "principal_id": body["principal_id"], "kind": kind}
         if path.endswith("/grants") and method == "POST":
             expiry = self.grant_expiry if self.grant_expiry is not None else body["expires_at"]
             self.grants.append(
@@ -48,7 +66,7 @@ class FakeApi:
             rows = list(self.grants)
             if self.extra_grant and rows:
                 rows.append({**rows[0], "capability": self.extra_grant})
-            return rows
+            return self.rows(rows)
         return {"ok": True}
 
     def principal(self):
@@ -81,6 +99,9 @@ def env(monkeypatch):
         return api
 
     return SimpleNamespace(role_calls=role_calls, failing=failing, install_api=install_api)
+
+
+REVOKED = "credential setup failed; issued credentials were revoked"
 
 
 def run(expiry=EXPIRY):
@@ -133,14 +154,25 @@ def test_check_failure_issues_nothing(env):
         ({"extra_grant": "code.publish"}, "exact least-privilege"),
         ({"extra_grant": "work.create"}, "exact least-privilege"),
         ({"grant_expiry": (datetime.now(UTC) + timedelta(days=30)).isoformat()}, "expiry"),
-        ({"fail": {("POST", "/grants"): pm.BootstrapError("HTTP 500")}}, "revoked where possible"),
-        ({"fail": {("GET", "/grants"): pm.BootstrapError("HTTP 500")}}, "revoked where possible"),
+        ({"fail": {("POST", "/grants"): pm.BootstrapError("HTTP 500")}}, REVOKED),
+        ({"fail": {("GET", "/grants"): pm.BootstrapError("HTTP 500")}}, REVOKED),
+        ({"rows": lambda rows: [*rows, "not-a-row"]}, "grant inventory response is invalid"),
+        ({"rows": lambda rows: {"rows": rows}}, "grant inventory response is invalid"),
+        # Each case below is rejected by exactly one clause of the grant verification.
+        ({"rows": lambda rows: [*rows, rows[0]]}, "exact least-privilege"),
+        ({"rows": lambda rows: [{**rows[0], "kind": "AUDITOR"}, *rows[1:]]}, "exact least"),
+        ({"rows": lambda rows: [{**rows[0], "credential_enabled": False}, *rows[1:]]}, "exact"),
+        (
+            {"rows": lambda rows: [{**rows[0], "expires_at": EXPIRY_SAME_INSTANT}, *rows[1:]]},
+            "exact least-privilege",
+        ),
     ],
 )
 def test_failures_after_issuance_remove_token_and_revoke_principal(env, api_kwargs, match):
     api = env.install_api(FakeApi(**api_kwargs))
-    with pytest.raises(pm.ProvisionError, match=match):
+    with pytest.raises(pm.ProvisionError, match=match) as exc:
         run()
+    assert TOKEN not in str(exc.value)
     principal = api.principal()
     assert api.revoked() == [f"/v1/principals/{principal}/revoke"]
     assert ("aao-pm", TOKEN, "remove", "pm") in env.role_calls
@@ -167,10 +199,76 @@ def test_install_or_verify_failure_removes_token_and_revokes(env, operation):
 )
 def test_invalid_credential_response_revokes_without_touching_files(env, credential):
     api = env.install_api(FakeApi(credential=credential))
-    with pytest.raises(pm.ProvisionError, match="invalid publisher credential"):
+    with pytest.raises(pm.ProvisionError, match="invalid agent credential"):
         run()
     assert api.revoked() == [f"/v1/principals/{api.principal()}/revoke"]
     assert [c[2] for c in env.role_calls] == ["check"]
+
+
+def test_credential_with_only_wrong_kind_is_rejected(env):
+    api = env.install_api(FakeApi(credential_kind="AUDITOR"))
+    with pytest.raises(pm.ProvisionError, match="invalid agent credential"):
+        run()
+    assert api.revoked() == [f"/v1/principals/{api.principal()}/revoke"]
+
+
+def test_no_expiry_rejects_grants_that_carry_an_expiry(env):
+    api = env.install_api(FakeApi(grant_expiry=EXPIRY))
+    with pytest.raises(pm.ProvisionError, match="expiry differs"):
+        run(expiry=None)
+    assert ("aao-pm", TOKEN, "remove", "pm") in env.role_calls
+    assert api.revoked() == [f"/v1/principals/{api.principal()}/revoke"]
+
+
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
+def test_interrupt_during_install_still_cleans_up_and_reraises(env, interrupt):
+    api = env.install_api(FakeApi())
+    env.failing["install"] = interrupt()
+    with pytest.raises(interrupt):
+        run()
+    assert env.role_calls[-1] == ("aao-pm", TOKEN, "remove", "pm")
+    assert api.revoked() == [f"/v1/principals/{api.principal()}/revoke"]
+
+
+def test_unexpected_exception_after_issuance_still_cleans_up(env, monkeypatch):
+    api = env.install_api(FakeApi())
+    monkeypatch.setattr(pm.w2, "grant_exactly", lambda *a, **kw: {}.missing)
+    with pytest.raises(pm.ProvisionError, match=REVOKED):
+        run()
+    assert api.revoked() == [f"/v1/principals/{api.principal()}/revoke"]
+
+
+def test_incomplete_cleanup_is_surfaced_with_principal_but_not_token(env, monkeypatch, capsys):
+    fail = {("POST", "/revoke"): pm.BootstrapError("HTTP 500")}
+    api = env.install_api(FakeApi(fail=fail))
+    env.failing["install"] = pm.ProvisionError("simulated install failure")
+    env.failing["remove"] = pm.ProvisionError("simulated remove failure")
+    with pytest.raises(pm.ProvisionError) as exc:
+        run()
+    message = str(exc.value)
+    principal = api.principal()
+    assert "simulated install failure; CLEANUP INCOMPLETE" in message
+    assert f"principal {principal} NOT revoked" in message
+    assert f"token file of aao-pm for principal {principal} not removed" in message
+    assert TOKEN not in message and CEO not in message
+
+    monkeypatch.setattr(pm.getpass, "getpass", lambda _p: CEO)
+    assert pm.main(["--project-id", "project/1", "--no-expiry"]) == 1
+    err = capsys.readouterr().err
+    assert "CLEANUP INCOMPLETE" in err and "NOT revoked" in err and TOKEN not in err
+
+    env.failing["install"] = KeyboardInterrupt()
+    with pytest.raises(KeyboardInterrupt):
+        run()
+    err = capsys.readouterr().err
+    assert err.startswith("CLEANUP INCOMPLETE") and "NOT revoked" in err and TOKEN not in err
+
+
+def test_refuses_non_dict_project_rows_before_issuing(env):
+    api = env.install_api(FakeApi(projects=["project/1"]))
+    with pytest.raises(pm.ProvisionError, match="project inventory response is invalid"):
+        run()
+    assert api.calls == [("GET", "/v1/projects", None)] and env.role_calls == []
 
 
 def test_refuses_inactive_or_unknown_project_and_same_account(env, monkeypatch):

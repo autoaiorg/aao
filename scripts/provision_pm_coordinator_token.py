@@ -54,9 +54,9 @@ def provision(
     api_url = local_api_url(api_url)
     if not w2.INSTALLER.is_file() or w2.INSTALLER.is_symlink():
         raise ProvisionError("token installer is missing or unsafe")
-    projects = w2.request_json(api_url, "/v1/projects", ceo_token=ceo_token)
-    if not isinstance(projects, list):
-        raise ProvisionError("project inventory response is invalid")
+    projects = w2._rows(
+        w2.request_json(api_url, "/v1/projects", ceo_token=ceo_token), "project inventory"
+    )
     matches = [row for row in projects if str(row.get("id")) == project_id]
     if len(matches) != 1 or matches[0].get("state") != "ACTIVE":
         raise ProvisionError("project ID must resolve to exactly one ACTIVE project")
@@ -82,15 +82,13 @@ def provision(
                 token_kind=TOKEN_KIND,
             )
         return ACCOUNT, principal, expiry
-    except (BootstrapError, ProvisionError, OSError, ValueError) as exc:
-        w2.cleanup(
-            api_url, issued, ceo_token=ceo_token, api_python=api_python, token_kind=TOKEN_KIND
+    except BaseException as exc:  # includes KeyboardInterrupt during sudo
+        error = w2.rollback(
+            exc, api_url, issued, ceo_token=ceo_token, api_python=api_python, token_kind=TOKEN_KIND
         )
-        if isinstance(exc, ProvisionError):
+        if error is None:
             raise
-        raise ProvisionError(
-            "PM coordinator credential setup failed; the principal was revoked where possible"
-        ) from None
+        raise error from None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -128,6 +126,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     print("Token was not displayed; aao-pm.token was verified mode 0600 by the installer.")
     print(f"Set AAO_PM_PRINCIPAL_ID={principal} in the coordinator service environment.")
+    print(
+        "WARNING: this run does not touch earlier PM coordinator principals; revoke or "
+        "rotate any previous aao-pm-coordinator-* principal (POST /v1/principals/{id}/revoke).",
+        file=sys.stderr,
+    )
     return 0
 
 

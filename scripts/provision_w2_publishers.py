@@ -65,8 +65,14 @@ def issue_agent_credential(api_url: str, principal: str, *, ceo_token: str) -> s
     if (not isinstance(token, str) or not token
             or credential.get("principal_id") != principal
             or credential.get("kind") != "AGENT"):
-        raise ProvisionError("AAO returned an invalid publisher credential")
+        raise ProvisionError("AAO returned an invalid agent credential")
     return token
+
+
+def _rows(value: object, what: str) -> list[dict]:
+    if not isinstance(value, list) or not all(isinstance(row, dict) for row in value):
+        raise ProvisionError(f"{what} response is invalid")
+    return value
 
 
 def grant_exactly(api_url: str, project_path: str, principal: str, grants: tuple[str, ...],
@@ -78,16 +84,17 @@ def grant_exactly(api_url: str, project_path: str, principal: str, grants: tuple
             ceo_token=ceo_token,
             body={"principal_id": principal, "capability": grant, "expires_at": expiry},
         )
-    grant_rows = request_json(api_url, f"/v1/projects/{project_path}/grants", ceo_token=ceo_token)
-    if not isinstance(grant_rows, list):
-        raise ProvisionError("project grant inventory response is invalid")
+    grant_rows = _rows(
+        request_json(api_url, f"/v1/projects/{project_path}/grants", ceo_token=ceo_token),
+        "project grant inventory",
+    )
     scoped = [row for row in grant_rows if row.get("principal_id") == principal]
     actual_caps = {row.get("capability") for row in scoped}
     actual_expiries = {row.get("expires_at") for row in scoped}
     if (actual_caps != set(grants) or len(scoped) != len(grants)
             or any(row.get("kind") != "AGENT" or not row.get("credential_enabled") for row in scoped)
             or len(actual_expiries) != 1):
-        raise ProvisionError("could not verify the exact least-privilege publisher grants")
+        raise ProvisionError("could not verify the exact least-privilege grants")
     actual = next(iter(actual_expiries))
     if expiry is None:
         if actual is not None:
@@ -96,28 +103,54 @@ def grant_exactly(api_url: str, project_path: str, principal: str, grants: tuple
     try:
         actual_expiry = datetime.fromisoformat(actual)
     except (TypeError, ValueError):
-        raise ProvisionError("could not verify publisher grant expiry") from None
+        raise ProvisionError("could not verify grant expiry") from None
     if actual_expiry.astimezone(UTC) != datetime.fromisoformat(expiry):
-        raise ProvisionError("publisher grant expiry differs from the requested expiry")
+        raise ProvisionError("grant expiry differs from the requested expiry")
 
 
 def cleanup(api_url: str, issued: list[tuple[str, str, str]], *, ceo_token: str,
-            api_python: str, token_kind: str = "publisher") -> None:
-    """Best effort: remove matching token files, then revoke every issued principal."""
-    for account, _principal, token in reversed(issued):
+            api_python: str, token_kind: str = "publisher") -> list[str]:
+    """Remove matching token files, then revoke every issued principal.
+
+    Returns the steps that failed (account/principal IDs only, never tokens).
+    """
+    failures = []
+    for account, principal, token in reversed(issued):
         if not token:
             continue
         try:
             _run_role_helper(account, api_python=api_python, token=token, operation="remove",
                              token_kind=token_kind)
-        except ProvisionError:
-            pass
+        except Exception:  # noqa: BLE001 - keep going; reported to the CEO below
+            failures.append(f"token file of {account} for principal {principal} not removed")
     for _account, principal, _token in reversed(issued):
         try:
             request_json(api_url, f"/v1/principals/{quote(principal, safe='')}/revoke",
                          method="POST", ceo_token=ceo_token, body={})
-        except BootstrapError:
-            pass
+        except Exception:  # noqa: BLE001
+            failures.append(f"principal {principal} NOT revoked")
+    return failures
+
+
+def rollback(exc: BaseException, api_url: str, issued: list[tuple[str, str, str]], *,
+             ceo_token: str, api_python: str, token_kind: str = "publisher",
+             ) -> ProvisionError | None:
+    """Clean up after any failure, including KeyboardInterrupt.
+
+    Returns the ProvisionError to raise, or None when ``exc`` is not an ``Exception``
+    (the caller re-raises it). Incomplete cleanup is always reported with principal IDs.
+    """
+    failures = cleanup(api_url, issued, ceo_token=ceo_token, api_python=api_python,
+                       token_kind=token_kind)
+    note = ("; CLEANUP INCOMPLETE, act manually: " + "; ".join(failures)) if failures else ""
+    if not isinstance(exc, Exception):
+        if failures:
+            print(note.removeprefix("; "), file=sys.stderr)
+        return None
+    reason = str(exc) if isinstance(exc, ProvisionError) else "credential setup failed"
+    if not failures:
+        note = "; issued credentials were revoked"
+    return ProvisionError(reason + note)
 
 
 def provision(project_id: str, *, api_url: str, ceo_token: str,
@@ -126,9 +159,8 @@ def provision(project_id: str, *, api_url: str, ceo_token: str,
     api_url = local_api_url(api_url)
     if not INSTALLER.is_file() or INSTALLER.is_symlink():
         raise ProvisionError("publisher-token installer is missing or unsafe")
-    projects = request_json(api_url, "/v1/projects", ceo_token=ceo_token)
-    if not isinstance(projects, list):
-        raise ProvisionError("project inventory response is invalid")
+    projects = _rows(request_json(api_url, "/v1/projects", ceo_token=ceo_token),
+                     "project inventory")
     matches = [row for row in projects if row.get("name") == PROJECT_NAME]
     if (len(matches) != 1 or str(matches[0].get("id")) != project_id
             or matches[0].get("state") != "ACTIVE"):
@@ -154,11 +186,11 @@ def provision(project_id: str, *, api_url: str, ceo_token: str,
             _run_role_helper(account, api_python=api_python, token=token, operation="install")
             _run_role_helper(account, api_python=api_python, token=token, operation="verify")
         return [(account, principal, expiry) for account, principal, _ in issued]
-    except (BootstrapError, ProvisionError, OSError, ValueError) as exc:
-        cleanup(api_url, issued, ceo_token=ceo_token, api_python=api_python)
-        if isinstance(exc, ProvisionError):
+    except BaseException as exc:  # includes KeyboardInterrupt during sudo
+        error = rollback(exc, api_url, issued, ceo_token=ceo_token, api_python=api_python)
+        if error is None:
             raise
-        raise ProvisionError("publisher credential setup failed; issued credentials were revoked where possible") from None
+        raise error from None
 
 
 def main() -> int:

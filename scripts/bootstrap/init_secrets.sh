@@ -100,7 +100,7 @@ try:
         stream.write(data)
         stream.flush()
         os.fsync(stream.fileno())
-    os.chmod(0o640, temporary)
+    os.chmod(temporary, 0o640)
     os.replace(temporary, path)
 finally:
     if os.path.exists(temporary):
@@ -155,7 +155,7 @@ try:
         stream.write(data)
         stream.flush()
         os.fsync(stream.fileno())
-    os.chmod(0o640, temporary)
+    os.chmod(temporary, 0o640)
     os.replace(temporary, path)
 finally:
     if os.path.exists(temporary):

@@ -18,6 +18,10 @@ from typing import Any
 
 MIGRATION_PATTERN = re.compile(r"^(\d{3})_(.+)\.sql$")
 ADVISORY_LOCK_ID = 84729103  # Fixed cluster-level lock ID for AAO migrations
+# Historical draft migration names can survive in deployed ledgers after a
+# sequence renumber. Keep this list explicit: aliases are recognized as legacy
+# evidence only; they never suppress the current migration at that sequence.
+LEGACY_MIGRATION_ALIASES = frozenset({"045_selfdev_cycle_mtls_intents"})
 
 
 class MigrationError(RuntimeError):
@@ -180,7 +184,7 @@ def check_status(connection: Any, migrations_dir: Path | None = None) -> Migrati
 
     # Check for foreign versions in the database not recognized in disk migrations
     available_stems = {m.stem for m in available}
-    unrecognized = applied_stems - available_stems
+    unrecognized = applied_stems - available_stems - LEGACY_MIGRATION_ALIASES
     if unrecognized:
         raise MigrationError(
             f"Database contains unrecognized migrations not in catalog: {sorted(unrecognized)}"

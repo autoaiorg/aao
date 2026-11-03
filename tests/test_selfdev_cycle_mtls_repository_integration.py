@@ -79,6 +79,106 @@ def _project_and_principal(suffix, kind):
     return project_id, principal_id, owned_project
 
 
+@pytest.fixture
+def runtime_role(monkeypatch):
+    """Provision the disposable cluster role so ACL tests cannot silently pass."""
+    import psycopg
+
+    from aao.postgresql_connection import connect_postgres
+
+    dsn = os.environ["AAO_TEST_POSTGRES_URL"]
+    monkeypatch.setenv("AAO_POSTGRES_URL", dsn)
+    with connect_postgres() as db:
+        exists = db.execute(
+            "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='aao_runtime')"
+        ).fetchone()[0]
+        created = not exists
+        if not exists:
+            db.execute("CREATE ROLE aao_runtime NOLOGIN")
+    # The migration is deliberately rerun after role creation: migrations must
+    # grant only the bounded API functions, and tests must observe real ACLs.
+    migration = Path(__file__).parents[1] / "db/postgres/046_selfdev_cycle_mtls_intents.sql"
+    with connect_postgres() as db:
+        db.execute(migration.read_text())
+        db.commit()
+    yield
+    if created:
+        with connect_postgres() as db:
+            db.execute("DROP OWNED BY aao_runtime")
+            db.commit()
+        with psycopg.connect(dsn, autocommit=True) as db:
+            db.execute("DROP ROLE aao_runtime")
+
+
+def test_real_migrator_accepts_legacy_045_ledger_and_applies_current_045_046(monkeypatch):
+    """Exercise the actual migrator against a cloned disposable legacy ledger."""
+    import psycopg
+    from psycopg.conninfo import make_conninfo
+
+    from aao.migrator import apply_migrations
+
+    base_dsn = os.environ["AAO_TEST_POSTGRES_URL"]
+    monkeypatch.setenv("AAO_POSTGRES_URL", base_dsn)
+    parts = psycopg.conninfo.conninfo_to_dict(base_dsn)
+    base_db = parts.get("dbname") or parts.get("database")
+    assert base_db, "test DSN must identify the disposable source database"
+    clone_db = "aao_mtls_legacy_" + uuid.uuid4().hex[:12]
+    admin_dsn = make_conninfo(base_dsn, dbname="postgres")
+    clone_dsn = make_conninfo(base_dsn, dbname=clone_db)
+
+    # This test requires the disposable CI/local PostgreSQL owner to have
+    # CREATEDB; fail explicitly rather than reporting a skipped migration gate.
+    with psycopg.connect(admin_dsn, autocommit=True) as admin:
+        admin.execute(f'CREATE DATABASE "{clone_db}" TEMPLATE "{base_db}"')
+    try:
+        monkeypatch.setenv("AAO_POSTGRES_URL", clone_dsn)
+        from aao.postgresql_connection import connect_postgres
+
+        with connect_postgres(clone_dsn) as db:
+            # Reconstruct the schema/ledger left by the earlier published draft
+            # that used 045 for cycle mTLS before 045 was reassigned.
+            db.execute("DELETE FROM schema_migrations WHERE version IN (%s,%s)", (
+                "045_organization_execution",
+                "046_selfdev_cycle_mtls_intents",
+            ))
+            db.execute("DELETE FROM schema_migrations WHERE version=%s", (
+                "045_selfdev_cycle_mtls_intents",
+            ))
+            db.execute(
+                "ALTER TABLE selfdev_cycle_mtls_intents "
+                "DROP CONSTRAINT IF EXISTS selfdev_cycle_mtls_intents_principal_id_key"
+            )
+            db.execute(
+                "INSERT INTO schema_migrations(version) VALUES (%s)",
+                ("045_selfdev_cycle_mtls_intents",),
+            )
+            db.commit()
+            count, applied = apply_migrations(db)
+            assert count == 2
+            assert applied == ["045_organization_execution", "046_selfdev_cycle_mtls_intents"]
+            rows = db.execute(
+                "SELECT version FROM schema_migrations WHERE version IN (%s,%s) ORDER BY version",
+                ("045_organization_execution", "046_selfdev_cycle_mtls_intents"),
+            ).fetchall()
+            assert [row[0] for row in rows] == [
+                "045_organization_execution",
+                "046_selfdev_cycle_mtls_intents",
+            ]
+            assert db.execute(
+                "SELECT EXISTS (SELECT 1 FROM pg_constraint "
+                "WHERE conrelid='selfdev_cycle_mtls_intents'::regclass "
+                "AND conname='selfdev_cycle_mtls_intents_principal_id_key' AND contype='u')"
+            ).fetchone()[0]
+    finally:
+        with psycopg.connect(admin_dsn, autocommit=True) as admin:
+            admin.execute(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                "WHERE datname=%s AND pid <> pg_backend_pid()",
+                (clone_db,),
+            )
+            admin.execute(f'DROP DATABASE IF EXISTS "{clone_db}"')
+
+
 def test_create_intent_replay_and_concurrent_completion_are_idempotent(seeded_intent):
     from aao.selfdev_cycle_mtls_repository import PostgresCycleIntentRepository
 
@@ -115,17 +215,14 @@ def test_create_intent_replay_and_concurrent_completion_are_idempotent(seeded_in
         )
 
 
-def test_migration_upgrades_legacy_runtime_column_grants_and_principal_uniqueness(monkeypatch):
+def test_migration_upgrades_legacy_runtime_column_grants_and_principal_uniqueness(
+    monkeypatch, runtime_role
+):
     """Table-level REVOKE alone does not remove an older column ACL."""
     from aao.postgresql_connection import connect_postgres
 
     monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
     with connect_postgres() as db:
-        role_exists = db.execute(
-            "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='aao_runtime')"
-        ).fetchone()[0]
-        if not role_exists:
-            pytest.skip("aao_runtime is not provisioned in this disposable database")
         # Recreate the legacy ACL, then run the idempotent migration as an
         # upgrade would. This proves the migration removes existing column ACLs.
         db.execute(
@@ -337,7 +434,7 @@ def test_revoke_disables_binding_and_principal_atomically(seeded_intent):
         )
 
 
-def test_runtime_cannot_write_binding_or_complete_intent(seeded_intent):
+def test_runtime_cannot_write_binding_or_complete_intent(seeded_intent, runtime_role):
     """Exercise actual PostgreSQL role privileges, not SQL-text expectations."""
     from aao.postgresql_connection import connect_postgres
 
@@ -345,10 +442,7 @@ def test_runtime_cannot_write_binding_or_complete_intent(seeded_intent):
         role_exists = db.execute(
             "SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_roles WHERE rolname='aao_runtime')"
         ).fetchone()[0]
-        if not role_exists:
-            # CI's migration database intentionally does not provision runtime
-            # identities; migration must succeed without inventing one.
-            return
+        assert role_exists, "runtime_role fixture must provision aao_runtime"
         privileges = db.execute(
             "SELECT has_table_privilege('aao_runtime','workload_identity_bindings','INSERT'),"
             "has_table_privilege('aao_runtime','workload_identity_bindings','UPDATE'),"

@@ -37,6 +37,39 @@ inert audit history. Issuance and revocation each create audit events naming
 the PM issuer, cycle, principal, grants/expiry as applicable; no token or
 digest is recorded.
 
+Implementer lifecycle (CEO decision 2026-11-03), all in the same transaction
+as the credentials and grants:
+
+- **Host binding (G1).** Issuance binds the new implementer to the API's own
+  protected host identity (`current_host_id()`, never a client value) with
+  `register_host_worker(..., new_worker_only=True)`: a plain INSERT at the
+  host's single active fencing epoch. A fenced or never-registered host, or a
+  pre-existing binding for that worker, returns HTTP 409 and nothing is
+  created. The issue event records `host_id`. Revocation moves that binding
+  from `ACTIVE` to `FENCED` (epoch unchanged) through the owner-run function
+  `retire_selfdev_cycle_host_binding(worker_id, project_id)` (migration 041,
+  `EXECUTE` granted to `aao_runtime` only). The definer accepts only a disabled
+  AGENT with the exact implementer grant set scoped to the named active Self
+  Development project, matching grant/credential expiry no more than two hours
+  after credential creation, and a matching active binding. Migration 041 is a
+  hard prerequisite for revocation:
+  without the function, the API returns HTTP 503 before disabling credentials.
+  The revoke event records `host_bindings_retired`.
+- **Organization profile (G3).** The new implementer copies the most recent
+  profile of an earlier `aao-selfdev-impl-*` principal whose AGENT credential
+  is enabled and unexpired and which has an unexpired grant in this same
+  project. Issuance never declares competencies itself; if no
+  such profile exists none is created, and the CEO declares the first one with
+  `PUT /v1/organization/profiles` on the current implementer. Revocation
+  disables the implementer's profile, so a chain broken by revoking before a
+  successor exists needs a new CEO declaration. The reviewer gets neither a
+  binding nor a profile.
+- **Assigned work (G4).** Revocation escalates unclaimed work still assigned to
+  the implementer exactly like the CEO principal-revoke path
+  (`blockage-escalation`, `work.dispatch_blocked`), with the PM as actor. The
+  event's coordinator candidates must have both an enabled, unexpired AGENT
+  credential and an unexpired `work.assign` grant for that project's work.
+
 ## One-time authorization and host setup
 
 This is a one-time administrative enablement, not a routine cycle step:
@@ -104,7 +137,10 @@ HTTP 409 and never overwrites credentials. Role inserts, grants and issue
 events share one transaction; conflict on the second role rolls back the first
 role too. DELETE for the exact pair is idempotent: the first call disables both
 roles and records two revoke events; later calls return `already_revoked: true`
-and add no events. A malformed or expanded role/grant set returns HTTP 409.
+and add no events. A cycle for which neither principal exists returns HTTP 404
+`{"code": "CYCLE_NOT_FOUND"}` (safe to treat as "never issued" after a lost
+POST response). If at least one principal exists but the role/grant set is
+malformed or expanded, it returns HTTP 409.
 
 If the API response is lost
 or an install/verification step fails, the script uses that known ID to remove

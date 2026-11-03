@@ -997,10 +997,30 @@ def active_host_fence_epoch(db: Any, host_id: str) -> int:
     return epochs.pop()
 
 
-def register_host_worker(db: Any, host_id: str, worker_id: str) -> None:
-    """Explicitly register a worker identity as bound to a specific host machine."""
+def register_host_worker(
+    db: Any, host_id: str, worker_id: str, *, new_worker_only: bool = False,
+) -> None:
+    """Explicitly register a worker identity as bound to a specific host machine.
+
+    ``new_worker_only`` is the API path for a freshly issued principal: it needs
+    only INSERT (no ON CONFLICT DO UPDATE, which PostgreSQL authorizes as UPDATE),
+    never re-activates an existing row, and refuses a host that has no active,
+    consistent fencing epoch (i.e. a fenced or never-registered host).
+    """
     db.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (host_id,))
     ensure_host_worker_registry(db)
+    if new_worker_only:
+        # Same rule as active_host_fence_epoch, as a plain SELECT: FOR SHARE would
+        # need UPDATE privilege. The advisory lock above serializes with fencing.
+        if not db.execute(
+            "INSERT INTO host_worker_bindings (host_id, worker_id, status, fence_epoch) "
+            "SELECT %s, %s, 'ACTIVE', max(fence_epoch) FROM host_worker_bindings "
+            "WHERE host_id=%s AND status='ACTIVE' HAVING count(DISTINCT fence_epoch)=1 "
+            "RETURNING 1",
+            (host_id, worker_id, host_id),
+        ).fetchone():
+            raise BackupError(f"Host '{host_id}' has no single active fencing epoch")
+        return
     db.execute(
         """
         INSERT INTO host_worker_bindings (host_id, worker_id, status, fence_epoch)

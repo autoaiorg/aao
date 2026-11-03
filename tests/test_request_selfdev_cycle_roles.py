@@ -189,9 +189,10 @@ def test_only_named_pm_coordinator_can_pass_issuer_identity_gate(monkeypatch):
 
 
 class _FakeDb:
-    def __init__(self, *, project_rows=None, role_rows=None):
+    def __init__(self, *, project_rows=None, role_rows=None, retirement_function=True):
         self.project_rows = project_rows
         self.role_rows = role_rows or {}
+        self.retirement_function = retirement_function
         self.statements = []
         self.inserted = set()
 
@@ -199,11 +200,16 @@ class _FakeDb:
         self.statements.append((sql, params))
         if "SELECT name,state FROM projects" in sql:
             return SimpleNamespace(fetchone=lambda: ("AAO — Self Development", "ACTIVE"))
+        if "to_regprocedure('public.retire_selfdev_cycle_host_binding(text,uuid)')" in sql:
+            value = "retire_selfdev_cycle_host_binding(text,uuid)" if self.retirement_function else None
+            return SimpleNamespace(fetchone=lambda: (value,))
         if "SELECT id FROM projects WHERE name=%s" in sql:
             rows = self.project_rows or [(params[0],)]
             return SimpleNamespace(fetchall=lambda: rows)
         if "SELECT clock_timestamp()+%s" in sql:
             return SimpleNamespace(fetchone=lambda: (datetime.now(UTC) + params[0],))
+        if "SELECT count(*) FROM principal_credentials" in sql:
+            return SimpleNamespace(fetchone=lambda: (len(self.role_rows),))
         if "SELECT c.kind,c.enabled,g.project_id,g.capability" in sql:
             return SimpleNamespace(fetchall=lambda: self.role_rows[params[0]])
         if sql.startswith("INSERT INTO principal_credentials"):
@@ -236,6 +242,8 @@ def test_api_issues_only_fixed_roles_and_audits_without_secrets(monkeypatch):
     monkeypatch.setattr(
         api, "audit", lambda _db, subject, kind, details: events.append((subject, kind, details))
     )
+    # Host binding and profile inheritance are covered by the PostgreSQL integration tests.
+    monkeypatch.setattr(api, "_bind_selfdev_cycle_implementer", lambda *_args: {"host_id": "h"})
     tokens = iter(("private-impl-token", "private-review-token"))
     monkeypatch.setattr(api.secrets, "token_urlsafe", lambda _n: next(tokens))
 
@@ -300,6 +308,10 @@ def test_api_revoke_requires_exact_grant_set_before_disabling(monkeypatch):
     monkeypatch.setattr(api, "tx", lambda: _transaction(db))
     monkeypatch.setattr(api, "require_grant", lambda *_args: None)
     monkeypatch.setattr(api, "audit", lambda *_args: None)
+    retired = []
+    monkeypatch.setattr(
+        api, "_retire_selfdev_cycle_implementer", lambda _db, p, _a, _project, **_kwargs: retired.append(p) or {},
+    )
 
     result = api.revoke_selfdev_cycle_roles(
         project_id,
@@ -310,6 +322,7 @@ def test_api_revoke_requires_exact_grant_set_before_disabling(monkeypatch):
     disabled = [sql for sql, _params in db.statements if "UPDATE principal_credentials" in sql]
     assert len(disabled) == 2
     assert all("pending_token_digest=NULL" in sql for sql in disabled)
+    assert retired == [expected[0][0]]
 
     role_rows[expected[0][0]] = [("AGENT", True, project_id, "code.publish", expiry, expiry)]
     db = _FakeDb(role_rows=role_rows)
@@ -321,4 +334,36 @@ def test_api_revoke_requires_exact_grant_set_before_disabling(monkeypatch):
             api.AuthenticatedPrincipal("aao-pm-coordinator-test", "digest", "AGENT"),
         )
     assert error.value.status_code == 409
+    assert not any("UPDATE principal_credentials" in sql for sql, _params in db.statements)
+
+
+def test_api_revoke_fails_before_disabling_when_retirement_migration_is_missing(monkeypatch):
+    from fastapi import HTTPException
+
+    from aao import work_management_api as api
+
+    project_id = "selfdev-id"
+    cycle_id = "f" * 32
+    expected = (
+        (f"aao-selfdev-impl-{cycle_id}", "AGENT", api.SELFDEV_IMPLEMENTER_GRANTS),
+        (f"aao-selfdev-review-{cycle_id}", "AUDITOR", api.SELFDEV_REVIEWER_GRANTS),
+    )
+    expiry = datetime.now(UTC) + timedelta(hours=1)
+    role_rows = {
+        principal_id: [(kind, True, project_id, cap, expiry, expiry) for cap in grants]
+        for principal_id, kind, grants in expected
+    }
+    db = _FakeDb(role_rows=role_rows, retirement_function=False)
+    monkeypatch.setattr(api, "tx", lambda: _transaction(db))
+    monkeypatch.setattr(api, "require_grant", lambda *_args: None)
+
+    with pytest.raises(HTTPException) as error:
+        api.revoke_selfdev_cycle_roles(
+            project_id,
+            cycle_id,
+            api.AuthenticatedPrincipal("aao-pm-coordinator-test", "digest", "AGENT"),
+        )
+
+    assert error.value.status_code == 503
+    assert "migration 041" in error.value.detail
     assert not any("UPDATE principal_credentials" in sql for sql, _params in db.statements)

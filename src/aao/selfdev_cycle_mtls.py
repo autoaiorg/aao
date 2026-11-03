@@ -115,7 +115,8 @@ def reconcile_cycle_certificate(
     exact CSR SHA-256 matches; mismatched CSR replay conflicts without contacting
     the signer. Any missing intent, malformed CSR, oversized result,
     verifier error, or invalid fingerprint leaves the principal non-executable.
-    No credential, CSR or certificate is logged or returned by this API.
+    No credential, private key, or CSR is logged or returned. The result
+    contains only the public certificate fingerprint and chain.
     """
     if not isinstance(csr_pem, bytes) or not csr_pem or len(csr_pem) > MAX_CSR_BYTES:
         raise CycleMtlError("cycle CSR is invalid")

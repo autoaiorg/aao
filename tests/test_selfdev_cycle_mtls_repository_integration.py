@@ -104,6 +104,7 @@ def runtime_role(monkeypatch):
         for migration_name in (
             "046_selfdev_cycle_mtls_intents.sql",
             "047_selfdev_cycle_mtls_certificate_replay.sql",
+            "048_selfdev_cycle_mtls_live_principal.sql",
         ):
             db.execute((migrations / migration_name).read_text())
             db.commit()
@@ -144,11 +145,12 @@ def test_real_migrator_accepts_legacy_045_ledger_and_applies_current_045_046(mon
             # Reconstruct the schema/ledger left by the earlier published draft
             # that used 045 for cycle mTLS before 045 was reassigned.
             db.execute(
-                "DELETE FROM schema_migrations WHERE version IN (%s,%s,%s)",
+                "DELETE FROM schema_migrations WHERE version IN (%s,%s,%s,%s)",
                 (
                     "045_organization_execution",
                     "046_selfdev_cycle_mtls_intents",
                     "047_selfdev_cycle_mtls_certificate_replay",
+                    "048_selfdev_cycle_mtls_live_principal",
                 ),
             )
             db.execute(
@@ -173,11 +175,12 @@ def test_real_migrator_accepts_legacy_045_ledger_and_applies_current_045_046(mon
             )
             db.commit()
             count, applied = apply_migrations(db)
-            assert count == 3
+            assert count == 4
             assert applied == [
                 "045_organization_execution",
                 "046_selfdev_cycle_mtls_intents",
                 "047_selfdev_cycle_mtls_certificate_replay",
+                "048_selfdev_cycle_mtls_live_principal",
             ]
             rows = db.execute(
                 "SELECT version FROM schema_migrations WHERE version IN (%s,%s) ORDER BY version",
@@ -563,6 +566,19 @@ def test_certificate_chain_replay_is_bound_to_authenticated_identity_and_live_st
     assert (
         repo.get_active_certificate(
             seeded_intent.principal_id, digest, seeded_intent.kind, "c" * 64
+        )
+        is None
+    )
+
+    with connect_postgres() as db:
+        db.execute(
+            "UPDATE principal_credentials SET expires_at=clock_timestamp()-interval '1 second' "
+            "WHERE principal_id=%s",
+            (seeded_intent.principal_id,),
+        )
+    assert (
+        repo.get_active_certificate(
+            seeded_intent.principal_id, digest, seeded_intent.kind, "a" * 64
         )
         is None
     )

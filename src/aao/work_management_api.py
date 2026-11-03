@@ -578,6 +578,9 @@ class OrganizationProposalCreateRequest(BaseModel):
     operation: Literal["organization.unit.create_permanent", "organization.unit.merge", "organization.unit.split", "organization.squad.create_temporary", "organization.squad.dissolve", "organization.slot.assign"]
     title: str = Field(min_length=1, max_length=250)
     scope_description: str = Field(min_length=1, max_length=5000)
+    project_id: UUID | None = None
+    operation_parameters: dict[str, Any] = Field(default_factory=dict)
+    budget_ceiling_usd: float = Field(default=0.0, ge=0.0, allow_inf_nan=False)
     target_unit_id: str | None = Field(default=None, max_length=128)
     target_unit_code: str | None = Field(default=None, max_length=64)
     target_unit_name: str | None = Field(default=None, max_length=200)
@@ -590,11 +593,33 @@ class OrganizationProposalCreateRequest(BaseModel):
     min_observation_days: int = Field(default=60, ge=1)
     max_marginal_cost_usd: float = Field(default=0.0, ge=0.0)
 
+    @field_validator("operation_parameters")
+    @classmethod
+    def operation_parameters_are_json(cls, value: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return json.loads(json.dumps(value, allow_nan=False))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("operation_parameters must contain finite JSON values") from exc
+
 
 class OrganizationProposalTransitionRequest(BaseModel):
     target_state: str = Field(pattern=r"^(ANALYZED|EVALUATED|REQUIRES_CEO_APPROVAL|AUTONOMOUS_APPROVED|REJECTED|DISSOLVED)$")
     rejection_reason: str | None = Field(default=None, max_length=2000)
     expected_version: int = Field(ge=1)
+
+
+def _validate_organization_effect_parameters(operation: str, parameters: dict[str, Any]) -> None:
+    """Validate execution payloads against existing domain request contracts."""
+    if operation != "organization.squad.create_temporary":
+        return
+    try:
+        ConversationWorkGroupRequest.model_validate(parameters.get("work_group_request"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid temporary-squad request: {exc}") from exc
+
+
+class OrganizationExecutionRequest(BaseModel):
+    idempotency_key: UUID
 
 
 class CapabilityFeedbackRequest(BaseModel):
@@ -2377,8 +2402,8 @@ def create_organization_proposal(
             "id,version,title,scope_description,target_unit_id,target_unit_code,target_unit_name,"
             "parent_unit_id,lead_principal_id,proposed_role_title,impact,state,demand_summary,"
             "criteria_json,alternatives_json,chosen_alternative,authority_classification_json,"
-            "author_principal_id,created_at,updated_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s::jsonb,%s,%s,%s)",
+            "author_principal_id,operation,project_id,operation_parameters_json,budget_ceiling_usd,created_at,updated_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s::jsonb,%s,%s,%s,%s::jsonb,%s,%s,%s)",
             (
                 proposal_id,
                 1,
@@ -2398,6 +2423,10 @@ def create_organization_proposal(
                 payload.chosen_alternative,
                 json.dumps(auth_dict),
                 author_str,
+                op,
+                str(payload.project_id) if payload.project_id else None,
+                json.dumps(payload.operation_parameters),
+                payload.budget_ceiling_usd,
                 now,
                 now,
             ),
@@ -2421,9 +2450,13 @@ def create_organization_proposal(
         "title": payload.title,
         "state": initial_state.value,
         "impact": auth_class.impact.value,
+        "operation": op,
         "requires_ceo_decision": auth_class.requires_ceo_decision,
         "competent_authority": auth_class.competent_authority,
         "alternatives": alts_json,
+        "project_id": str(payload.project_id) if payload.project_id else None,
+        "operation_parameters": payload.operation_parameters,
+        "budget_ceiling_usd": payload.budget_ceiling_usd,
         "created_at": now.isoformat(),
     }
 
@@ -2447,7 +2480,9 @@ def list_organization_proposals(
             "target_unit_name,parent_unit_id,lead_principal_id,proposed_role_title,impact,"
             "state,demand_summary,criteria_json,alternatives_json,chosen_alternative,"
             "authority_classification_json,author_principal_id,delegation_authority_id,"
-            "rejection_reason,stability_review_due_at,created_at,updated_at "
+            "rejection_reason,stability_review_due_at,created_at,updated_at,project_id,"
+            "operation_parameters_json,budget_ceiling_usd,approved_version,"
+            "approved_plan_sha256,approved_by_principal_id,approved_at,operation "
             "FROM organization_proposals "
         )
         params: list[Any] = []
@@ -2492,6 +2527,14 @@ def list_organization_proposals(
             "stability_review_due_at": r[20].isoformat() if r[20] else None,
             "created_at": r[21].isoformat() if r[21] else None,
             "updated_at": r[22].isoformat() if r[22] else None,
+            "project_id": str(r[23]) if r[23] else None,
+            "operation_parameters": r[24],
+            "budget_ceiling_usd": float(r[25]),
+            "approved_version": r[26],
+            "approved_plan_sha256": r[27],
+            "approved_by_principal_id": r[28],
+            "approved_at": r[29].isoformat() if r[29] else None,
+            "operation": r[30],
         })
 
     return {
@@ -2514,7 +2557,9 @@ def get_organization_proposal(
             "target_unit_name,parent_unit_id,lead_principal_id,proposed_role_title,impact,"
             "state,demand_summary,criteria_json,alternatives_json,chosen_alternative,"
             "authority_classification_json,author_principal_id,delegation_authority_id,"
-            "rejection_reason,stability_review_due_at,created_at,updated_at "
+            "rejection_reason,stability_review_due_at,created_at,updated_at,project_id,"
+            "operation_parameters_json,budget_ceiling_usd,approved_version,"
+            "approved_plan_sha256,approved_by_principal_id,approved_at,operation "
             "FROM organization_proposals WHERE id = %s",
             (proposal_id,),
         ).fetchone()
@@ -2545,6 +2590,14 @@ def get_organization_proposal(
         "stability_review_due_at": r[20].isoformat() if r[20] else None,
         "created_at": r[21].isoformat() if r[21] else None,
         "updated_at": r[22].isoformat() if r[22] else None,
+        "project_id": str(r[23]) if r[23] else None,
+        "operation_parameters": r[24],
+        "budget_ceiling_usd": float(r[25]),
+        "approved_version": r[26],
+        "approved_plan_sha256": r[27],
+        "approved_by_principal_id": r[28],
+        "approved_at": r[29].isoformat() if r[29] else None,
+        "operation": r[30],
     }
 
 
@@ -2565,13 +2618,16 @@ def transition_organization_proposal(
 
     with tx() as db:
         row = db.execute(
-            "SELECT version,state,impact FROM organization_proposals WHERE id=%s FOR UPDATE",
+            "SELECT version,state,impact,operation,project_id,scope_description,"
+            "operation_parameters_json,budget_ceiling_usd FROM organization_proposals "
+            "WHERE id=%s FOR UPDATE",
             (proposal_id,),
         ).fetchone()
         if not row:
             raise HTTPException(404, "Organization proposal not found")
 
-        current_version, current_state_str, _impact_str = row
+        (current_version, current_state_str, _impact_str, operation, project_id,
+         scope_description, operation_parameters, budget_ceiling_usd) = row
         if current_version != payload.expected_version:
             raise HTTPException(
                 409,
@@ -2599,14 +2655,39 @@ def transition_organization_proposal(
         next_version = current_version + 1
         actor_str = "ceo" if principal is _CEO_PRINCIPAL else str(principal)
 
+        approved_snapshot_sha256 = None
+        if (target_state == ProposalDecisionState.AUTONOMOUS_APPROVED
+                and project_id is not None):
+            # Bind approval to the exact deterministic plan, not merely to state.
+            from aao.organization_execution import build_execution_plan
+            try:
+                _validate_organization_effect_parameters(operation, operation_parameters)
+                approved_snapshot_sha256 = build_execution_plan({
+                    "id": proposal_id,
+                    "version": next_version,
+                    "state": target_state.value,
+                    "operation": operation,
+                    "project_id": str(project_id),
+                    "scope_description": scope_description,
+                    "operation_parameters": operation_parameters,
+                    "budget_ceiling_usd": float(budget_ceiling_usd),
+                }).sha256
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(422, f"Proposal cannot be approved for execution: {exc}") from exc
+
         db.execute(
             "UPDATE organization_proposals SET "
-            "version=%s, state=%s, rejection_reason=%s, updated_at=%s "
+            "version=%s, state=%s, rejection_reason=%s, approved_version=%s, "
+            "approved_plan_sha256=%s, approved_by_principal_id=%s, approved_at=%s, updated_at=%s "
             "WHERE id=%s",
             (
                 next_version,
                 target_state.value,
                 payload.rejection_reason,
+                next_version if approved_snapshot_sha256 else None,
+                approved_snapshot_sha256,
+                actor_str if approved_snapshot_sha256 else None,
+                now if approved_snapshot_sha256 else None,
                 now,
                 proposal_id,
             ),
@@ -2633,6 +2714,199 @@ def transition_organization_proposal(
         "to_state": target_state.value,
         "updated_at": now.isoformat(),
     }
+
+
+@app.post("/v1/organization/proposals/{proposal_id}/executions", status_code=201)
+def plan_organization_execution(
+    proposal_id: str,
+    payload: OrganizationExecutionRequest,
+    principal: str = Depends(read_principal),
+):
+    """Persist a deterministic plan after rechecking current operation scope.
+
+    This endpoint deliberately does not perform organizational effects. Execution
+    remains separately gated until its operation-specific executor and reconciliation
+    contract are available.
+    """
+    from aao.organization_execution import build_execution_plan
+
+    with tx() as db:
+        row = db.execute(
+            "SELECT id,version,state,operation,project_id,scope_description,"
+            "operation_parameters_json,budget_ceiling_usd,approved_version,"
+            "approved_plan_sha256 FROM organization_proposals WHERE id=%s FOR UPDATE",
+            (proposal_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Organization proposal not found")
+        (stored_id, version, state, operation, project_id, scope_description,
+         operation_parameters, budget_ceiling_usd, approved_version,
+         approved_plan_sha256) = row
+        if state != "AUTONOMOUS_APPROVED":
+            raise HTTPException(409, "Proposal is not approved for execution")
+        if (project_id is None or approved_version != version
+                or not approved_plan_sha256):
+            raise HTTPException(409, "Proposal lacks an executable approved snapshot")
+        try:
+            _validate_organization_effect_parameters(operation, operation_parameters)
+            plan = build_execution_plan({
+                "id": stored_id,
+                "version": version,
+                "state": state,
+                "operation": operation,
+                "project_id": str(project_id),
+                "scope_description": scope_description,
+                "operation_parameters": operation_parameters,
+                "budget_ceiling_usd": float(budget_ceiling_usd),
+            })
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(409, f"Approved proposal is no longer executable: {exc}") from exc
+        if plan.sha256 != approved_plan_sha256:
+            raise HTTPException(409, "Approved proposal snapshot has changed")
+
+        project = db.execute(
+            "SELECT state FROM projects WHERE id=%s FOR SHARE", (project_id,),
+        ).fetchone()
+        if not project or project[0] != "ACTIVE":
+            raise HTTPException(409, "Proposal project is missing or inactive")
+        require_grant(db, principal, str(project_id), plan.authority_required)
+        actor = str(principal)
+
+        existing = db.execute(
+            "SELECT id,plan_sha256,idempotency_key,state FROM organization_executions "
+            "WHERE proposal_id=%s AND proposal_version=%s FOR UPDATE",
+            (proposal_id, version),
+        ).fetchone()
+        if existing:
+            if existing[1] != plan.sha256 or str(existing[2]) != str(payload.idempotency_key):
+                raise HTTPException(409, "Proposal version already has a different execution request")
+            return {
+                "id": str(existing[0]), "proposal_id": proposal_id,
+                "proposal_version": version, "state": existing[3],
+                "idempotent_replay": True, "plan": plan.as_dict(),
+                "plan_sha256": plan.sha256,
+            }
+
+        keyed = db.execute(
+            "SELECT id,proposal_id,proposal_version,plan_sha256 FROM organization_executions "
+            "WHERE project_id=%s AND idempotency_key=%s FOR UPDATE",
+            (project_id, str(payload.idempotency_key)),
+        ).fetchone()
+        if keyed:
+            if keyed[1] != proposal_id or keyed[2] != version or keyed[3] != plan.sha256:
+                raise HTTPException(409, "Idempotency key is already bound to another execution")
+            raise HTTPException(409, "Execution idempotency record is inconsistent")
+
+        execution_id = str(uuid4())
+        db.execute(
+            "INSERT INTO organization_executions(id,proposal_id,proposal_version,project_id,"
+            "plan_sha256,plan_json,idempotency_key,state,actor_principal_id,authority_capability) "
+            "VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s,'PLANNED',%s,%s)",
+            (execution_id, proposal_id, version, project_id, plan.sha256,
+             json.dumps(plan.as_dict()), str(payload.idempotency_key), actor,
+             plan.authority_required),
+        )
+        db.execute(
+            "INSERT INTO organization_execution_events(execution_id,from_state,to_state,"
+            "actor_principal_id,event_type,details_json) "
+            "VALUES (%s,NULL,'PLANNED',%s,'plan.persisted',%s::jsonb)",
+            (execution_id, actor, json.dumps({"plan_sha256": plan.sha256,
+                                               "proposal_version": version})),
+        )
+        audit(db, execution_id, "organization.execution_planned", {
+            "proposal_id": proposal_id, "proposal_version": version,
+            "project_id": str(project_id), "plan_sha256": plan.sha256,
+            "actor": actor, "authority_capability": plan.authority_required,
+        })
+
+    return {
+        "id": execution_id, "proposal_id": proposal_id,
+        "proposal_version": version, "state": "PLANNED",
+        "idempotent_replay": False, "plan": plan.as_dict(),
+        "plan_sha256": plan.sha256,
+    }
+
+
+@app.get("/v1/projects/{project_id}/organization-executions")
+def list_organization_executions(
+    project_id: str,
+    principal: str = Depends(read_principal),
+    limit: int = 100,
+):
+    """Read the durable execution journal without exposing cross-project records."""
+    if not 1 <= limit <= 500:
+        raise HTTPException(422, "limit must be between 1 and 500")
+    with tx() as db:
+        if not db.execute("SELECT 1 FROM projects WHERE id=%s", (project_id,)).fetchone():
+            raise HTTPException(404, "Project not found")
+        if principal is not _CEO_PRINCIPAL:
+            require_grant(db, principal, project_id, "project.read")
+        rows = db.execute(
+            "SELECT id,proposal_id,proposal_version,plan_sha256,plan_json,state,"
+            "result_json,error_code,created_at,updated_at FROM organization_executions "
+            "WHERE project_id=%s ORDER BY created_at DESC,id LIMIT %s",
+            (project_id, limit),
+        ).fetchall()
+        execution_ids = [str(row[0]) for row in rows]
+        event_rows = []
+        if execution_ids:
+            event_rows = db.execute(
+                "SELECT execution_id,from_state,to_state,event_type,details_json,occurred_at "
+                "FROM organization_execution_events WHERE execution_id = ANY(%s::uuid[]) "
+                "ORDER BY occurred_at,id",
+                (execution_ids,),
+            ).fetchall()
+    events_by_execution: dict[str, list[dict[str, Any]]] = {}
+    for event in event_rows:
+        events_by_execution.setdefault(str(event[0]), []).append({
+            "from_state": event[1], "to_state": event[2], "event_type": event[3],
+            "details": event[4], "occurred_at": event[5].isoformat(),
+        })
+    return [{
+        "id": str(row[0]), "proposal_id": row[1],
+        "proposal_version": row[2], "plan_sha256": row[3],
+        "plan": row[4], "state": row[5], "result": row[6],
+        "error_code": row[7], "created_at": row[8].isoformat(),
+        "updated_at": row[9].isoformat(),
+        "events": events_by_execution.get(str(row[0]), []),
+    } for row in rows]
+
+
+@app.post("/v1/organization/executions/{execution_id}/cancel")
+def cancel_organization_execution(
+    execution_id: str,
+    principal: str = Depends(require_ceo),
+):
+    """Cancel a plan before it has been authorized or started; never reverse effects."""
+    with tx() as db:
+        row = db.execute(
+            "SELECT state,actor_principal_id,project_id FROM organization_executions "
+            "WHERE id=%s FOR UPDATE",
+            (execution_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Organization execution not found")
+        current_state, original_actor, project_id = row
+        if current_state != "PLANNED":
+            raise HTTPException(409, "Only an unstarted PLANNED execution can be cancelled")
+        actor = str(principal)
+        db.execute(
+            "UPDATE organization_executions SET state='CANCELLED',updated_at=clock_timestamp() "
+            "WHERE id=%s AND state='PLANNED'",
+            (execution_id,),
+        )
+        db.execute(
+            "INSERT INTO organization_execution_events(execution_id,from_state,to_state,"
+            "actor_principal_id,event_type,details_json) "
+            "VALUES (%s,'PLANNED','CANCELLED',%s,'plan.cancelled',%s::jsonb)",
+            (execution_id, actor, json.dumps({"project_id": str(project_id),
+                                              "original_actor": original_actor})),
+        )
+        audit(db, execution_id, "organization.execution_cancelled", {
+            "project_id": str(project_id), "actor": actor,
+            "from_state": "PLANNED", "to_state": "CANCELLED",
+        })
+    return {"id": execution_id, "state": "CANCELLED"}
 
 
 @app.get("/v1/projects/{project_id}/grants")

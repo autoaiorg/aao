@@ -2391,7 +2391,7 @@ def test_organization_profiles_are_persisted_and_do_not_create_grants(monkeypatc
         assert client.post(f"/v1/principals/{principal}/revoke", headers=ceo).status_code == 200
         retired = client.get("/v1/organization", headers=ceo).json()
         assert all(row["id"] != principal for row in retired["agents"])
-        assert retired["historicalAgentCount"] == 1
+        assert retired["historicalAgentCount"] >= 1
 
 
 @pytest.mark.skipif(

@@ -502,7 +502,7 @@ def test_reconciliation_requires_distinct_granted_reviewer(monkeypatch):
 
     def racing_completion():
         return complete(
-            eid, lease["token"], worker_id, {"inert": True},
+            eid, lease["token"], worker_id, {"kind": "aao.inert-worker.v1"},
             agent_credential=secret,
         )
 

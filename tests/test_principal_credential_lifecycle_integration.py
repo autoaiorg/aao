@@ -285,14 +285,41 @@ def test_review_rejection_serializes_with_auditor_revocation(monkeypatch, revoca
 
         from aao.evidence_registry import register_evidence
         candidate_sha = "b" * 40
+        proposal_id = str(uuid4())
+        patch_bytes = b"valid review-race patch"
+        patch_sha = sha256(patch_bytes).hexdigest()
         with connect_postgres() as db:
+            db.execute(
+                "INSERT INTO patch_proposals(id,work_id,project_id,proposer_id,base_sha,"
+                "patch_sha256,patch_bytes,changed_paths) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                (proposal_id, work, project, agent_id, "a" * 40, patch_sha,
+                 patch_bytes, json.dumps(["src/review_race.py"])),
+            )
             db.execute(
                 "INSERT INTO execution_queue(id,work_id,project_id,status,input_json,"
                 "project_state_generation,result_json) "
-                "SELECT %s,%s,%s,'SUCCEEDED','{}'::jsonb,state_generation,%s::jsonb "
+                "SELECT %s,%s,%s,'SUCCEEDED',%s::jsonb,state_generation,%s::jsonb "
                 "FROM projects WHERE id=%s",
                 (str(uuid4()), work, project,
-                 json.dumps({"candidate_sha": candidate_sha}), project),
+                 json.dumps({"type": "aao.agent-patch.v1", "capability_id": "aao.agent-runner",
+                             "version": "1.0.0", "base_sha": "a" * 40}),
+                 json.dumps({"kind": "aao.agent-patch.v1", "conclusion": "success",
+                             "candidate_sha": candidate_sha,
+                             "candidate_ref": f"refs/aao/candidates/{candidate_sha}",
+                             "proposal_id": proposal_id, "patch_sha256": patch_sha,
+                             "changed_paths": ["src/review_race.py"],
+                             "exit_status": 0, "elapsed_seconds": 0.1,
+                             "check": {"kind": "aao.repository-check.v1",
+                                       "check_id": "core-unit", "conclusion": "success",
+                                       "candidate_sha": candidate_sha, "exit_code": 0,
+                                       "duration_ms": 1, "extra_tests": [], "stdout": "",
+                                       "stderr": "", "limits": {
+                                           "network": "unshared",
+                                           "source": "read-only mounted source/tests/config",
+                                           "home_and_secrets": "not mounted; environment allow-listed",
+                                           "timeout_seconds": 120,
+                                           "memory_bytes": 1_073_741_824,
+                                           "temporary_filesystem_bytes": 268_435_456}}}), project),
             )
         evidence_ref = register_evidence(
             project, b"review authorization race evidence", agent_id=agent_id,
@@ -585,7 +612,7 @@ def test_individual_agent_claim_and_revocation(monkeypatch):
     with connect_postgres() as db:
         db.execute("UPDATE principal_credentials SET enabled=false WHERE principal_id=%s", (principal,))
     with pytest.raises(ExecutionConflict):
-        complete(eid, lease["token"], principal, {"ok": True}, agent_credential=secret)
+        complete(eid, lease["token"], principal, {"kind": "aao.inert-worker.v1"}, agent_credential=secret)
     assert state(eid)["status"] == "RUNNING"
 
 

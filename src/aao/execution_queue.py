@@ -5,7 +5,7 @@ UNCERTAIN and must be reconciled by a separate authorized procedure.
 """
 import hmac
 import json
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from aao.host_identity import HostIdentityError, current_host_id
 from aao.postgresql_connection import connect_postgres
@@ -22,6 +22,120 @@ def journal(db, execution_id: str, kind: str, details: dict):
         "INSERT INTO execution_journal(id,execution_id,kind,details) VALUES (%s,%s,%s,%s::jsonb)",
         (str(uuid4()), execution_id, kind, json.dumps(details)),
     )
+
+
+def result_status(input_data: object, result: object) -> str:
+    """Classify only recognized, structurally valid results as successful."""
+    if isinstance(input_data, str):
+        try:
+            input_data = json.loads(input_data)
+        except json.JSONDecodeError:
+            input_data = None
+    if not isinstance(input_data, dict) or not isinstance(result, dict):
+        return "FAILED"
+
+    task_type = input_data.get("type")
+    if task_type == "aao.inert.v1":
+        return "SUCCEEDED" if result.get("kind") == "aao.inert-worker.v1" else "FAILED"
+    if result.get("kind") != task_type or result.get("conclusion") != "success":
+        return "FAILED"
+
+    def is_sha(value: object) -> bool:
+        return (isinstance(value, str) and len(value) == 40
+                and all(char in "0123456789abcdef" for char in value))
+
+    if task_type == "aao.repository-check.v1":
+        limits = result.get("limits")
+        expected_limits = {
+            "network": "unshared",
+            "source": "read-only mounted source/tests/config",
+            "home_and_secrets": "not mounted; environment allow-listed",
+            "timeout_seconds": 120,
+            "memory_bytes": 1_073_741_824,
+            "temporary_filesystem_bytes": 268_435_456,
+        }
+        return "SUCCEEDED" if (
+            set(input_data) == {"type", "check_id", "capability_id", "version"}
+            and set(result) == {
+                "kind", "check_id", "capability_id", "capability_version",
+                "extra_tests", "candidate_sha", "conclusion", "exit_code",
+                "duration_ms", "stdout", "stderr", "limits",
+            }
+            and result.get("check_id") == input_data.get("check_id")
+            and result.get("capability_id") == input_data.get("capability_id")
+            and result.get("capability_version") == input_data.get("version")
+            and is_sha(result.get("candidate_sha"))
+            and type(result.get("exit_code")) is int
+            and result.get("exit_code") == 0
+            and type(result.get("duration_ms")) is int
+            and result["duration_ms"] >= 0
+            and isinstance(result.get("extra_tests"), list)
+            and all(isinstance(path, str) for path in result["extra_tests"])
+            and isinstance(result.get("stdout"), str)
+            and isinstance(result.get("stderr"), str)
+            and limits == expected_limits
+        ) else "FAILED"
+
+    if task_type == "aao.agent-patch.v1":
+        task_capability = input_data.get("capability_id")
+        task_version = input_data.get("version")
+        task_base_sha = input_data.get("base_sha")
+        check = result.get("check")
+        candidate = result.get("candidate_sha")
+        proposal_id = result.get("proposal_id")
+        paths = result.get("changed_paths")
+        patch_sha = result.get("patch_sha256")
+        return "SUCCEEDED" if (
+            set(input_data) == {"type", "capability_id", "version", "base_sha"}
+            and isinstance(task_capability, str) and bool(task_capability)
+            and isinstance(task_version, str) and bool(task_version)
+            and is_sha(task_base_sha)
+            and isinstance(result.get("kind"), str)
+            and is_sha(candidate)
+            and result.get("candidate_ref") == f"refs/aao/candidates/{candidate}"
+            and isinstance(proposal_id, str)
+            and _is_uuid(proposal_id)
+            and isinstance(patch_sha, str)
+            and len(patch_sha) == 64
+            and all(char in "0123456789abcdef" for char in patch_sha)
+            and isinstance(paths, list)
+            and all(isinstance(path, str) and path for path in paths)
+            and isinstance(check, dict)
+            and check.get("kind") == "aao.repository-check.v1"
+            and check.get("conclusion") == "success"
+            and check.get("candidate_sha") == candidate
+            and isinstance(check.get("check_id"), str)
+            and type(check.get("exit_code")) is int
+            and check.get("exit_code") == 0
+            and type(check.get("duration_ms")) is int
+            and check["duration_ms"] >= 0
+            and isinstance(check.get("extra_tests"), list)
+            and all(isinstance(path, str) for path in check["extra_tests"])
+            and isinstance(check.get("stdout"), str)
+            and isinstance(check.get("stderr"), str)
+            and check.get("limits") == {
+                "network": "unshared",
+                "source": "read-only mounted source/tests/config",
+                "home_and_secrets": "not mounted; environment allow-listed",
+                "timeout_seconds": 120,
+                "memory_bytes": 1_073_741_824,
+                "temporary_filesystem_bytes": 268_435_456,
+            }
+            and type(result.get("exit_status")) is int
+            and result.get("exit_status") == 0
+            and type(result.get("elapsed_seconds")) in (float, int)
+            and result["elapsed_seconds"] >= 0
+        ) else "FAILED"
+
+    # Unknown task/result kinds cannot assert successful execution.
+    return "FAILED"
+
+
+def _is_uuid(value: str) -> bool:
+    try:
+        return str(UUID(value)) == value
+    except ValueError:
+        return False
 
 
 def verify_execution_principal(db, worker_id, agent_credential):
@@ -171,7 +285,7 @@ def complete(execution_id: str, token: str, worker_id: str, result: dict,
         # grant) and compare the claim epoch explicitly; the final UPDATE re-checks token/expiry.
         host_fence_epoch = active_host_fence_epoch(db, worker_id)
         execution = db.execute(
-            "SELECT project_id,project_state_generation FROM execution_queue "
+            "SELECT project_id,project_state_generation,input_json,work_id FROM execution_queue "
             "WHERE id=%s FOR UPDATE",
             (execution_id,),
         ).fetchone()
@@ -209,7 +323,19 @@ def complete(execution_id: str, token: str, worker_id: str, result: dict,
         ).fetchone()
         if not grant:
             raise ExecutionConflict("Project execution claim grant revoked")
-        final_status = "FAILED" if result.get("conclusion") == "failure" else "SUCCEEDED"
+        final_status = result_status(execution[2], result)
+        if final_status == "SUCCEEDED" and isinstance(execution[2], dict) and (
+            execution[2].get("type") == "aao.agent-patch.v1"
+        ):
+            proposal_id = result.get("proposal_id") if isinstance(result, dict) else None
+            proposal = db.execute(
+                "SELECT 1 FROM patch_proposals WHERE id=%s AND work_id=%s "
+                "AND project_id=%s AND base_sha=%s AND patch_sha256=%s",
+                (proposal_id, execution[3], project_id, execution[2].get("base_sha"),
+                 result.get("patch_sha256")),
+            ).fetchone()
+            if not proposal:
+                final_status = "FAILED"
         updated = db.execute(
             "UPDATE execution_queue SET status=%s,result_json=%s::jsonb "
             "WHERE id=%s AND status='RUNNING' AND lease_token=%s "

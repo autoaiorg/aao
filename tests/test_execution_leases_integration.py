@@ -195,7 +195,7 @@ def test_worker_claim_complete_respects_identity_and_project_state(monkeypatch):
         lease = claim(worker_id, agent_credential=token, project_id=project_id)
         assert lease is not None and lease["execution_id"] == eid
         with pytest.raises(ExecutionConflict):
-            complete(eid, lease["token"], worker_id, {"ok": True}, agent_credential="wrong")
+            complete(eid, lease["token"], worker_id, {"kind": "aao.inert-worker.v1"}, agent_credential="wrong")
         assert state(eid)["status"] == "RUNNING"
 
     # Exercise the CEO API transition against this exact live lease, not only
@@ -207,19 +207,19 @@ def test_worker_claim_complete_respects_identity_and_project_state(monkeypatch):
         )
         assert paused.status_code == 200, paused.text
         with pytest.raises(ExecutionConflict, match="Project is not active"):
-            complete(eid, lease["token"], worker_id, {"ok": True}, agent_credential=token)
+            complete(eid, lease["token"], worker_id, {"kind": "aao.inert-worker.v1"}, agent_credential=token)
         resumed = client.post(
             f"/v1/projects/{project_id}/state", headers=ceo,
             json={"action": "resume"},
         )
         assert resumed.status_code == 200, resumed.text
         with pytest.raises(ExecutionConflict):
-            complete(eid, lease["token"], worker_id, {"ok": True}, agent_credential=token)
+            complete(eid, lease["token"], worker_id, {"kind": "aao.inert-worker.v1"}, agent_credential=token)
 
         with ThreadPoolExecutor(max_workers=1) as pool, connect_postgres() as blocker:
             blocker.execute("SELECT id FROM projects WHERE id=%s FOR UPDATE", (project_id,))
             paused_completion = pool.submit(
-                complete, eid, lease["token"], worker_id, {"ok": True},
+                complete, eid, lease["token"], worker_id, {"kind": "aao.inert-worker.v1"},
                 agent_credential=token,
             )
             deadline = time.monotonic() + 5
@@ -256,7 +256,7 @@ def test_worker_claim_complete_respects_identity_and_project_state(monkeypatch):
                 "SELECT state_generation FROM projects WHERE id=%s", (project_id,),
             ).fetchone()[0] == 4
         with pytest.raises(ExecutionConflict, match="Project state changed"):
-            complete(eid, lease["token"], worker_id, {"ok": True}, agent_credential=token)
+            complete(eid, lease["token"], worker_id, {"kind": "aao.inert-worker.v1"}, agent_credential=token)
         assert state(eid)["status"] == "RUNNING"
         with connect_postgres() as db:
             db.execute(
@@ -287,7 +287,7 @@ def test_worker_claim_complete_respects_identity_and_project_state(monkeypatch):
             )
             delayed_completion = pool.submit(
                 complete, delayed_execution, delayed_lease["token"], worker_id,
-                {"ok": True}, agent_credential=token,
+                {"kind": "aao.inert-worker.v1"}, agent_credential=token,
             )
             deadline = time.monotonic() + 5
             waiting = False
@@ -295,7 +295,7 @@ def test_worker_claim_complete_respects_identity_and_project_state(monkeypatch):
                 with connect_postgres() as observer:
                     waiting = observer.execute(
                         "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
-                        "WHERE query LIKE 'SELECT project_id,project_state_generation FROM execution_queue%' "
+                        "WHERE query LIKE 'SELECT project_id,project_state_generation,input_json,work_id FROM execution_queue%' "
                         "AND wait_event_type='Lock')"
                     ).fetchone()[0]
                 if waiting:
@@ -333,7 +333,7 @@ def test_worker_claim_complete_respects_identity_and_project_state(monkeypatch):
                 barrier.wait(timeout=3)
                 complete(
                     execution_id, lease_token, selected_worker,
-                    {"ok": True}, agent_credential=credential,
+                    {"kind": "aao.inert-worker.v1"}, agent_credential=credential,
                 )
 
             def quarantine_work(barrier=start):
@@ -631,7 +631,7 @@ def test_execution_completion_serializes_with_grant_revocation(monkeypatch):
             blocker.execute("LOCK TABLE execution_journal IN ACCESS EXCLUSIVE MODE")
             completion_future = pool.submit(
                 complete, execution_id, lease["token"], identity,
-                {"ok": True}, agent_credential=token,
+                {"kind": "aao.inert-worker.v1"}, agent_credential=token,
             )
             deadline = time.monotonic() + 5
             completion_waiting = False
@@ -671,7 +671,7 @@ def test_execution_completion_serializes_with_grant_revocation(monkeypatch):
         assert revoked.status_code == 204, revoked.text
         assert state(execution_id)["status"] == "SUCCEEDED"
         with pytest.raises(ExecutionConflict, match="Project execution claim grant revoked"):
-            complete(execution_id, lease["token"], identity, {"ok": True}, agent_credential=token)
+            complete(execution_id, lease["token"], identity, {"kind": "aao.inert-worker.v1"}, agent_credential=token)
 
 
 @pytest.mark.skipif(
@@ -724,7 +724,7 @@ def test_execution_completion_serializes_with_credential_revocation(monkeypatch)
             blocker.execute("LOCK TABLE execution_journal IN ACCESS EXCLUSIVE MODE")
             completion_future = pool.submit(
                 complete, execution_id, lease["token"], identity,
-                {"ok": True}, agent_credential=token,
+                {"kind": "aao.inert-worker.v1"}, agent_credential=token,
             )
             deadline = time.monotonic() + 5
             completion_waiting = False
@@ -762,7 +762,7 @@ def test_execution_completion_serializes_with_credential_revocation(monkeypatch)
         assert revoked.status_code == 200, revoked.text
         assert state(execution_id)["status"] == "SUCCEEDED"
         with pytest.raises(ExecutionConflict, match="credential invalid or revoked"):
-            complete(execution_id, lease["token"], identity, {"ok": True}, agent_credential=token)
+            complete(execution_id, lease["token"], identity, {"kind": "aao.inert-worker.v1"}, agent_credential=token)
 
 
 @pytest.mark.skipif(

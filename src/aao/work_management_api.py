@@ -4413,21 +4413,33 @@ def submit_next_agent_result(project_id: str, worker_id: str, credential: str) -
         if not project or project[0] != "ACTIVE":
             raise HTTPException(409, "Project not active")
         latest = db.execute(
-            "SELECT id,status,worker_id,result_json FROM execution_queue "
-            "WHERE work_id=%s ORDER BY created_at DESC,id DESC LIMIT 1",
+            "SELECT q.id,q.status,q.worker_id,q.result_json,q.input_json "
+            "FROM execution_queue q WHERE q.work_id=%s "
+            "ORDER BY q.created_at DESC,q.id DESC LIMIT 1",
             (work_id,),
         ).fetchone()
         if not latest or latest[1] != "SUCCEEDED" or latest[2] != worker_id:
             raise HTTPException(409, "Latest execution must have succeeded for this worker")
-        execution_id, _, _, result = latest
+        execution_id, _, _, result, input_data = latest
+        from aao.execution_queue import result_status
+
+        if isinstance(input_data, str):
+            try:
+                input_data = json.loads(input_data)
+            except json.JSONDecodeError:
+                input_data = None
         check = result.get("check") if isinstance(result, dict) else None
         candidate = result.get("candidate_sha") if isinstance(result, dict) else None
-        if (not isinstance(candidate, str) or len(candidate) != 40
-                or any(char not in "0123456789abcdef" for char in candidate)
-                or result.get("kind") != "aao.agent-patch.v1"
-                or result.get("conclusion") != "success"
-                or not isinstance(check, dict) or check.get("conclusion") != "success"):
+        if result_status(input_data, result) != "SUCCEEDED":
             raise HTTPException(409, "Successful candidate and check evidence required")
+        linked_proposal = db.execute(
+            "SELECT 1 FROM patch_proposals WHERE id=%s AND work_id=%s "
+            "AND base_sha=%s AND patch_sha256=%s",
+            (result.get("proposal_id"), work_id, input_data.get("base_sha"),
+             result.get("patch_sha256")),
+        ).fetchone()
+        if not linked_proposal:
+            raise HTTPException(409, "Candidate execution has no matching patch proposal")
         record = json.dumps({"candidate_sha": candidate, "check": {
             key: check.get(key) for key in (
                 "check_id", "extra_tests", "conclusion", "exit_code", "duration_ms",
@@ -4697,6 +4709,7 @@ def read_patch_proposal(
 @app.post("/v1/work/{work_id}/reviews", status_code=201)
 def review(work_id: str, payload: ReviewRequest, principal: str = Depends(require_reviewer)):
     from aao.evidence_registry import EvidenceDenied, verify_evidence_references
+    from aao.execution_queue import result_status
 
     with tx() as db:
         work = db.execute("SELECT project_id,status,author_id FROM work_items WHERE id=%s FOR UPDATE", (work_id,)).fetchone()
@@ -4716,10 +4729,23 @@ def review(work_id: str, payload: ReviewRequest, principal: str = Depends(requir
         except EvidenceDenied as exc:
             raise HTTPException(409, str(exc)) from exc
         candidate_execution = db.execute(
-            "SELECT id,status FROM execution_queue WHERE work_id=%s "
-            "AND result_json->>'candidate_sha'=%s FOR SHARE",
+            "SELECT q.id,q.status,q.input_json,q.result_json FROM execution_queue q "
+            "JOIN patch_proposals p ON p.id::text=q.result_json->>'proposal_id' "
+            "AND p.work_id=q.work_id AND p.patch_sha256=q.result_json->>'patch_sha256' "
+            "AND p.base_sha=q.input_json->>'base_sha' "
+            "WHERE q.work_id=%s "
+            "AND q.input_json->>'type'='aao.agent-patch.v1' "
+            "AND q.result_json->>'kind'='aao.agent-patch.v1' "
+            "AND q.result_json->>'candidate_sha'=%s FOR SHARE OF q",
             (work_id, payload.candidate_sha),
         ).fetchall()
+        candidate_execution = [
+            (execution_id, execution_status)
+            for execution_id, execution_status, input_data, result in candidate_execution
+            if execution_status == "SUCCEEDED"
+            and result_status(input_data, result) == "SUCCEEDED"
+            and result.get("candidate_sha") == payload.candidate_sha
+        ]
         if not candidate_execution:
             raise HTTPException(409, "Candidate SHA has no linked execution")
         if db.execute(

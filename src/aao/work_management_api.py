@@ -1260,14 +1260,7 @@ def issue_selfdev_cycle_roles(
     principal: Annotated[AuthenticatedPrincipal, Depends(require_worker)],
 ):
     """Issue only the fixed, short-lived implementer/reviewer pair for Self Development."""
-    # The existing response contains development bearer credentials. Production
-    # must remain closed until the typed mTLS intent/signer flow is wired end to
-    # end; never create or return cycle bearer credentials there.
-    if os.getenv("AAO_ENV", "").strip().lower() == "production":
-        raise HTTPException(
-            503,
-            "Self Development cycle issuance requires the production mTLS signer flow",
-        )
+    production = os.getenv("AAO_ENV", "").strip().lower() == "production"
     from aao.principal_credentials import digest_token
 
     cycle_id = payload.cycle_id
@@ -1325,13 +1318,18 @@ def issue_selfdev_cycle_roles(
             "SELECT clock_timestamp()+%s", (timedelta(seconds=payload.lifetime_seconds),),
         ).fetchone()[0]
         issued_at = expires_at - timedelta(seconds=payload.lifetime_seconds)
+        production_roles = []
         for principal_id, kind, grants in roles:
             token = secrets.token_urlsafe(32)
             db.execute(
                 "INSERT INTO principal_credentials(principal_id,kind,token_digest,enabled,"
-                "created_at,expires_at) VALUES (%s,%s,%s,true,%s,%s)",
-                (principal_id, kind, digest_token(token), issued_at, expires_at),
+                "created_at,expires_at) VALUES (%s,%s,%s,%s,%s,%s)",
+                (principal_id, kind, digest_token(token), not production, issued_at,
+                 expires_at + timedelta(seconds=1) if production else expires_at),
             )
+            # In production the random value is intentionally never returned;
+            # only its digest exists, and the credential stays disabled until
+            # an independently verified certificate binding exists.
             for capability in grants:
                 db.execute(
                     "INSERT INTO project_grants(principal_id,project_id,capability,expires_at) "
@@ -1343,16 +1341,43 @@ def issue_selfdev_cycle_roles(
                 "grants": list(grants), "expires_at": expires_at.isoformat(),
                 "issuer_principal_id": str(principal),
             }
-            if kind == "AGENT":
+            if kind == "AGENT" and not production:
                 details.update(_bind_selfdev_cycle_implementer(db, project_id, principal_id))
             audit(db, project_id, "principal.selfdev_cycle_role.issued", details)
-            issued.append({"principal_id": principal_id, "kind": kind,
-                           "grants": list(grants), "token": token})
+            if production:
+                from aao.selfdev_cycle_mtls import CycleMtlError, CycleSigningIntent
+                from aao.selfdev_cycle_mtls_repository import PostgresCycleIntentRepository
+
+                intent_id = uuid4()
+                try:
+                    intent = CycleSigningIntent(
+                        intent_id=intent_id,
+                        project_id=UUID(project_id),
+                        cycle_id=cycle_id,
+                        principal_id=principal_id,
+                        kind=kind,
+                        not_before=issued_at,
+                        not_after=expires_at,
+                    )
+                    PostgresCycleIntentRepository.create_intent_in_transaction(db, intent)
+                except (CycleMtlError, ValueError) as exc:
+                    raise HTTPException(503, "Production cycle identity intent unavailable") from exc
+                production_roles.append({
+                    "principal_id": principal_id,
+                    "kind": kind,
+                    "grants": list(grants),
+                    "intent_id": str(intent_id),
+                    "certificate_status": "pending_verifier",
+                })
+            else:
+                issued.append({"principal_id": principal_id, "kind": kind,
+                               "grants": list(grants), "token": token})
         # After the new implementer copied its profile: retire cycles that
         # expired without an explicit revoke, so no binding outlives its cycle.
         _retire_expired_selfdev_cycles(db, project_id, str(principal))
     return {"cycle_id": cycle_id, "project_id": project_id,
-            "expires_at": expires_at.isoformat(), "roles": issued}
+            "expires_at": expires_at.isoformat(),
+            "roles": production_roles if production else issued}
 
 
 @app.delete("/v1/projects/{project_id}/selfdev-cycle-roles/{cycle_id}")
@@ -1362,6 +1387,7 @@ def revoke_selfdev_cycle_roles(
     principal: Annotated[AuthenticatedPrincipal, Depends(require_worker)],
 ):
     """Disable exactly the two principals from a cycle issued by this scoped API."""
+    production = os.getenv("AAO_ENV", "").strip().lower() == "production"
     if not re.fullmatch(r"[0-9a-f]{32}", cycle_id):
         raise HTTPException(404, "Self Development cycle not found")
     expected = (
@@ -1396,6 +1422,14 @@ def revoke_selfdev_cycle_roles(
                 raise HTTPException(409, "Self Development cycle role set does not match")
             if any(bool(row[1]) for row in rows):
                 already_revoked = False
+        if production:
+            active_intents = db.execute(
+                "SELECT count(*) FROM selfdev_cycle_mtls_intents "
+                "WHERE project_id=%s AND cycle_id=%s AND state IN ('PENDING','COMPLETED')",
+                (project_id, cycle_id),
+            ).fetchone()[0]
+            if active_intents:
+                already_revoked = False
         if already_revoked:
             # Repair/verify cleanup for cycles revoked by an earlier API version
             # or interrupted deployment. This is idempotent and deliberately
@@ -1415,6 +1449,18 @@ def revoke_selfdev_cycle_roles(
         # credential. The transaction would roll back on a later failure, but
         # this keeps the operation fail-before-mutation as well as atomic.
         _require_selfdev_cycle_retirement_migration(db)
+        if production:
+            from aao.selfdev_cycle_mtls_repository import PostgresCycleIntentRepository
+
+            intent_rows = db.execute(
+                "SELECT intent_id FROM selfdev_cycle_mtls_intents "
+                "WHERE project_id=%s AND cycle_id=%s ORDER BY kind FOR UPDATE",
+                (project_id, cycle_id),
+            ).fetchall()
+            if len(intent_rows) != len(expected):
+                raise HTTPException(503, "Production cycle identity intents are incomplete")
+            for (intent_id,) in intent_rows:
+                PostgresCycleIntentRepository.revoke_in_transaction(db, intent_id)
         for principal_id, kind, _grants in expected:
             db.execute(
                 "UPDATE principal_credentials SET enabled=false,pending_token_digest=NULL,"

@@ -580,6 +580,89 @@ def test_live_cycle_issue_rollback_duplicate_and_idempotent_revoke(monkeypatch):
             )
 
 
+def test_production_cycle_issue_creates_only_pending_mtls_intents_and_revoke_is_atomic(monkeypatch):
+    """Production route integration stays inert pending an independently reviewed verifier."""
+    from fastapi import HTTPException
+
+    from aao.postgresql_connection import connect_postgres
+    from aao.principal_credentials import digest_token
+    from aao.selfdev_cycle_mtls import CycleMtlError
+    from aao.selfdev_cycle_mtls_repository import PostgresCycleIntentRepository
+    from aao.work_management_api import (
+        AuthenticatedPrincipal,
+        SelfDevCycleIssueRequest,
+        issue_selfdev_cycle_roles,
+        revoke_selfdev_cycle_roles,
+    )
+
+    project, pm, token = _seed(monkeypatch)
+    monkeypatch.setenv("AAO_ENV", "production")
+    cycle = uuid4().hex
+    principal = AuthenticatedPrincipal(pm, digest_token(token), "AGENT")
+
+    failed_cycle = uuid4().hex
+    create_intent = PostgresCycleIntentRepository.create_intent_in_transaction
+
+    def fail_intent(_db, _intent):
+        raise CycleMtlError("test failure")
+
+    monkeypatch.setattr(
+        PostgresCycleIntentRepository, "create_intent_in_transaction", fail_intent,
+    )
+    with pytest.raises(HTTPException) as failure:
+        issue_selfdev_cycle_roles(
+            project,
+            SelfDevCycleIssueRequest(cycle_id=failed_cycle, lifetime_seconds=600),
+            principal,
+        )
+    assert failure.value.status_code == 503
+    with connect_postgres() as db:
+        assert db.execute(
+            "SELECT count(*) FROM principal_credentials WHERE principal_id=ANY(%s)",
+            ([f"aao-selfdev-impl-{failed_cycle}", f"aao-selfdev-review-{failed_cycle}"],),
+        ).fetchone()[0] == 0
+
+    monkeypatch.setattr(
+        PostgresCycleIntentRepository, "create_intent_in_transaction", create_intent,
+    )
+    monkeypatch.setenv("AAO_ENV", "production")
+    result = issue_selfdev_cycle_roles(
+        project, SelfDevCycleIssueRequest(cycle_id=cycle, lifetime_seconds=600), principal,
+    )
+    assert result["cycle_id"] == cycle
+    assert len(result["roles"]) == 2
+    assert all(role["certificate_status"] == "pending_verifier" for role in result["roles"])
+    assert all("token" not in role for role in result["roles"])
+    assert {role["kind"] for role in result["roles"]} == {"AGENT", "AUDITOR"}
+    with connect_postgres() as db:
+        rows = db.execute(
+            "SELECT i.kind,i.state,c.enabled,i.principal_id "
+            "FROM selfdev_cycle_mtls_intents i JOIN principal_credentials c USING(principal_id) "
+            "WHERE i.project_id=%s AND i.cycle_id=%s ORDER BY i.kind",
+            (project, cycle),
+        ).fetchall()
+        assert len(rows) == 2
+        assert all(state == "PENDING" and enabled is False for _kind, state, enabled, _pid in rows)
+        assert all(any(row[3] == role["principal_id"] for row in rows) for role in result["roles"])
+        assert db.execute(
+            "SELECT count(*) FROM host_worker_bindings WHERE worker_id=%s AND status='ACTIVE'",
+            (f"aao-selfdev-impl-{cycle}",),
+        ).fetchone()[0] == 0
+
+    revoked = revoke_selfdev_cycle_roles(project, cycle, principal)
+    assert revoked == {"cycle_id": cycle, "revoked": True, "already_revoked": False}
+    with connect_postgres() as db:
+        assert db.execute(
+            "SELECT count(*) FROM selfdev_cycle_mtls_intents "
+            "WHERE project_id=%s AND cycle_id=%s AND state='REVOKED'",
+            (project, cycle),
+        ).fetchone()[0] == 2
+        assert db.execute(
+            "SELECT count(*) FROM principal_credentials WHERE principal_id=ANY(%s) AND enabled",
+            ([f"aao-selfdev-impl-{cycle}", f"aao-selfdev-review-{cycle}"],),
+        ).fetchone()[0] == 0
+
+
 def test_live_cycle_credential_expiry_rejects_authentication(monkeypatch):
     from aao.postgresql_connection import connect_postgres
     from aao.work_management_api import app

@@ -4,8 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import hashlib
+import hmac
 import os
 import pwd
+import secrets
 import stat
 import sys
 from pathlib import Path
@@ -25,6 +29,8 @@ TOKEN_ACCOUNTS = {
     "selfdev-implementer": {"aao-impl-codex"},
     "selfdev-reviewer": {"aao-auditor"},
 }
+# Only per-cycle Self Development tokens may be atomically replaced.
+REPLACE_TOKENS = {"selfdev-implementer", "selfdev-reviewer"}
 RUNTIME_ROOT = Path("/run/user")
 
 
@@ -91,6 +97,109 @@ def install(path: Path, token: str) -> None:
         raise
 
 
+def _temp_prefix(name: str) -> str:
+    return f".{name}."
+
+
+def _clean_stale_temps(dir_fd: int, name: str) -> None:
+    """Remove temp files a crashed earlier ``replace`` left for this token name."""
+    prefix = _temp_prefix(name)
+    for entry in os.listdir(dir_fd):
+        if entry.startswith(prefix) and entry.endswith(".tmp"):
+            # unlink never follows a symlink; it removes only the directory entry.
+            os.unlink(entry, dir_fd=dir_fd)
+
+
+def _read_private(dir_fd: int, name: str) -> bytes:
+    """Read a role-owned, regular, single-link 0600 file without following links."""
+    before = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    if not stat.S_ISREG(before.st_mode):
+        raise TokenInstallError("existing token is not a regular file; refusing replace")
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    fd = os.open(name, flags, dir_fd=dir_fd)
+    try:
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or (info.st_dev, info.st_ino) != (before.st_dev, before.st_ino)
+            or info.st_nlink != 1
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o600
+        ):
+            raise TokenInstallError("existing token file is not private; refusing replace")
+        return os.read(fd, 4097)
+    finally:
+        os.close(fd)
+
+
+def replace(path: Path, token: str) -> None:
+    """Atomically replace (or create) ``path`` with ``token``.
+
+    A crash at any point leaves either the previous file intact or the new file
+    complete: the token is written and fsynced in a same-directory temp file
+    created with O_EXCL|O_NOFOLLOW, then renamed over the target, then the
+    directory is fsynced. Stale temps from a crashed run are removed first.
+    """
+    name = path.name
+    try:
+        dir_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        raise TokenInstallError("token directory is unavailable or a symlink") from None
+    try:
+        info = os.fstat(dir_fd)
+        if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            raise TokenInstallError("token directory ownership or mode is unsafe")
+        _clean_stale_temps(dir_fd, name)
+        payload = (token + "\n").encode("utf-8")
+        try:
+            existing = _read_private(dir_fd, name)
+        except FileNotFoundError:
+            existing = None
+        except OSError:
+            raise TokenInstallError("existing token is a symlink or unreadable") from None
+        if existing is not None and hmac.compare_digest(existing, payload):
+            raise TokenInstallError("new token equals the installed token; refusing replace")
+
+        temp = f"{_temp_prefix(name)}{secrets.token_hex(8)}.tmp"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        try:
+            fd = os.open(temp, flags, 0o600, dir_fd=dir_fd)
+        except FileExistsError:
+            raise TokenInstallError("temporary token file already exists") from None
+        try:
+            try:
+                os.fchmod(fd, 0o600)
+                view = memoryview(payload)
+                while view:
+                    view = view[os.write(fd, view) :]
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.replace(temp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        except BaseException:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(temp, dir_fd=dir_fd)
+            raise
+        os.fsync(dir_fd)
+
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+        try:
+            new = os.fstat(fd)
+            written = os.read(fd, 4097)
+        finally:
+            os.close(fd)
+        if (
+            not stat.S_ISREG(new.st_mode)
+            or new.st_nlink != 1
+            or new.st_uid != os.geteuid()
+            or stat.S_IMODE(new.st_mode) != 0o600
+            or hashlib.sha256(written).digest() != hashlib.sha256(payload).digest()
+        ):
+            raise TokenInstallError("replaced token file failed post-write verification")
+    finally:
+        os.close(dir_fd)
+
+
 def verify(path: Path, token: str) -> None:
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -127,10 +236,17 @@ def main() -> int:
     parser.add_argument(
         "--remove", action="store_true", help="remove only the matching token from stdin"
     )
+    parser.add_argument(
+        "--replace",
+        action="store_true",
+        help="atomically replace (or create) a Self Development token from stdin",
+    )
     args = parser.parse_args()
-    if sum((args.check, args.verify, args.remove)) > 1:
-        parser.error("--check, --verify, and --remove are mutually exclusive")
+    if sum((args.check, args.verify, args.remove, args.replace)) > 1:
+        parser.error("--check, --verify, --remove, and --replace are mutually exclusive")
     try:
+        if args.replace and args.token not in REPLACE_TOKENS:
+            raise TokenInstallError("replace is only supported for Self Development tokens")
         path = target_path(args.account, args.token)
         if args.check:
             if path.exists() or path.is_symlink():
@@ -142,6 +258,8 @@ def main() -> int:
             elif args.remove:
                 verify(path, token)
                 path.unlink()
+            elif args.replace:
+                replace(path, token)
             else:
                 install(path, token)
         print(

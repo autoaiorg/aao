@@ -59,7 +59,7 @@ This is a one-time administrative enablement, not a routine cycle step:
    which can replace even root-owned children. The installed wrapper has the
    fixed `#!/usr/bin/python3` interpreter, validates that interpreter and every
    path ancestor, and never runs code from the frozen tree as root. It accepts
-   only the fixed account, token-kind and `check|install|verify|remove`
+   only the fixed account, token-kind and `check|install|verify|remove|replace`
    allowlist, then calls `/usr/sbin/runuser` and the root-installed fixed
    installer with a minimal environment. Configure sudoers for only the
    installed wrapper executable, for example:
@@ -121,6 +121,55 @@ project authorization. Neither expiry physically deletes rows or files.
 Reboot also removes `/run/user` files, but still requires API revocation to
 disable the credentials. Audit event evidence and disabled credential state
 must be checked before considering cleanup complete.
+
+## Atomic token replacement (`replace`)
+
+`install` still refuses to overwrite an existing token file, and `remove`
+still requires the old token on stdin. For unattended renewal of a cycle token
+file, the wrapper also accepts `--operation replace`, with exactly the same
+account/token-kind allowlist as `install`: `aao-impl-codex` with
+`selfdev-implementer` and `aao-auditor` with `selfdev-reviewer`. The installer
+itself rejects `--replace` for the `publisher` and `pm` token kinds. Running as
+the role account, `install_publisher_token_for_role.py --replace`:
+
+1. Reads the new token from stdin only; it is never written to argv, the
+   environment, stdout or stderr.
+2. Opens the runtime directory with `O_NOFOLLOW` and refuses unless it is owned
+   by the role and mode `0700`. All following steps are relative to that
+   directory descriptor.
+3. Removes leftover `.<token-name>.*.tmp` files that a crashed earlier run
+   left for the same token name.
+4. If the target exists, refuses unless it is a regular, single-link file
+   owned by the role with mode `0600`. Symlinks, FIFOs and directories are
+   refused. It also refuses if the new token equals the installed one; this
+   comparison happens in memory only.
+5. Creates `.<token-name>.<random>.tmp` with
+   `O_CREAT|O_EXCL|O_NOFOLLOW` and mode `0600`, writes the token, then fsyncs
+   it. It renames the file over the target with `os.replace` and fsyncs the
+   directory.
+6. Checks the result: a regular, single-link, role-owned `0600` file whose
+   SHA-256 matches the new token.
+
+If the target is absent, `replace` creates it the same way, so it acts like
+`install`. If the process crashes before the rename, the previous file stays
+intact. If it crashes after the rename, the new file is complete. A partial
+target file is never left behind. Any leftover temp file is removed on the
+next `replace`.
+
+**One-time host reinstall required.** The root-owned copies in
+`/usr/local/libexec/aao` do not update themselves. Until a host administrator
+reinstalls them from the reviewed commit, `--operation replace` returns exit
+code 2. With the same ownership and modes as in step 3 above, the
+administrator must replace exactly these two files:
+
+- `scripts/selfdev_role_token_helper.py` →
+  `/usr/local/libexec/aao/selfdev_role_token_helper.py` (root:root, `0755`)
+- `scripts/install_publisher_token_for_role.py` →
+  `/usr/local/libexec/aao/install_publisher_token_for_role.py`
+  (root:root, `0644`)
+
+The sudoers rule does not change. Do not reinstall until the change has passed
+independent review (GOV-REV-001).
 
 ## Lifecycle boundary
 

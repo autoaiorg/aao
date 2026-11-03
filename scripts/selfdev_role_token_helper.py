@@ -19,7 +19,7 @@ TARGETS = {
     ("aao-impl-codex", "selfdev-implementer"),
     ("aao-auditor", "selfdev-reviewer"),
 }
-OPERATIONS = {"check", "install", "verify", "remove"}
+OPERATIONS = {"check", "install", "verify", "remove", "replace"}
 
 
 def _root_owned_safe(path: Path, *, allow_symlink: bool = False) -> bool:
@@ -85,6 +85,8 @@ def main(argv: list[str] | None = None) -> int:
         helper_args.append("--verify")
     elif args.operation == "remove":
         helper_args.append("--remove")
+    elif args.operation == "replace":
+        helper_args.append("--replace")
     command = [
         str(RUNUSER),
         "-u",

@@ -188,3 +188,56 @@ def test_redirect_is_refused_and_the_token_never_follows(monkeypatch, caplog):
     assert error.value.code == "PROVIDER_HTTP_ERROR"
     assert hits == []
     assert secret not in str(error.value) and secret not in caplog.text
+
+
+def test_loopback_http_ignores_environment_proxy(monkeypatch):
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    target_hits = []
+    proxy_hits = []
+
+    class Target(BaseHTTPRequestHandler):
+        def do_POST(self):
+            target_hits.append(self.headers.get("Authorization"))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", len(b"data: [DONE]\\n"))
+            self.end_headers()
+            self.wfile.write(b"data: [DONE]\\n")
+
+        def log_message(self, *_args):
+            pass
+
+    class Proxy(BaseHTTPRequestHandler):
+        def do_POST(self):
+            proxy_hits.append(self.headers.get("Authorization"))
+            self.send_response(502)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    target = HTTPServer(("127.0.0.1", 0), Target)
+    proxy = HTTPServer(("127.0.0.1", 0), Proxy)
+    servers = [target, proxy]
+    threads = [threading.Thread(target=s.serve_forever, daemon=True) for s in servers]
+    for thread in threads:
+        thread.start()
+    try:
+        secret = _configure(
+            monkeypatch,
+            f"http://127.0.0.1:{target.server_port}/v1/chat",
+        )
+        monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{proxy.server_port}")
+        monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{proxy.server_port}")
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+        assert list(conversation_provider.stream_reply([{"role": "user", "content": "hi"}])) == []
+    finally:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+    assert target_hits == [f"Bearer {secret}"]
+    assert proxy_hits == []

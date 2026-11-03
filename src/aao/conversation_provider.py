@@ -12,7 +12,7 @@ import os
 from collections.abc import Iterator
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
@@ -23,11 +23,17 @@ class _RefuseRedirects(HTTPRedirectHandler):
 
 
 _OPENER = build_opener(_RefuseRedirects())
+_LOOPBACK_OPENER = build_opener(ProxyHandler({}), _RefuseRedirects())
 
 
 def urlopen(request, timeout):
-    """The only network seam (tests and the activation check replace it); redirects are refused."""
-    return _OPENER.open(request, timeout=timeout)
+    """Open without redirects; never route loopback requests through an env proxy."""
+    try:
+        host = urlsplit(request.full_url).hostname
+    except ValueError:
+        host = None
+    opener = _LOOPBACK_OPENER if host in _LOOPBACK_HOSTS else _OPENER
+    return opener.open(request, timeout=timeout)
 
 
 def endpoint_allowed(endpoint: str) -> bool:

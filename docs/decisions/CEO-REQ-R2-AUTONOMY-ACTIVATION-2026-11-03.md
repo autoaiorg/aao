@@ -88,10 +88,10 @@ Estados posibles: **CUMPLIDO** (hay evidencia citada), **NO CUMPLIDO** (la evide
 | P-22 | Segunda línea sobre el código del auditor (§9) | §9.1 | **NO VERIFICADO** | No hay registro de una revisión §9 sobre la revisión del auditor que se activaría |
 | P-23 | Dictamen de un auditor no recusado, de modelo distinto, sobre el árbol completo afectado | R2, §3.2 | **NO CUMPLIDO** | No existe. Se pide en `AUDITOR-DICTAMEN-REQUEST-R2-2026-11-03.md` |
 | P-24 | Matriz de traspaso: criterio 4 (protección) y criterio 8 (servicios operativos) | CONSTRUCTION §4 | **NO CUMPLIDO** | `HANDOVER_ACCEPTANCE_MATRIX.md:25,29`: los dos ABIERTO |
-| P-25 | Estado de partida seguro: integrador apagado | `ops.py:139-164` | **CUMPLIDO** | `inactive` y `disabled`. Hay un matiz: `ops.py:164` dice «OFF (masked)», pero la unidad **no está enmascarada** y la comprobación solo mira `is-active` |
+| P-25 | Estado de partida seguro: integrador apagado | `ops.py:139-164` | **NO VERIFICADO** | La instantánea histórica observó `inactive` y `disabled`, pero no `masked`. `ops.py:164` exige «OFF (masked)» en su descripción; su comprobación solo mira `is-active`, así que no demuestra la condición de máscara. Aclarar el criterio y medirlo correctamente antes de usar el expediente para firma |
 | P-26 | Claves del integrador: clave privada de la App `aao-integrator` bajo su uid y clave de firma ed25519 registrada | §4.2; `TRUST_ROOT_HOST_INSTALL.md` §3 | **NO VERIFICADO** | Existe `/srv/aao/trust/keys/aao-integrator-ed25519.pub`, y el registro tiene `integrator_key_id = aao-integrator`. `ESTADO_ACTUAL.md:91`: los `.pem` y `.json` de las Apps «habían pasado como metadatos en verificaciones previas; no se revalidó aquí». `:145`: el preflight dio PASS en «Apps config». Sin sudo no se puede comprobar la custodia de la clave privada en `/var/lib/aao-integrator`, ni que la clave de la App corresponda a la App 5447984 |
 
-**Recuento histórico (instantánea de `f127a7e`, 2026-11-03 12:20 UTC):** 2 CUMPLIDO, 18 NO CUMPLIDO y 6 NO VERIFICADO, sobre 26. No es un recuento vigente; debe recalcularse tras revalidar cada fila para el candidato.
+**Recuento revisado (instantánea de `f127a7e`, 2026-11-03 12:20 UTC):** 1 CUMPLIDO, 18 NO CUMPLIDO y 7 NO VERIFICADO, sobre 26. El cambio respecto del recuento original reclasifica P-25, porque la evidencia citada no demuestra el estado masked. No es un recuento vigente; debe recalcularse tras revalidar cada fila para el candidato.
 
 ## 4. Pruebas negativas disponibles y las que faltan
 

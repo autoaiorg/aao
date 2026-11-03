@@ -10,6 +10,18 @@ def test_worker_api_clients_ignore_configured_proxy_and_keep_token_on_api(monkey
     observed = {"api": [], "proxy": []}
 
     class ApiHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            observed["api"].append((self.path, self.headers.get("X-Agent-Token")))
+            body = json.dumps({
+                "principal_id": "aao-selfdev-impl-test",
+                "kind": "AGENT",
+                "enabled": True,
+            }).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_POST(self):
             observed["api"].append((self.path, self.headers.get("X-Agent-Token")))
             if self.path.endswith("dispatch-next"):
@@ -60,7 +72,7 @@ def test_worker_api_clients_ignore_configured_proxy_and_keep_token_on_api(monkey
         assert inert_execution_worker._api_request(
             "/v1/agent/executions/claim", "inert-secret", body={}
         ) == {"status": "IDLE"}
-        assert worker.dispatch_next("project-1", "agent-1", "a" * 40) == {
+        assert worker.dispatch_next("project-1", "aao-selfdev-impl-test", "a" * 40) == {
             "status": "QUEUED",
             "execution_id": "exec-1",
             "work_id": "work-1",
@@ -73,6 +85,7 @@ def test_worker_api_clients_ignore_configured_proxy_and_keep_token_on_api(monkey
     assert observed == {
         "api": [
             ("/v1/agent/executions/claim", "inert-secret"),
+            ("/v1/principals/me", "worker-secret"),
             ("/v1/agent/dispatch-next", "worker-secret"),
         ],
         "proxy": [],

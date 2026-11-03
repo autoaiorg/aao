@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { AgentIdentity } from '../../../domain/models';
-import type { OfficeRoomConfig } from '../types';
+import type { CameraViewState, OfficeCameraPreset, OfficeRoomConfig } from '../types';
 import { ThreeOfficeScene } from '../engine/ThreeOfficeScene';
 
 export interface Office3DCanvasProps {
@@ -12,13 +12,16 @@ export interface Office3DCanvasProps {
   onSelectRoom: (roomId: string) => void;
   onSelectAgent: (agentId: string) => void;
   onFallbackTo2D: () => void;
+  onCameraChange?: (state: CameraViewState) => void;
   reducedMotion?: boolean;
+  fullViewport?: boolean;
 }
 
 export interface WebGLCanvasHandle {
   rotate: (degrees: number) => void;
   zoom: (factor: number) => void;
   reset: () => void;
+  setPreset: (preset: OfficeCameraPreset) => void;
 }
 
 function checkWebGLSupport(): boolean {
@@ -43,7 +46,9 @@ export const Office3DCanvas = React.forwardRef<WebGLCanvasHandle, Office3DCanvas
       onSelectRoom,
       onSelectAgent,
       onFallbackTo2D,
+      onCameraChange,
       reducedMotion = false,
+      fullViewport = false,
     },
     ref
   ) => {
@@ -63,6 +68,9 @@ export const Office3DCanvas = React.forwardRef<WebGLCanvasHandle, Office3DCanvas
       reset: () => {
         sceneRef.current?.resetCamera();
       },
+      setPreset: (preset: OfficeCameraPreset) => {
+        sceneRef.current?.setCameraPreset(preset);
+      },
     }));
 
     // Initialize ThreeOfficeScene
@@ -78,6 +86,7 @@ export const Office3DCanvas = React.forwardRef<WebGLCanvasHandle, Office3DCanvas
           onSelectRoom: (roomId) => onSelectRoom(roomId),
           onSelectAgent: (agentId) => onSelectAgent(agentId),
           onHoverObject: (info) => setHoveredInfo(info),
+          onCameraChange: (state) => onCameraChange?.(state),
         },
       });
 
@@ -170,19 +179,44 @@ export const Office3DCanvas = React.forwardRef<WebGLCanvasHandle, Office3DCanvas
         style={{
           position: 'relative',
           width: '100%',
-          minHeight: '520px',
+          height: fullViewport ? '100%' : undefined,
+          minHeight: fullViewport ? '560px' : '520px',
           backgroundColor: '#0a1628',
-          borderRadius: 'var(--radius-lg, 16px)',
+          borderRadius: fullViewport ? '0' : 'var(--radius-lg, 16px)',
           overflow: 'hidden',
-          border: '1px solid var(--border-subtle)',
-          boxShadow: 'var(--shadow-md)',
+          border: fullViewport ? 'none' : '1px solid var(--border-subtle)',
+          boxShadow: fullViewport ? 'none' : 'var(--shadow-md)',
         }}
       >
         <div
           ref={containerRef}
-          style={{ width: '100%', height: '520px', display: 'block', touchAction: 'none' }}
+          style={{
+            width: '100%',
+            height: fullViewport ? '100%' : '520px',
+            minHeight: fullViewport ? '560px' : '520px',
+            display: 'block',
+            touchAction: 'none',
+          }}
           tabIndex={0}
           role="region"
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowLeft') {
+              e.preventDefault();
+              sceneRef.current?.rotateCamera(-20);
+            } else if (e.key === 'ArrowRight') {
+              e.preventDefault();
+              sceneRef.current?.rotateCamera(20);
+            } else if (e.key === '+' || e.key === '=') {
+              e.preventDefault();
+              sceneRef.current?.zoomCamera(0.88);
+            } else if (e.key === '-' || e.key === '_') {
+              e.preventDefault();
+              sceneRef.current?.zoomCamera(1.12);
+            } else if (e.key === '0') {
+              e.preventDefault();
+              sceneRef.current?.resetCamera();
+            }
+          }}
           aria-label="Vista 3D interactiva de la Oficina Virtual de AAO. Arrastre para rotar, rueda del ratón para zoom, y haga clic en un departamento o avatar para seleccionarlo."
         />
 

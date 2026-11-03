@@ -8,6 +8,7 @@ import json
 import os
 import re
 import secrets
+import unicodedata
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -20,7 +21,7 @@ load_local_env()
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from aao.backup import BackupError, active_host_fence_epoch
 from aao.capability_contracts import missing_contract_fields, model_profile_errors
@@ -896,6 +897,124 @@ class SelfDevCycleIssueRequest(BaseModel):
     lifetime_seconds: int = Field(ge=1, le=int(SELFDEV_CYCLE_TTL.total_seconds()))
 
 
+SELFDEV_CYCLE_WORK_DAILY_CAP = 20  # CEO-DEC-PM-WORK-CREATION-2026-11-03 limit (c), per PM principal
+
+
+def _reject_control_characters(value: str, *, allowed: str = "") -> str:
+    if any(unicodedata.category(char) == "Cc" and char not in allowed for char in value):
+        raise ValueError("control characters are not allowed")
+    return value
+
+
+class SelfDevCycleWorkRequest(BaseModel):
+    """A tightly bounded work-item request; this route cannot admit or execute it."""
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    idempotency_key: UUID
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=5000)
+    acceptance_criteria: list[str] = Field(min_length=1, max_length=20)
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, value: str) -> str:
+        # Single line: the title becomes a commit subject and must not carry trailers.
+        return _reject_control_characters(value)
+
+    @field_validator("description")
+    @classmethod
+    def validate_description(cls, value: str) -> str:
+        return _reject_control_characters(value, allowed="\n\t")
+
+    @field_validator("acceptance_criteria")
+    @classmethod
+    def validate_criteria(cls, values: list[str]) -> list[str]:
+        normalized = [_reject_control_characters(value.strip()) for value in values]
+        if any(not value or len(value) > 500 for value in normalized):
+            raise ValueError("criteria must be non-empty and at most 500 characters")
+        return normalized
+
+
+def _require_selfdev_cycle_coordinator(db, principal: AuthenticatedPrincipal, project_id: str) -> None:
+    if not str(principal).startswith("aao-pm-coordinator-"):
+        raise HTTPException(403, "Self Development cycle request requires the PM coordinator")
+    require_grant(db, principal, project_id, "work.coordinate")
+
+
+@app.post("/v1/projects/{project_id}/selfdev-cycle-work", status_code=201)
+def create_selfdev_cycle_work(
+    project_id: UUID,
+    payload: SelfDevCycleWorkRequest,
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_worker)],
+):
+    """Create one attributable INBOX request for Self Development; never admit it."""
+    pid, actor, key = str(project_id), str(principal), str(payload.idempotency_key)
+    request_sha256 = hashlib.sha256(json.dumps({
+        "title": payload.title,
+        "description": payload.description,
+        "acceptance_criteria": payload.acceptance_criteria,
+    }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    with tx() as db:
+        # Authorize before taking any lock or row lock on the caller's behalf.
+        _require_selfdev_cycle_coordinator(db, principal, pid)
+        # One lock per PM principal serializes both its idempotency keys and its daily cap.
+        db.execute(
+            "SELECT pg_advisory_xact_lock(hashtext('selfdev.cycle.work'),hashtext(%s))",
+            (actor,),
+        )
+        project = db.execute(
+            "SELECT name,state FROM projects WHERE id=%s FOR UPDATE", (pid,),
+        ).fetchone()
+        active_projects = db.execute(
+            "SELECT id FROM projects WHERE name=%s AND state='ACTIVE' FOR UPDATE",
+            (SELFDEV_PROJECT_NAME,),
+        ).fetchall()
+        if (not project or project[0] != SELFDEV_PROJECT_NAME or project[1] != "ACTIVE"
+                or len(active_projects) != 1 or str(active_projects[0][0]) != pid):
+            raise HTTPException(409, "Self Development project is not uniquely active")
+
+        # Idempotency keys are scoped to the calling principal.
+        prior = db.execute(
+            "SELECT e.subject_id,e.details,w.status FROM events e "
+            "LEFT JOIN work_items w ON w.id=e.subject_id "
+            "WHERE e.kind='work.selfdev_cycle_requested' AND e.details->>'idempotency_key'=%s "
+            "AND e.details->>'actor'=%s",
+            (key, actor),
+        ).fetchone()
+        if prior:
+            details = prior[1] if isinstance(prior[1], dict) else {}
+            if details.get("project_id") != pid:
+                raise HTTPException(409, "Idempotency key was already used for another project")
+            if details.get("request_sha256") != request_sha256:
+                raise HTTPException(409, "Idempotency key was already used for a different request")
+            return {"id": str(prior[0]), "status": prior[2], "created": False}
+
+        created_today = db.execute(
+            "SELECT count(*) FROM events WHERE kind='work.selfdev_cycle_requested' "
+            "AND details->>'actor'=%s AND created_at > now() - interval '24 hours'",
+            (actor,),
+        ).fetchone()[0]
+        if created_today >= SELFDEV_CYCLE_WORK_DAILY_CAP:
+            raise HTTPException(429, "Daily Self Development work creation cap reached")
+
+        work_id = str(uuid4())
+        db.execute(
+            "INSERT INTO work_items(id,project_id,title,description,author_id,status,acceptance_criteria) "
+            "VALUES (%s,%s,%s,%s,%s,'INBOX',%s::jsonb)",
+            (work_id, pid, payload.title, payload.description, actor,
+             json.dumps(payload.acceptance_criteria)),
+        )
+        audit(db, work_id, "work.selfdev_cycle_requested", {
+            "project_id": pid,
+            "actor": actor,
+            "status": "INBOX",
+            "admitted": False,
+            "idempotency_key": key,
+            "request_sha256": request_sha256,
+        })
+    return {"id": work_id, "status": "INBOX", "created": True}
+
+
 def _require_selfdev_cycle_issuer(db, principal: AuthenticatedPrincipal, project_id: str) -> None:
     """Require an individual PM agent with the separately CEO-granted scope."""
     if not str(principal).startswith("aao-pm-coordinator-"):
@@ -1582,12 +1701,16 @@ def put_organization_profile(payload: OrganizationProfileRequest, _: str = Depen
 
 
 @app.get("/v1/organization")
-def organization(principal: str = Depends(read_principal)):
+def organization(response: Response, principal: str = Depends(read_principal)):
     """Read-only office projection from persisted principals, work, and executions.
 
     Organizational placement and heartbeat are intentionally unknown until AAO
     has canonical persisted sources for them.
     """
+    # This projection includes mutable credential state used to distinguish
+    # operational agents from revoked historical principals. Never let an
+    # intermediary or browser cache preserve a stale roster after revocation.
+    response.headers["Cache-Control"] = "no-store"
     with tx() as db:
         if principal is _CEO_PRINCIPAL:
             projects_rows = db.execute(
@@ -1624,6 +1747,16 @@ def organization(principal: str = Depends(read_principal)):
         profile_rows = db.execute(
             profile_query, () if principal is _CEO_PRINCIPAL else (str(principal),),
         ).fetchall()
+        # Only the CEO projection may distinguish historical identities from
+        # currently enabled credentials. Never expose this inventory to agents.
+        credential_state_by_id = {}
+        if principal is _CEO_PRINCIPAL:
+            credential_state_by_id = {
+                str(row[0]): "ENABLED" if row[1] else "DISABLED"
+                for row in db.execute(
+                    "SELECT principal_id,enabled FROM principal_credentials"
+                ).fetchall()
+            }
         profile_by_id = {str(row[0]): row[1:] for row in profile_rows}
         visible_unit_ids = {str(row[3]) for row in profile_rows if row[3] is not None}
         if principal is _CEO_PRINCIPAL:
@@ -1664,6 +1797,8 @@ def organization(principal: str = Depends(read_principal)):
                 "authorityBoundary": "El perfil organizativo no concede permisos.",
                 "isSyntheticDemo": False, "evidenceDescription": "Perfil organizativo persistido.",
                 "lastEvidenceAt": None,
+                **({"credentialStatus": credential_state_by_id[principal_id]}
+                   if principal_id in credential_state_by_id else {}),
             } for principal_id, profile in profile_by_id.items()]
             return {"units": units, "agents": agents, "totalStandingAgents": 0,
                     "totalEphemeralAgents": 0, "totalUnknownAgents": len(agents),
@@ -1783,6 +1918,10 @@ def organization(principal: str = Depends(read_principal)):
             "managerId": profile[3], "competencies": profile[4],
             "evidenceDescription": "Perfil organizativo persistido; actividad derivada de ejecuciones y revisiones.",
         })
+    if principal is _CEO_PRINCIPAL:
+        for agent_id, agent in agents.items():
+            if agent_id in credential_state_by_id:
+                agent["credentialStatus"] = credential_state_by_id[agent_id]
     return {"units": units, "agents": list(agents.values()),
             "totalStandingAgents": 0, "totalEphemeralAgents": 0,
             "totalUnknownAgents": len(agents), "activeAssignmentsCount": active_count,
@@ -4946,13 +5085,10 @@ def stage_repository_check(
 def _agent_budget_left(db, project_id) -> float | None:
     """Daily agent budget the CEO set for this API (AAO_AGENT_DAILY_BUDGET_USD) minus today's estimated spend of
     the project's staged agent attempts. None when no budget is set. An unreadable value fails closed (0)."""
-    raw = os.getenv("AAO_AGENT_DAILY_BUDGET_USD")
-    if raw is None:
+    from aao.agent_runner import daily_budget_usd
+    if os.getenv("AAO_AGENT_DAILY_BUDGET_USD") is None:
         return None
-    try:
-        budget = float(raw)
-    except ValueError:
-        budget = 0.0
+    budget = daily_budget_usd() or 0.0  # set but not a positive finite number: fail closed
     spent = db.execute("SELECT coalesce(sum((e.details->>'cost_estimate_usd')::numeric),0) FROM events e "
                        "JOIN execution_queue q ON q.id=e.subject_id WHERE e.kind='execution.staged' "
                        "AND q.project_id=%s AND e.created_at >= date_trunc('day', now() AT TIME ZONE 'UTC') "
@@ -5027,9 +5163,11 @@ def stage_agent_run(work_id: str, payload: AgentRunRequest, principal: str = Dep
         if not cap or cap[0] != "agent" or cap[1] != "registered_local" or cap[2] != "aao.agent_runner:patch":
             raise HTTPException(409, "Selected agent-runner capability is unavailable")
         # Authorization is checked here on its own, whatever any routing recommendation said.
-        from aao.agent_runner import activated_backends
+        from aao.agent_runner import activated_backends, daily_budget_usd
         if cap[3] not in (None, "fixture") and cap[3] not in activated_backends():
             raise HTTPException(409, f"Agent backend {cap[3]} is not activated; CEO provider activation required")
+        if cap[3] not in (None, "fixture") and daily_budget_usd() is None:
+            raise HTTPException(409, f"Agent backend {cap[3]} refused: daily budget required (AAO_AGENT_DAILY_BUDGET_USD)")
         ev = db.execute("SELECT 1 FROM events WHERE subject_id=%s AND kind='capability.evaluated' AND details->>'capability_id'=%s AND details->>'version'=%s AND details->>'recommendation' IN ('reuse','adapt') LIMIT 1", (work_id, payload.capability_id, payload.version)).fetchone()
         if not ev:
             raise HTTPException(409, "Capability must be selected for this task before staging")

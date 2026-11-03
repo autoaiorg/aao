@@ -9,6 +9,8 @@ StartLimitBurst=5
 [Service]
 Type=simple
 EnvironmentFile=/etc/aao/selfdev-codex-worker.env
+# The EnvironmentFile must set AAO_AGENT_DAILY_BUDGET_USD to a positive finite
+# USD amount; the Codex backend fails closed when it is absent or invalid.
 Environment=XDG_RUNTIME_DIR=%t
 Environment=XDG_DATA_HOME=%h/.local/share
 Environment=AAO_ENV=production

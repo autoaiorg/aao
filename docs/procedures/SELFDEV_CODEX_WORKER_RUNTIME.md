@@ -31,6 +31,12 @@ exige que coincida exactamente con el principal autenticado.
   Codex; el worker necesita esa misma activación y el `CODEX_HOME` dedicado.
   Esto es independiente de la unidad. La plantilla no configura el proveedor
   por defecto.
+- El fichero de activación `/etc/aao/selfdev-codex-worker.env` debe establecer
+  `AAO_AGENT_DAILY_BUDGET_USD` con el límite diario aprobado por el CEO, como
+  número positivo y finito (por ejemplo `5.00`, solo ilustrativo). Si falta, no
+  es numérico, es cero/negativo, `NaN` o infinito, el backend Codex falla
+  cerrado. Aplicar el límite tanto al proceso API (para staging) como al worker
+  (para ejecución).
 - La API configurada por `AAO_API_BASE_URL` debe ser loopback en este despliegue.
 - La autenticación de Codex puede expirar o ser revocada; este documento no
   comprueba ni renueva credenciales de OpenAI.
@@ -71,7 +77,13 @@ ruta no secreta; no contiene tokens):
 ```ini
 AAO_AGENT_PROVIDER=codex
 AAO_AGENT_CODEX_HOME=/home/aao-impl-codex/.local/share/aao/codex-agent
+AAO_AGENT_DAILY_BUDGET_USD=5.00
 ```
+
+`5.00` es un ejemplo, no un presupuesto concedido: sustituirlo por un límite
+diario positivo y finito expresamente aprobado antes de activar Codex. La misma
+variable debe estar en el entorno de la API; no basta con configurarla solo en
+esta unidad.
 
 La instancia del servicio es el UUID del proyecto (por ejemplo
 `aao-selfdev-codex-worker@9d17d6c1-d644-424a-a425-fe7e084c3d91.service`). La

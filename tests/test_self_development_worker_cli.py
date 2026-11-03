@@ -460,8 +460,9 @@ def test_dispatch_sends_agent_token_only_to_local_api(tmp_path, monkeypatch):
             return Response(json.dumps({"status": "QUEUED", "execution_id": "e1",
                                         "work_id": "w1"}).encode())
 
-    def fake_build_opener(handler):
-        captured["redirect_handler"] = handler
+    def fake_build_opener(*handlers):
+        captured["proxy_handler"] = handlers[0]
+        captured["redirect_handler"] = handlers[1]
         return Opener()
 
     def unused_urlopen(*_args, **_kwargs):
@@ -479,6 +480,8 @@ def test_dispatch_sends_agent_token_only_to_local_api(tmp_path, monkeypatch):
         "project_id": "p1", "principal_id": "a1", "base_sha": "a" * 40,
     }
     assert captured["timeout"] == 10
+    assert isinstance(captured["proxy_handler"], worker.urllib.request.ProxyHandler)
+    assert captured["proxy_handler"].proxies == {}
     assert captured["redirect_handler"] is worker._RejectRedirects
     assert worker._RejectRedirects().redirect_request(None, None, 302, "Found", {},
                                                       "https://elsewhere.test/") is None

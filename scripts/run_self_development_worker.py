@@ -155,7 +155,9 @@ def dispatch_next(project_id: str, principal_id: str | None, base_sha: str) -> d
             headers={"Content-Type": "application/json", "X-Agent-Token": token},
             method="POST",
         )
-        opener = urllib.request.build_opener(_RejectRedirects)
+        # Worker credentials are scoped to the configured AAO API origin. Never
+        # let inherited proxy settings redirect that bearer header elsewhere.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _RejectRedirects)
         with opener.open(request, timeout=10) as response:
             payload = json.loads(response.read(65536))
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:

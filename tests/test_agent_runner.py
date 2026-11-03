@@ -189,6 +189,8 @@ def test_ollama_backend_uses_only_loopback_and_zero_cost(monkeypatch, tmp_path):
     repo, sha = _empty_repo(tmp_path)
     (repo / "src/aao").mkdir(parents=True)
     (repo / "src/aao/x.py").write_text("before\n")
+    _git(repo, "config", "user.name", "test")
+    _git(repo, "config", "user.email", "test@example.com")
     _git(repo, "add", ".")
     _git(repo, "commit", "-qm", "add file")
     sha = _git(repo, "rev-parse", "HEAD").strip()

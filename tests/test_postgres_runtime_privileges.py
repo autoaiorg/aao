@@ -342,3 +342,84 @@ def test_bootstrap_removes_preexisting_parent_memberships():
                 ).fetchall()
             ]
             assert leftovers == [], f"test roles left behind: {leftovers}"
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="Explicit disposable PostgreSQL database required",
+)
+def test_api_runtime_grants_for_organization_execution_journal(monkeypatch):
+    """Exercise the exact API grants as an isolated, non-owner role."""
+    import psycopg
+    from psycopg import sql
+    from psycopg.conninfo import make_conninfo
+
+    from aao.postgresql_connection import connect_postgres
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    role = "org_exec_test_" + uuid4().hex
+    password = uuid4().hex + uuid4().hex
+    database = Path(__file__).resolve().parents[1] / "scripts/bootstrap/apply_api_grants.sql"
+    grants = database.read_text(encoding="utf-8")
+    expected_grants = (
+        "GRANT SELECT, INSERT, UPDATE ON TABLE organization_proposals TO aao_runtime;",
+        "GRANT SELECT, INSERT, UPDATE ON TABLE organization_executions TO aao_runtime;",
+        "GRANT SELECT, INSERT ON TABLE organization_execution_events TO aao_runtime;",
+        "GRANT USAGE ON SEQUENCE organization_execution_events_id_seq TO aao_runtime;",
+    )
+    assert all(statement in grants for statement in expected_grants)
+
+    with connect_postgres() as db:
+        db.execute(
+            sql.SQL(
+                "CREATE ROLE {} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD {}"
+            ).format(sql.Identifier(role), sql.Literal(password))
+        )
+        db.execute(
+            sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
+                sql.Identifier(db.info.dbname), sql.Identifier(role)
+            )
+        )
+        db.execute(sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(sql.Identifier(role)))
+        for statement in expected_grants:
+            db.execute(statement.replace("aao_runtime", role))
+
+    runtime = psycopg.connect(
+        make_conninfo(os.environ["AAO_TEST_POSTGRES_URL"], user=role, password=password)
+    )
+    try:
+        assert runtime.execute(
+            "SELECT has_table_privilege(current_user, 'organization_proposals', 'SELECT'), "
+            "has_table_privilege(current_user, 'organization_proposals', 'INSERT'), "
+            "has_table_privilege(current_user, 'organization_proposals', 'UPDATE'), "
+            "has_table_privilege(current_user, 'organization_proposals', 'DELETE'), "
+            "has_table_privilege(current_user, 'organization_executions', 'INSERT'), "
+            "has_table_privilege(current_user, 'organization_executions', 'UPDATE'), "
+            "has_table_privilege(current_user, 'organization_executions', 'DELETE'), "
+            "has_table_privilege(current_user, 'organization_execution_events', 'INSERT'), "
+            "has_table_privilege(current_user, 'organization_execution_events', 'UPDATE'), "
+            "has_table_privilege(current_user, 'organization_execution_events', 'DELETE'), "
+            "has_sequence_privilege(current_user, 'organization_execution_events_id_seq', 'USAGE')"
+        ).fetchone() == (True, True, True, False, True, True, False, True, False, False, True)
+        for table in (
+            "organization_proposals",
+            "organization_executions",
+            "organization_execution_events",
+        ):
+            runtime.execute(sql.SQL("SELECT 1 FROM {} LIMIT 0").format(sql.Identifier(table)))
+        runtime.commit()
+        for statement in (
+            "DELETE FROM organization_proposals WHERE false",
+            "DELETE FROM organization_executions WHERE false",
+            "UPDATE organization_execution_events SET event_type=event_type WHERE false",
+            "DELETE FROM organization_execution_events WHERE false",
+            "TRUNCATE organization_execution_events",
+        ):
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                runtime.execute(statement)
+            runtime.rollback()
+    finally:
+        runtime.close()
+        with connect_postgres() as db:
+            db.execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(role)))
+            db.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))

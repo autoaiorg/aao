@@ -386,6 +386,28 @@ renovaciones mientras no exista consumidor. Hoy no hay ninguno en el repo.
 de los dos principals existe, la API devuelve 404 `CYCLE_NOT_FOUND`; el estado
 parcial inesperado continúa fallando cerrado.
 
+**G8. Límites de emisión en servidor (seguimiento de auditoría de #377).**
+
+- Como máximo `SELFDEV_CYCLE_CONCURRENT_CAP = 2` implementadores de ciclo
+  habilitados y no caducados por proyecto. Más allá: 409
+  `SELFDEV_CYCLE_CONCURRENCY_CAP`. Basta para emitir N+1 mientras N es válido;
+  revocar N o su caducidad liberan el hueco.
+- Si un POST se aplicó pero el cliente perdió la respuesta, un reintento con un
+  ID nuevo puede recibir este 409. El orquestador debe revocar el ciclo huérfano
+  en lugar de reintentar sin límite.
+- Como máximo `SELFDEV_CYCLE_ISSUANCE_DAILY_CAP = 24` emisiones por principal PM
+  en 24 h móviles. Más allá: 429 `SELFDEV_CYCLE_ISSUANCE_DAILY_CAP`.
+- Herencia de perfil: la fuente es el perfil habilitado más reciente de
+  cualquier `aao-selfdev-impl-*` anterior con grant `project.read` en el
+  proyecto. Da igual que su credencial o sus grants hayan caducado o se hayan
+  revocado. Nunca se usa el perfil del coordinador PM. Revocar un ciclo
+  deshabilita su perfil, así que revocar N antes de emitir N+1 (hueco tras
+  revocación) sigue perdiendo el linaje: el CEO debe volver a sembrar el perfil.
+- Cada emisión, después de copiar el perfil, deshabilita los ciclos caducados
+  sin revocar que conservan un binding ACTIVE y retira ese binding (041).
+  Registra el evento `principal.selfdev_cycle_role.expired_retired`. No
+  escala trabajo; eso sigue siendo cosa del DELETE explícito.
+
 ## 8. Eventos de auditoría
 
 Los de la API ya existen: `principal.selfdev_cycle_role.issued` y

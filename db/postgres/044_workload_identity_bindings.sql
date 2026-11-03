@@ -16,5 +16,5 @@ CREATE INDEX IF NOT EXISTS ix_workload_identity_bindings_principal
     ON workload_identity_bindings(principal_id);
 REVOKE ALL ON TABLE workload_identity_bindings FROM PUBLIC;
 INSERT INTO schema_migrations(version)
-VALUES ('043_workload_identity_bindings') ON CONFLICT DO NOTHING;
+VALUES ('044_workload_identity_bindings') ON CONFLICT DO NOTHING;
 COMMIT;

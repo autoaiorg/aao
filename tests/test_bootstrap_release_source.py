@@ -81,7 +81,7 @@ def test_api_and_recovery_use_distinct_database_roles_and_secrets():
 
 def test_api_runtime_can_resolve_but_not_manage_workload_identity_bindings():
     grants = (BOOTSTRAP / "apply_api_grants.sql").read_text()
-    migration = (REPO_ROOT / "db/postgres/043_workload_identity_bindings.sql").read_text()
+    migration = (REPO_ROOT / "db/postgres/044_workload_identity_bindings.sql").read_text()
 
     assert "GRANT SELECT ON TABLE workload_identity_bindings TO aao_runtime" in grants
     assert "GRANT INSERT" not in grants.split(

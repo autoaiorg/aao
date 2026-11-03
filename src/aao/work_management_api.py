@@ -1624,6 +1624,16 @@ def organization(principal: str = Depends(read_principal)):
         profile_rows = db.execute(
             profile_query, () if principal is _CEO_PRINCIPAL else (str(principal),),
         ).fetchall()
+        # Only the CEO projection may distinguish historical identities from
+        # currently enabled credentials. Never expose this inventory to agents.
+        credential_state_by_id = {}
+        if principal is _CEO_PRINCIPAL:
+            credential_state_by_id = {
+                str(row[0]): "ENABLED" if row[1] else "DISABLED"
+                for row in db.execute(
+                    "SELECT principal_id,enabled FROM principal_credentials"
+                ).fetchall()
+            }
         profile_by_id = {str(row[0]): row[1:] for row in profile_rows}
         visible_unit_ids = {str(row[3]) for row in profile_rows if row[3] is not None}
         if principal is _CEO_PRINCIPAL:
@@ -1664,6 +1674,8 @@ def organization(principal: str = Depends(read_principal)):
                 "authorityBoundary": "El perfil organizativo no concede permisos.",
                 "isSyntheticDemo": False, "evidenceDescription": "Perfil organizativo persistido.",
                 "lastEvidenceAt": None,
+                **({"credentialStatus": credential_state_by_id[principal_id]}
+                   if principal_id in credential_state_by_id else {}),
             } for principal_id, profile in profile_by_id.items()]
             return {"units": units, "agents": agents, "totalStandingAgents": 0,
                     "totalEphemeralAgents": 0, "totalUnknownAgents": len(agents),
@@ -1783,6 +1795,10 @@ def organization(principal: str = Depends(read_principal)):
             "managerId": profile[3], "competencies": profile[4],
             "evidenceDescription": "Perfil organizativo persistido; actividad derivada de ejecuciones y revisiones.",
         })
+    if principal is _CEO_PRINCIPAL:
+        for agent_id, agent in agents.items():
+            if agent_id in credential_state_by_id:
+                agent["credentialStatus"] = credential_state_by_id[agent_id]
     return {"units": units, "agents": list(agents.values()),
             "totalStandingAgents": 0, "totalEphemeralAgents": 0,
             "totalUnknownAgents": len(agents), "activeAssignmentsCount": active_count,

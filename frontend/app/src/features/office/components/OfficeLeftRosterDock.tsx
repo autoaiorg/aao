@@ -30,6 +30,7 @@ const CATEGORY_BADGE_COLORS: Record<string, { bg: string; border: string; text: 
   INACTIVO: { bg: 'rgba(30, 41, 59, 0.85)', border: '#64748b', text: '#cbd5e1' },
   DESCONOCIDO: { bg: 'rgba(15, 23, 42, 0.85)', border: '#475569', text: '#94a3b8' },
   DESCONECTADO: { bg: 'rgba(51, 65, 85, 0.7)', border: '#475569', text: '#94a3b8' },
+  HISTORICO: { bg: 'rgba(30, 41, 59, 0.85)', border: '#64748b', text: '#cbd5e1' },
 };
 
 export const OfficeLeftRosterDock: React.FC<OfficeLeftRosterDockProps> = ({
@@ -236,7 +237,7 @@ export const OfficeLeftRosterDock: React.FC<OfficeLeftRosterDockProps> = ({
               </span>
             ) : (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '4px' }}>
-                {(['ACTIVO', 'BLOQUEADO', 'PENDIENTE', 'INACTIVO', 'DESCONOCIDO', 'DESCONECTADO'] as const).map(
+                {(['ACTIVO', 'BLOQUEADO', 'PENDIENTE', 'INACTIVO', 'DESCONOCIDO', 'DESCONECTADO', 'HISTORICO'] as const).map(
                   (cat) => {
                     const count = agents.filter((a) => deriveAgentOperationalCategory(a).category === cat).length;
                     const styleBadge = CATEGORY_BADGE_COLORS[cat] || CATEGORY_BADGE_COLORS.DESCONOCIDO;

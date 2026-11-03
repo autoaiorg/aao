@@ -367,6 +367,17 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
     expect(deriveAgentOperationalCategory(liveOrgWithAgents.data.agents[0]).category).toBe('ACTIVO');
     expect(deriveAgentOperationalCategory(liveOrgWithAgents.data.agents[1]).category).toBe('BLOQUEADO');
 
+    const revokedAgent: AgentIdentity = {
+      ...DEMO_AGENTS[0],
+      credentialStatus: 'DISABLED',
+      status: 'UNKNOWN',
+      currentAssignments: [],
+    };
+    expect(deriveAgentOperationalCategory(revokedAgent)).toMatchObject({
+      category: 'HISTORICO',
+      label: 'Histórico · credencial revocada',
+    });
+
     const disconnectedAgent: AgentIdentity = {
       ...DEMO_AGENTS[0],
       status: 'OFFLINE',

@@ -83,6 +83,7 @@ export const OfficeTopRibbon: React.FC<OfficeTopRibbonProps> = ({
       PENDIENTE: 0,
       DESCONOCIDO: 0,
       DESCONECTADO: 0,
+      HISTORICO: 0,
     };
     for (const agent of agents) {
       const { category } = deriveAgentOperationalCategory(agent);
@@ -142,6 +143,11 @@ export const OfficeTopRibbon: React.FC<OfficeTopRibbonProps> = ({
             {stateCounts.DESCONECTADO > 0 && (
               <span className="aao-hud-pill" title="Agentes desconectados o fuera de servicio">
                 🔌 Desconectados: <strong>{stateCounts.DESCONECTADO}</strong>
+              </span>
+            )}
+            {stateCounts.HISTORICO > 0 && (
+              <span className="aao-hud-pill" title="Identidades con credencial deshabilitada; historial conservado">
+                📦 Históricos: <strong>{stateCounts.HISTORICO}</strong>
               </span>
             )}
           </div>

@@ -656,6 +656,9 @@ def test_user_units_are_oneshot_without_no_new_privileges():
                       "RestrictAddressFamilies", "SystemCallFilter"):
         assert not any(line.startswith(forbidden) for line in directives)
     assert "OnUnitActiveSec=5min" in timer and "Unit=aao-selfdev-cycle-renew.service" in timer
+    # The 429 retry margin is derived from these two directives.
+    assert renew.TIMER_INTERVAL == timedelta(minutes=5) and "AccuracySec=30s" in timer
+    assert renew.TIMER_ACCURACY == timedelta(seconds=30)
     assert "OnFailure=aao-selfdev-cycle-renew-alert.service" in directives
     alert = (unit_dir / "aao-selfdev-cycle-renew-alert.service").read_text()
     assert "-p err" in alert and "[Install]" not in alert
@@ -919,23 +922,30 @@ def test_concurrency_cap_409_opens_breaker_without_revoking_anything(env):
     assert any("SELFDEV_CYCLE_CONCURRENCY_CAP" in e.get("reason", "") for e in logs)
 
 
+# Just at the ~26/day peak demand of the 72 h scenario: 429s happen every day and
+# retrying before N runs out reaches the freed slot in time. Any lower cap (25 or
+# less here) leaves a gap whatever the retry timing: the runner renews at T-60, so
+# a cap below demand exhausts the window for longer than N's remaining TTL. That
+# is why the API cap carries 2x headroom (48) rather than relying on this path.
+LOW_DAILY_CAP = 26
 DAILY_CAP_429 = (429, {"detail": {"code": "SELFDEV_CYCLE_ISSUANCE_DAILY_CAP",
                                   "message": "48 per day"}})
 
 
 @pytest.mark.parametrize(("remaining", "wait"), [
-    (timedelta(hours=2), timedelta(hours=1)),        # capped at 1 h
-    (timedelta(minutes=97), timedelta(hours=1)),     # 61 min -> 1 h
-    (timedelta(minutes=96), timedelta(minutes=60)),  # exactly at the cap
-    (timedelta(minutes=95), timedelta(minutes=59)),
-    (timedelta(minutes=60), timedelta(minutes=24)),  # renewal threshold: 60 - 36
-    (timedelta(minutes=42), timedelta(minutes=6)),
-    (timedelta(minutes=41), timedelta(minutes=5)),   # exactly the floor
-    (timedelta(minutes=40), timedelta(minutes=5)),   # floor
+    (timedelta(hours=2), timedelta(hours=1)),                    # capped at 1 h
+    (timedelta(minutes=101, seconds=31), timedelta(hours=1)),
+    (timedelta(minutes=101, seconds=30), timedelta(minutes=60)),  # exactly at the cap
+    (timedelta(minutes=101, seconds=29), timedelta(minutes=59, seconds=59)),
+    (timedelta(minutes=60), timedelta(minutes=18, seconds=30)),  # renewal threshold
+    (timedelta(minutes=46, seconds=31), timedelta(minutes=5, seconds=1)),
+    (timedelta(minutes=46, seconds=30), timedelta(minutes=5)),   # exactly the floor
+    (timedelta(minutes=46, seconds=29), timedelta(minutes=5)),   # floor
     (timedelta(seconds=1), timedelta(minutes=5)),
 ])
 def test_daily_cap_retry_at_targets_n_remaining_minus_margin(remaining, wait):
-    assert renew.DAILY_CAP_SAFETY_MARGIN == timedelta(minutes=36)
+    # 30 min lease + 5 min stop margin + 1 min skew + 5 min timer + 30 s AccuracySec
+    assert renew.DAILY_CAP_SAFETY_MARGIN == timedelta(minutes=41, seconds=30)
     assert renew.daily_cap_retry_at(T0, T0 + remaining) == T0 + wait
 
 
@@ -954,13 +964,13 @@ def test_daily_cap_429_retries_before_n_expires_and_never_revokes(env):
     state = store.load()
     assert state["phase"] == "ACTIVE" and state["consecutive_failures"] == 0
     assert state["next_cycle_id"] is None and state["current_cycle_id"] == c1
-    assert _parse(state["next_attempt_at"]) == clock.now + timedelta(minutes=24)
+    assert _parse(state["next_attempt_at"]) == clock.now + timedelta(minutes=18, seconds=30)
     assert [c[0] for c in server.calls] == ["issue"]
-    for _ in range(4):  # 20 min: still waiting, alert, no POST
+    for _ in range(3):  # 15 min: still waiting, alert, no POST
         clock.advance(minutes=5)
         assert make().tick() == 1
     assert [c[0] for c in server.calls] == ["issue"]
-    clock.advance(minutes=5)  # 25 min: retry while N still has 35 min left
+    clock.advance(minutes=5)  # 20 min: first tick after retry_at; N still has 40 min
     assert make().tick() == 1
     assert [c[0] for c in server.calls] == ["issue", "issue"]
     assert _parse(store.load()["next_attempt_at"]) == clock.now + renew.DAILY_CAP_MIN_WAIT
@@ -1025,16 +1035,14 @@ class FlakyInstaller(FakeInstaller):
         return rc
 
 
-def test_steady_state_72h_with_jitter_and_install_failures_never_leaves_a_gap(tmp_path):
-    """P1 regression: ~23 renewals/day + 3 install failures/day stay under the cap."""
+def _simulate_72h(tmp_path, daily_cap):
+    """5-min timer with up to 60 s jitter, ~3 install failures/day; never a gap."""
     import random
-
-    from aao.work_management_api import SELFDEV_CYCLE_ISSUANCE_DAILY_CAP
 
     rng = random.Random(388)
     clock = Clock()
-    server = CappedServer(clock, SELFDEV_CYCLE_ISSUANCE_DAILY_CAP)
-    installer = FlakyInstaller(server, every=8)  # ~3 failures per day
+    server = CappedServer(clock, daily_cap)
+    installer = FlakyInstaller(server, every=8)
     store = renew.StateStore(tmp_path / "state.json", PROJECT)
     logs = []
     runner = renew.Runner(project_id=PROJECT, api=server, installer=installer, store=store,
@@ -1046,16 +1054,33 @@ def test_steady_state_72h_with_jitter_and_install_failures_never_leaves_a_gap(tm
         live = server.cycles[cycle]
         assert not live["revoked"] and live["expires"] > clock(), f"gap at {clock()}"
 
-    for tick in range(1, 72 * 12 + 1):  # 5-min timer with up to 60 s jitter
+    for tick in range(1, 72 * 12 + 1):
         clock.now = T0 + timedelta(minutes=5 * tick, seconds=rng.uniform(0, 60))
         assert_live_cycle()
         runner.tick()
         assert_live_cycle()
         assert store.load()["phase"] != "BREAKER_OPEN"
-    failures = sum(e["event"] == "selfdev_cycle.failed" for e in logs)
-    assert failures >= 3 * 3  # the scenario really injected the failures
+    failures = sum(e["event"] == "selfdev_cycle.failed" and "daily cap" not in e["reason"]
+                   for e in logs)
+    assert failures >= 3 * 3  # the scenario really injected the install failures
+    return server
+
+
+def test_steady_state_72h_with_jitter_and_install_failures_never_leaves_a_gap(tmp_path):
+    """P1 regression: ~23 renewals/day + 3 install failures/day stay under the cap."""
+    from aao.work_management_api import SELFDEV_CYCLE_ISSUANCE_DAILY_CAP
+
+    server = _simulate_72h(tmp_path, SELFDEV_CYCLE_ISSUANCE_DAILY_CAP)
     assert server.rejected == []
     assert len(server.cycles) >= 72
+
+
+def test_72h_under_a_low_daily_cap_the_429_retry_path_never_leaves_a_gap(tmp_path):
+    """N2: a cap below demand forces 429s; retrying before N runs out keeps a live cycle."""
+    server = _simulate_72h(tmp_path, daily_cap=LOW_DAILY_CAP)
+    assert len(server.rejected) >= 3  # the 429 path really ran, on several days
+    assert {r.date() for r in server.rejected} >= {(T0 + timedelta(days=d)).date()
+                                                   for d in (1, 2)}
 
 
 @pytest.mark.parametrize("response", [(429, {"detail": "slow down"}), (409, {"detail": "exists"})])

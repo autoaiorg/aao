@@ -3560,9 +3560,20 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
             **capability["contract"], "model_profile": {"backend": "codex", "provider": "openai", "model": "gpt-6-luna",
                                                         "seats": ["patch.tests"], "quality": {"patch.tests": 4}}}}
         assert client.post(f"/v1/projects/{project}/capabilities", headers=agent, json=codex).status_code == 201
+        ollama = {**capability, "capability_id": "aao.agent-runner.ollama", "contract": {
+            **capability["contract"], "model_profile": {"backend": "ollama", "provider": "ollama-local",
+                                                        "model": "llama3.2:3b", "seats": ["patch.tests"],
+                                                        "quality": {"patch.tests": 3}, "cost_per_attempt_usd": 0}}}
+        # A local backend must be explicitly activated too; a zero price in the catalog does not activate it.
+        bad_ollama = {**ollama, "contract": {**ollama["contract"], "model_profile": {
+            **ollama["contract"]["model_profile"], "cost_per_attempt_usd": 0.01}}}
+        rejected_ollama_cost = client.post(f"/v1/projects/{project}/capabilities", headers=agent, json=bad_ollama)
+        assert rejected_ollama_cost.status_code == 422 and "cost_per_attempt_usd" in rejected_ollama_cost.text
+        assert client.post(f"/v1/projects/{project}/capabilities", headers=agent, json=ollama).status_code == 201
         routed = client.post(f"/v1/work/{work}/route-model", headers=agent, json={"seat": "patch.tests"}).json()
         assert routed["capability_id"] == "aao.agent-runner" and routed["execution_authorized"] is False
         assert ["aao.agent-runner.codex@1.0.0", "backend codex not activated"] in routed["rejected"]
+        assert ["aao.agent-runner.ollama@1.0.0", "backend ollama not activated"] in routed["rejected"]
         monkeypatch.setenv("AAO_AGENT_PROVIDER", "codex")
         routed = client.post(f"/v1/work/{work}/route-model", headers=agent, json={"seat": "patch.tests"}).json()
         assert routed["capability_id"] == "aao.agent-runner.codex"
@@ -3580,6 +3591,9 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         refused = client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json={
             "capability_id": "aao.agent-runner.codex", "version": "1.0.0", "base_sha": base_sha})
         assert refused.status_code == 409 and "not activated" in refused.text
+        ollama_run = {"capability_id": "aao.agent-runner.ollama", "version": "1.0.0", "base_sha": base_sha}
+        refused_ollama = client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=ollama_run)
+        assert refused_ollama.status_code == 409 and "not activated" in refused_ollama.text
         # An activated model backend is still refused without a positive daily budget (fail closed).
         codex_run = {"capability_id": "aao.agent-runner.codex", "version": "1.0.0", "base_sha": base_sha}
         monkeypatch.setenv("AAO_AGENT_PROVIDER", "codex")

@@ -181,6 +181,132 @@ def test_daily_budget_accepts_only_a_positive_finite_value(monkeypatch):
     assert daily_budget_usd() is None
 
 
+def test_ollama_backend_uses_only_loopback_and_zero_cost(monkeypatch, tmp_path):
+    import json
+
+    from aao import agent_runner
+
+    repo, sha = _empty_repo(tmp_path)
+    (repo / "src/aao").mkdir(parents=True)
+    (repo / "src/aao/x.py").write_text("before\n")
+    _git(repo, "config", "user.name", "test")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "add file")
+    sha = _git(repo, "rev-parse", "HEAD").strip()
+    patch = b"diff --git a/src/aao/x.py b/src/aao/x.py\n--- a/src/aao/x.py\n+++ b/src/aao/x.py\n@@ -1 +1 @@\n-before\n+after\n"
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def read(self, _limit): return json.dumps({"model": "qwen3.5:9b", "response": patch.decode()}).encode()
+
+    class Opener:
+        def open(self, request, timeout):
+            assert request.full_url == "http://127.0.0.1:11434/api/generate"
+            assert timeout == 20
+            request_data = json.loads(request.data)
+            assert request_data["options"]["num_predict"] == 384
+            assert request_data["think"] is False
+            assert "UNTRUSTED REPOSITORY FILE: src/aao/x.py" in request_data["prompt"]
+            assert "before" in request_data["prompt"]
+            return Response()
+
+    monkeypatch.setenv("AAO_AGENT_PROVIDER", "ollama")
+    monkeypatch.setenv("AAO_AGENT_OLLAMA_MODEL", "qwen3.5:9b")
+    monkeypatch.setenv("AAO_AGENT_DAILY_BUDGET_USD", "0")
+    monkeypatch.setattr(agent_runner, "_ollama_opener", lambda: Opener())
+    result = run_agent_patch(repo, sha, "edit x", backend="ollama", timeout=20, model="qwen3.5:9b")
+    assert result["provider"] == "ollama-local" and result["model"] == "qwen3.5:9b"
+    assert "-before\n+after" in result["patch"]
+    assert (repo / "src/aao/x.py").read_text() == "before\n"
+
+
+def test_ollama_repository_context_is_bounded_and_excludes_untracked_secret_paths(tmp_path):
+    from aao.agent_runner import _ollama_repository_context
+
+    repo, _sha = _empty_repo(tmp_path)
+    (repo / "src/aao").mkdir(parents=True)
+    (repo / "src/aao/module.py").write_text("safe source\n")
+    (repo / "src/aao/.env.secret.py").write_text("API_TOKEN=do-not-send\n")
+    (repo / "src/aao/private_notes.md").write_text("PRIVATE=do-not-send\n")
+    _git(repo, "add", "src/aao/module.py", "src/aao/.env.secret.py", "src/aao/private_notes.md")
+    context = _ollama_repository_context(repo, max_chars=128)
+    assert len(context) <= 128
+    assert "safe source" in context
+    assert "do-not-send" not in context
+    (repo / "src/aao/untracked.py").write_text("untracked content\n")
+    assert "untracked content" not in _ollama_repository_context(repo)
+
+
+def test_ollama_opener_does_not_follow_redirects():
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from urllib.error import HTTPError
+
+    from aao.agent_runner import _ollama_opener
+
+    remote_requests = []
+
+    class RemoteHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            remote_requests.append(("GET", self.path))
+            self.send_response(200)
+            self.end_headers()
+
+        def do_POST(self):
+            remote_requests.append(("POST", self.path))
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    remote = HTTPServer(("127.0.0.1", 0), RemoteHandler)
+    remote_thread = threading.Thread(target=remote.serve_forever, daemon=True)
+    remote_thread.start()
+
+    class RedirectHandler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            # urllib does not normally follow 307 redirects for POST; use 302
+            # so this test proves our opener's redirect handler is required.
+            self.send_response(302)
+            self.send_header("Location", f"http://127.0.0.1:{remote.server_port}/capture")
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    redirect = HTTPServer(("127.0.0.1", 0), RedirectHandler)
+    redirect_thread = threading.Thread(target=redirect.serve_forever, daemon=True)
+    redirect_thread.start()
+    try:
+        from urllib.request import Request
+
+        req = Request(f"http://127.0.0.1:{redirect.server_port}/generate", data=b"private prompt", method="POST")
+        with pytest.raises(HTTPError):
+            _ollama_opener().open(req, timeout=3)
+        assert remote_requests == []
+    finally:
+        redirect.shutdown()
+        remote.shutdown()
+        redirect.server_close()
+        remote.server_close()
+        redirect_thread.join(timeout=3)
+        remote_thread.join(timeout=3)
+
+
+def test_ollama_backend_requires_activation_and_pinned_model(monkeypatch, tmp_path):
+    from aao import agent_runner
+    from aao.agent_runner import backend_identity
+    monkeypatch.delenv("AAO_AGENT_PROVIDER", raising=False)
+    monkeypatch.setenv("AAO_AGENT_OLLAMA_MODEL", "qwen3.5:9b")
+    with pytest.raises(AgentRunnerError, match="pinned AAO_AGENT_OLLAMA_MODEL"):
+        backend_identity("ollama", model="--unsafe")
+    repo, sha = _empty_repo(tmp_path)
+    monkeypatch.setattr(agent_runner, "build_opener", lambda *_args: pytest.fail("network call must not occur"))
+    with pytest.raises(AgentRunnerError, match="ollama backend disabled"):
+        agent_runner.run_agent_patch(repo, sha, "task", backend="ollama", timeout=3, model="qwen3.5:9b")
 @pytest.mark.parametrize("budget", ["", "abc", "0", "-1", "-inf", "nan", "inf", "1e400"])
 def test_agent_budget_left_fails_closed_on_an_invalid_budget(monkeypatch, budget):
     """A set but invalid AAO_AGENT_DAILY_BUDGET_USD leaves nothing to spend: never nan, inf, negative or a crash."""

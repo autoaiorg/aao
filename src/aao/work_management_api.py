@@ -20,7 +20,7 @@ load_local_env()
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from aao.backup import BackupError, active_host_fence_epoch
 from aao.capability_contracts import missing_contract_fields, model_profile_errors
@@ -894,6 +894,92 @@ SELFDEV_REVIEWER_GRANTS = ("work.review",)
 class SelfDevCycleIssueRequest(BaseModel):
     cycle_id: str = Field(pattern=r"^[0-9a-f]{32}$")
     lifetime_seconds: int = Field(ge=1, le=int(SELFDEV_CYCLE_TTL.total_seconds()))
+
+
+class SelfDevCycleWorkRequest(BaseModel):
+    """A tightly bounded work-item request; this route cannot admit or execute it."""
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    idempotency_key: UUID
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=5000)
+    acceptance_criteria: list[str] = Field(min_length=1, max_length=20)
+
+    @field_validator("acceptance_criteria")
+    @classmethod
+    def validate_criteria(cls, values: list[str]) -> list[str]:
+        normalized = [value.strip() for value in values]
+        if any(not value or len(value) > 500 for value in normalized):
+            raise ValueError("criteria must be non-empty and at most 500 characters")
+        return normalized
+
+
+def _require_selfdev_cycle_coordinator(db, principal: AuthenticatedPrincipal, project_id: str) -> None:
+    if not str(principal).startswith("aao-pm-coordinator-"):
+        raise HTTPException(403, "Self Development cycle request requires the PM coordinator")
+    require_grant(db, principal, project_id, "work.coordinate")
+
+
+@app.post("/v1/projects/{project_id}/selfdev-cycle-work", status_code=201)
+def create_selfdev_cycle_work(
+    project_id: str,
+    payload: SelfDevCycleWorkRequest,
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_worker)],
+):
+    """Create one attributable INBOX request for Self Development; never admit it."""
+    key = str(payload.idempotency_key)
+    request_sha256 = hashlib.sha256(json.dumps({
+        "title": payload.title,
+        "description": payload.description,
+        "acceptance_criteria": payload.acceptance_criteria,
+    }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    with tx() as db:
+        # Serialize retries for the key, including across different project IDs.
+        db.execute(
+            "SELECT pg_advisory_xact_lock(hashtext('selfdev.cycle.work'),hashtext(%s))",
+            (key,),
+        )
+        project = db.execute(
+            "SELECT name,state FROM projects WHERE id=%s FOR UPDATE", (project_id,),
+        ).fetchone()
+        _require_selfdev_cycle_coordinator(db, principal, project_id)
+        active_projects = db.execute(
+            "SELECT id FROM projects WHERE name=%s AND state='ACTIVE' FOR UPDATE",
+            (SELFDEV_PROJECT_NAME,),
+        ).fetchall()
+        if (not project or project[0] != SELFDEV_PROJECT_NAME or project[1] != "ACTIVE"
+                or len(active_projects) != 1 or str(active_projects[0][0]) != project_id):
+            raise HTTPException(409, "Self Development project is not uniquely active")
+
+        prior = db.execute(
+            "SELECT subject_id,details FROM events "
+            "WHERE kind='work.selfdev_cycle_requested' AND details->>'idempotency_key'=%s",
+            (key,),
+        ).fetchone()
+        if prior:
+            details = prior[1] if isinstance(prior[1], dict) else {}
+            if details.get("project_id") != project_id:
+                raise HTTPException(409, "Idempotency key was already used for another project")
+            if details.get("request_sha256") != request_sha256:
+                raise HTTPException(409, "Idempotency key was already used for a different request")
+            return {"id": str(prior[0]), "status": "INBOX", "created": False}
+
+        work_id = str(uuid4())
+        db.execute(
+            "INSERT INTO work_items(id,project_id,title,description,author_id,status,acceptance_criteria) "
+            "VALUES (%s,%s,%s,%s,%s,'INBOX',%s::jsonb)",
+            (work_id, project_id, payload.title, payload.description, str(principal),
+             json.dumps(payload.acceptance_criteria)),
+        )
+        audit(db, work_id, "work.selfdev_cycle_requested", {
+            "project_id": project_id,
+            "actor": str(principal),
+            "status": "INBOX",
+            "admitted": False,
+            "idempotency_key": key,
+            "request_sha256": request_sha256,
+        })
+    return {"id": work_id, "status": "INBOX", "created": True}
 
 
 def _require_selfdev_cycle_issuer(db, principal: AuthenticatedPrincipal, project_id: str) -> None:

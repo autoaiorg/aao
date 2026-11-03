@@ -122,6 +122,25 @@ Reboot also removes `/run/user` files, but still requires API revocation to
 disable the credentials. Audit event evidence and disabled credential state
 must be checked before considering cleanup complete.
 
+## Bounded PM intake request
+
+The PM coordinator may submit one narrowly-scoped Self Development work request
+through `POST /v1/projects/{project_id}/selfdev-cycle-work`. This endpoint
+requires only the PM coordinator identity and the project's existing
+`work.coordinate` grant; it does not require or grant `work.create`. It accepts
+only an idempotency UUID, title (1–200 characters), description (0–5000), and
+1–20 non-empty acceptance criteria (at most 500 characters each); unknown
+fields are rejected. The project ID must identify the uniquely active
+`AAO — Self Development` project.
+
+The API attributes `author_id` and the audit event to the authenticated PM
+principal and creates only an `INBOX` item with `admitted: false`. Repeating the
+same key and normalized request returns the same item; reusing the key for a
+different project or content returns HTTP 409. This route does not admit,
+assign, execute, review, publish, or merge work. The ordinary lifecycle and
+review gates still apply, and an API lifecycle reviewer is not a GOV-REV-001
+auditor.
+
 ## Lifecycle boundary
 
 The API review route can advance work only after it validates the linked

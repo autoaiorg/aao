@@ -98,6 +98,105 @@ def _issue(client, project_id, token, cycle_id=None, lifetime=7200):
     )
 
 
+def _request_cycle_work(client, project_id, token, key, **overrides):
+    payload = {
+        "idempotency_key": str(key),
+        "title": "Add a bounded regression check",
+        "description": "Verify one deterministic behavior.",
+        "acceptance_criteria": ["The focused test passes."],
+        **overrides,
+    }
+    return client.post(
+        f"/v1/projects/{project_id}/selfdev-cycle-work",
+        headers={"X-Agent-Token": token},
+        json=payload,
+    )
+
+
+def test_live_cycle_work_request_is_coordinate_only_inbox_and_idempotent(monkeypatch):
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    project, pm, token = _seed(monkeypatch, pm_caps={"work.coordinate"})
+    key = uuid4()
+    with TestClient(app) as client:
+        created = _request_cycle_work(client, project, token, key)
+        assert created.status_code == 201, created.text
+        result = created.json()
+        assert result["status"] == "INBOX" and result["created"] is True
+
+        retry = _request_cycle_work(client, project, token, key)
+        assert retry.status_code == 201, retry.text
+        assert retry.json() == {"id": result["id"], "status": "INBOX", "created": False}
+        conflict = _request_cycle_work(
+            client,
+            project,
+            token,
+            key,
+            title="Different content",
+        )
+        assert conflict.status_code == 409
+
+    with connect_postgres() as db:
+        item = db.execute(
+            "SELECT title,description,author_id,status,acceptance_criteria "
+            "FROM work_items WHERE id=%s",
+            (result["id"],),
+        ).fetchone()
+        assert item == (
+            "Add a bounded regression check",
+            "Verify one deterministic behavior.",
+            pm,
+            "INBOX",
+            ["The focused test passes."],
+        )
+        event = db.execute(
+            "SELECT kind,details FROM events WHERE subject_id=%s",
+            (result["id"],),
+        ).fetchone()
+        assert event[0] == "work.selfdev_cycle_requested"
+        assert event[1]["idempotency_key"] == str(key)
+        assert event[1]["admitted"] is False
+        assert (
+            db.execute(
+                "SELECT count(*) FROM events WHERE kind='work.selfdev_cycle_requested' "
+                "AND details->>'idempotency_key'=%s",
+                (str(key),),
+            ).fetchone()[0]
+            == 1
+        )
+
+
+def test_live_cycle_work_request_requires_coordinate_and_strict_payload(monkeypatch):
+    from aao.work_management_api import app
+
+    project, _pm, _token = _seed(monkeypatch, pm_caps=set())
+    token = "underprivileged-" + uuid4().hex
+    principal = "aao-pm-coordinator-under-" + uuid4().hex
+    _seed_agent(project, token=token, principal_id=principal)
+    with TestClient(app) as client:
+        denied = _request_cycle_work(client, project, token, uuid4())
+        assert denied.status_code == 403
+
+        _project, _pm, authorized = _seed(monkeypatch, pm_caps={"work.coordinate"})
+        malformed = _request_cycle_work(
+            client,
+            _project,
+            authorized,
+            uuid4(),
+            unexpected="must be rejected",
+        )
+        assert malformed.status_code == 422
+        empty_criteria = _request_cycle_work(
+            client,
+            _project,
+            authorized,
+            uuid4(),
+            acceptance_criteria=["  "],
+        )
+        assert empty_criteria.status_code == 422
+
+
 def test_live_fastapi_authorization_rejects_missing_ordinary_and_underprivileged(monkeypatch):
     from aao import work_management_api as api
 

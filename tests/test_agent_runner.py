@@ -179,3 +179,72 @@ def test_daily_budget_accepts_only_a_positive_finite_value(monkeypatch):
     assert daily_budget_usd() == 0.5
     monkeypatch.setenv("AAO_AGENT_DAILY_BUDGET_USD", "0")
     assert daily_budget_usd() is None
+
+
+def test_ollama_backend_uses_only_loopback_and_zero_cost(monkeypatch, tmp_path):
+    import json
+
+    from aao import agent_runner
+
+    repo, sha = _empty_repo(tmp_path)
+    (repo / "src/aao").mkdir(parents=True)
+    (repo / "src/aao/x.py").write_text("before\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "add file")
+    sha = _git(repo, "rev-parse", "HEAD").strip()
+    patch = b"diff --git a/src/aao/x.py b/src/aao/x.py\n--- a/src/aao/x.py\n+++ b/src/aao/x.py\n@@ -1 +1 @@\n-before\n+after\n"
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def read(self, _limit): return json.dumps({"model": "qwen3.5:9b", "response": patch.decode()}).encode()
+
+    class Opener:
+        def open(self, request, timeout):
+            assert request.full_url == "http://127.0.0.1:11434/api/generate"
+            assert timeout == 20
+            request_data = json.loads(request.data)
+            assert request_data["options"]["num_predict"] == 384
+            assert request_data["think"] is False
+            assert "UNTRUSTED REPOSITORY FILE: src/aao/x.py" in request_data["prompt"]
+            assert "before" in request_data["prompt"]
+            return Response()
+
+    monkeypatch.setenv("AAO_AGENT_PROVIDER", "ollama")
+    monkeypatch.setenv("AAO_AGENT_OLLAMA_MODEL", "qwen3.5:9b")
+    monkeypatch.setenv("AAO_AGENT_DAILY_BUDGET_USD", "0")
+    monkeypatch.setattr(agent_runner, "build_opener", lambda handler: Opener())
+    result = run_agent_patch(repo, sha, "edit x", backend="ollama", timeout=20, model="qwen3.5:9b")
+    assert result["provider"] == "ollama-local" and result["model"] == "qwen3.5:9b"
+    assert "-before\n+after" in result["patch"]
+    assert (repo / "src/aao/x.py").read_text() == "before\n"
+
+
+def test_ollama_repository_context_is_bounded_and_excludes_untracked_secret_paths(tmp_path):
+    from aao.agent_runner import _ollama_repository_context
+
+    repo, _sha = _empty_repo(tmp_path)
+    (repo / "src/aao").mkdir(parents=True)
+    (repo / "src/aao/module.py").write_text("safe source\n")
+    (repo / "src/aao/.env.secret.py").write_text("API_TOKEN=do-not-send\n")
+    (repo / "src/aao/private_notes.md").write_text("PRIVATE=do-not-send\n")
+    _git(repo, "add", "src/aao/module.py", "src/aao/.env.secret.py", "src/aao/private_notes.md")
+    context = _ollama_repository_context(repo, max_chars=128)
+    assert len(context) <= 128
+    assert "safe source" in context
+    assert "do-not-send" not in context
+    (repo / "src/aao/untracked.py").write_text("untracked content\n")
+    assert "untracked content" not in _ollama_repository_context(repo)
+
+
+def test_ollama_backend_requires_activation_and_pinned_model(monkeypatch, tmp_path):
+    from aao import agent_runner
+    from aao.agent_runner import backend_identity
+    monkeypatch.delenv("AAO_AGENT_PROVIDER", raising=False)
+    monkeypatch.setenv("AAO_AGENT_OLLAMA_MODEL", "qwen3.5:9b")
+    with pytest.raises(AgentRunnerError, match="pinned AAO_AGENT_OLLAMA_MODEL"):
+        backend_identity("ollama", model="--unsafe")
+    repo, sha = _empty_repo(tmp_path)
+    monkeypatch.setattr(agent_runner, "build_opener", lambda *_args: pytest.fail("network call must not occur"))
+    with pytest.raises(AgentRunnerError, match="ollama backend disabled"):
+        agent_runner.run_agent_patch(repo, sha, "task", backend="ollama", timeout=3, model="qwen3.5:9b")

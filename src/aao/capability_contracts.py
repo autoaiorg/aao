@@ -22,7 +22,7 @@ def missing_contract_fields(capability_type: str, contract: dict) -> set[str]:
     return {field for field in required if not contract.get(field)}
 
 
-AGENT_BACKENDS = {"fixture", "codex"}
+AGENT_BACKENDS = {"fixture", "codex", "ollama"}
 _PROFILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 
 
@@ -50,6 +50,13 @@ def model_profile_errors(contract: dict) -> list[str]:
     cost = profile.get("cost_per_attempt_usd", 0)
     if type(cost) not in (int, float) or not 0 <= cost <= 1000:
         errors.append("model_profile.cost_per_attempt_usd must be a number between 0 and 1000")
+    if profile.get("backend") == "ollama":
+        if profile.get("provider") != "ollama-local":
+            errors.append("model_profile.provider must be ollama-local for the ollama backend")
+        if not isinstance(model, str) or not _PROFILE_NAME.fullmatch(model):
+            errors.append("model_profile.model must pin a local Ollama model")
+        if type(cost) not in (int, float) or cost != 0:
+            errors.append("model_profile.cost_per_attempt_usd must be 0 for the ollama backend")
     seats = profile.get("seats", [])
     if not isinstance(seats, list) or not all(isinstance(s, str) and _PROFILE_NAME.fullmatch(s) for s in seats):
         errors.append("model_profile.seats must be a list of names")

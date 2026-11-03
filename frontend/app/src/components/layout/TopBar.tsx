@@ -92,31 +92,40 @@ export const TopBar: React.FC<TopBarProps> = ({
     <header
       style={{
         height: 'var(--header-height)',
-        backgroundColor: 'var(--bg-surface)',
+        backgroundColor: 'rgba(10, 22, 40, 0.92)',
+        backdropFilter: 'blur(12px)',
         borderBottom: '1px solid var(--border-subtle)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
-        padding: '0 20px',
+        padding: '0 14px',
         position: 'sticky',
         top: 0,
         zIndex: 50,
       }}
     >
       {authError && !showLoginModal && <p role="alert" style={{ margin: 0, color: 'var(--status-danger-text, #b91c1c)', fontSize: 12 }}>{authError}</p>}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
         {onToggleSidebar && (
           <button
             type="button"
             onClick={onToggleSidebar}
             aria-label="Alternar menú lateral"
             style={{
-              padding: '6px',
-              borderRadius: 'var(--radius-sm)',
-              color: 'var(--text-secondary)',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '5px 10px',
+              borderRadius: 'var(--radius-md)',
+              backgroundColor: 'rgba(30, 41, 59, 0.85)',
+              border: '1px solid var(--border-subtle)',
+              color: 'var(--text-primary)',
+              fontSize: '12px',
+              fontWeight: 600,
             }}
           >
-            ☰
+            <span aria-hidden="true">☰</span>
+            <span>Paneles</span>
           </button>
         )}
 

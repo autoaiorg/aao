@@ -79,14 +79,17 @@ def test_api_and_recovery_use_distinct_database_roles_and_secrets():
     assert "principal_credentials" in api_grants
 
 
-def test_api_runtime_can_resolve_but_not_manage_workload_identity_bindings():
+def test_api_runtime_has_narrow_cycle_binding_and_intent_privileges():
     grants = (BOOTSTRAP / "apply_api_grants.sql").read_text()
     migration = (REPO_ROOT / "db/postgres/044_workload_identity_bindings.sql").read_text()
 
-    assert "GRANT SELECT ON TABLE workload_identity_bindings TO aao_runtime" in grants
-    assert "GRANT INSERT" not in grants.split(
-        "GRANT SELECT ON TABLE workload_identity_bindings TO aao_runtime", 1
-    )[0].split("workload_identity_bindings", 1)[-1]
+    assert "GRANT SELECT, INSERT ON TABLE workload_identity_bindings TO aao_runtime" in grants
+    assert (
+        "GRANT UPDATE (enabled, revoked_at) ON TABLE workload_identity_bindings TO aao_runtime"
+        in grants
+    )
+    assert "GRANT SELECT, INSERT, UPDATE (state, completed_at, revoked_at)" in grants
+    assert "ON TABLE selfdev_cycle_mtls_intents TO aao_runtime" in grants
     assert "REVOKE ALL ON TABLE workload_identity_bindings FROM PUBLIC" in migration
     assert "certificate_sha256 text PRIMARY KEY" in migration
 

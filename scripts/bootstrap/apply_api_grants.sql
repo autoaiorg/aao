@@ -35,7 +35,10 @@ GRANT SELECT, INSERT, UPDATE ON TABLE
 TO aao_runtime;
 GRANT SELECT, INSERT ON TABLE host_worker_bindings TO aao_runtime;
 GRANT SELECT, INSERT, UPDATE ON TABLE pm_coordinator_presence TO aao_runtime;
-GRANT SELECT ON TABLE workload_identity_bindings TO aao_runtime;
+GRANT SELECT, INSERT ON TABLE workload_identity_bindings TO aao_runtime;
+GRANT UPDATE (enabled, revoked_at) ON TABLE workload_identity_bindings TO aao_runtime;
+GRANT SELECT, INSERT, UPDATE (state, completed_at, revoked_at)
+  ON TABLE selfdev_cycle_mtls_intents TO aao_runtime;
 -- Narrow ACTIVE->FENCED retirement for revoked Self Development cycle implementers (041).
 GRANT EXECUTE ON FUNCTION retire_selfdev_cycle_host_binding(text, uuid) TO aao_runtime;
 GRANT SELECT, INSERT, DELETE ON TABLE project_grants TO aao_runtime;

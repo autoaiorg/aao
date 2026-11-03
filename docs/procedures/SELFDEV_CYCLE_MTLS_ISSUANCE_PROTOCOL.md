@@ -102,19 +102,23 @@ contra PostgreSQL.
 
 1. **CEO/host administrator:** elegir custodia real (servicio dedicado root o
    mecanismo hardware) y custodio/rotación de la clave CA. No se toma aquí.
-2. **API/DB owner:** migración de intenciones tipadas, estados y permisos
-   mínimos; ciclo no ejecutable hasta completar binding; revocación y retención
-   idempotentes bajo concurrencia.
+2. **API/DB owner:** la migración 045 y `PostgresCycleIntentRepository`
+   implementan persistencia de intenciones, binding, expiración y revocación
+   atómicos con permisos de runtime acotados. Su integración con un endpoint
+   de emisión seguro sigue pendiente; no habilita por sí sola el ciclo en
+   producción.
 3. **Host owner:** ACL socket para API y cada UID workload, store de certificados
    públicos, entrega privada de key/cert por `LoadCredential=` y recuperación
    de crash. Nada desplegado.
 4. **GOV-REV-001:** auditoría independiente del protocolo, signer, esquema,
-   reconciliador y suites adversariales antes de merge/activación.
+   repositorio, reconciliador y suites adversariales antes de merge/activación.
 
 ## Evidencia de este PR
 
 Los tests del reconciliador usan dobles en memoria; no crean CA ni certificados
-reales. Demuestran el orden verify-before-bind, redacción de fallos, límites de
-entrada e idempotencia de replay en el adaptador. No prueban PostgreSQL,
-concurrencia real, socket, custodia CA, TLS en producción ni comportamiento del
-host; el test de atomicidad usa un fake que modela un único registro persistido.
+reales. La integración PostgreSQL del repositorio requiere
+`AAO_TEST_POSTGRES_URL` y `AAO_TEST_DB_DISPOSABLE=yes`; comprueba idempotencia
+concurrente de creación/completado, expiración y revocación contra una base
+explícitamente desechable. No prueba socket, custodia CA, TLS en producción ni
+comportamiento del host. La integración del firmante y la activación siguen
+fuera de alcance.

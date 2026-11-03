@@ -6,9 +6,10 @@
 proveedor. Activar un proveedor es una decisión **reservada al CEO**; la clave la
 coloca **solo el CEO**, directamente en el host, nunca en chat, tickets ni PR.
 
-Revisión del código de referencia: `origin/main` f127a7e. La unidad
-`aao-selfdev-codex-worker.service` pertenece a la PR #356 (abierta al redactar
-esto): hasta que se fusione, los pasos del apartado B.3 no son ejecutables.
+Revisión del código de referencia al actualizar este runbook: `origin/main`
+47a3a36 (incluye el endurecimiento de proveedor de #363). Antes de ejecutar,
+confirma que la unidad y el procedimiento del worker Codex estén instalados en
+la revisión vigente; este documento no los activa.
 
 ## 0. Quién hace qué
 
@@ -19,7 +20,7 @@ esto): hasta que se fusione, los pasos del apartado B.3 no son ejecutables.
 | Escribir `AAO_CONVERSATION_API_KEY` en el fichero | **sí** (el fichero es root 0600) | **sí, solo el CEO** |
 | `codex login --device-auth` con `CODEX_HOME` dedicado | **sí** si hay que cambiar a la cuenta `aao-impl-codex` (`sudo -u`); no si ya se opera como ella | **sí, solo el CEO** (sesión OpenAI) |
 | `systemctl restart aao-api` / iniciar el worker Codex | **sí** (sistema) / no (unidad `--user` del propio rol) | autorización expresa del CEO |
-| Fijar `AAO_AGENT_DAILY_BUDGET_USD` | **sí** | decide el CEO |
+| Fijar `AAO_AGENT_DAILY_BUDGET_USD` positivo y finito en API y worker | **sí** | decide el CEO |
 | Rollback (quitar variable + reiniciar) | **sí** | puede hacerlo cualquier operador autorizado |
 
 Ningún agente debe leer `.env.local` ni los ficheros de `/etc/aao/` con claves.
@@ -33,11 +34,13 @@ Ningún agente debe leer `.env.local` ni los ficheros de `/etc/aao/` con claves.
    implementador con `project.read, work.create, work.admit, work.progress, execution.claim,
    code.propose, evidence.submit`; auditor con `work.review`, **separado**; publicador con
    `code.publish`. La API vuelve a comprobar grants en staging y claim.
-3. **Presupuesto**: `AAO_AGENT_DAILY_BUDGET_USD` fijado en el proceso de la **API**.
-   Si no está fijado **no hay límite** (solo se registra la estimación). Un valor ilegible
-   falla cerrado (0). `AAO_AGENT_MAX_ATTEMPTS` (3 por defecto) lo aplica la API. Para la
-   conversación no existe presupuesto en AAO: el límite de gasto debe fijarse en la consola
-   del proveedor (clave con tope de gasto), y es un requisito previo.
+3. **Presupuesto (bloqueante)**: para Codex, `AAO_AGENT_DAILY_BUDGET_USD` debe ser
+   un número positivo y finito en los procesos de la **API** y del **worker**. El código
+   rechaza staging y ejecución de Codex si falta o no es válido; el verificador usa el mismo
+   parser de producción. `AAO_AGENT_MAX_ATTEMPTS` (3 por defecto) lo aplica la API. Para
+   conversación no existe presupuesto ni tope en AAO: antes de activar, el CEO debe configurar
+   y confirmar un límite de gasto en la consola del proveedor para esa clave. Es una
+   precondición manual bloqueante; el verificador no puede inspeccionarla.
 4. **CODEX_HOME aislado** (solo Codex): directorio dedicado, 0700, propiedad de
    `aao-impl-codex`, p. ej. `/home/aao-impl-codex/.local/share/aao/codex-agent`; nunca el
    `~/.codex` de un operador. `agent_runner` rechaza el backend si falta o no es directorio.
@@ -50,8 +53,9 @@ Ningún agente debe leer `.env.local` ni los ficheros de `/etc/aao/` con claves.
    define una lista de destinos permitidos**: aplicarla en el firewall del host (permitir
    solo el host del proveedor, puerto 443) es precondición operativa y **no está verificada
    aquí**.
-7. **Endpoint**: debe ser `https://` sin userinfo ni query (el código no valida el esquema,
-   ver sección 6).
+7. **Endpoint**: debe ser `https://`, sin userinfo. Solo se permite `http://` para
+   `127.0.0.1`, `::1` o `localhost` en pruebas locales. El código rechaza otros esquemas,
+   hosts/puertos malformados y redirecciones.
 8. Backup/rollback listo (sección 4) y verificador ejecutado en estado OFF (sección 3.1).
 
 ## 2. Activación
@@ -63,7 +67,7 @@ Ficheros y lectores (valores en `deploy/env/aao-provider.env.example`, todos vac
 | `AAO_CONVERSATION_PROVIDER`, `_API_URL`, `_MODEL`, `_API_KEY` | `/etc/aao/aao-api.env` | `aao-api.service` (`EnvironmentFile`) | 0600 root (systemd lee como root) |
 | ídem + `AAO_CONVERSATION_RECOVERY_ENABLED=true` | `/etc/aao/aao-recovery.env` | `aao-conversation-recovery.service` (usuario `aao-recovery`) | 0600 root; solo si se activa la recuperación |
 | `AAO_AGENT_PROVIDER=codex`, `AAO_AGENT_DAILY_BUDGET_USD`, `AAO_AGENT_MAX_ATTEMPTS` | `/etc/aao/aao-api.env` | `aao-api.service` (puerta de staging y router) | 0600 root |
-| `AAO_AGENT_PROVIDER=codex`, `AAO_AGENT_CODEX_HOME` | `/etc/aao/selfdev-codex-worker.env` | worker Codex (PR #356) | 0644 root, legible por `aao-impl-codex`; **sin secretos** |
+| `AAO_AGENT_PROVIDER=codex`, `AAO_AGENT_CODEX_HOME`, `AAO_AGENT_DAILY_BUDGET_USD` | `/etc/aao/selfdev-codex-worker.env` | worker Codex | 0644 root, legible por `aao-impl-codex`; **sin secretos** |
 
 En producción no se cargan ficheros dotenv (`environment_settings.py`); solo valen
 las unidades systemd. La clave nunca va en la línea de comandos ni en `Environment=`.
@@ -97,9 +101,10 @@ las unidades systemd. La clave nunca va en la línea de comandos ni en `Environm
    `AAO_AGENT_DAILY_BUDGET_USD=<n>`; `systemctl restart aao-api`. Sin esto la API
    rechaza con 409 el staging de capacidades Codex (`Agent backend codex is not
    activated; CEO provider activation required`).
-3. (sudo, tras fusionar #356) Crear `/etc/aao/selfdev-codex-worker.env` (0644 root)
-   con `AAO_AGENT_PROVIDER=codex` y `AAO_AGENT_CODEX_HOME=<CODEX_HOME>`, instalar la
-   unidad según `docs/procedures/SELFDEV_CODEX_WORKER_RUNTIME.md` (de #356) e iniciarla
+3. (sudo) Crear `/etc/aao/selfdev-codex-worker.env` (0644 root) con
+   `AAO_AGENT_PROVIDER=codex`, `AAO_AGENT_CODEX_HOME=<CODEX_HOME>` y el mismo
+   `AAO_AGENT_DAILY_BUDGET_USD` positivo y finito; instalar la unidad según
+   `docs/procedures/SELFDEV_CODEX_WORKER_RUNTIME.md` e iniciarla
    solo para un ensayo acotado autorizado por el CEO. La unidad falla cerrada si falta
    ese fichero o el token del rol.
 4. Verificar (sección 3.2). El modelo y el backend los decide la capacidad elegida
@@ -111,7 +116,8 @@ las unidades systemd. La clave nunca va en la línea de comandos ni en `Environm
 únicamente booleanos (nunca valores). Debe ejecutarse con las variables del
 servicio inspeccionado exportadas en el mismo shell. Reutiliza por importación
 la puerta real (`conversation_provider.stream_reply`, con `urlopen` sustituido
-para que no pueda enviarse nada, y `agent_runner.activated_backends`).
+para que no pueda enviarse nada, `agent_runner.activated_backends` y el parser
+`agent_runner.daily_budget_usd`).
 
 ### 3.1 Verificar que está OFF (antes de activar y tras el rollback)
 
@@ -125,12 +131,17 @@ Comprobar además que `systemctl show aao-api -p Environment` y
 ### 3.2 Verificar que está ON
 
 ```sh
-python scripts/check_provider_activation.py --expect on    # exit 0
+python scripts/check_provider_activation.py --expect on --conversation-spend-limit-confirmed  # exit 0
 ```
-Esperado: `conversation_provider_active: true`, `codex_backend_would_run: true`
-(`codex_backend_activated` y `codex_home_is_directory`), `agent_budget_limit_set: true`.
-Limitación: demuestra que la puerta deja pasar, **no** que el proveedor
-responda ni que la clave sea válida; eso solo lo demuestra la primera llamada real.
+El flag `--conversation-spend-limit-confirmed` es una atestación explícita del
+operador de que el tope existe en la consola; no es verificación técnica.
+Esperado: `conversation_provider_active: true`,
+`conversation_spend_limit_required: true`,
+`conversation_spend_limit_confirmed_by_operator: true`,
+`codex_backend_would_run: true`, `codex_budget_is_valid: true` y
+`agent_budget_limit_set: true`. Sin el flag manual, `--expect on` falla.
+Limitación: demuestra que la puerta deja pasar, **no** que el proveedor responda
+ni que la clave sea válida; eso solo lo demuestra la primera llamada real.
 
 ## 4. Rollback
 
@@ -154,22 +165,22 @@ Sin secretos. Guardar en `docs/construction-runs/` (o el registro que el PM indi
 - modo/propietario de los ficheros (`stat -c '%a %U:%G %n'`), nunca su contenido;
 - `systemctl is-active` y hora del restart; evidencia de la primera llamada (id de
   turno/ejecución, `model.routed`, `execution.staged` con `cost_estimate_usd`);
-- el valor de presupuesto y de `AAO_AGENT_MAX_ATTEMPTS` vigentes;
+- el valor de presupuesto y de `AAO_AGENT_MAX_ATTEMPTS` vigentes (sin capturar
+  secretos), y confirmación de que la consola del proveedor tiene límite de gasto
+  para la clave de conversación;
 - para Codex: `verify` de `self_development_cycle.py` (cadena desde PostgreSQL);
 - limitaciones: el coste real en tokens no se mide; el egreso no verificado en repo.
 
-## 6. Hallazgos de la preparación (no modificados; sin cambios de código de producción)
+## 6. Límites y condiciones restantes
 
-1. **El endpoint no se valida**: `stream_reply` usa `urllib.request.urlopen` con la URL tal cual;
-   acepta `http://` (la clave viajaría en claro) y esquemas como `file:`/`ftp:`. Mitigación
-   actual: solo el CEO escribe la URL y debe ser `https://`. Recomendado: exigir esquema
-   `https` (y rechazar userinfo) en `stream_reply`.
-2. **`.env.example` induce a error**: documenta `AAO_CONVERSATION_PROVIDER=dummy` con modelo
-   `gemini-2.0-flash` y comentarios "gemini, openai". Solo `openai-compatible` activa algo;
-   cualquier otro valor deja el proveedor apagado.
-3. Si `AAO_AGENT_DAILY_BUDGET_USD` no está fijado no hay tope de gasto del agente.
-4. La conversación no tiene presupuesto ni límite en AAO; depende del tope en el proveedor.
+1. **Endurecimiento aplicado en #363**: el endpoint requiere HTTPS (salvo loopback local),
+   rechaza userinfo y redirecciones, y falla cerrado para esquemas, hosts o puertos no válidos.
+2. **Configuración de ejemplo corregida en #363**: solo `openai-compatible` activa el proveedor.
+3. `AAO_AGENT_DAILY_BUDGET_USD` debe ser positivo y finito; la API y el runner Codex lo
+   rechazan si falta o no es válido. El worker también debe recibirlo.
+4. La conversación no tiene presupuesto ni límite en AAO; depende del tope en el proveedor,
+   que sigue siendo una confirmación manual del CEO.
 5. Las variables `AAO_CONVERSATION_*` deben duplicarse en el entorno del worker de
    recuperación si este se activa; `AAO_AGENT_PROVIDER` debe estar en API **y** worker.
-6. La comprobación de `AAO_AGENT_CODEX_HOME` está inline en `run_agent_patch`, no es
-   importable; el verificador replica esa única condición (directorio existente).
+6. El verificador importa `agent_runner.daily_budget_usd()` y replica la comprobación de
+   `AAO_AGENT_CODEX_HOME` como directorio existente. Sin activación de Codex no se exige presupuesto.

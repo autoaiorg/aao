@@ -1,4 +1,5 @@
 """Activation path and read-only check, with a loopback fake OpenAI-compatible server (no external network)."""
+
 from __future__ import annotations
 
 import importlib.util
@@ -12,12 +13,22 @@ import pytest
 from aao.conversation_provider import ProviderUnavailable, stream_reply
 
 KEY = "sk-test-only-SECRET-123456"
-ALL = ("AAO_CONVERSATION_PROVIDER", "AAO_CONVERSATION_API_URL", "AAO_CONVERSATION_MODEL",
-       "AAO_CONVERSATION_API_KEY", "AAO_AGENT_PROVIDER", "AAO_AGENT_CODEX_HOME",
-       "AAO_AGENT_DAILY_BUDGET_USD", "AAO_AGENT_MAX_ATTEMPTS", "AAO_CONVERSATION_RECOVERY_ENABLED")
+ALL = (
+    "AAO_CONVERSATION_PROVIDER",
+    "AAO_CONVERSATION_API_URL",
+    "AAO_CONVERSATION_MODEL",
+    "AAO_CONVERSATION_API_KEY",
+    "AAO_AGENT_PROVIDER",
+    "AAO_AGENT_CODEX_HOME",
+    "AAO_AGENT_DAILY_BUDGET_USD",
+    "AAO_AGENT_MAX_ATTEMPTS",
+    "AAO_CONVERSATION_RECOVERY_ENABLED",
+)
 
 _spec = importlib.util.spec_from_file_location(
-    "check_provider_activation", Path(__file__).parents[1] / "scripts" / "check_provider_activation.py")
+    "check_provider_activation",
+    Path(__file__).parents[1] / "scripts" / "check_provider_activation.py",
+)
 check = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(check)
 
@@ -69,7 +80,11 @@ def test_activated_conversation_provider_calls_loopback_server(monkeypatch, fake
     assert "".join(stream_reply([{"role": "user", "content": "hi"}])) == "Hola mundo"
     path, auth, body = seen[0]
     assert (path, auth, body["model"], body["stream"]) == (
-        "/v1/chat/completions", f"Bearer {KEY}", "fake-model", True)
+        "/v1/chat/completions",
+        f"Bearer {KEY}",
+        "fake-model",
+        True,
+    )
 
 
 def test_unset_variables_refuse_without_calling_server(fake_provider):
@@ -80,8 +95,9 @@ def test_unset_variables_refuse_without_calling_server(fake_provider):
     assert seen == []
 
 
-@pytest.mark.parametrize("missing", ["AAO_CONVERSATION_API_URL", "AAO_CONVERSATION_MODEL",
-                                     "AAO_CONVERSATION_API_KEY"])
+@pytest.mark.parametrize(
+    "missing", ["AAO_CONVERSATION_API_URL", "AAO_CONVERSATION_MODEL", "AAO_CONVERSATION_API_KEY"]
+)
 def test_any_missing_variable_keeps_provider_off(monkeypatch, fake_provider, missing):
     url, seen = fake_provider
     _activate(monkeypatch, url)
@@ -100,10 +116,14 @@ def test_check_script_off_then_on_never_prints_secret(monkeypatch, fake_provider
     _activate(monkeypatch, url)
     monkeypatch.setenv("AAO_AGENT_PROVIDER", "codex")
     monkeypatch.setenv("AAO_AGENT_CODEX_HOME", str(tmp_path))
-    assert check.main(["--expect", "on"]) == 0
+    monkeypatch.setenv("AAO_AGENT_DAILY_BUDGET_USD", "10")
+    assert check.main(["--expect", "on", "--conversation-spend-limit-confirmed"]) == 0
     captured = capsys.readouterr()
     on = json.loads(captured.out)
     assert on["conversation_provider_active"] and on["codex_backend_would_run"]
+    assert on["codex_budget_is_valid"]
+    assert on["conversation_spend_limit_required"]
+    assert on["conversation_spend_limit_confirmed_by_operator"]
     assert on["variables_set"]["AAO_CONVERSATION_API_KEY"] is True
     for text in (captured.out, captured.err):
         assert KEY not in text and url not in text and str(tmp_path) not in text
@@ -116,3 +136,31 @@ def test_check_script_expect_mismatch_and_partial_codex(monkeypatch, capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["codex_backend_activated"] and not out["codex_backend_would_run"]
     assert check.main(["--expect", "off"]) == 0
+
+
+@pytest.mark.parametrize("budget", [None, "", "abc", "0", "-1", "nan", "inf"])
+def test_codex_invalid_budget_blocks_activation(monkeypatch, capsys, tmp_path, budget):
+    monkeypatch.setenv("AAO_AGENT_PROVIDER", "codex")
+    monkeypatch.setenv("AAO_AGENT_CODEX_HOME", str(tmp_path))
+    if budget is None:
+        monkeypatch.delenv("AAO_AGENT_DAILY_BUDGET_USD", raising=False)
+    else:
+        monkeypatch.setenv("AAO_AGENT_DAILY_BUDGET_USD", budget)
+    assert check.main(["--expect", "on"]) == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["codex_backend_activated"]
+    assert not out["codex_budget_is_valid"]
+    assert not out["codex_backend_would_run"]
+
+
+def test_conversation_spend_limit_is_explicit_blocker(monkeypatch, fake_provider, capsys):
+    url, _seen = fake_provider
+    _activate(monkeypatch, url)
+    monkeypatch.setenv("AAO_AGENT_PROVIDER", "codex")
+    monkeypatch.setenv("AAO_AGENT_CODEX_HOME", "/tmp")
+    monkeypatch.setenv("AAO_AGENT_DAILY_BUDGET_USD", "10")
+    # Local readiness cannot attest provider-console spending controls.
+    assert check.main(["--expect", "on"]) == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["conversation_spend_limit_required"]
+    assert not out["conversation_spend_limit_confirmed_by_operator"]

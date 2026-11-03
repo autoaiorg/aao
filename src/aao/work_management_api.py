@@ -964,9 +964,13 @@ SELFDEV_IMPLEMENTER_GRANTS = (
 )
 SELFDEV_REVIEWER_GRANTS = ("work.review",)
 # H1b: server-side issuance bounds. Two concurrent cycles allow exactly one
-# overlapping renewal (issue N+1 while N is valid); 24 per 24 h per PM principal.
+# overlapping renewal (issue N+1 while N is valid). The daily cap is 2x the
+# steady renewal rate (one issuance per ~60-65 min, ~23/day): at 24 a few install
+# failures a day exhausted it and left the worker without a live cycle (post-merge
+# audit P1 on #388/#387). Revoked issuances still count, so a revoke-and-reissue
+# loop stays bounded.
 SELFDEV_CYCLE_CONCURRENT_CAP = 2
-SELFDEV_CYCLE_ISSUANCE_DAILY_CAP = 24
+SELFDEV_CYCLE_ISSUANCE_DAILY_CAP = 48
 SELFDEV_IMPL_PRINCIPAL_RE = "^aao-selfdev-impl-[0-9a-f]{32}$"
 
 
@@ -1252,10 +1256,15 @@ def _retire_expired_selfdev_cycles(db, project_id: str, actor: str) -> None:
             "UPDATE organization_profiles SET enabled=false,updated_at=clock_timestamp() "
             "WHERE principal_id=%s AND enabled", (impl_id,),
         ).rowcount
-        audit(db, project_id, "principal.selfdev_cycle_role.expired_retired", {
+        details = {
             "cycle_id": cycle_id, "principal_id": impl_id, "issuer_principal_id": actor,
             "host_bindings_retired": retired, "profile_disabled": bool(profiles),
-        })
+        }
+        audit(db, project_id, "principal.selfdev_cycle_role.expired_retired", details)
+        if not retired:
+            # 041 refused (e.g. altered grants): the binding stays ACTIVE for an
+            # operator to inspect; surface it as its own warning event.
+            audit(db, project_id, "principal.selfdev_cycle_role.binding_retire_refused", details)
 
 
 @app.post("/v1/projects/{project_id}/selfdev-cycle-roles", status_code=201)

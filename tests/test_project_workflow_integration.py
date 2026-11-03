@@ -1160,8 +1160,17 @@ def test_group_assignment_routes_execution_without_creating_grants(monkeypatch):
 
         def run_patch(*args, **kwargs):
             calls.append(kwargs)
-            return {"patch": patch, **inspect_patch(patch), "candidate_sha": "b" * 40,
-                    "candidate_ref": "refs/candidates/test", "check": {"conclusion": "success"},
+            candidate_sha = "b" * 40
+            return {"patch": patch, **inspect_patch(patch), "candidate_sha": candidate_sha,
+                    "candidate_ref": f"refs/aao/candidates/{candidate_sha}",
+                    "check": {"kind": "aao.repository-check.v1", "check_id": "core-unit",
+                              "conclusion": "success", "candidate_sha": candidate_sha,
+                              "exit_code": 0, "duration_ms": 0, "extra_tests": [],
+                              "stdout": "", "stderr": "", "limits": {
+                                  "network": "unshared", "source": "read-only mounted source/tests/config",
+                                  "home_and_secrets": "not mounted; environment allow-listed",
+                                  "timeout_seconds": 120, "memory_bytes": 1_073_741_824,
+                                  "temporary_filesystem_bytes": 268_435_456}},
                     "backend": "fixture", "provider": None, "model": None,
                     "backend_version": "test", "elapsed_seconds": 0, "exit_status": 0}
 
@@ -2877,8 +2886,43 @@ def test_postgres_review_is_separate_from_author_and_required_for_done(monkeypat
         })
         assert rejected_while_running.status_code == 409
         candidate_sha = "a" * 40
+        proposal_id = str(uuid4())
+        patch_bytes = (
+            b"diff --git a/tests/review.py b/tests/review.py\n"
+            b"new file mode 100644\n--- /dev/null\n+++ b/tests/review.py\n"
+            b"@@ -0,0 +1 @@\n+assert True\n"
+        )
+        patch_sha = sha256(patch_bytes).hexdigest()
+        # This test exercises the review gate, not staging. Give the queued row
+        # a linked proposal and valid typed result rather than a success-shaped
+        # but incomplete payload.
+        with connect_postgres() as db:
+            db.execute(
+                "UPDATE execution_queue SET input_json=%s::jsonb WHERE id=%s",
+                (json.dumps({"type": "aao.agent-patch.v1", "capability_id": "test-assignment",
+                             "version": "1.0.0", "base_sha": "a" * 40}), execution_id),
+            )
+            db.execute(
+                "INSERT INTO patch_proposals(id,work_id,project_id,proposer_id,base_sha,"
+                "patch_sha256,patch_bytes,changed_paths) VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb)",
+                (proposal_id, w, p, agent_id, "a" * 40, patch_sha, patch_bytes,
+                 json.dumps(["tests/review.py"])),
+            )
         complete(execution_id, lease["token"], agent_id,
-                 {"ok": True, "candidate_sha": candidate_sha},
+                 {"kind": "aao.agent-patch.v1", "conclusion": "success",
+                  "candidate_sha": candidate_sha,
+                  "candidate_ref": f"refs/aao/candidates/{candidate_sha}",
+                  "proposal_id": proposal_id, "patch_sha256": patch_sha,
+                  "changed_paths": ["tests/review.py"], "exit_status": 0,
+                  "elapsed_seconds": 0,
+                  "check": {"kind": "aao.repository-check.v1", "conclusion": "success",
+                            "candidate_sha": candidate_sha, "check_id": "fixture-check",
+                            "exit_code": 0, "duration_ms": 0, "extra_tests": [],
+                            "stdout": "", "stderr": "", "limits": {
+                                "network": "unshared", "source": "read-only mounted source/tests/config",
+                                "home_and_secrets": "not mounted; environment allow-listed",
+                                "timeout_seconds": 120, "memory_bytes": 1_073_741_824,
+                                "temporary_filesystem_bytes": 268_435_456}}},
                  agent_credential=worker["X-Agent-Token"])
         from aao.evidence_registry import register_evidence
         evidence_ref = register_evidence(
@@ -2888,6 +2932,24 @@ def test_postgres_review_is_separate_from_author_and_required_for_done(monkeypat
         assert client.post(f"/v1/work/{w}/progress", headers=worker).status_code == 409
         assert client.post(f"/v1/work/{w}/reviews", headers=worker, json={"decision": "APPROVE", "candidate_sha": candidate_sha, "evidence": [evidence_ref]}).status_code == 403
         assert client.post(f"/v1/work/{w}/reviews", headers=auditor, json={"decision": "APPROVE", "candidate_sha": candidate_sha, "evidence": [""]}).status_code == 409
+        # Legacy success-shaped rows with an incomplete task schema cannot
+        # authorize review, even when a proposal and candidate SHA are linked.
+        with connect_postgres() as db:
+            db.execute(
+                "UPDATE execution_queue SET input_json=%s::jsonb WHERE id=%s",
+                (json.dumps({"type": "aao.agent-patch.v1", "base_sha": "a" * 40}), execution_id),
+            )
+        malformed_input_review = client.post(f"/v1/work/{w}/reviews", headers=auditor, json={
+            "decision": "APPROVE", "candidate_sha": candidate_sha,
+            "evidence": [evidence_ref],
+        })
+        assert malformed_input_review.status_code == 409, malformed_input_review.text
+        with connect_postgres() as db:
+            db.execute(
+                "UPDATE execution_queue SET input_json=%s::jsonb WHERE id=%s",
+                (json.dumps({"type": "aao.agent-patch.v1", "capability_id": "test-assignment",
+                             "version": "1.0.0", "base_sha": "a" * 40}), execution_id),
+            )
         # A verified approval is covered by the W2a test; here: REJECT, then a veto blocks approval.
         from aao.postgresql_connection import connect_postgres
         with connect_postgres() as db:

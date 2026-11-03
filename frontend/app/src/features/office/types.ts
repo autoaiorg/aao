@@ -40,7 +40,8 @@ export type OperationalStateCategory =
   | 'BLOQUEADO'
   | 'PENDIENTE'
   | 'DESCONOCIDO'
-  | 'DESCONECTADO';
+  | 'DESCONECTADO'
+  | 'HISTORICO';
 
 export interface OfficeRoomConfig {
   id: string;

@@ -144,6 +144,23 @@ export function deriveAgentOperationalCategory(agent: AgentIdentity): {
   label: string;
   reason: string;
 } {
+  const hasActiveAssignment = agent.currentAssignments.some(
+    (asg) => asg.status === 'ACTIVE' && Boolean(asg.taskId),
+  );
+  if (agent.credentialStatus === 'DISABLED') {
+    if (hasActiveAssignment) {
+      return {
+        category: 'BLOQUEADO',
+        label: 'Bloqueado · credencial revocada',
+        reason: 'La credencial está deshabilitada mientras figura una asignación con lease activo.',
+      };
+    }
+    return {
+      category: 'HISTORICO',
+      label: 'Histórico · credencial revocada',
+      reason: 'La credencial está deshabilitada; se conserva la identidad y su historial de auditoría.',
+    };
+  }
   const hasBlockingExecution = Boolean(
     agent.executionHistory?.some(
       (exec) => exec.isBudgetExceeded || exec.isNoProgressRetry || Boolean(exec.alert) || Boolean(exec.error)
@@ -157,7 +174,6 @@ export function deriveAgentOperationalCategory(agent: AgentIdentity): {
     };
   }
 
-  const hasActiveAssignment = agent.currentAssignments.some((asg) => asg.status === 'ACTIVE' && Boolean(asg.taskId));
   if (agent.status === 'BUSY' && hasActiveAssignment) {
     return {
       category: 'ACTIVO',

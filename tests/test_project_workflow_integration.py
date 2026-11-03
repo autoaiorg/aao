@@ -2379,11 +2379,17 @@ def test_organization_profiles_are_persisted_and_do_not_create_grants(monkeypatc
         assert agent["roleTitle"] == "Analyst"
         assert agent["unitId"] == unit["id"]
         assert agent["status"] == "UNKNOWN"
+        assert agent["credentialStatus"] == "ENABLED"
         assert any(row["id"] == unit["id"] for row in projection["units"])
         assert client.get(f"/v1/projects/{project}/grants", headers=ceo).json() == []
         scoped = client.get("/v1/organization", headers=agent_headers).json()
         assert [item["id"] for item in scoped["agents"]] == [principal]
+        assert "credentialStatus" not in scoped["agents"][0]
         assert {item["id"] for item in scoped["units"]} == {unit["id"], "unit-unassigned"}
+        assert client.post(f"/v1/principals/{principal}/revoke", headers=ceo).status_code == 200
+        retired = client.get("/v1/organization", headers=ceo).json()
+        retired_agent = next(row for row in retired["agents"] if row["id"] == principal)
+        assert retired_agent["credentialStatus"] == "DISABLED"
 
 
 @pytest.mark.skipif(

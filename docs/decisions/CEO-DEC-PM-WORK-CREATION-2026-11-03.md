@@ -27,7 +27,7 @@ a. **Solo `INBOX`.** El PM nunca admite, asigna ni ejecuta trabajo por esta vía
 b. **Solo en el proyecto Self Development** cuando es el único activo. En cualquier otro caso el endpoint responde 409.
 c. **Tope diario:** 20 work items creados por principal PM en una ventana móvil de 24 h. El endpoint cuenta los eventos `work.selfdev_cycle_requested` del principal en las últimas 24 h y, al superar el tope, responde **429**.
 d. **Auditoría:** cada creación queda registrada como evento `work.selfdev_cycle_requested`, con actor, proyecto, clave de idempotencia, hash de la petición y `admitted: false`.
-e. **La admisión sigue separada.** Requiere el paso del CEO o una revisión independiente. Esta decisión no la delega.
+e. **La admisión no se delega aquí, y hoy no existe una puerta independiente.** Esta decisión no delega la admisión. El control real de `POST /v1/work/{id}/admit` (`src/aao/work_management_api.py:4632-4645`) de autorización es solo `require_grant(..., "work.admit")` (más `require_group_work_assignee` y comprobaciones de estado y dependencias, que no son una puerta de revisión). El grant `work.admit` lo incluye `SELFDEV_IMPLEMENTER_GRANTS` (`src/aao/work_management_api.py:888-891`; `docs/procedures/SELF_DEVELOPMENT_CYCLE_ROLES.md:18`), que el PM emite al implementador de cada ciclo. Por tanto, el implementador emitido por el PM puede admitir trabajo. No hay hoy ninguna exigencia de paso del CEO ni de revisión independiente en la admisión. El registro abierto de esa brecha es el issue #367.
 
 ## 4. Lo que esta decisión NO autoriza
 

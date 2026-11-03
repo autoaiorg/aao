@@ -122,6 +122,41 @@ Reboot also removes `/run/user` files, but still requires API revocation to
 disable the credentials. Audit event evidence and disabled credential state
 must be checked before considering cleanup complete.
 
+## Bounded PM intake request
+
+The CEO's scoped authorization is recorded in issue #367 (`ceo-proposal`)
+under GOV-REV-002 §10.1 / D7-bis. It authorizes the PM coordinator to submit
+narrowly-scoped Self Development work requests
+through `POST /v1/projects/{project_id}/selfdev-cycle-work`. This endpoint
+requires the PM coordinator identity and the project's existing
+`work.coordinate` grant; it does not require or grant general `work.create`.
+This is a purpose-specific exception for attributable requests in `INBOX`, not
+general PM work-creation authority. Admission, assignment, execution, review and
+publication remain separate lifecycle actions and authorities. The route is
+limited to 20 requests per PM principal in a rolling 24-hour period; requests
+over that limit fail with HTTP 429. It accepts only
+an idempotency UUID, title (1–200 characters), description (0–5000), and 1–20
+non-empty acceptance criteria (at most 500 characters each); unknown fields
+are rejected. The combined text content is bounded to at most 15,200 characters;
+this is not a bound on the encoded HTTP request size in bytes, and the endpoint
+does not set a separate request-body byte limit. These limits bound an
+individual item. The project ID must identify the
+uniquely active `AAO — Self Development` project, and non-PM principals are
+rejected even if they have `work.coordinate`.
+
+The API attributes `author_id` and the audit event to the authenticated PM
+principal and creates only an `INBOX` item with `admitted: false`. Repeating the
+same key and normalized request returns the same item; reusing the key for a
+different project or content returns HTTP 409. This route does not admit,
+assign, execute, review, publish, or merge work. The ordinary lifecycle and
+review gates still apply, and an API lifecycle reviewer is not a GOV-REV-001
+auditor.
+
+The per-principal limit is counted from `work.selfdev_cycle_requested` audit
+events. It is deliberately not a global or per-project quota. The event history
+must be retained and protected from alteration for the limit to remain
+effective; any inability to read that history fails the request closed.
+
 ## Lifecycle boundary
 
 The API review route can advance work only after it validates the linked

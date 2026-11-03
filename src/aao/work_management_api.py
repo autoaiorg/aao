@@ -4946,13 +4946,10 @@ def stage_repository_check(
 def _agent_budget_left(db, project_id) -> float | None:
     """Daily agent budget the CEO set for this API (AAO_AGENT_DAILY_BUDGET_USD) minus today's estimated spend of
     the project's staged agent attempts. None when no budget is set. An unreadable value fails closed (0)."""
-    raw = os.getenv("AAO_AGENT_DAILY_BUDGET_USD")
-    if raw is None:
+    from aao.agent_runner import daily_budget_usd
+    if os.getenv("AAO_AGENT_DAILY_BUDGET_USD") is None:
         return None
-    try:
-        budget = float(raw)
-    except ValueError:
-        budget = 0.0
+    budget = daily_budget_usd() or 0.0  # set but not a positive finite number: fail closed
     spent = db.execute("SELECT coalesce(sum((e.details->>'cost_estimate_usd')::numeric),0) FROM events e "
                        "JOIN execution_queue q ON q.id=e.subject_id WHERE e.kind='execution.staged' "
                        "AND q.project_id=%s AND e.created_at >= date_trunc('day', now() AT TIME ZONE 'UTC') "
@@ -5027,9 +5024,11 @@ def stage_agent_run(work_id: str, payload: AgentRunRequest, principal: str = Dep
         if not cap or cap[0] != "agent" or cap[1] != "registered_local" or cap[2] != "aao.agent_runner:patch":
             raise HTTPException(409, "Selected agent-runner capability is unavailable")
         # Authorization is checked here on its own, whatever any routing recommendation said.
-        from aao.agent_runner import activated_backends
+        from aao.agent_runner import activated_backends, daily_budget_usd
         if cap[3] not in (None, "fixture") and cap[3] not in activated_backends():
             raise HTTPException(409, f"Agent backend {cap[3]} is not activated; CEO provider activation required")
+        if cap[3] not in (None, "fixture") and daily_budget_usd() is None:
+            raise HTTPException(409, f"Agent backend {cap[3]} refused: daily budget required (AAO_AGENT_DAILY_BUDGET_USD)")
         ev = db.execute("SELECT 1 FROM events WHERE subject_id=%s AND kind='capability.evaluated' AND details->>'capability_id'=%s AND details->>'version'=%s AND details->>'recommendation' IN ('reuse','adapt') LIMIT 1", (work_id, payload.capability_id, payload.version)).fetchone()
         if not ev:
             raise HTTPException(409, "Capability must be selected for this task before staging")

@@ -24,6 +24,7 @@ import {
 import { OFFICE_ROOMS } from './types';
 import { buildLiveOfficeRooms } from './liveOfficeLayout';
 import {
+  filterOperationalAgents,
   isInteractiveOrEditableElement,
   useOfficeHudState,
 } from './useOfficeHudState';
@@ -179,6 +180,9 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
       return true;
     });
   }, [allAgents, typeFilter, searchQuery]);
+  // Revoked identities remain available to the top-level historical count and
+  // detail/history views, but should not occupy the live office or rosters.
+  const operationalAgents = useMemo(() => filterOperationalAgents(filteredAgents), [filteredAgents]);
 
   // Prioritize contextProjectId in projects list when autoSyncContext is enabled
   const contextualizedProjects = useMemo(() => {
@@ -607,7 +611,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
             {viewMode === '3d' ? (
               <Office3DCanvas
                 ref={canvas3DRef}
-                agents={filteredAgents}
+                agents={operationalAgents}
                 rooms={sceneRooms}
                 demoFurniture={isDemo}
                 selectedRoomId={selectedRoomId}
@@ -621,7 +625,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
             ) : (
               <Office2DPlan
                 units={units}
-                agents={filteredAgents}
+                agents={operationalAgents}
                 selectedRoomId={selectedRoomId}
                 selectedAgentId={selectedAgentId}
                 onSelectRoom={selectRoom}
@@ -635,7 +639,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
             selectedRoomId={selectedRoomId}
             selectedAgentId={selectedAgentId}
             units={units}
-            agents={filteredAgents}
+            agents={operationalAgents}
             onSelectAgent={selectAgent}
             onNavigate={onNavigate}
             onOpenAgentDetail={(agent) => setDrawerAgent(agent)}
@@ -662,7 +666,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
         {viewMode === '3d' ? (
           <Office3DCanvas
             ref={canvas3DRef}
-            agents={filteredAgents}
+            agents={operationalAgents}
             rooms={sceneRooms}
             demoFurniture={isDemo}
             selectedRoomId={selectedRoomId}
@@ -678,7 +682,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
           <div style={{ padding: '16px', paddingTop: zenMode ? '16px' : '148px', paddingBottom: '260px' }}>
             <Office2DPlan
               units={units}
-              agents={filteredAgents}
+              agents={operationalAgents}
               selectedRoomId={selectedRoomId}
               selectedAgentId={selectedAgentId}
               onSelectRoom={selectRoom}
@@ -796,7 +800,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
               widthPx={rosterWidthPx}
               onWidthChange={setRosterWidthPx}
               units={units}
-              agents={filteredAgents}
+              agents={operationalAgents}
               selectedRoomId={selectedRoomId}
               selectedAgentId={selectedAgentId}
               onSelectRoom={selectRoom}
@@ -814,7 +818,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
               isOpen={isMinimapOpen}
               onToggleOpen={() => setIsMinimapOpen((prev) => !prev)}
               rooms={roomConfigs}
-              agents={filteredAgents}
+              agents={operationalAgents}
               selectedRoomId={selectedRoomId}
               selectedAgentId={selectedAgentId}
               cameraState={cameraState}
@@ -853,7 +857,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
                   selectedRoomId={selectedRoomId}
                   selectedAgentId={selectedAgentId}
                   units={units}
-                  agents={filteredAgents}
+                  agents={operationalAgents}
                   onSelectAgent={selectAgent}
                   onNavigate={onNavigate}
                   onOpenAgentDetail={(agent) => setDrawerAgent(agent)}

@@ -159,8 +159,9 @@ next `replace`.
 **One-time host reinstall required.** The root-owned copies in
 `/usr/local/libexec/aao` do not update themselves. Until a host administrator
 reinstalls them from the reviewed commit, `--operation replace` returns exit
-code 2. With the same ownership and modes as in step 3 above, the
-administrator must replace exactly these two files:
+code 2. Using the ownership and mode rules from step 3 of *One-time
+authorization and host setup*, the administrator must replace exactly these
+two files:
 
 - `scripts/selfdev_role_token_helper.py` →
   `/usr/local/libexec/aao/selfdev_role_token_helper.py` (root:root, `0755`)

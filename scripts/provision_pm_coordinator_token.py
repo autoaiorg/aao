@@ -25,6 +25,9 @@ from provision_w2_publishers import ProvisionError, local_api_url
 ACCOUNT = "aao-pm"
 TOKEN_KIND = "pm"
 # Exactly the preflight's REQUIRED_GRANTS; work.create needs a separate CEO decision.
+# Note 2026-11-03: CEO-DEC-PM-WORK-CREATION-2026-11-03 delegates INBOX-only Self Development
+# work creation through the scoped selfdev-cycle-work endpoint under work.coordinate; it does
+# not grant work.create, so these grants are unchanged.
 GRANTS = ("project.read", "work.coordinate", "work.assign")
 
 

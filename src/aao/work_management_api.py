@@ -5360,8 +5360,10 @@ def stage_agent_run(work_id: str, payload: AgentRunRequest, principal: str = Dep
         from aao.agent_runner import activated_backends, daily_budget_usd
         if cap[3] not in (None, "fixture") and cap[3] not in activated_backends():
             raise HTTPException(409, f"Agent backend {cap[3]} is not activated; CEO provider activation required")
-        if cap[3] not in (None, "fixture") and daily_budget_usd() is None:
+        if cap[3] == "codex" and daily_budget_usd() is None:
             raise HTTPException(409, f"Agent backend {cap[3]} refused: daily budget required (AAO_AGENT_DAILY_BUDGET_USD)")
+        if cap[3] == "ollama" and float(cap[4]) != 0:
+            raise HTTPException(409, "Local Ollama backend must declare cost_per_attempt_usd=0")
         ev = db.execute("SELECT 1 FROM events WHERE subject_id=%s AND kind='capability.evaluated' AND details->>'capability_id'=%s AND details->>'version'=%s AND details->>'recommendation' IN ('reuse','adapt') LIMIT 1", (work_id, payload.capability_id, payload.version)).fetchone()
         if not ev:
             raise HTTPException(409, "Capability must be selected for this task before staging")

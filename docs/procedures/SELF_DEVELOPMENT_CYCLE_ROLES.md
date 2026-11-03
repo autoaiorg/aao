@@ -225,7 +225,11 @@ independent review (GOV-REV-001).
 ## Bounded PM intake request
 
 The CEO's scoped authorization is recorded in issue #367 (`ceo-proposal`)
-under GOV-REV-002 §10.1 / D7-bis. It authorizes the PM coordinator to submit
+and in `docs/decisions/CEO-DEC-PM-WORK-CREATION-2026-11-03.md`. The in-force
+source for the CEO's decisions is `docs/decisions/CEO-DEC-GOV-2026-10-21.md`,
+where D7-bis (line 31) only defines the provisional channel (a GitHub Issue
+labelled `ceo-proposal`); it does not itself grant this scope. This
+authorization lets the PM coordinator submit
 narrowly-scoped Self Development work requests
 through `POST /v1/projects/{project_id}/selfdev-cycle-work`. This endpoint
 requires the PM coordinator identity and the project's existing
@@ -256,6 +260,17 @@ The per-principal limit is counted from `work.selfdev_cycle_requested` audit
 events. It is deliberately not a global or per-project quota. The event history
 must be retained and protected from alteration for the limit to remain
 effective; any inability to read that history fails the request closed.
+
+Any quota added later must have explicit expiry, audit and recovery semantics.
+This per-principal rolling limit is not such a quota: it has no expiry, reset
+or recovery mechanism beyond the 24-hour window.
+
+Serialization of this route does not come from the per-principal advisory
+lock. The serializer is `SELECT ... FOR UPDATE` on the single active
+`AAO — Self Development` `projects` row
+(`src/aao/work_management_api.py:997-1003`), which orders all requests for the
+project. The `pg_advisory_xact_lock` per PM principal (`:993-996`) is
+redundant with it.
 
 ## Lifecycle boundary
 

@@ -3,8 +3,8 @@
 Estado: **orquestador de renovación implementado en código (rama
 `feat/selfdev-cycle-renew-runner`); no desplegado, no habilitado y no verificado
 en el host. No hay operación desatendida en producción.**
-Revisión base: `b46aab7` (origin/main, 2026-11-03), tras #377; incorpora el
-texto del PR #379. Actualiza el diseño
+Revisión base: `478781e` (origin/main, 2026-11-03), tras #377 y #379.
+Actualiza el diseño
 publicado en el PR #357 y la implementación de ciclo fusionada. Este documento
 no emite, concede ni amplía credenciales. Toca la
 emisión de credenciales: exige auditoría independiente (GOV-REV-001) antes de

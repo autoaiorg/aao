@@ -40,3 +40,17 @@ def test_model_profile_is_optional_but_validated_when_present():
                        ({**good, "quality": {"patch.tests": 9}}, "quality")):
         errors = model_profile_errors({"model_profile": bad})
         assert len(errors) == 1 and f"model_profile.{field}" in errors[0], (field, errors)
+
+
+def test_ollama_profile_must_be_pinned_local_and_zero_cost():
+    from aao.capability_contracts import model_profile_errors
+
+    profile = {"backend": "ollama", "provider": "ollama-local", "model": "qwen3.5:9b",
+               "cost_per_attempt_usd": 0, "seats": ["patch.tests"]}
+    assert model_profile_errors({"model_profile": profile}) == []
+    for changed in (
+        {**profile, "provider": "openai"},
+        {**profile, "model": None},
+        {**profile, "cost_per_attempt_usd": 0.01},
+    ):
+        assert model_profile_errors({"model_profile": changed})

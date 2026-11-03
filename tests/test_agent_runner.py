@@ -144,7 +144,7 @@ def test_agent_jail_hides_operator_state_and_mounts_only_the_workdir(tmp_path):
 
 
 def test_isolation_probe_finds_no_leak():
-    """Runs the real probe when codex and bubblewrap are installed (dev host); CI has no codex."""
+    """Runs the real Codex sandbox and AAO outer-jail probe when prerequisites are installed."""
     import json
     import shutil
     import sys

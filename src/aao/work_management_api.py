@@ -12,7 +12,7 @@ import unicodedata
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
 from aao.environment_settings import load_local_env
@@ -550,6 +550,29 @@ class CapabilityEvaluationRequest(BaseModel):
 
 class CapabilityFeedbackReviewRequest(BaseModel):
     status: Literal["accepted", "rejected"]
+
+
+class OrganizationProposalCreateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=250)
+    scope_description: str = Field(min_length=1, max_length=5000)
+    target_unit_id: str | None = Field(default=None, max_length=128)
+    target_unit_code: str | None = Field(default=None, max_length=64)
+    target_unit_name: str | None = Field(default=None, max_length=200)
+    parent_unit_id: str | None = Field(default=None, max_length=128)
+    lead_principal_id: str | None = Field(default=None, max_length=128)
+    proposed_role_title: str | None = Field(default=None, max_length=200)
+    demand_summary: str = Field(min_length=1, max_length=5000)
+    criteria: dict[str, Any]
+    chosen_alternative: str | None = Field(default=None)
+    min_observation_days: int = Field(default=60, ge=1)
+    max_marginal_cost_usd: float = Field(default=0.0, ge=0.0)
+
+
+class OrganizationProposalTransitionRequest(BaseModel):
+    target_state: str = Field(pattern=r"^(ANALYZED|EVALUATED|REQUIRES_CEO_APPROVAL|AUTONOMOUS_APPROVED|REJECTED|DISSOLVED)$")
+    rejection_reason: str | None = Field(default=None, max_length=2000)
+    delegation_authority_id: str | None = Field(default=None, max_length=128)
+    expected_version: int = Field(ge=1)
 
 
 class CapabilityFeedbackRequest(BaseModel):
@@ -2122,6 +2145,362 @@ def organization(response: Response, principal: str = Depends(read_principal)):
             "coverage": {"totalProjects": len(project_ids),
                          "inspectedProjects": len(project_ids),
                          "failedProjects": 0, "isPartial": False}}
+
+
+@app.post("/v1/organization/proposals")
+def create_organization_proposal(
+    payload: OrganizationProposalCreateRequest,
+    principal: str = Depends(read_principal),
+):
+    """
+    Submits an advisory organizational change proposal into persistent storage.
+    Does not activate units, alter credentials, or execute reorganizations.
+    """
+    from aao.autonomous_organization import (
+        DemandAnalysisCriteria,
+        OrganizationChangeImpact,
+        ProposalDecisionState,
+        classify_organizational_authority,
+        evaluate_organizational_demand,
+    )
+
+    try:
+        criteria = DemandAnalysisCriteria(
+            active_projects_count=int(payload.criteria.get("active_projects_count", 0)),
+            future_commitments_count=int(payload.criteria.get("future_commitments_count", 0)),
+            unassigned_tasks_count=int(payload.criteria.get("unassigned_tasks_count", 0)),
+            blocked_tasks_count=int(payload.criteria.get("blocked_tasks_count", 0)),
+            specialization_gaps=list(payload.criteria.get("specialization_gaps", [])),
+            coordination_friction_score=float(payload.criteria.get("coordination_friction_score", 0.0)),
+            budget_utilization_ratio=float(payload.criteria.get("budget_utilization_ratio", 0.0)),
+            segregation_risk_detected=bool(payload.criteria.get("segregation_risk_detected", False)),
+            observation_period_days=int(payload.criteria.get("observation_period_days", 14)),
+        )
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(422, f"Invalid demand criteria parameters: {exc}")
+
+    # Determine simulated operation for classification
+    op = "organization.unit.create_permanent" if payload.target_unit_id else "organization.squad.create_temporary"
+    auth_class = classify_organizational_authority(op)
+
+    # Evaluate alternatives with grounded criteria
+    alternatives = evaluate_organizational_demand(
+        criteria,
+        max_marginal_cost_usd=payload.max_marginal_cost_usd,
+        min_permanent_observation_days=payload.min_observation_days,
+    )
+
+    # Determine initial state
+    initial_state = ProposalDecisionState.EVALUATED
+    if auth_class.requires_ceo_decision:
+        initial_state = ProposalDecisionState.REQUIRES_CEO_APPROVAL
+
+    proposal_id = f"prop-{uuid4().hex[:12]}"
+    now = datetime.now(UTC)
+
+    alts_json = [
+        {
+            "kind": alt.kind.value,
+            "description": alt.description,
+            "estimated_cost_overhead_usd": alt.estimated_cost_overhead_usd,
+            "cost_estimation_basis": alt.cost_estimation_basis,
+            "implementation_delay_hours": alt.implementation_delay_hours,
+            "governance_risk_level": alt.governance_risk_level,
+            "score": alt.score,
+            "is_viable": alt.is_viable,
+            "is_primary_recommendation": alt.is_primary_recommendation,
+            "rationale": alt.rationale,
+        }
+        for alt in alternatives
+    ]
+
+    criteria_dict = {
+        "active_projects_count": criteria.active_projects_count,
+        "future_commitments_count": criteria.future_commitments_count,
+        "unassigned_tasks_count": criteria.unassigned_tasks_count,
+        "blocked_tasks_count": criteria.blocked_tasks_count,
+        "specialization_gaps": criteria.specialization_gaps,
+        "coordination_friction_score": criteria.coordination_friction_score,
+        "budget_utilization_ratio": criteria.budget_utilization_ratio,
+        "segregation_risk_detected": criteria.segregation_risk_detected,
+        "observation_period_days": criteria.observation_period_days,
+    }
+
+    auth_dict = {
+        "impact": auth_class.impact.value,
+        "requires_ceo_decision": auth_class.requires_ceo_decision,
+        "competent_authority": auth_class.competent_authority,
+        "rationale": auth_class.rationale,
+        "authorization_verified": auth_class.authorization_verified,
+        "advisory_only": auth_class.advisory_only,
+    }
+
+    author_str = "ceo" if principal is _CEO_PRINCIPAL else str(principal)
+
+    with tx() as db:
+        db.execute(
+            "INSERT INTO organization_proposals("
+            "id,version,title,scope_description,target_unit_id,target_unit_code,target_unit_name,"
+            "parent_unit_id,lead_principal_id,proposed_role_title,impact,state,demand_summary,"
+            "criteria_json,alternatives_json,chosen_alternative,authority_classification_json,"
+            "author_principal_id,created_at,updated_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s::jsonb,%s,%s,%s)",
+            (
+                proposal_id,
+                1,
+                payload.title,
+                payload.scope_description,
+                payload.target_unit_id,
+                payload.target_unit_code,
+                payload.target_unit_name,
+                payload.parent_unit_id,
+                payload.lead_principal_id,
+                payload.proposed_role_title,
+                auth_class.impact.value,
+                initial_state.value,
+                payload.demand_summary,
+                json.dumps(criteria_dict),
+                json.dumps(alts_json),
+                payload.chosen_alternative,
+                json.dumps(auth_dict),
+                author_str,
+                now,
+                now,
+            ),
+        )
+        audit(
+            db,
+            str(uuid4()),
+            "organization.proposal_created",
+            {
+                "proposal_id": proposal_id,
+                "title": payload.title,
+                "state": initial_state.value,
+                "author": author_str,
+                "impact": auth_class.impact.value,
+            },
+        )
+
+    return {
+        "id": proposal_id,
+        "version": 1,
+        "title": payload.title,
+        "state": initial_state.value,
+        "impact": auth_class.impact.value,
+        "requires_ceo_decision": auth_class.requires_ceo_decision,
+        "competent_authority": auth_class.competent_authority,
+        "alternatives": alts_json,
+        "created_at": now.isoformat(),
+    }
+
+
+@app.get("/v1/organization/proposals")
+def list_organization_proposals(
+    limit: int = 50,
+    offset: int = 0,
+    state: str | None = None,
+    principal: str = Depends(read_principal),
+):
+    """Lists persistent organizational proposals with pagination and optional state filter."""
+    if limit < 1 or limit > 100:
+        raise HTTPException(400, "Limit must be between 1 and 100")
+    if offset < 0:
+        raise HTTPException(400, "Offset must be non-negative")
+
+    with tx() as db:
+        query = (
+            "SELECT id,version,title,scope_description,target_unit_id,target_unit_code,"
+            "target_unit_name,parent_unit_id,lead_principal_id,proposed_role_title,impact,"
+            "state,demand_summary,criteria_json,alternatives_json,chosen_alternative,"
+            "authority_classification_json,author_principal_id,delegation_authority_id,"
+            "rejection_reason,stability_review_due_at,created_at,updated_at "
+            "FROM organization_proposals "
+        )
+        params: list[Any] = []
+        if state:
+            query += "WHERE state = %s "
+            params.append(state)
+        query += "ORDER BY created_at DESC LIMIT %s OFFSET %s"
+        params.extend([limit, offset])
+
+        rows = db.execute(query, tuple(params)).fetchall()
+
+        count_query = "SELECT count(*) FROM organization_proposals"
+        count_params: list[Any] = []
+        if state:
+            count_query += " WHERE state = %s"
+            count_params.append(state)
+        total_count = db.execute(count_query, tuple(count_params)).fetchone()[0]
+
+    items = []
+    for r in rows:
+        items.append({
+            "id": r[0],
+            "version": r[1],
+            "title": r[2],
+            "scope_description": r[3],
+            "target_unit_id": r[4],
+            "target_unit_code": r[5],
+            "target_unit_name": r[6],
+            "parent_unit_id": r[7],
+            "lead_principal_id": r[8],
+            "proposed_role_title": r[9],
+            "impact": r[10],
+            "state": r[11],
+            "demand_summary": r[12],
+            "criteria": r[13],
+            "alternatives": r[14],
+            "chosen_alternative": r[15],
+            "authority_classification": r[16],
+            "author_principal_id": r[17],
+            "delegation_authority_id": r[18],
+            "rejection_reason": r[19],
+            "stability_review_due_at": r[20].isoformat() if r[20] else None,
+            "created_at": r[21].isoformat() if r[21] else None,
+            "updated_at": r[22].isoformat() if r[22] else None,
+        })
+
+    return {
+        "items": items,
+        "total": total_count,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@app.get("/v1/organization/proposals/{proposal_id}")
+def get_organization_proposal(
+    proposal_id: str,
+    principal: str = Depends(read_principal),
+):
+    """Retrieves a single organizational proposal by ID."""
+    with tx() as db:
+        r = db.execute(
+            "SELECT id,version,title,scope_description,target_unit_id,target_unit_code,"
+            "target_unit_name,parent_unit_id,lead_principal_id,proposed_role_title,impact,"
+            "state,demand_summary,criteria_json,alternatives_json,chosen_alternative,"
+            "authority_classification_json,author_principal_id,delegation_authority_id,"
+            "rejection_reason,stability_review_due_at,created_at,updated_at "
+            "FROM organization_proposals WHERE id = %s",
+            (proposal_id,),
+        ).fetchone()
+        if not r:
+            raise HTTPException(404, "Organization proposal not found")
+
+    return {
+        "id": r[0],
+        "version": r[1],
+        "title": r[2],
+        "scope_description": r[3],
+        "target_unit_id": r[4],
+        "target_unit_code": r[5],
+        "target_unit_name": r[6],
+        "parent_unit_id": r[7],
+        "lead_principal_id": r[8],
+        "proposed_role_title": r[9],
+        "impact": r[10],
+        "state": r[11],
+        "demand_summary": r[12],
+        "criteria": r[13],
+        "alternatives": r[14],
+        "chosen_alternative": r[15],
+        "authority_classification": r[16],
+        "author_principal_id": r[17],
+        "delegation_authority_id": r[18],
+        "rejection_reason": r[19],
+        "stability_review_due_at": r[20].isoformat() if r[20] else None,
+        "created_at": r[21].isoformat() if r[21] else None,
+        "updated_at": r[22].isoformat() if r[22] else None,
+    }
+
+
+@app.post("/v1/organization/proposals/{proposal_id}/transitions")
+def transition_organization_proposal(
+    proposal_id: str,
+    payload: OrganizationProposalTransitionRequest,
+    principal: str = Depends(read_principal),
+):
+    """
+    Executes a governed state transition on an organizational proposal with optimistic concurrency check.
+    Approval requires CEO if impact is CONSTITUTIONAL or CRITICAL.
+    """
+    from aao.autonomous_organization import (
+        ProposalDecisionState,
+        validate_proposal_transition,
+    )
+
+    with tx() as db:
+        row = db.execute(
+            "SELECT version,state,impact FROM organization_proposals WHERE id=%s FOR UPDATE",
+            (proposal_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Organization proposal not found")
+
+        current_version, current_state_str, impact_str = row
+        if current_version != payload.expected_version:
+            raise HTTPException(
+                409,
+                f"Concurrency conflict: expected version {payload.expected_version}, current version is {current_version}",
+            )
+
+        current_state = ProposalDecisionState(current_state_str)
+        target_state = ProposalDecisionState(payload.target_state)
+
+        if not validate_proposal_transition(current_state, target_state):
+            raise HTTPException(
+                422,
+                f"Invalid transition from {current_state.value} to {target_state.value}",
+            )
+
+        # Authority checks on approval
+        if target_state == ProposalDecisionState.AUTONOMOUS_APPROVED:
+            # If requires CEO approval, only CEO can transition
+            if impact_str in {"CONSTITUTIONAL", "CRITICAL", "UNKNOWN"} and principal is not _CEO_PRINCIPAL:
+                raise HTTPException(
+                    403,
+                    f"Approval of {impact_str} organizational change proposal strictly requires CEO authority.",
+                )
+
+        now = datetime.now(UTC)
+        next_version = current_version + 1
+        actor_str = "ceo" if principal is _CEO_PRINCIPAL else str(principal)
+
+        db.execute(
+            "UPDATE organization_proposals SET "
+            "version=%s, state=%s, rejection_reason=%s, delegation_authority_id=%s, updated_at=%s "
+            "WHERE id=%s",
+            (
+                next_version,
+                target_state.value,
+                payload.rejection_reason,
+                payload.delegation_authority_id,
+                now,
+                proposal_id,
+            ),
+        )
+
+        audit(
+            db,
+            str(uuid4()),
+            "organization.proposal_transitioned",
+            {
+                "proposal_id": proposal_id,
+                "from_state": current_state.value,
+                "to_state": target_state.value,
+                "version": next_version,
+                "actor": actor_str,
+                "delegation_authority_id": payload.delegation_authority_id,
+            },
+        )
+
+    return {
+        "id": proposal_id,
+        "version": next_version,
+        "from_state": current_state.value,
+        "to_state": target_state.value,
+        "updated_at": now.isoformat(),
+    }
 
 
 @app.get("/v1/projects/{project_id}/grants")

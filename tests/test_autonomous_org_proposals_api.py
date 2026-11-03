@@ -1,4 +1,6 @@
 """Integration tests for Autonomous Organization Proposals API & Database Persistence."""
+import os
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -11,9 +13,10 @@ def client():
 
 
 def test_proposals_api_flow(client, monkeypatch):
+    if "AAO_TEST_POSTGRES_URL" in os.environ:
+        monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
     monkeypatch.setenv("AAO_ENV", "test")
     monkeypatch.setenv("AAO_CEO_TOKEN", "test-ceo-token-123456")
-
     # Authenticate as CEO via X-CEO-Token
     client.headers["X-CEO-Token"] = "test-ceo-token-123456"
 

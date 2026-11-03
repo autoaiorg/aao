@@ -197,6 +197,94 @@ def test_live_cycle_work_request_requires_coordinate_and_strict_payload(monkeypa
         assert empty_criteria.status_code == 422
 
 
+def test_live_cycle_work_request_rejects_non_pm_even_with_project_capability(monkeypatch):
+    from aao.work_management_api import app
+
+    project, _pm, _token = _seed(monkeypatch, pm_caps=set())
+    token = "coordinator-not-pm-" + uuid4().hex
+    _seed_agent(
+        project,
+        token=token,
+        principal_id="aao-other-coordinator-" + uuid4().hex,
+        caps={"work.coordinate"},
+    )
+    with TestClient(app) as client:
+        denied = _request_cycle_work(client, project, token, uuid4())
+    assert denied.status_code == 403
+
+
+def test_live_cycle_work_request_rejects_inactive_or_duplicate_active_project(monkeypatch):
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import SELFDEV_PROJECT_NAME, app
+
+    project, pm, token = _seed(monkeypatch, pm_caps={"work.coordinate"})
+    with connect_postgres() as db:
+        db.execute("UPDATE projects SET state='PAUSED' WHERE id=%s", (project,))
+    with TestClient(app) as client:
+        inactive = _request_cycle_work(client, project, token, uuid4())
+    assert inactive.status_code == 409
+    with connect_postgres() as db:
+        db.execute("UPDATE projects SET state='ACTIVE' WHERE id=%s", (project,))
+        mandate = str(uuid4())
+        duplicate = str(uuid4())
+        db.execute(
+            "INSERT INTO mandates(id,title,objective,status,confirmed_by) "
+            "VALUES (%s,'Duplicate Self Development test','Test duplicate active project',"
+            "'CONFIRMED','integration-test')",
+            (mandate,),
+        )
+        db.execute(
+            "INSERT INTO projects(id,name,mandate_id,state) VALUES (%s,%s,%s,'ACTIVE')",
+            (duplicate, SELFDEV_PROJECT_NAME, mandate),
+        )
+        db.execute(
+            "INSERT INTO project_grants(principal_id,project_id,capability,expires_at) "
+            "VALUES (%s,%s,'work.coordinate',clock_timestamp()+interval '1 hour')",
+            (pm, duplicate),
+        )
+    with TestClient(app) as client:
+        ambiguous = _request_cycle_work(client, duplicate, token, uuid4())
+    assert ambiguous.status_code == 409
+
+
+def test_live_cycle_work_request_concurrent_retry_creates_one_item(monkeypatch):
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    project, pm, token = _seed(monkeypatch, pm_caps={"work.coordinate"})
+    key = uuid4()
+
+    def request_once():
+        with TestClient(app) as client:
+            return _request_cycle_work(client, project, token, key)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(request_once) for _ in range(4)]
+        responses = [future.result(timeout=20) for future in futures]
+    assert all(response.status_code == 201 for response in responses), [
+        response.text for response in responses
+    ]
+    results = [response.json() for response in responses]
+    assert len({result["id"] for result in results}) == 1
+    assert sum(result["created"] for result in results) == 1
+    with connect_postgres() as db:
+        assert (
+            db.execute(
+                "SELECT count(*) FROM work_items WHERE id=%s AND author_id=%s AND status='INBOX'",
+                (results[0]["id"], pm),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            db.execute(
+                "SELECT count(*) FROM events WHERE kind='work.selfdev_cycle_requested' "
+                "AND details->>'idempotency_key'=%s",
+                (str(key),),
+            ).fetchone()[0]
+            == 1
+        )
+
+
 def test_live_fastapi_authorization_rejects_missing_ordinary_and_underprivileged(monkeypatch):
     from aao import work_management_api as api
 

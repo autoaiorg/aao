@@ -124,14 +124,21 @@ must be checked before considering cleanup complete.
 
 ## Bounded PM intake request
 
-The PM coordinator may submit one narrowly-scoped Self Development work request
+The approved operational policy for the Self Development autonomy cycle is that
+the PM coordinator may submit one narrowly-scoped Self Development work request
 through `POST /v1/projects/{project_id}/selfdev-cycle-work`. This endpoint
-requires only the PM coordinator identity and the project's existing
-`work.coordinate` grant; it does not require or grant `work.create`. It accepts
-only an idempotency UUID, title (1–200 characters), description (0–5000), and
-1–20 non-empty acceptance criteria (at most 500 characters each); unknown
-fields are rejected. The project ID must identify the uniquely active
-`AAO — Self Development` project.
+requires the PM coordinator identity and the project's existing
+`work.coordinate` grant; it does not require or grant general `work.create`.
+This bounded policy is not a general PM authority expansion: it allows only an
+attributable request in `INBOX`; admission, assignment, execution, review and
+publication remain separate lifecycle actions and authorities. It accepts only
+an idempotency UUID, title (1–200 characters), description (0–5000), and 1–20
+non-empty acceptance criteria (at most 500 characters each); unknown fields
+are rejected. The combined text bound is at most 15,200 characters, aside from
+small fixed JSON/key overhead. These limits bound an individual item; they are
+not a quota on the number of requests. The project ID must identify the
+uniquely active `AAO — Self Development` project, and non-PM principals are
+rejected even if they have `work.coordinate`.
 
 The API attributes `author_id` and the audit event to the authenticated PM
 principal and creates only an `INBOX` item with `admitted: false`. Repeating the
@@ -140,6 +147,12 @@ different project or content returns HTTP 409. This route does not admit,
 assign, execute, review, publish, or merge work. The ordinary lifecycle and
 review gates still apply, and an API lifecycle reviewer is not a GOV-REV-001
 auditor.
+
+The request-size limits bound individual payloads but intentionally do not
+impose a hidden global rate/quota. If operational abuse controls are needed,
+they must be designed separately with explicit expiry, audit and recovery
+semantics; this endpoint must not silently consume general work-creation or
+admission authority.
 
 ## Lifecycle boundary
 

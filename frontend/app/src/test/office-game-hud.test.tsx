@@ -12,6 +12,7 @@ import {
 import { OFFICE_ROOMS } from '../features/office/types';
 import {
   deriveAgentOperationalCategory,
+  filterOperationalAgents,
   HUD_PREFS_STORAGE_KEY,
   loadPersistedHudPreferences,
 } from '../features/office/useOfficeHudState';
@@ -377,6 +378,9 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
       category: 'HISTORICO',
       label: 'Histórico · credencial revocada',
     });
+    expect(filterOperationalAgents([revokedAgent, liveOrgWithAgents.data.agents[0]])).toEqual([
+      liveOrgWithAgents.data.agents[0],
+    ]);
 
     const disconnectedAgent: AgentIdentity = {
       ...DEMO_AGENTS[0],

@@ -225,6 +225,11 @@ export function deriveAgentOperationalCategory(agent: AgentIdentity): {
   };
 }
 
+/** Keep revoked identities in backend/history data, but out of the live office. */
+export function filterOperationalAgents(agents: readonly AgentIdentity[]): AgentIdentity[] {
+  return agents.filter((agent) => deriveAgentOperationalCategory(agent).category !== 'HISTORICO');
+}
+
 /**
  * Checks if a keyboard event target is an interactive or editable element
  * so global HUD hotkeys never interfere with typing, forms, or button activation.

@@ -186,5 +186,5 @@ DO $$ BEGIN
   END IF;
 END $$;
 INSERT INTO schema_migrations(version)
-VALUES ('045_selfdev_cycle_mtls_intents') ON CONFLICT DO NOTHING;
+VALUES ('046_selfdev_cycle_mtls_intents') ON CONFLICT DO NOTHING;
 COMMIT;

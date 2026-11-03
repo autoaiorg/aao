@@ -29,8 +29,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_workload_identity_binding_intent
     ON workload_identity_bindings(intent_id) WHERE intent_id IS NOT NULL;
 
 -- Do not permit the API runtime to forge certificate-fingerprint bindings.
-REVOKE ALL ON TABLE selfdev_cycle_mtls_intents FROM PUBLIC, aao_runtime;
-REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE workload_identity_bindings FROM PUBLIC, aao_runtime;
+REVOKE ALL ON TABLE selfdev_cycle_mtls_intents FROM PUBLIC;
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE workload_identity_bindings FROM PUBLIC;
 
 CREATE OR REPLACE FUNCTION create_selfdev_cycle_mtls_intent(
     p_intent_id uuid, p_project_id uuid, p_cycle_id text, p_principal_id text,
@@ -50,6 +50,12 @@ BEGIN
        OR p_not_after <= p_not_before
        OR p_not_after > p_not_before + interval '2 hours' THEN
         RAISE EXCEPTION 'invalid cycle intent bounds' USING ERRCODE='22023';
+    END IF;
+    IF p_principal_id <> (CASE p_kind
+        WHEN 'AGENT' THEN 'aao-selfdev-impl-' || p_cycle_id
+        WHEN 'AUDITOR' THEN 'aao-selfdev-review-' || p_cycle_id
+        ELSE NULL END) THEN
+        RAISE EXCEPTION 'principal does not match cycle role' USING ERRCODE='23514';
     END IF;
     SELECT name INTO v_project_name FROM public.projects
       WHERE id=p_project_id AND state='ACTIVE' FOR SHARE;
@@ -166,12 +172,19 @@ REVOKE ALL ON FUNCTION create_selfdev_cycle_mtls_intent(uuid,uuid,text,text,text
 REVOKE ALL ON FUNCTION complete_selfdev_cycle_mtls_binding(uuid,text,text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION expire_selfdev_cycle_mtls_intent(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION revoke_selfdev_cycle_mtls_intent(uuid) FROM PUBLIC;
-GRANT SELECT ON TABLE selfdev_cycle_mtls_intents TO aao_runtime;
-GRANT EXECUTE ON FUNCTION create_selfdev_cycle_mtls_intent(uuid,uuid,text,text,text,timestamptz,timestamptz) TO aao_runtime;
--- Completion must be called only by a future isolated certificate verifier.
--- No verifier role is provisioned or granted by this migration.
-GRANT EXECUTE ON FUNCTION expire_selfdev_cycle_mtls_intent(uuid) TO aao_runtime;
-GRANT EXECUTE ON FUNCTION revoke_selfdev_cycle_mtls_intent(uuid) TO aao_runtime;
+-- Some CI/test databases do not yet provision the runtime role. Do not create
+-- identities here; grant bounded access only where bootstrap already created it.
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname='aao_runtime') THEN
+    REVOKE ALL ON TABLE selfdev_cycle_mtls_intents FROM aao_runtime;
+    REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE workload_identity_bindings FROM aao_runtime;
+    GRANT SELECT ON TABLE selfdev_cycle_mtls_intents TO aao_runtime;
+    GRANT EXECUTE ON FUNCTION create_selfdev_cycle_mtls_intent(uuid,uuid,text,text,text,timestamptz,timestamptz) TO aao_runtime;
+    -- Completion is reserved for a future isolated certificate verifier.
+    GRANT EXECUTE ON FUNCTION expire_selfdev_cycle_mtls_intent(uuid) TO aao_runtime;
+    GRANT EXECUTE ON FUNCTION revoke_selfdev_cycle_mtls_intent(uuid) TO aao_runtime;
+  END IF;
+END $$;
 INSERT INTO schema_migrations(version)
 VALUES ('045_selfdev_cycle_mtls_intents') ON CONFLICT DO NOTHING;
 COMMIT;

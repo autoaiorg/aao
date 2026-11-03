@@ -109,8 +109,6 @@ def test_api_runtime_has_narrow_cycle_binding_and_intent_privileges():
     assert "principal_id text NOT NULL UNIQUE" in migration
     assert "principal_id text NOT NULL UNIQUE" in migration
     assert "principal does not match cycle role" in migration
-
-
 def test_api_runtime_has_minimal_organization_execution_journal_grants():
     grants = (BOOTSTRAP / "apply_api_grants.sql").read_text()
 

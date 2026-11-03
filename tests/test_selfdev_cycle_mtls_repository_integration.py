@@ -151,6 +151,26 @@ def test_principal_cannot_be_reused_by_another_cycle(seeded_intent):
         assert getattr(denied.value, "sqlstate", None) == "23505"
 
 
+def test_create_function_rejects_noncanonical_cycle_principal(seeded_intent):
+    from aao.postgresql_connection import connect_postgres
+
+    with connect_postgres() as db:
+        with pytest.raises(Exception) as denied:
+            db.execute(
+                "SELECT create_selfdev_cycle_mtls_intent(%s,%s,%s,%s,%s,%s,%s)",
+                (
+                    uuid.uuid4(),
+                    seeded_intent.project_id,
+                    seeded_intent.cycle_id,
+                    "arbitrary-disabled-principal",
+                    seeded_intent.kind,
+                    seeded_intent.not_before,
+                    seeded_intent.not_after,
+                ),
+            )
+        assert getattr(denied.value, "sqlstate", None) == "23514"
+
+
 def test_completion_waits_for_intent_row_lock_before_commit(seeded_intent):
     from aao.postgresql_connection import connect_postgres
     from aao.selfdev_cycle_mtls_repository import PostgresCycleIntentRepository

@@ -212,6 +212,32 @@ export const Office2DPlan: React.FC<Office2DPlanProps> = ({
                           {agent.name}
                         </span>
                       </div>
+                      {agent.coordinatorState && (
+                        <span
+                          role="status"
+                          aria-label={`Estado del coordinador ${agent.name}: ${
+                            agent.coordinatorState === 'COORDINATING'
+                              ? 'Coordinando, sin ejecución de tarea'
+                              : agent.coordinatorState === 'WAITING'
+                                ? 'En espera'
+                                : 'Estado desactualizado'
+                          }`}
+                          style={{
+                            fontSize: '10px',
+                            color: agent.coordinatorState === 'STALE' ? '#fca5a5' : '#7dd3fc',
+                            padding: '1px 6px',
+                            borderRadius: 'var(--radius-sm, 4px)',
+                            border: '1px solid currentColor',
+                            fontWeight: 600,
+                          }}
+                        >
+                          {agent.coordinatorState === 'COORDINATING'
+                            ? 'Coordinando · sin ejecución'
+                            : agent.coordinatorState === 'WAITING'
+                              ? 'En espera'
+                              : 'Estado desactualizado'}
+                        </span>
+                      )}
                       <span
                         style={{
                           fontSize: '10px',
@@ -349,8 +375,29 @@ export const Office2DPlan: React.FC<Office2DPlanProps> = ({
                       textAlign: 'left',
                     }}
                   >
-                    <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>
-                      {agent.name}
+                    <span style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                      <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                        {agent.name}
+                      </span>
+                      {agent.coordinatorState && (
+                        <span
+                          role="status"
+                          aria-label={`Estado del coordinador ${agent.name}: ${
+                            agent.coordinatorState === 'COORDINATING'
+                              ? 'Coordinando, sin ejecución de tarea'
+                              : agent.coordinatorState === 'WAITING'
+                                ? 'En espera'
+                                : 'Estado desactualizado'
+                          }`}
+                          style={{ fontSize: '10px', color: agent.coordinatorState === 'STALE' ? '#fca5a5' : '#7dd3fc' }}
+                        >
+                          {agent.coordinatorState === 'COORDINATING'
+                            ? 'Coordinando · sin ejecución'
+                            : agent.coordinatorState === 'WAITING'
+                              ? 'En espera'
+                              : 'Estado desactualizado'}
+                        </span>
+                      )}
                     </span>
                     <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
                       {agent.type === 'STANDING'

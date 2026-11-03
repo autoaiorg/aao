@@ -173,6 +173,37 @@ describe('Phase F4: VirtualOfficeView & 3D Office Experience', () => {
 });
 
 describe('Office2DPlan Component Direct Test', () => {
+  it('shows truthful coordinator presence in the roster without selecting the agent', () => {
+    const labels = [
+      ['COORDINATING', 'Coordinando · sin ejecución'],
+      ['WAITING', 'En espera'],
+      ['STALE', 'Estado desactualizado'],
+    ] as const;
+
+    for (const [coordinatorState, label] of labels) {
+      const agent: AgentIdentity = {
+        ...DEMO_AGENTS[0],
+        id: `pm-${coordinatorState}`,
+        name: 'PM coordinator',
+        unitId: 'unit-unassigned',
+        coordinatorState,
+      };
+      const { unmount } = render(
+        <Office2DPlan
+          units={DEMO_ORG_UNITS}
+          agents={[agent]}
+          selectedRoomId="unit-unassigned"
+          selectedAgentId={null}
+          onSelectRoom={vi.fn()}
+          onSelectAgent={vi.fn()}
+        />
+      );
+
+      expect(screen.getByRole('status')).toHaveTextContent(label);
+      unmount();
+    }
+  });
+
   it('renders all 6 departments and handles room and agent selection', () => {
     const onSelectRoom = vi.fn();
     const onSelectAgent = vi.fn();

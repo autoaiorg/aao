@@ -23,7 +23,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from aao.backup import BackupError, active_host_fence_epoch
+from aao.backup import BackupError, active_host_fence_epoch, register_host_worker
 from aao.capability_contracts import missing_contract_fields, model_profile_errors
 from aao.capability_evaluation import recommend
 from aao.conversation_turns import (
@@ -1023,6 +1023,85 @@ def _require_selfdev_cycle_issuer(db, principal: AuthenticatedPrincipal, project
     require_grant(db, principal, project_id, SELFDEV_CYCLE_ISSUER_CAPABILITY)
 
 
+def _bind_selfdev_cycle_implementer(db, project_id: str, principal_id: str) -> dict:
+    """G1+G3: bind a new cycle implementer to this API host and inherit its profile.
+
+    Runs in the issuing transaction. The host id is never taken from the client.
+    The profile is copied only from the most recent enabled profile of an earlier
+    cycle implementer of this same project, so issuance never declares new
+    competencies; with no such profile, none is created (the CEO seeds one).
+    """
+    from psycopg.errors import UniqueViolation
+
+    try:
+        host_id = current_host_id()
+        register_host_worker(db, host_id, principal_id, new_worker_only=True)
+    except HostIdentityError as exc:
+        raise HTTPException(503, "Trusted local host identity unavailable") from exc
+    except BackupError as exc:
+        raise HTTPException(409, "API host has no active, unfenced worker binding") from exc
+    except UniqueViolation as exc:
+        raise HTTPException(409, "Self Development cycle implementer is already bound") from exc
+    source = db.execute(
+        "SELECT p.principal_id,p.display_name,p.role_title,p.unit_id,"
+        "p.manager_principal_id,p.competencies FROM organization_profiles p "
+        "JOIN principal_credentials c ON c.principal_id=p.principal_id "
+        "WHERE p.enabled AND c.kind='AGENT' AND c.enabled "
+        "AND c.kind='AGENT' AND c.enabled "
+        "AND (c.expires_at IS NULL OR c.expires_at>clock_timestamp()) "
+        "AND p.principal_id<>%s "
+        "AND p.principal_id ~ '^aao-selfdev-impl-[0-9a-f]{32}$' "
+        "AND EXISTS (SELECT 1 FROM project_grants g WHERE g.principal_id=p.principal_id "
+        "AND g.project_id=%s AND (g.expires_at IS NULL OR g.expires_at>clock_timestamp()) "
+        "AND g.capability='project.read') "
+        "ORDER BY c.created_at DESC,p.principal_id DESC LIMIT 1 FOR SHARE OF p",
+        (principal_id, project_id),
+    ).fetchone()
+    if source:
+        db.execute(
+            "INSERT INTO organization_profiles(principal_id,display_name,role_title,unit_id,"
+            "manager_principal_id,competencies,enabled) VALUES (%s,%s,%s,%s,%s,%s,true)",
+            (principal_id, *source[1:]),
+        )
+    return {"host_id": host_id, "profile_inherited_from": source[0] if source else None}
+
+
+def _require_selfdev_cycle_retirement_migration(db) -> None:
+    """Fail closed unless migration 041's binding-retirement function exists."""
+    function = db.execute(
+        "SELECT to_regprocedure('public.retire_selfdev_cycle_host_binding(text,uuid)')"
+    ).fetchone()[0]
+    if not function:
+        raise HTTPException(503, "Self Development host-binding retirement migration 041 is required")
+
+
+def _retire_selfdev_cycle_implementer(
+    db, principal_id: str, actor: str, project_id: str, *, escalate_work: bool = True,
+) -> dict:
+    """G1/G3/G4 on revoke: require binding retirement, disable profile and escalate work.
+
+    Migration 041 is a hard prerequisite for revocation. Silently skipping the
+    security-sensitive binding retirement would leave a revoked worker ACTIVE.
+    """
+    _require_selfdev_cycle_retirement_migration(db)
+    retired = db.execute(
+        "SELECT public.retire_selfdev_cycle_host_binding(%s,%s)", (principal_id, project_id),
+    ).fetchone()[0]
+    active_binding = db.execute(
+        "SELECT 1 FROM host_worker_bindings WHERE worker_id=%s AND status='ACTIVE' LIMIT 1",
+        (principal_id,),
+    ).fetchone()
+    if active_binding:
+        raise HTTPException(503, "Self Development host binding remains active after retirement")
+    profiles = db.execute(
+        "UPDATE organization_profiles SET enabled=false,updated_at=clock_timestamp() "
+        "WHERE principal_id=%s AND enabled", (principal_id,),
+    ).rowcount
+    if escalate_work:
+        _escalate_revoked_agent_work(db, principal_id, actor)
+    return {"host_bindings_retired": retired, "profile_disabled": bool(profiles)}
+
+
 @app.post("/v1/projects/{project_id}/selfdev-cycle-roles", status_code=201)
 def issue_selfdev_cycle_roles(
     project_id: str,
@@ -1059,12 +1138,13 @@ def issue_selfdev_cycle_roles(
         expires_at = db.execute(
             "SELECT clock_timestamp()+%s", (timedelta(seconds=payload.lifetime_seconds),),
         ).fetchone()[0]
+        issued_at = expires_at - timedelta(seconds=payload.lifetime_seconds)
         for principal_id, kind, grants in roles:
             token = secrets.token_urlsafe(32)
             db.execute(
-                "INSERT INTO principal_credentials(principal_id,kind,token_digest,enabled,expires_at) "
-                "VALUES (%s,%s,%s,true,%s)",
-                (principal_id, kind, digest_token(token), expires_at),
+                "INSERT INTO principal_credentials(principal_id,kind,token_digest,enabled,"
+                "created_at,expires_at) VALUES (%s,%s,%s,true,%s,%s)",
+                (principal_id, kind, digest_token(token), issued_at, expires_at),
             )
             for capability in grants:
                 db.execute(
@@ -1072,11 +1152,14 @@ def issue_selfdev_cycle_roles(
                     "VALUES (%s,%s,%s,%s)",
                     (principal_id, project_id, capability, expires_at),
                 )
-            audit(db, project_id, "principal.selfdev_cycle_role.issued", {
+            details = {
                 "cycle_id": cycle_id, "principal_id": principal_id, "kind": kind,
                 "grants": list(grants), "expires_at": expires_at.isoformat(),
                 "issuer_principal_id": str(principal),
-            })
+            }
+            if kind == "AGENT":
+                details.update(_bind_selfdev_cycle_implementer(db, project_id, principal_id))
+            audit(db, project_id, "principal.selfdev_cycle_role.issued", details)
             issued.append({"principal_id": principal_id, "kind": kind,
                            "grants": list(grants), "token": token})
     return {"cycle_id": cycle_id, "project_id": project_id,
@@ -1104,6 +1187,13 @@ def revoke_selfdev_cycle_roles(
         ).fetchone()
         if not project or project[0] != SELFDEV_PROJECT_NAME:
             raise HTTPException(404, "Self Development project not found")
+        existing = db.execute(
+            "SELECT count(*) FROM principal_credentials WHERE principal_id=ANY(%s)",
+            ([principal_id for principal_id, _kind, _grants in expected],),
+        ).fetchone()[0]
+        if existing == 0:
+            raise HTTPException(404, {"code": "CYCLE_NOT_FOUND",
+                                      "message": "Self Development cycle was never issued"})
         for principal_id, kind, grants in expected:
             rows = db.execute(
                 "SELECT c.kind,c.enabled,g.project_id,g.capability FROM principal_credentials c "
@@ -1118,16 +1208,38 @@ def revoke_selfdev_cycle_roles(
             if any(bool(row[1]) for row in rows):
                 already_revoked = False
         if already_revoked:
+            # Repair/verify cleanup for cycles revoked by an earlier API version
+            # or interrupted deployment. This is idempotent and deliberately
+            # does not repeat work-escalation events.
+            repair = _retire_selfdev_cycle_implementer(
+                db, expected[0][0], str(principal), project_id, escalate_work=False,
+            )
+            if repair["host_bindings_retired"] or repair["profile_disabled"]:
+                audit(db, project_id, "principal.selfdev_cycle_role.retirement_repaired", {
+                    "cycle_id": cycle_id,
+                    "principal_id": expected[0][0],
+                    "issuer_principal_id": str(principal),
+                    **repair,
+                })
             return {"cycle_id": cycle_id, "revoked": True, "already_revoked": True}
+        # Check the security-critical DB capability before disabling either
+        # credential. The transaction would roll back on a later failure, but
+        # this keeps the operation fail-before-mutation as well as atomic.
+        _require_selfdev_cycle_retirement_migration(db)
         for principal_id, kind, _grants in expected:
             db.execute(
                 "UPDATE principal_credentials SET enabled=false,pending_token_digest=NULL,"
                 "pending_expires_at=NULL WHERE principal_id=%s", (principal_id,),
             )
-            audit(db, project_id, "principal.selfdev_cycle_role.revoked", {
+            details = {
                 "cycle_id": cycle_id, "principal_id": principal_id, "kind": kind,
                 "issuer_principal_id": str(principal),
-            })
+            }
+            if kind == "AGENT":
+                details.update(_retire_selfdev_cycle_implementer(
+                    db, principal_id, str(principal), project_id,
+                ))
+            audit(db, project_id, "principal.selfdev_cycle_role.revoked", details)
     return {"cycle_id": cycle_id, "revoked": True, "already_revoked": False}
 
 
@@ -1366,6 +1478,72 @@ def current_auditor_grants(
     ]
 
 
+def _escalate_revoked_agent_work(db, principal_id: str, actor: str) -> None:
+    """Escalate unclaimed work assigned to a just-revoked AGENT credential.
+
+    Callers must disable the credential first in the same transaction.
+    """
+    # Read after credential revocation serializes with any claim or
+    # assignment that had already authenticated this principal.
+    assigned_work = db.execute(
+        "SELECT w.id,w.project_id FROM work_items w "
+        "JOIN work_item_assignments a ON a.project_id=w.project_id AND a.work_id=w.id "
+        "WHERE a.principal_id=%s AND w.status IN ('INBOX','READY','IN_PROGRESS') "
+        "AND NOT EXISTS (SELECT 1 FROM execution_queue q WHERE q.work_id=w.id "
+        "AND q.status IN ('RUNNING','UNCERTAIN','SUCCEEDED')) "
+        "ORDER BY w.id",
+        (principal_id,),
+    ).fetchall()
+    for work_id, project_id in assigned_work:
+        coordinators = [record[0] for record in db.execute(
+            "SELECT DISTINCT c.principal_id FROM principal_credentials c "
+            "JOIN project_grants g ON g.principal_id=c.principal_id "
+            "WHERE c.kind='AGENT' AND c.enabled AND g.project_id=%s "
+            "AND (c.expires_at IS NULL OR c.expires_at>clock_timestamp()) "
+            "AND g.capability='work.assign' "
+            "AND (g.expires_at IS NULL OR g.expires_at>clock_timestamp()) "
+            "ORDER BY c.principal_id",
+            (project_id,),
+        ).fetchall()]
+        blockage_id = str(uuid4())
+        reason = "Assigned agent credential revoked before execution claim"
+        next_action = (
+            "An active project principal with work.assign must reassign this child "
+            "to an eligible agent; current grants and competencies are rechecked."
+            if coordinators else
+            "No active project principal with work.assign was found. The CEO must "
+            "select an eligible replacement; no assignment was changed automatically."
+        )
+        protocol_instance_id = start_work_protocol(
+            db,
+            protocol_id="blockage-escalation",
+            work_id=str(work_id),
+            started_by=actor,
+            subject_type="work_item",
+            idempotency_key=(
+                f"blockage-escalation:work_item:{work_id}:credential-revoked:{principal_id}"
+            ),
+            request={
+                "blockage_id": blockage_id,
+                "project_id": str(project_id),
+                "reason": reason,
+                "unavailable_principal_id": principal_id,
+                "reported_by": actor,
+            },
+        )
+        audit(db, str(work_id), "work.dispatch_blocked", {
+            "project_id": str(project_id),
+            "work_id": str(work_id),
+            "principal_id": principal_id,
+            "actor": actor,
+            "reason": reason,
+            "blockage_id": blockage_id,
+            "protocol_instance_id": protocol_instance_id,
+            "next_actor_principal_ids": coordinators,
+            "next_action": next_action,
+        })
+
+
 @app.post("/v1/principals/{principal_id}/revoke")
 def revoke_principal(principal_id: str, _: str = Depends(require_ceo)):
     """Revocation prevents new authentication and lease completion."""
@@ -1386,64 +1564,7 @@ def revoke_principal(principal_id: str, _: str = Depends(require_ceo)):
         audit(db, str(uuid4()), "principal.credential.revoked",
               {"principal_id": principal_id, "kind": row[0]})
         if row[0] == "AGENT":
-            # Read after credential revocation serializes with any claim or
-            # assignment that had already authenticated this principal.
-            assigned_work = db.execute(
-                "SELECT w.id,w.project_id FROM work_items w "
-                "JOIN work_item_assignments a ON a.project_id=w.project_id AND a.work_id=w.id "
-                "WHERE a.principal_id=%s AND w.status IN ('INBOX','READY','IN_PROGRESS') "
-                "AND NOT EXISTS (SELECT 1 FROM execution_queue q WHERE q.work_id=w.id "
-                "AND q.status IN ('RUNNING','UNCERTAIN','SUCCEEDED')) "
-                "ORDER BY w.id",
-                (principal_id,),
-            ).fetchall()
-            for work_id, project_id in assigned_work:
-                coordinators = [record[0] for record in db.execute(
-                    "SELECT DISTINCT c.principal_id FROM principal_credentials c "
-                    "JOIN project_grants g ON g.principal_id=c.principal_id "
-                    "WHERE c.kind='AGENT' AND c.enabled AND g.project_id=%s "
-                    "AND g.capability='work.assign' "
-                    "AND (g.expires_at IS NULL OR g.expires_at>clock_timestamp()) "
-                    "ORDER BY c.principal_id",
-                    (project_id,),
-                ).fetchall()]
-                blockage_id = str(uuid4())
-                reason = "Assigned agent credential revoked before execution claim"
-                next_action = (
-                    "An active project principal with work.assign must reassign this child "
-                    "to an eligible agent; current grants and competencies are rechecked."
-                    if coordinators else
-                    "No active project principal with work.assign was found. The CEO must "
-                    "select an eligible replacement; no assignment was changed automatically."
-                )
-                protocol_instance_id = start_work_protocol(
-                    db,
-                    protocol_id="blockage-escalation",
-                    work_id=str(work_id),
-                    started_by="ceo",
-                    subject_type="work_item",
-                    idempotency_key=(
-                        f"blockage-escalation:work_item:{work_id}:credential-revoked:{principal_id}"
-                    ),
-                    request={
-                        "blockage_id": blockage_id,
-                        "project_id": str(project_id),
-                        "reason": reason,
-                        "unavailable_principal_id": principal_id,
-                        "reported_by": "ceo",
-                    },
-                )
-                audit(db, str(work_id), "work.dispatch_blocked", {
-                    "project_id": str(project_id),
-                    "work_id": str(work_id),
-                    "principal_id": principal_id,
-                    "actor": "ceo",
-                    "reason": reason,
-                    "blockage_id": blockage_id,
-                    "protocol_instance_id": protocol_instance_id,
-                    "next_actor_principal_ids": coordinators,
-                    "next_action": next_action,
-                })
+            _escalate_revoked_agent_work(db, principal_id, "ceo")
     return {"principal_id": principal_id, "enabled": False}
 
 

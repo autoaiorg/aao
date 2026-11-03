@@ -5,7 +5,7 @@
 > Esta solicitud no concede, activa ni autoriza nada. Un dictamen emitido a partir de ella **tampoco** activa R2. Solo aporta evidencia para la decisión del CEO descrita en [`CEO-REQ-R2-AUTONOMY-ACTIVATION-2026-11-03.md`](CEO-REQ-R2-AUTONOMY-ACTIVATION-2026-11-03.md) §7.
 > Fusionar este archivo no es una aprobación ([CEO-DEC-2026-10-25](CEO-DEC-2026-10-25.md), Decisión 1). `docs/decisions/` es una ruta R3.
 
-**Fecha de redacción:** 2026-11-03.
+**Fecha de redacción original:** 2026-11-03. La evidencia del expediente relacionado está anclada a `f127a7e` y fechada alrededor de las 12:20 UTC; debe revalidarse y fijarse de nuevo antes de iniciar el dictamen.
 **Redacta:** agente Claude del equipo constructor. **Claude está recusado** como auditor de este alcance: es autor de commits en él y ha participado en el diseño (§4.3.1).
 **Normas aplicables:** GOV-REV-001 v1.1 (`docs/AUTONOMOUS_AUDIT_POLICY.md`), pasos 1 a 9, y GOV-REV-002 §3.2 (R2), §4.3, §5, §6.1, §6.2 y §9. GOV-REV-002 sigue en BORRADOR (P-01 de la solicitud al CEO): el auditor la aplica como especificación de la evaluación, no como autoridad vigente.
 
@@ -35,7 +35,7 @@
    - Si el rango contiene commits de los tres modelos, puede que **ningún auditor quede sin recusar**. En ese caso la materia es R3 (§4.3.8) y decide el CEO.
    - Con RA-02 en PENDING, la atribución no está resuelta y el resultado tiene que ser `INCONCLUSIVE`, nunca `APPROVE` (§4.3.4).
    - El auditor debe pronunciarse expresamente sobre este punto antes de entrar en el fondo.
-5. Mientras F2 no esté en PASS, el dictamen incluye literalmente: «Independencia de auditoría no demostrada; revisor y autor comparten uid y credenciales.» (§9.4).
+5. Mientras F2 no esté en PASS, el dictamen debe decir que la independencia no está demostrada y que el dictamen es **INCONCLUSIVE** conforme a §4.3.4. No debe afirmar que revisor y autor comparten uid o credenciales, salvo que exista evidencia autenticada específica que lo demuestre.
 
 ## 4. Pruebas negativas que el auditor debe ejecutar o evaluar
 

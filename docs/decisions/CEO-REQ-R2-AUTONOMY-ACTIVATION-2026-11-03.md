@@ -5,11 +5,13 @@
 > Este documento no concede, activa ni autoriza nada. Solo tendría efecto si el CEO firma una decisión propia (`CEO-DEC-…`, R3) sobre un SHA exacto, **después** de que exista el dictamen pedido en [`AUDITOR-DICTAMEN-REQUEST-R2-2026-11-03.md`](AUDITOR-DICTAMEN-REQUEST-R2-2026-11-03.md).
 > Fusionar este archivo **no** es una aprobación: «No utilices la fusión de una PR como sustituto de una autorización formal en futuras decisiones R3» ([CEO-DEC-2026-10-25](CEO-DEC-2026-10-25.md), Decisión 1). `docs/decisions/` es ruta protegida R3 (`docs/protected-routes.json`).
 
-**Fecha de redacción:** 2026-11-03, alrededor de las 12:20 UTC.
+**Fecha de redacción original:** 2026-11-03, alrededor de las 12:20 UTC.
 **Redacta:** agente Claude en el equipo constructor ([CEO-DEC-AAO-CONSTRUCTION-2026-10-25](CEO-DEC-AAO-CONSTRUCTION-2026-10-25.md)). No implementa la activación, no audita y no fusiona.
 **Origen:** instrucción del CEO del 2026-11-03, transmitida por el coordinador, de «lanzar la solicitud del §12.5». En el repositorio no consta un registro de esa instrucción.
 **Revisión observada:** `origin/main` = `f127a7e37b41e015b07ab25bb076201178a96795`.
 **Canal previsto:** issue `ceo-proposal` (D7-bis; GOV-REV-002 §10.1), con enlace a este documento y al dictamen.
+
+> **Validez de la evidencia:** este expediente es una instantánea histórica tomada sobre `f127a7e` y con observaciones de host/GitHub del 2026-11-03 alrededor de las 12:20 UTC. `main` ha avanzado desde entonces. Las tablas, los estados, los recuentos y las inferencias siguientes **no son evidencia actual** ni se pueden usar para solicitar o firmar una activación. Antes de circular el expediente, el PM debe fijar un SHA candidato nuevo y repetir las comprobaciones mutables contra ese SHA y la configuración efectiva; cualquier dato no revalidado debe quedar como **NO VERIFICADO**. El recuento 2/18/6 solo describe aquella instantánea.
 
 ---
 
@@ -89,7 +91,7 @@ Estados posibles: **CUMPLIDO** (hay evidencia citada), **NO CUMPLIDO** (la evide
 | P-25 | Estado de partida seguro: integrador apagado | `ops.py:139-164` | **CUMPLIDO** | `inactive` y `disabled`. Hay un matiz: `ops.py:164` dice «OFF (masked)», pero la unidad **no está enmascarada** y la comprobación solo mira `is-active` |
 | P-26 | Claves del integrador: clave privada de la App `aao-integrator` bajo su uid y clave de firma ed25519 registrada | §4.2; `TRUST_ROOT_HOST_INSTALL.md` §3 | **NO VERIFICADO** | Existe `/srv/aao/trust/keys/aao-integrator-ed25519.pub`, y el registro tiene `integrator_key_id = aao-integrator`. `ESTADO_ACTUAL.md:91`: los `.pem` y `.json` de las Apps «habían pasado como metadatos en verificaciones previas; no se revalidó aquí». `:145`: el preflight dio PASS en «Apps config». Sin sudo no se puede comprobar la custodia de la clave privada en `/var/lib/aao-integrator`, ni que la clave de la App corresponda a la App 5447984 |
 
-**Recuento:** 2 CUMPLIDO, 18 NO CUMPLIDO y 6 NO VERIFICADO, sobre 26.
+**Recuento histórico (instantánea de `f127a7e`, 2026-11-03 12:20 UTC):** 2 CUMPLIDO, 18 NO CUMPLIDO y 6 NO VERIFICADO, sobre 26. No es un recuento vigente; debe recalcularse tras revalidar cada fila para el candidato.
 
 ## 4. Pruebas negativas disponibles y las que faltan
 
@@ -174,7 +176,7 @@ Firmaría una decisión `CEO-DEC-R2-AUTONOMY-ACTIVATION-<fecha>` (R3, `autonomy.
 
 | # | Tarea | Rol responsable | Cierra |
 |---|---|---|---|
-| 1 | Decidir sobre P5: aprobar GOV-REV-002 sobre su SHA, o sustituir expresamente el §12.5 por otro instrumento | CEO (R3), con propuesta del PM | P-01 |
+| 1 | Preparar la propuesta P5 y mantenerla pendiente. No solicitar ni registrar aprobación del CEO para P5/R1/R2 antes de que F2 y el trial estén en PASS, conforme a la condición expresada por el CEO; entonces presentar la secuencia y evidencia actualizadas para decisión expresa | PM prepara; CEO decide (R3) | P-01 |
 | 2 | Completar y evidenciar el aislamiento F2 (matriz del plan §8.1) bajo cada uid, sobre el candidato | Implementador; CEO ejecuta sudo (P1) | P-04 |
 | 3 | Regenerar e instalar la raíz de confianza sobre el candidato, incluido el árbol congelado de `aao-auditor-alt`, y obtener `verify_trust_root_host.py` en PASS | CEO (sudo, R3), con un artefacto auditado | P-15, P-16 |
 | 4 | Ejecutar el ensayo P2/P3 y las pruebas en vivo (NT-09-1, NT-09-2 y NT-03-6). Llevar RA-01, 02, 03, 07 y 09 a PASS con evidencia vinculada al SHA | Implementador y auditor no recusado; el CEO reinstala el registro | P-05 a P-09 |

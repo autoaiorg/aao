@@ -4377,7 +4377,7 @@ def submit_next_agent_result(project_id: str, worker_id: str, credential: str) -
 
     Work lock serializes submitters, staging and reassignment. Evidence, protocol,
     state and provenance commit together; a restart retries from execution_queue.
-    No new endpoint or grant is introduced.
+    The authenticated endpoint below reuses the existing grants; no new grant is introduced.
     """
     from aao.evidence_registry import register_evidence_in_transaction
     from aao.principal_credentials import PrincipalDenied
@@ -4452,6 +4452,17 @@ def submit_next_agent_result(project_id: str, worker_id: str, credential: str) -
         })
     return {"work_id": work_id, "execution_id": str(execution_id),
             "status": "IN_REVIEW", "evidence": evidence}
+
+
+@app.post("/v1/agent/projects/{project_id}/submit-next-result")
+def submit_next_agent_result_endpoint(
+    project_id: str,
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_worker)],
+    x_agent_token: str | None = Header(None),
+):
+    """Submit one durable successful result through the authenticated API boundary."""
+    submitted = submit_next_agent_result(project_id, str(principal), x_agent_token or "")
+    return submitted if submitted is not None else {"status": "IDLE"}
 
 
 @app.post("/v1/work/{work_id}/progress")

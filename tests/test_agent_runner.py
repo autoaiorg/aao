@@ -77,6 +77,7 @@ def test_codex_requires_a_dedicated_codex_home(monkeypatch, tmp_path):
     subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-qm", "base"], check=True)
     sha = _git(repo, "rev-parse", "HEAD").strip()
     monkeypatch.setenv("AAO_AGENT_PROVIDER", "codex")
+    monkeypatch.setenv("AAO_AGENT_DAILY_BUDGET_USD", "5")
     monkeypatch.delenv("AAO_AGENT_CODEX_HOME", raising=False)
     with pytest.raises(AgentRunnerError, match="dedicated AAO_AGENT_CODEX_HOME"):
         run_agent_patch(repo, sha, "x", backend="codex", timeout=3)
@@ -97,6 +98,7 @@ def test_codex_run_records_provider_pinned_model_and_real_cli_release(monkeypatc
     argv_file = tmp_path / "argv"
     (tmp_path / "codex-home").mkdir()
     monkeypatch.setenv("AAO_AGENT_PROVIDER", "codex")
+    monkeypatch.setenv("AAO_AGENT_DAILY_BUDGET_USD", "5")
     monkeypatch.setenv("AAO_AGENT_CODEX_HOME", str(tmp_path / "codex-home"))
     monkeypatch.setenv("AAO_AGENT_CODEX_MODEL", "gpt-5.1-codex")
     monkeypatch.setattr(agent_runner, "codex_release", lambda: tmp_path / "releases" / "0.164.0-x86_64-unknown-linux-musl")
@@ -154,3 +156,26 @@ def test_isolation_probe_finds_no_leak():
     proc = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, timeout=180, check=False)
     report = json.loads(proc.stdout)
     assert proc.returncode == 0 and report["ok"], report.get("failures")
+
+
+@pytest.mark.parametrize("budget", [None, "", "abc", "0", "-1", "nan", "inf"])
+def test_codex_refuses_without_a_positive_daily_budget(monkeypatch, tmp_path, budget):
+    """Fail closed: an activated model backend never runs without a positive finite daily budget."""
+    repo, sha = _empty_repo(tmp_path)
+    (tmp_path / "codex-home").mkdir()
+    monkeypatch.setenv("AAO_AGENT_PROVIDER", "codex")
+    monkeypatch.setenv("AAO_AGENT_CODEX_HOME", str(tmp_path / "codex-home"))
+    if budget is None:
+        monkeypatch.delenv("AAO_AGENT_DAILY_BUDGET_USD", raising=False)
+    else:
+        monkeypatch.setenv("AAO_AGENT_DAILY_BUDGET_USD", budget)
+    with pytest.raises(AgentRunnerError, match="daily budget required"):
+        run_agent_patch(repo, sha, "x", backend="codex", timeout=3)
+
+
+def test_daily_budget_accepts_only_a_positive_finite_value(monkeypatch):
+    from aao.agent_runner import daily_budget_usd
+    monkeypatch.setenv("AAO_AGENT_DAILY_BUDGET_USD", "0.5")
+    assert daily_budget_usd() == 0.5
+    monkeypatch.setenv("AAO_AGENT_DAILY_BUDGET_USD", "0")
+    assert daily_budget_usd() is None

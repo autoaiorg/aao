@@ -12,7 +12,40 @@ import os
 from collections.abc import Iterator
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+class _RefuseRedirects(HTTPRedirectHandler):
+    def redirect_request(self, *_args, **_kwargs):
+        return None  # the 3xx surfaces as HTTPError; the bearer token never follows a redirect
+
+
+_OPENER = build_opener(_RefuseRedirects())
+_LOOPBACK_OPENER = build_opener(ProxyHandler({}), _RefuseRedirects())
+
+
+def urlopen(request, timeout):
+    """Open without redirects; never route loopback requests through an env proxy."""
+    try:
+        host = urlsplit(request.full_url).hostname
+    except ValueError:
+        host = None
+    opener = _LOOPBACK_OPENER if host in _LOOPBACK_HOSTS else _OPENER
+    return opener.open(request, timeout=timeout)
+
+
+def endpoint_allowed(endpoint: str) -> bool:
+    """https only (http just for loopback fakes), no userinfo: the bearer token must not travel in clear."""
+    try:
+        parsed = urlsplit(endpoint)
+        host, _port = parsed.hostname, parsed.port  # .port raises ValueError when malformed
+    except ValueError:
+        return False
+    if not host or parsed.username is not None or parsed.password is not None or "@" in parsed.netloc:
+        return False
+    return parsed.scheme == "https" or (parsed.scheme == "http" and host in _LOOPBACK_HOSTS)
 
 
 class ProviderUnavailable(RuntimeError):
@@ -43,6 +76,10 @@ def stream_reply(messages: list[dict[str, str]]) -> Iterator[str]:
     provider = os.getenv("AAO_CONVERSATION_PROVIDER", "").strip()
     if provider != "openai-compatible" or not endpoint or not model or not token:
         raise ProviderUnavailable("PROVIDER_NOT_CONFIGURED", "Conversación con modelo no configurada.")
+    if not endpoint_allowed(endpoint):
+        # Same code as "not configured": nothing is sent. The message never echoes the URL or the key.
+        raise ProviderUnavailable("PROVIDER_NOT_CONFIGURED",
+                                  "Endpoint del proveedor rechazado: se requiere https sin credenciales en la URL.")
     body = json.dumps({"model": model, "messages": messages, "stream": True}).encode()
     request = Request(endpoint, data=body, headers={
         "Authorization": f"Bearer {token}", "Content-Type": "application/json",
@@ -64,6 +101,7 @@ def stream_reply(messages: list[dict[str, str]]) -> Iterator[str]:
                 if isinstance(chunk, str) and chunk:
                     yield chunk
     except HTTPError as exc:
+        exc.close()  # also a refused redirect: its body is never read
         raise ProviderUnavailable("PROVIDER_HTTP_ERROR", f"Proveedor respondió HTTP {exc.code}.") from exc
     except (URLError, TimeoutError, OSError) as exc:
         raise ProviderUnavailable("PROVIDER_UNAVAILABLE", "No se pudo conectar con el proveedor.") from exc

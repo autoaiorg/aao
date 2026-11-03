@@ -19,8 +19,14 @@ def _directives(unit: str, name: str) -> list[str]:
 def test_production_workload_units_fail_closed_and_use_mtls() -> None:
     for path in UNIT_PATHS:
         unit = path.read_text()
-        assert "Environment=AAO_ENV=production" in unit
-        assert "Environment=AAO_API_BASE_URL=https://127.0.0.1:8443" in unit
+        exec_start = _directives(unit, "ExecStart")
+        assert len(exec_start) == 1
+        # systemd applies EnvironmentFile after Environment=, so the final
+        # command sets security-critical values via env immediately before exec.
+        assert exec_start[0].startswith(
+            "/usr/bin/env AAO_ENV=production "
+            "AAO_API_BASE_URL=https://127.0.0.1:8443 "
+        )
         assert "ConditionPathIsDirectory=%h/.config/aao/workload-tls" in unit
         assert "aao-self-development-agent.token" not in unit
         assert "aao-pm.token" not in unit

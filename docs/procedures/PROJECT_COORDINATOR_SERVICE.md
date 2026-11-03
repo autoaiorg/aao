@@ -23,7 +23,7 @@ El unit `deploy/systemd/user/aao-project-coordinator@.service` ejecuta el runner
    AAO_PM_PRINCIPAL_ID=<principal autenticado del PM>
    ```
 
-   No guardar tokens, certificados, claves de proveedor ni credenciales GitHub en este archivo. El origen API HTTPS se fija en el unit y no debe sobrescribirse desde el entorno del manager.
+   No guardar tokens, certificados, claves de proveedor ni credenciales GitHub en este archivo. El modo de producción y el origen API HTTPS se fijan como argumentos de `/usr/bin/env` en `ExecStart`, después de cargar `EnvironmentFile`; así el archivo de configuración no puede sustituirlos.
 
 ## Habilitación por el CEO (requiere actuar como aao-pm y un paso sudo)
 

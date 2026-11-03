@@ -45,7 +45,7 @@ autenticado.
   es numérico, es cero/negativo, `NaN` o infinito, el backend Codex falla
   cerrado. Aplicar el límite tanto al proceso API (para staging) como al worker
   (para ejecución).
-- La unidad fija `AAO_API_BASE_URL=https://127.0.0.1:8443`. El certificado de
+- La unidad fija `AAO_ENV=production` y `AAO_API_BASE_URL=https://127.0.0.1:8443` mediante `/usr/bin/env` en `ExecStart`, después de cargar `EnvironmentFile`, por lo que el archivo no puede reemplazarlos. El certificado de
   servidor debe incluir `IP:127.0.0.1` en SAN y su CA debe coincidir con
   `server-ca.pem`; no se permite el fallback a HTTP/bearer en producción.
 - La autenticación de Codex puede expirar o ser revocada; este documento no

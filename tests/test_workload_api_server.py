@@ -13,6 +13,12 @@ def test_workload_listener_refuses_non_production(monkeypatch, tmp_path):
         build_config(credentials_dir=str(tmp_path))
 
 
+def test_workload_listener_refuses_unset_environment(monkeypatch, tmp_path):
+    monkeypatch.delenv("AAO_ENV", raising=False)
+    with pytest.raises(RuntimeError, match="AAO_ENV=production"):
+        build_config(credentials_dir=str(tmp_path))
+
+
 def test_workload_listener_requires_systemd_credentials(monkeypatch):
     monkeypatch.setenv("AAO_ENV", "production")
     monkeypatch.delenv("CREDENTIALS_DIRECTORY", raising=False)

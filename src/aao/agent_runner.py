@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from urllib.request import ProxyHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from aao.patch_proposals import PatchProposalError, inspect_patch
 
@@ -90,6 +90,17 @@ _MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 
 _OLLAMA_CONTEXT_EXTENSIONS = {".py", ".md", ".toml", ".yml", ".yaml", ".sql", ".sh", ".ts", ".tsx", ".js", ".jsx"}
 _OLLAMA_CONTEXT_DENY_PARTS = {".env", "secrets", "secret", "credentials", "tokens", "keys", "private"}
+
+
+class _NoRedirectHandler(HTTPRedirectHandler):
+    """Prevent a local Ollama endpoint from forwarding prompts to a remote host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _ollama_opener():
+    return build_opener(ProxyHandler({}), _NoRedirectHandler())
 
 
 def _ollama_repository_context(clone: Path, *, max_chars: int = 8000) -> str:
@@ -283,7 +294,7 @@ def run_agent_patch(repository, base_sha: str, instructions: str, *, backend: st
                 "options": {"temperature": 0, "num_predict": 384},
             }).encode(), headers={"Content-Type": "application/json"}, method="POST")
             try:
-                with build_opener(ProxyHandler({})).open(request, timeout=timeout) as response:
+                with _ollama_opener().open(request, timeout=timeout) as response:
                     payload = json.loads(response.read(1_000_001))
             except Exception as exc:
                 raise AgentRunnerError("local Ollama request failed") from exc

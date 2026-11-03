@@ -213,7 +213,7 @@ def test_ollama_backend_uses_only_loopback_and_zero_cost(monkeypatch, tmp_path):
     monkeypatch.setenv("AAO_AGENT_PROVIDER", "ollama")
     monkeypatch.setenv("AAO_AGENT_OLLAMA_MODEL", "qwen3.5:9b")
     monkeypatch.setenv("AAO_AGENT_DAILY_BUDGET_USD", "0")
-    monkeypatch.setattr(agent_runner, "build_opener", lambda handler: Opener())
+    monkeypatch.setattr(agent_runner, "_ollama_opener", lambda: Opener())
     result = run_agent_patch(repo, sha, "edit x", backend="ollama", timeout=20, model="qwen3.5:9b")
     assert result["provider"] == "ollama-local" and result["model"] == "qwen3.5:9b"
     assert "-before\n+after" in result["patch"]
@@ -235,6 +235,56 @@ def test_ollama_repository_context_is_bounded_and_excludes_untracked_secret_path
     assert "do-not-send" not in context
     (repo / "src/aao/untracked.py").write_text("untracked content\n")
     assert "untracked content" not in _ollama_repository_context(repo)
+
+
+def test_ollama_opener_does_not_follow_redirects():
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from urllib.error import HTTPError
+
+    from aao.agent_runner import _ollama_opener
+
+    remote_requests = []
+
+    class RemoteHandler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            remote_requests.append(self.path)
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    remote = HTTPServer(("127.0.0.1", 0), RemoteHandler)
+    remote_thread = threading.Thread(target=remote.serve_forever, daemon=True)
+    remote_thread.start()
+
+    class RedirectHandler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.send_response(307)
+            self.send_header("Location", f"http://127.0.0.1:{remote.server_port}/capture")
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    redirect = HTTPServer(("127.0.0.1", 0), RedirectHandler)
+    redirect_thread = threading.Thread(target=redirect.serve_forever, daemon=True)
+    redirect_thread.start()
+    try:
+        from urllib.request import Request
+
+        req = Request(f"http://127.0.0.1:{redirect.server_port}/generate", data=b"private prompt", method="POST")
+        with pytest.raises(HTTPError):
+            _ollama_opener().open(req, timeout=3)
+        assert remote_requests == []
+    finally:
+        redirect.shutdown()
+        remote.shutdown()
+        redirect.server_close()
+        remote.server_close()
+        redirect_thread.join(timeout=3)
+        remote_thread.join(timeout=3)
 
 
 def test_ollama_backend_requires_activation_and_pinned_model(monkeypatch, tmp_path):

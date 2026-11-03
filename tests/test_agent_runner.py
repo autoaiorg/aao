@@ -28,11 +28,13 @@ def test_fixture_runs_in_clone_and_preserves_source(tmp_path, monkeypatch):
     monkeypatch.setenv("AAO_AGENT_FIXTURE_PATCH", str(patch_file))
     original_run = agent_runner.subprocess.run
     source_git_configs = []
+    config_paths = []
 
     def record_git_command(argv, *args, **kwargs):
         if argv[:1] == ["git"] and str(repo) in argv and "--show-toplevel" in argv:
             config_path = kwargs["env"]["GIT_CONFIG_GLOBAL"]
-            source_git_configs.append(Path(config_path).read_text())
+            config_paths.append(Path(config_path))
+            source_git_configs.append((Path(config_path).read_text(), Path(config_path).stat().st_mode & 0o777))
         return original_run(argv, *args, **kwargs)
 
     monkeypatch.setattr(agent_runner.subprocess, "run", record_git_command)
@@ -42,9 +44,19 @@ def test_fixture_runs_in_clone_and_preserves_source(tmp_path, monkeypatch):
     assert result["patch"]
     assert _git(repo, "status", "--porcelain") == before
     assert source_git_configs
-    assert all(f"directory = {repo.resolve()}" in config for config in source_git_configs)
+    assert all(f"directory = {repo.resolve()}" in config for config, _mode in source_git_configs)
+    assert all(mode == 0o600 for _config, mode in source_git_configs)
+    assert all(not path.exists() for path in config_paths)
     assert (repo / "src/aao/x.py").read_text() == "before\n"
     assert (result["provider"], result["model"], result["backend_version"]) == ("fixture", None, "fixture-v1")
+
+
+def test_git_safe_directory_rejects_newline_in_path():
+    from aao.agent_runner import AgentRunnerError, _git
+
+    with pytest.raises(AgentRunnerError, match="unsafe Git safe.directory path"):
+        _git(Path("/tmp/aao-safe\ndirectory = *"), "rev-parse", "HEAD",
+             safe_directories=(Path("/tmp/aao-safe\ndirectory = *"),))
 
 
 def test_codex_requires_provider(monkeypatch, tmp_path):

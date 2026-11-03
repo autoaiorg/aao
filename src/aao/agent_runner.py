@@ -29,7 +29,12 @@ def _git(repo: Path, *args: str, timeout: int = 30,
             # child process also sees the exact allowlist.
             with tempfile.TemporaryDirectory(prefix="aao-git-config-") as config_dir:
                 config_path = Path(config_dir) / "config"
-                entries = "".join(f"\tdirectory = {path.resolve()}\n" for path in safe_directories)
+                resolved_safe_directories = tuple(path.resolve() for path in safe_directories)
+                if any("\n" in str(path) or "\r" in str(path) for path in resolved_safe_directories):
+                    raise AgentRunnerError("unsafe Git safe.directory path")
+                entries = "".join(
+                    f"\tdirectory = {path}\n" for path in resolved_safe_directories
+                )
                 config_path.write_text(f"[safe]\n{entries}", encoding="utf-8")
                 config_path.chmod(0o600)
                 p = subprocess.run(["git", "-C", str(repo), *args], cwd="/",

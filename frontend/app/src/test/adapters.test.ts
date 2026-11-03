@@ -367,7 +367,7 @@ describe('HttpAaoLiveAdapter organization projection', () => {
     if (result.kind === 'ready') expect(result.data.agents).toEqual([]);
     expect(global.fetch).toHaveBeenCalledTimes(1);
     expect(global.fetch).toHaveBeenCalledWith(
-      expect.stringContaining('/v1/organization'), expect.any(Object),
+      expect.stringContaining('/v1/organization'), expect.objectContaining({ cache: 'no-store' }),
     );
   });
 

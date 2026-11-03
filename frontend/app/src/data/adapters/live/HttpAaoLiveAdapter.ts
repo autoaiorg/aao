@@ -894,7 +894,9 @@ export class HttpAaoLiveAdapter implements AaoRoutinePort, AaoReadPort, AaoOrgan
         retryable: false,
       };
     }
-    return this.request('/v1/organization', OrganizationStructureSchema);
+    return this.request('/v1/organization', OrganizationStructureSchema, {
+      cache: 'no-store',
+    });
   }
 
   async putOrganizationUnit(input: OrganizationUnitCommand): Promise<DataState<unknown>> {

@@ -338,6 +338,9 @@ export const App: React.FC = () => {
             calendarReadPort={origin === 'live' ? port : undefined}
             conversationPort={origin === 'live' && role === 'CEO' && port instanceof HttpAaoLiveAdapter ? port : undefined}
             conversationSessionId={sessionId}
+            canManageOrganization={origin === 'live' && role === 'CEO' && port instanceof HttpAaoLiveAdapter}
+            onSaveUnit={port instanceof HttpAaoLiveAdapter ? (input) => port.putOrganizationUnit(input) : undefined}
+            onSaveProfile={port instanceof HttpAaoLiveAdapter ? (input) => port.putOrganizationProfile(input) : undefined}
             onCreateWorkRequest={port instanceof HttpAaoLiveAdapter
               ? async (projectId, input) => {
                   const result = await port.createCEOWorkRequest(projectId, input);

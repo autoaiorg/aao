@@ -9,6 +9,10 @@ import type { CEOWorkRequest, CreatedWorkRequest } from '../../data/ports/AaoWor
 import type { AaoConversationPort } from '../../data/ports/AaoConversationPort';
 import type { AaoReadPort } from '../../data/ports/AaoReadPort';
 import type { AaoCapabilityFeedbackPort } from '../../data/ports/AaoCapabilityFeedbackPort';
+import type {
+  OrganizationProfileCommand,
+  OrganizationUnitCommand,
+} from '../../data/ports/AaoOrganizationCommandPort';
 
 import type { AaoRoutinePort } from '../../data/ports/AaoRoutinePort';
 
@@ -162,6 +166,9 @@ export interface VirtualOfficeViewProps {
   routinePort?: AaoRoutinePort;
   calendarReadPort?: Pick<AaoReadPort, 'getProjectBoard'>;
   conversationSessionId?: string;
+  canManageOrganization?: boolean;
+  onSaveUnit?: (input: OrganizationUnitCommand) => Promise<DataState<unknown>>;
+  onSaveProfile?: (input: OrganizationProfileCommand) => Promise<DataState<unknown>>;
   onCreateWorkRequest?: (projectId: string, input: CEOWorkRequest) => Promise<DataState<CreatedWorkRequest>>;
   onNavigate?: (
     target: 'organization' | 'kanban' | 'projects' | 'decisions' | 'alerts' | 'audit',

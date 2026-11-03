@@ -495,6 +495,25 @@ class Runner:
             expired = current is not None and now >= current
             return self._save(state, "FAILED_EXPIRED" if expired else "ACTIVE",
                               next_attempt_at=until, **cleared)
+        # Issuance itself may be slow even when the retry was scheduled with
+        # enough margin. Do not replace either role file unless N can still
+        # remain valid for the full bounded drain interval after this response.
+        # Track N+1 as FAILED_INSTALL (conservative: it exists, but no token was
+        # installed) so a failed/ambiguous revoke cannot make us forget it.
+        current_exp = state["current_expires_at"]
+        current_exp = _parse_time(current_exp) if current_exp else None
+        if (
+            current_exp is not None
+            and now < current_exp
+            and current_exp - self.clock() < DAILY_CAP_SAFETY_MARGIN
+        ):
+            reason = "successor issued too late to preserve old-cycle drain margin"
+            self._event("failed", phase="ISSUING", cycle=cycle_id, reason=reason)
+            self._event("breaker_open", reason=reason)
+            return self._save(
+                state, "FAILED_INSTALL", consecutive_failures=BREAKER_THRESHOLD,
+                next_attempt_at=None,
+            )
         try:
             expires, tokens, ids = self._check_issue_response(cycle_id, status, body, now)
             # Identity is verified with the in-memory tokens BEFORE any file is
@@ -634,10 +653,28 @@ class Runner:
                 if old is not None:
                     issued = _parse_time(state["next_issued_at"])
                     deadline = min(current_exp, issued + DRAIN_CAP)
-                    if now < deadline and not self._old_drained(old):
+                    drained = self._old_drained(old)
+                    if now < deadline and not drained:
                         self._event("drain_waited", old=old,
                                     seconds=int((now - issued).total_seconds()))
                         return 0
+                    # A running/uncertain execution must not be killed by
+                    # revoking its credential merely because the 35m lease
+                    # bound elapsed. Wait for natural N expiry (at most the
+                    # remaining clock-skew margin); then promote N+1 without
+                    # an explicit revoke. The authorization expires on its own.
+                    if not drained and current_exp is not None and now < current_exp:
+                        self._event("drain_cap_busy_wait", old=old,
+                                    seconds=int((now - issued).total_seconds()))
+                        return 0
+                    if not drained and current_exp is not None and now >= current_exp:
+                        self._event("old_expired_while_busy", old=old)
+                        state = self._save(
+                            state, "ACTIVE", current_cycle_id=state["next_cycle_id"],
+                            current_expires_at=state["next_expires_at"], next_cycle_id=None,
+                            next_expires_at=None, next_issued_at=None,
+                        )
+                        continue
                 state = self._save(state, "REVOKING_OLD")
             elif phase == "REVOKING_OLD":
                 old = state["current_cycle_id"]

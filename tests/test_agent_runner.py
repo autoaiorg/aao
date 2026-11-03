@@ -249,8 +249,13 @@ def test_ollama_opener_does_not_follow_redirects():
     remote_requests = []
 
     class RemoteHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            remote_requests.append(("GET", self.path))
+            self.send_response(200)
+            self.end_headers()
+
         def do_POST(self):
-            remote_requests.append(self.path)
+            remote_requests.append(("POST", self.path))
             self.send_response(200)
             self.end_headers()
 

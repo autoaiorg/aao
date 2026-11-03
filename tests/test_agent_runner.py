@@ -263,7 +263,9 @@ def test_ollama_opener_does_not_follow_redirects():
 
     class RedirectHandler(BaseHTTPRequestHandler):
         def do_POST(self):
-            self.send_response(307)
+            # urllib does not normally follow 307 redirects for POST; use 302
+            # so this test proves our opener's redirect handler is required.
+            self.send_response(302)
             self.send_header("Location", f"http://127.0.0.1:{remote.server_port}/capture")
             self.end_headers()
 

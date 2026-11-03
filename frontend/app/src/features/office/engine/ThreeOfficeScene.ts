@@ -1279,7 +1279,9 @@ export class ThreeOfficeScene {
         : 'UNK';
     const nameLabel = this.createAgentNameSprite(
       agent.name.split(' ')[0],
-      `${activity.shortBadge} · ${provTag}`,
+      agent.coordinatorState
+        ? `${agent.coordinatorState === 'COORDINATING' ? 'COORDINANDO · NO EJECUTA TAREA' : agent.coordinatorState === 'WAITING' ? 'EN ESPERA' : 'ESTADO DESACTUALIZADO'} · ${provTag}`
+        : `${activity.shortBadge} · ${provTag}`,
       haloColor
     );
     nameLabel.position.set(0, 1.24, 0);

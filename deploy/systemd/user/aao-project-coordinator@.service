@@ -1,5 +1,9 @@
 [Unit]
 Description=AAO project coordinator for project %i
+ConditionPathIsDirectory=%h/.config/aao/workload-tls
+ConditionPathExists=%h/.config/aao/workload-tls/client-cert.pem
+ConditionPathExists=%h/.config/aao/workload-tls/client-key.pem
+ConditionPathExists=%h/.config/aao/workload-tls/server-ca.pem
 After=default.target
 StartLimitIntervalSec=300
 StartLimitBurst=5
@@ -7,7 +11,15 @@ StartLimitBurst=5
 [Service]
 Type=simple
 Environment=XDG_RUNTIME_DIR=/run/user/%U
+Environment=AAO_ENV=production
+Environment=AAO_API_BASE_URL=https://127.0.0.1:8443
 EnvironmentFile=%h/.config/aao/project-coordinator/%i.env
+# Each workload principal gets its own client certificate and key. systemd
+# copies these into the private credential directory; the client fails closed
+# if any source is absent or invalid.
+LoadCredential=client-cert:%h/.config/aao/workload-tls/client-cert.pem
+LoadCredential=client-key:%h/.config/aao/workload-tls/client-key.pem
+LoadCredential=server-ca:%h/.config/aao/workload-tls/server-ca.pem
 WorkingDirectory=/srv/aao/frozen/aao-pm/tree
 ExecStart=/srv/aao/frozen/aao-pm/venv/bin/python -I -c "import sys; sys.path.insert(0, '/srv/aao/frozen/aao-pm/tree'); from scripts.run_project_coordinator import main; raise SystemExit(main())" --project-id ${AAO_PROJECT_ID} --principal-id ${AAO_PM_PRINCIPAL_ID} --watch
 Restart=on-failure

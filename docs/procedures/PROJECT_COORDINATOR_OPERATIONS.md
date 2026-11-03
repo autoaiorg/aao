@@ -14,12 +14,14 @@ Antes de ejecutarlo, el CEO debe verificar:
 1. El backend AAO esperado está disponible y `AAO_API_BASE_URL` apunta a ese backend. HTTP solo se permite para loopback; cualquier API remota debe usar HTTPS.
 2. El proyecto está activo y el grupo que se va a coordinar ya fue confirmado por el CEO. No existe modo `--dry-run`: la primera pasada puede cambiar asignaciones persistentes.
 3. El principal PM seleccionado tiene grants vigentes `work.coordinate` y `work.assign` en ese proyecto. Los grants se conceden por el mecanismo CEO existente; este runner no los crea.
-4. El usuario Linux que ejecutará el proceso es el custodio de la credencial del principal PM. Tiene un token AAO válido en `$XDG_RUNTIME_DIR/aao-pm.token`, con directorio privado suyo y fichero regular suyo con modo `0600`. No usar la clave privada de la GitHub App como token AAO.
+4. La ejecución manual con token privado descrita abajo es solo para desarrollo/pruebas. El servicio de producción usa el transporte mTLS de `workload_client`; no debe ejecutarse con `AAO_ENV=production` salvo que tenga el directorio systemd `CREDENTIALS_DIRECTORY` completo y el certificado ligado al principal PM. Nunca usar una clave privada de GitHub como identidad AAO.
 5. El código se ejecuta desde un checkout/releases instalado y legible por `aao-pm`, no desde un worktree de desarrollo. Seleccionar la versión de código explícitamente antes de operar.
 
 ## Primera pasada: una sola vez
 
 Sustituir los marcadores por valores comprobados por el CEO; no copiar credenciales a argumentos o variables de entorno. Este ejemplo supone que el API es local y el usuario de ejecución es `aao-pm`:
+
+Este ejemplo es únicamente para desarrollo/pruebas con el backend en loopback; no sirve para activar el unit de producción.
 
 ```bash
 PM_UID="$(id -u aao-pm)"

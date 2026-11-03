@@ -1,6 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { AgentIdentity } from '../../../domain/models';
-import type { CameraViewState, OfficeCameraPreset, OfficeRoomConfig } from '../types';
+import type {
+  CameraViewState,
+  OfficeCameraPreset,
+  OfficeGraphicsQuality,
+  OfficeRoomConfig,
+  OfficeScenePerfMetrics,
+} from '../types';
 import { ThreeOfficeScene } from '../engine/ThreeOfficeScene';
 
 export interface Office3DCanvasProps {
@@ -15,6 +21,8 @@ export interface Office3DCanvasProps {
   onCameraChange?: (state: CameraViewState) => void;
   reducedMotion?: boolean;
   fullViewport?: boolean;
+  qualityProfile?: OfficeGraphicsQuality;
+  followAgent?: boolean;
 }
 
 export interface WebGLCanvasHandle {
@@ -22,6 +30,10 @@ export interface WebGLCanvasHandle {
   zoom: (factor: number) => void;
   reset: () => void;
   setPreset: (preset: OfficeCameraPreset) => void;
+  pan: (dx: number, dz: number) => void;
+  setFollowAgent: (enabled: boolean) => void;
+  setQualityProfile: (profile: OfficeGraphicsQuality) => void;
+  getPerformanceMetrics: () => OfficeScenePerfMetrics | null;
 }
 
 function checkWebGLSupport(): boolean {
@@ -49,6 +61,8 @@ export const Office3DCanvas = React.forwardRef<WebGLCanvasHandle, Office3DCanvas
       onCameraChange,
       reducedMotion = false,
       fullViewport = false,
+      qualityProfile = 'balanced',
+      followAgent = false,
     },
     ref
   ) => {
@@ -71,6 +85,18 @@ export const Office3DCanvas = React.forwardRef<WebGLCanvasHandle, Office3DCanvas
       setPreset: (preset: OfficeCameraPreset) => {
         sceneRef.current?.setCameraPreset(preset);
       },
+      pan: (dx: number, dz: number) => {
+        sceneRef.current?.panCamera(dx, dz);
+      },
+      setFollowAgent: (enabled: boolean) => {
+        sceneRef.current?.setFollowAgent(enabled);
+      },
+      setQualityProfile: (profile: OfficeGraphicsQuality) => {
+        sceneRef.current?.setQualityProfile(profile);
+      },
+      getPerformanceMetrics: () => {
+        return sceneRef.current?.getPerformanceMetrics() ?? null;
+      },
     }));
 
     // Initialize ThreeOfficeScene
@@ -82,6 +108,7 @@ export const Office3DCanvas = React.forwardRef<WebGLCanvasHandle, Office3DCanvas
         reducedMotion,
         rooms,
         demoFurniture,
+        qualityProfile,
         callbacks: {
           onSelectRoom: (roomId) => onSelectRoom(roomId),
           onSelectAgent: (agentId) => onSelectAgent(agentId),
@@ -96,6 +123,7 @@ export const Office3DCanvas = React.forwardRef<WebGLCanvasHandle, Office3DCanvas
       if (selectedAgentId) {
         scene.selectAgent(selectedAgentId);
       }
+      scene.setFollowAgent(followAgent);
 
       const resizeObserver = new ResizeObserver(() => {
         scene.resize();
@@ -108,6 +136,16 @@ export const Office3DCanvas = React.forwardRef<WebGLCanvasHandle, Office3DCanvas
         sceneRef.current = null;
       };
     }, [webglSupported, reducedMotion, rooms, demoFurniture]);
+
+    // Update quality profile in existing scene
+    useEffect(() => {
+      sceneRef.current?.setQualityProfile(qualityProfile);
+    }, [qualityProfile]);
+
+    // Update follow-agent state in existing scene
+    useEffect(() => {
+      sceneRef.current?.setFollowAgent(followAgent);
+    }, [followAgent]);
 
     // Update agents in existing scene
     useEffect(() => {
@@ -206,6 +244,18 @@ export const Office3DCanvas = React.forwardRef<WebGLCanvasHandle, Office3DCanvas
             } else if (e.key === 'ArrowRight') {
               e.preventDefault();
               sceneRef.current?.rotateCamera(20);
+            } else if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') {
+              e.preventDefault();
+              sceneRef.current?.panCamera(0, -1.8);
+            } else if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') {
+              e.preventDefault();
+              sceneRef.current?.panCamera(0, 1.8);
+            } else if (e.key === 'a' || e.key === 'A') {
+              e.preventDefault();
+              sceneRef.current?.panCamera(-1.8, 0);
+            } else if (e.key === 'd' || e.key === 'D') {
+              e.preventDefault();
+              sceneRef.current?.panCamera(1.8, 0);
             } else if (e.key === '+' || e.key === '=') {
               e.preventDefault();
               sceneRef.current?.zoomCamera(0.88);

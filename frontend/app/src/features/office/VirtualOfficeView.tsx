@@ -22,7 +22,7 @@ import {
   type HudModuleDescriptor,
 } from './components/OfficeBottomTacticalDeck';
 import { OFFICE_ROOMS } from './types';
-import { buildLiveOfficeRooms } from './liveOfficeLayout';
+import { buildCorporateCampusLayout } from './liveOfficeLayout';
 import {
   filterOperationalAgents,
   isInteractiveOrEditableElement,
@@ -53,15 +53,18 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
   const data = organization.kind === 'ready' ? organization.data : null;
   const isDemo = organization.kind === 'ready' && organization.origin === 'demo';
 
-  const units = useMemo(() => data?.units || [], [data]);
-  const allAgents = useMemo(() => data?.agents || [], [data]);
-  const roomConfigs = useMemo(
-    () => (isDemo ? OFFICE_ROOMS : buildLiveOfficeRooms(units)),
-    [isDemo, units]
+  const rawUnits = useMemo(() => data?.units || [], [data]);
+  const rawAgents = useMemo(() => data?.agents || [], [data]);
+  const campusLayout = useMemo(
+    () => buildCorporateCampusLayout(rawUnits, rawAgents, { isDemo }),
+    [rawUnits, rawAgents, isDemo]
   );
+  const units = campusLayout.effectiveUnits;
+  const allAgents = campusLayout.normalizedAgents;
+  const roomConfigs = campusLayout.rooms;
   const sceneRooms = useMemo(
-    () => (isDemo || units.length === 0 ? OFFICE_ROOMS : roomConfigs),
-    [isDemo, units.length, roomConfigs]
+    () => (isDemo || roomConfigs.length === 0 ? OFFICE_ROOMS : roomConfigs),
+    [isDemo, roomConfigs]
   );
 
   // Compute which LIVE operational modules are available
@@ -120,6 +123,10 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
     setIsMinimapOpen,
     autoSyncContext,
     setAutoSyncContext,
+    qualityProfile,
+    setQualityProfile,
+    isToolbarCollapsed,
+    setIsToolbarCollapsed,
     panelOrder,
     moveTabOrder,
     viewMode,
@@ -132,6 +139,8 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
     contextProjectId,
     zenMode,
     setZenMode,
+    followAgent,
+    setFollowAgent,
     cameraState,
     setCameraState,
     searchQuery,
@@ -401,6 +410,17 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
         return;
       }
 
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        canvas3DRef.current?.pan(0, -1.8);
+        return;
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        canvas3DRef.current?.pan(0, 1.8);
+        return;
+      }
+
       // Number hotkeys 1-8 for Bottom Tactical Deck modules
       if (e.key >= '1' && e.key <= '8') {
         const index = Number(e.key) - 1;
@@ -621,6 +641,8 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
                 onFallbackTo2D={() => setViewMode('2d')}
                 onCameraChange={setCameraState}
                 reducedMotion={reducedMotion}
+                qualityProfile={qualityProfile}
+                followAgent={followAgent}
               />
             ) : (
               <Office2DPlan
@@ -644,6 +666,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
             onNavigate={onNavigate}
             onOpenAgentDetail={(agent) => setDrawerAgent(agent)}
             isDemo={isDemo}
+            attributionDiagnostics={campusLayout.diagnostics}
           />
         </div>
 
@@ -677,9 +700,11 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
             onCameraChange={setCameraState}
             reducedMotion={reducedMotion}
             fullViewport={true}
+            qualityProfile={qualityProfile}
+            followAgent={followAgent}
           />
         ) : (
-          <div style={{ padding: '16px', paddingTop: zenMode ? '16px' : '148px', paddingBottom: '260px' }}>
+          <div style={{ padding: '16px', paddingTop: zenMode ? '16px' : '116px', paddingBottom: '240px' }}>
             <Office2DPlan
               units={units}
               agents={operationalAgents}
@@ -764,6 +789,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
           agents={operationalAgents}
           historicalAgentCount={data?.historicalAgentCount ?? (filteredAgents.length - operationalAgents.length)}
           selectedRoomId={selectedRoomId}
+          selectedAgentId={selectedAgentId}
           onSelectRoom={selectRoom}
           viewMode={viewMode}
           onViewModeChange={(mode) => {
@@ -787,6 +813,14 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
           pendingCeoDecisions={pendingCeoDecisions}
           onOpenAlerts={onNavigate ? () => onNavigate('alerts') : undefined}
           onOpenDecisions={onNavigate ? () => onNavigate('decisions') : undefined}
+          onOpenOrganization={onNavigate ? () => onNavigate('organization') : undefined}
+          attributionDiagnostics={campusLayout.diagnostics}
+          qualityProfile={qualityProfile}
+          onQualityProfileChange={setQualityProfile}
+          followAgent={followAgent}
+          onToggleFollowAgent={() => setFollowAgent((prev) => !prev)}
+          isToolbarCollapsed={isToolbarCollapsed}
+          onToggleToolbarCollapsed={() => setIsToolbarCollapsed((prev) => !prev)}
         />
       )}
 
@@ -863,6 +897,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
                   onNavigate={onNavigate}
                   onOpenAgentDetail={(agent) => setDrawerAgent(agent)}
                   isDemo={isDemo}
+                  attributionDiagnostics={campusLayout.diagnostics}
                 />
               </div>
             </div>

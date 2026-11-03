@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import type {
   AgentIdentity,
   AlertSummary,
@@ -9,9 +9,11 @@ import type {
 import {
   OFFICE_ROOMS,
   type OfficeCameraPreset,
+  type OfficeGraphicsQuality,
   type OfficeLayoutMode,
   type OfficeViewMode,
 } from '../types';
+import type { OrganizationAttributionDiagnostics } from '../liveOfficeLayout';
 import { deriveAgentOperationalCategory } from '../useOfficeHudState';
 
 export interface OfficeTopRibbonProps {
@@ -22,6 +24,7 @@ export interface OfficeTopRibbonProps {
   agents: AgentIdentity[];
   historicalAgentCount?: number;
   selectedRoomId: string;
+  selectedAgentId?: string | null;
   onSelectRoom: (roomId: string) => void;
   viewMode: OfficeViewMode;
   onViewModeChange: (mode: OfficeViewMode) => void;
@@ -42,6 +45,14 @@ export interface OfficeTopRibbonProps {
   pendingCeoDecisions: DecisionSummary[];
   onOpenAlerts?: () => void;
   onOpenDecisions?: () => void;
+  onOpenOrganization?: () => void;
+  attributionDiagnostics?: OrganizationAttributionDiagnostics;
+  qualityProfile?: OfficeGraphicsQuality;
+  onQualityProfileChange?: (profile: OfficeGraphicsQuality) => void;
+  followAgent?: boolean;
+  onToggleFollowAgent?: () => void;
+  isToolbarCollapsed?: boolean;
+  onToggleToolbarCollapsed?: () => void;
 }
 
 export const OfficeTopRibbon: React.FC<OfficeTopRibbonProps> = ({
@@ -52,6 +63,7 @@ export const OfficeTopRibbon: React.FC<OfficeTopRibbonProps> = ({
   agents,
   historicalAgentCount = 0,
   selectedRoomId,
+  selectedAgentId,
   viewMode,
   onViewModeChange,
   allow3D,
@@ -71,7 +83,16 @@ export const OfficeTopRibbon: React.FC<OfficeTopRibbonProps> = ({
   pendingCeoDecisions,
   onOpenAlerts,
   onOpenDecisions,
+  onOpenOrganization,
+  attributionDiagnostics,
+  qualityProfile = 'balanced',
+  onQualityProfileChange,
+  followAgent = false,
+  onToggleFollowAgent,
+  isToolbarCollapsed = false,
+  onToggleToolbarCollapsed,
 }) => {
+  const [showDiagPopover, setShowDiagPopover] = useState(false);
   const canOpen3D = isDemo || allow3D;
   const activeUnit = units.find((u) => u.id === selectedRoomId);
   const activeRoomVisual = OFFICE_ROOMS.find((r) => r.id === selectedRoomId);
@@ -97,10 +118,10 @@ export const OfficeTopRibbon: React.FC<OfficeTopRibbonProps> = ({
 
   return (
     <header className="aao-hud-top-ribbon aao-hud-glass" aria-label="Cabecera táctica de la Oficina Virtual">
-      {/* Row 1: Title, Status Pills, Operational Telemetry & Layout/Zen Controls */}
+      {/* Row 1: Compact Primary Command Bar */}
       <div className="aao-hud-top-ribbon__row">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-          <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 800, color: '#f8fafc', letterSpacing: '0.2px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+          <h2 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#f8fafc', letterSpacing: '0.2px' }}>
             Oficina Virtual 3D · AAO
           </h2>
 
@@ -116,11 +137,31 @@ export const OfficeTopRibbon: React.FC<OfficeTopRibbonProps> = ({
             <span>{activeUnit?.name || activeRoomVisual?.name || '«Departamento desconocido»'}</span>
           </span>
 
+          {/* LIVE Organizational Attribution Diagnostic Pill & Popover Trigger */}
+          {!isDemo && attributionDiagnostics && attributionDiagnostics.unassignedAgentsCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowDiagPopover((prev) => !prev)}
+              aria-expanded={showDiagPopover}
+              className="aao-hud-pill aao-hud-pill--warning"
+              style={{ cursor: 'pointer' }}
+              title={attributionDiagnostics.headline}
+            >
+              <span aria-hidden="true">🧭</span>
+              <span>
+                {attributionDiagnostics.canonicalUnitsCount === 0
+                  ? `0 unidades declaradas · ${attributionDiagnostics.unassignedAgentsCount} sin adscripción`
+                  : `${attributionDiagnostics.unassignedAgentsCount} sin adscripción`}
+              </span>
+              <span aria-hidden="true">{showDiagPopover ? '▲' : '▼'}</span>
+            </button>
+          )}
+
           {/* Truthful Operational States Breakdown */}
           <div
             role="group"
             aria-label="Resumen de estados operativos de agentes"
-            style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}
           >
             <span className="aao-hud-pill" title="Agentes con ejecución activa y lease vigente">
               ⚡ Activos: <strong>{stateCounts.ACTIVO}</strong>
@@ -156,8 +197,8 @@ export const OfficeTopRibbon: React.FC<OfficeTopRibbonProps> = ({
           </div>
         </div>
 
-        {/* Right: Critical Alerts, Layout Switcher, Zen Mode & Refresh */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+        {/* Right: Critical Alerts, Secondary Controls Toggle, Layout Switcher, Zen Mode & Refresh */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}>
           {criticalAlerts.length > 0 && (
             <button
               type="button"
@@ -187,6 +228,18 @@ export const OfficeTopRibbon: React.FC<OfficeTopRibbonProps> = ({
               aria-label={`Decisiones reservadas al CEO pendientes: ${pendingCeoDecisions.length}`}
             >
               ⚖️ {pendingCeoDecisions.length} Decisión{pendingCeoDecisions.length === 1 ? '' : 'es'} CEO
+            </button>
+          )}
+
+          {onToggleToolbarCollapsed && (
+            <button
+              type="button"
+              className={`aao-hud-btn ${!isToolbarCollapsed ? 'aao-hud-btn--active' : ''}`}
+              aria-expanded={!isToolbarCollapsed}
+              onClick={onToggleToolbarCollapsed}
+              title="Mostrar u ocultar controles secundarios de cámara, calidad gráfica y vista"
+            >
+              🎛️ Controles {isToolbarCollapsed ? '▼' : '▲'}
             </button>
           )}
 
@@ -223,33 +276,77 @@ export const OfficeTopRibbon: React.FC<OfficeTopRibbonProps> = ({
         </div>
       </div>
 
-      {/* Row 2: Honest Status Banner (WCAG 2.2 AA & Veracity Contract) */}
+      {/* Diagnostic Popover for Unresolved LIVE Organizational Attribution */}
+      {showDiagPopover && !isDemo && attributionDiagnostics && (
+        <div
+          role="region"
+          aria-label="Diagnóstico de adscripción organizativa en LIVE"
+          style={{
+            padding: '8px 12px',
+            borderRadius: 'var(--radius-md, 6px)',
+            backgroundColor: 'rgba(15, 23, 42, 0.96)',
+            border: '1px solid #f59e0b',
+            color: '#f8fafc',
+            fontSize: '11px',
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '10px',
+            lineHeight: 1.4,
+          }}
+        >
+          <div style={{ flex: '1 1 420px' }}>
+            <div style={{ fontWeight: 700, color: '#fcd34d', marginBottom: '2px' }}>
+              🧭 Diagnóstico de adscripción LIVE: {attributionDiagnostics.headline}
+            </div>
+            <div style={{ color: '#cbd5e1' }}>{attributionDiagnostics.explanation}</div>
+            <div style={{ marginTop: '4px', color: '#94a3b8', fontSize: '10px' }}>
+              Desglose observado: {attributionDiagnostics.breakdown.executionNoProfile} en cola de ejecución (`execution_queue`),{' '}
+              {attributionDiagnostics.breakdown.reviewNoProfile} en revisiones (`reviews`),{' '}
+              {attributionDiagnostics.breakdown.profileWithoutUnit} perfiles sin unidad,{' '}
+              {attributionDiagnostics.disabledCredentialsCount} con credencial deshabilitada.
+            </div>
+          </div>
+          {onOpenOrganization && (
+            <button
+              type="button"
+              onClick={onOpenOrganization}
+              className="aao-hud-btn aao-hud-btn--active"
+            >
+              🏢 Declarar unidades en Organización
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Row 2: Compact Single-Line Honest Status Banner (WCAG 2.2 AA & Veracity Contract) */}
       <div
         role="status"
         style={{
-          padding: '6px 12px',
+          padding: '4px 10px',
           borderRadius: 'var(--radius-md, 6px)',
           backgroundColor: isDemo
-            ? 'rgba(124, 45, 18, 0.75)'
+            ? 'rgba(124, 45, 18, 0.72)'
             : hasLiveStructure
-            ? 'rgba(12, 74, 110, 0.75)'
-            : 'rgba(120, 53, 15, 0.78)',
+            ? 'rgba(12, 74, 110, 0.72)'
+            : 'rgba(120, 53, 15, 0.75)',
           border: isDemo
-            ? '1px solid #f97316'
+            ? '1px solid rgba(249, 115, 22, 0.65)'
             : hasLiveStructure
-            ? '1px solid #38bdf8'
-            : '1px solid #f59e0b',
+            ? '1px solid rgba(56, 189, 248, 0.55)'
+            : '1px solid rgba(245, 158, 11, 0.65)',
           color: '#f8fafc',
-          fontSize: '11px',
+          fontSize: '10.5px',
           fontWeight: 600,
           display: 'flex',
           alignItems: 'center',
-          gap: '8px',
-          lineHeight: 1.35,
+          gap: '6px',
+          lineHeight: 1.3,
         }}
       >
         <span aria-hidden="true">{isDemo ? '⚠' : hasLiveStructure ? 'ℹ' : '🔒'}</span>
-        <span>
+        <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
           {isDemo
             ? 'DEMO · SIMULACIÓN 3D ACTIVA · Todos los departamentos, agentes y asignaciones son sintéticos y no representan datos de producción.'
             : hasLiveStructure
@@ -265,22 +362,22 @@ export const OfficeTopRibbon: React.FC<OfficeTopRibbonProps> = ({
         </span>
       </div>
 
-      {/* Row 3: Camera & Viewport Toolbar */}
+      {/* Row 3: Collapsible Secondary Camera, Viewport & Quality Drawer */}
       <div
         role="toolbar"
         aria-label="Barra de herramientas de la Oficina Virtual"
         style={{
-          display: 'flex',
+          display: isToolbarCollapsed ? 'none' : 'flex',
           flexWrap: 'wrap',
           justifyContent: 'space-between',
           alignItems: 'center',
-          gap: '8px',
+          gap: '6px',
           paddingTop: '4px',
-          borderTop: '1px solid rgba(148, 163, 184, 0.2)',
+          borderTop: '1px solid rgba(148, 163, 184, 0.18)',
         }}
       >
         {/* View Mode Switcher */}
-        <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: '5px', alignItems: 'center' }}>
           <button
             type="button"
             aria-pressed={viewMode === '3d'}
@@ -303,7 +400,7 @@ export const OfficeTopRibbon: React.FC<OfficeTopRibbonProps> = ({
 
         {/* 3D Camera Controls & Presets */}
         {viewMode === '3d' && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px', alignItems: 'center' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', alignItems: 'center' }}>
             <button
               type="button"
               onClick={() => {
@@ -339,6 +436,23 @@ export const OfficeTopRibbon: React.FC<OfficeTopRibbonProps> = ({
             >
               🎯 Enfoque
             </button>
+
+            {onToggleFollowAgent && (
+              <button
+                type="button"
+                aria-pressed={followAgent}
+                disabled={!selectedAgentId}
+                onClick={onToggleFollowAgent}
+                className={`aao-hud-btn ${followAgent ? 'aao-hud-btn--active' : ''}`}
+                title={
+                  selectedAgentId
+                    ? 'Seguir continuamente al agente seleccionado con la cámara'
+                    : 'Seleccione un agente para activar el seguimiento de cámara'
+                }
+              >
+                🛰️ Seguir Agente
+              </button>
+            )}
 
             <span style={{ opacity: 0.35, padding: '0 2px' }}>|</span>
 
@@ -377,8 +491,41 @@ export const OfficeTopRibbon: React.FC<OfficeTopRibbonProps> = ({
           </div>
         )}
 
-        {/* Reduced Motion Toggle */}
-        <div>
+        {/* Right: Graphics Quality Selector & Reduced Motion Toggle */}
+        <div style={{ display: 'flex', gap: '5px', alignItems: 'center', flexWrap: 'wrap' }}>
+          {viewMode === '3d' && onQualityProfileChange && (
+            <label
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                fontSize: '11px',
+                fontWeight: 600,
+                color: '#cbd5e1',
+              }}
+            >
+              <span>Calidad:</span>
+              <select
+                aria-label="Perfil de calidad gráfica 3D"
+                value={qualityProfile}
+                onChange={(e) => onQualityProfileChange(e.target.value as OfficeGraphicsQuality)}
+                style={{
+                  background: 'rgba(15, 23, 42, 0.9)',
+                  color: '#f8fafc',
+                  border: '1px solid rgba(148, 163, 184, 0.35)',
+                  borderRadius: '6px',
+                  padding: '3px 6px',
+                  fontSize: '11px',
+                  fontWeight: 600,
+                }}
+              >
+                <option value="low">Baja (Ligera)</option>
+                <option value="balanced">Media (Equilibrada)</option>
+                <option value="high">Alta (Detallada)</option>
+              </select>
+            </label>
+          )}
+
           <button
             type="button"
             aria-pressed={reducedMotion}

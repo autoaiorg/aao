@@ -16,6 +16,8 @@ export type OfficeViewMode = '3d' | '2d';
 export type OfficeLayoutMode = 'hud' | 'classic';
 export type OfficeCameraPreset = 'overview' | 'isometric' | 'top-down' | 'agent-focus';
 export type OfficeBottomDeckState = 'minimized' | 'docked' | 'maximized';
+export type OfficeGraphicsQuality = 'low' | 'balanced' | 'high';
+export type OfficeLabelLodTier = 'overview' | 'department' | 'agent';
 export type OfficeHudTabId =
   | 'work-request'
   | 'comms'
@@ -32,6 +34,23 @@ export interface CameraViewState {
   distance: number;
   targetX: number;
   targetZ: number;
+  lodTier?: OfficeLabelLodTier;
+  followAgentId?: string | null;
+}
+
+export interface OfficeScenePerfMetrics {
+  qualityProfile: OfficeGraphicsQuality;
+  fpsEstimate: number;
+  lastFrameTimeMs: number;
+  lastStateUpdateMs: number;
+  interactiveMeshesCount: number;
+  roomsCount: number;
+  agentsCount: number;
+  visibleDepartmentLabelsCount: number;
+  visibleAgentLabelsCount: number;
+  suppressedOverlapLabelsCount: number;
+  sharedGeometriesCount: number;
+  sharedMaterialsCount: number;
 }
 
 export type OperationalStateCategory =
@@ -53,6 +72,9 @@ export interface OfficeRoomConfig {
   depth: number;
   color: string;
   accentColor: string;
+  kind?: 'canonical-department' | 'unassigned-holding';
+  parentId?: string | null;
+  workstationCapacity?: number;
 }
 
 export const OFFICE_ROOMS: OfficeRoomConfig[] = [

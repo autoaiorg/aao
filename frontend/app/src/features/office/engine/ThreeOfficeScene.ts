@@ -4,10 +4,16 @@ import {
   OFFICE_ROOMS,
   type CameraViewState,
   type OfficeCameraPreset,
+  type OfficeGraphicsQuality,
+  type OfficeLabelLodTier,
   type OfficeRoomConfig,
+  type OfficeScenePerfMetrics,
 } from '../types';
+import { buildCampusNavGraph, computeCampusBounds } from '../liveOfficeLayout';
 import {
   buildDepartmentInteriorLayout,
+  computeAdaptiveLabelStates,
+  deriveLabelLodTier,
   planOfficeLifePlacements,
   sampleWaypointRoute,
   stableAgentHash,
@@ -24,6 +30,7 @@ export interface ThreeSceneCallbacks {
 
 export interface ThreeSceneOptions {
   reducedMotion?: boolean;
+  qualityProfile?: OfficeGraphicsQuality;
   callbacks: ThreeSceneCallbacks;
   renderer?: THREE.WebGLRenderer;
   rooms?: OfficeRoomConfig[];
@@ -79,6 +86,11 @@ class SharedFurniturePool {
     roughness: 0.45,
     metalness: 0.35,
   });
+  public readonly holdingDeskMat = new THREE.MeshStandardMaterial({
+    color: 0x334155,
+    roughness: 0.65,
+    metalness: 0.2,
+  });
   public readonly metalLegMat = new THREE.MeshStandardMaterial({
     color: 0x0f172a,
     roughness: 0.3,
@@ -121,11 +133,20 @@ class SharedFurniturePool {
     ];
     this.allMaterials = [
       this.deskWoodMat,
+      this.holdingDeskMat,
       this.metalLegMat,
       this.chairCushionMat,
       this.keyboardMat,
       this.meetingTableMat,
     ];
+  }
+
+  public getGeometriesCount(): number {
+    return this.allGeometries.length;
+  }
+
+  public getMaterialsCount(): number {
+    return this.allMaterials.length;
   }
 
   public ownsGeometry(geo: THREE.BufferGeometry): boolean {
@@ -153,6 +174,7 @@ export class ThreeOfficeScene {
   private isDisposed = false;
   private contextLost = false;
   private furniturePool = new SharedFurniturePool();
+  private qualityProfile: OfficeGraphicsQuality = 'balanced';
 
   // Interaction & Raycasting
   private raycaster = new THREE.Raycaster();
@@ -160,7 +182,7 @@ export class ThreeOfficeScene {
   private pointerDownPos = new THREE.Vector2();
   private isDragging = false;
 
-  // Camera Orbit & Smart Zoom parameters
+  // Camera Orbit, Smart Zoom & Follow parameters
   private cameraAngle = 35; // degrees around Y
   private cameraElevation = 42; // degrees tilt
   private cameraDistance = 24; // distance from target
@@ -169,6 +191,7 @@ export class ThreeOfficeScene {
   private maxDistance = 38;
   private cameraTarget = new THREE.Vector3(0, 0, 0);
   private desiredTarget = new THREE.Vector3(0, 0, 0);
+  private followSelectedAgent = false;
 
   // Groups and Interactive Meshes
   private roomsGroup = new THREE.Group();
@@ -177,12 +200,23 @@ export class ThreeOfficeScene {
   private walkwaysGroup = new THREE.Group();
   private interactiveMeshes: THREE.Object3D[] = [];
   private roomPlatforms: Map<string, THREE.Mesh> = new Map();
+  private roomLabels: Map<string, THREE.Sprite> = new Map();
   private agentMeshes: Map<string, THREE.Group> = new Map();
   private agentRuntimeStates: Map<string, AgentAnimatedRuntimeState> = new Map();
   private currentAgents: AgentIdentity[] = [];
   private lastStateEvaluationMs = 0;
 
+  // Performance & Adaptive Label Telemetry
+  private lastFrameTimestampMs = 0;
+  private lastFrameDurationMs = 16.6;
+  private smoothedFps = 60;
+  private lastStateUpdateDurationMs = 0;
+  private visibleDepartmentLabelsCount = 0;
+  private visibleAgentLabelsCount = 0;
+  private suppressedOverlapLabelsCount = 0;
+
   private roomSpotlight: THREE.SpotLight | null = null;
+  private mainDirLight: THREE.DirectionalLight | null = null;
   private activeRoomId: string = 'unit-exec';
   private activeAgentId: string | null = null;
 
@@ -192,20 +226,24 @@ export class ThreeOfficeScene {
 
   constructor(container: HTMLElement, options: ThreeSceneOptions) {
     this.container = container;
-    // Keep direct scene consumers/tests compatible; the LIVE view always passes
-    // its persisted room projection explicitly.
     this.options = { ...options, demoFurniture: options.demoFurniture ?? true };
     this.rooms = options.rooms ?? OFFICE_ROOMS;
+    this.qualityProfile = options.qualityProfile ?? 'balanced';
 
     // 1. Scene
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x0a1628);
-    this.scene.fog = new THREE.FogExp2(0x0a1628, 0.018);
+    this.scene.fog = new THREE.FogExp2(0x0a1628, 0.016);
 
-    // 2. Camera
+    // 2. Camera framed to campus bounds
     const width = container.clientWidth || 800;
     const height = container.clientHeight || 500;
-    this.camera = new THREE.PerspectiveCamera(40, width / height, 0.5, 200);
+    this.camera = new THREE.PerspectiveCamera(40, width / height, 0.5, 220);
+    const bounds = computeCampusBounds(this.rooms);
+    this.cameraTarget.set(bounds.centerX, 0, bounds.centerZ);
+    this.desiredTarget.set(bounds.centerX, 0, bounds.centerZ);
+    this.cameraDistance = bounds.recommendedOverviewDistance;
+    this.desiredDistance = bounds.recommendedOverviewDistance;
     this.updateCameraPosition();
 
     // 3. Renderer (supports injected renderer for testing)
@@ -213,11 +251,7 @@ export class ThreeOfficeScene {
       options.renderer ||
       new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
     this.renderer.setSize(width, height);
-    if (!options.renderer) {
-      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-      this.renderer.shadowMap.enabled = true;
-      this.renderer.shadowMap.type = THREE.PCFShadowMap;
-    }
+    this.applyQualityProfileToRenderer();
     this.renderer.domElement.style.display = 'block';
     this.renderer.domElement.style.width = '100%';
     this.renderer.domElement.style.height = '100%';
@@ -238,6 +272,7 @@ export class ThreeOfficeScene {
     // 5. Build Environment
     this.setupLighting();
     this.buildWorld();
+    this.syncAdaptiveLabels();
 
     // 6. Event Listeners
     this.bindEvents();
@@ -247,61 +282,129 @@ export class ThreeOfficeScene {
     this.animFrameId = requestAnimationFrame(this.animate);
   }
 
+  private applyQualityProfileToRenderer(): void {
+    const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+    if (typeof this.renderer.setPixelRatio === 'function') {
+      const targetRatio =
+        this.qualityProfile === 'low'
+          ? 1
+          : this.qualityProfile === 'balanced'
+          ? Math.min(dpr, 1.5)
+          : Math.min(dpr, 2);
+      this.renderer.setPixelRatio(targetRatio);
+    }
+    if (this.renderer.shadowMap) {
+      this.renderer.shadowMap.enabled = this.qualityProfile !== 'low';
+      this.renderer.shadowMap.type =
+        this.qualityProfile === 'high' ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
+    }
+    if (this.mainDirLight) {
+      this.mainDirLight.castShadow = this.qualityProfile !== 'low';
+      const shadowSize = this.qualityProfile === 'high' ? 2048 : 1024;
+      this.mainDirLight.shadow.mapSize.width = shadowSize;
+      this.mainDirLight.shadow.mapSize.height = shadowSize;
+    }
+    if (this.roomSpotlight) {
+      this.roomSpotlight.castShadow = this.qualityProfile === 'high';
+    }
+  }
+
+  public setQualityProfile(profile: OfficeGraphicsQuality): void {
+    this.qualityProfile = profile;
+    this.applyQualityProfileToRenderer();
+  }
+
+  public getQualityProfile(): OfficeGraphicsQuality {
+    return this.qualityProfile;
+  }
+
+  public getPerformanceMetrics(): OfficeScenePerfMetrics {
+    return {
+      qualityProfile: this.qualityProfile,
+      fpsEstimate: Math.round(this.smoothedFps),
+      lastFrameTimeMs: Number(this.lastFrameDurationMs.toFixed(2)),
+      lastStateUpdateMs: Number(this.lastStateUpdateDurationMs.toFixed(2)),
+      interactiveMeshesCount: this.interactiveMeshes.length,
+      roomsCount: this.rooms.length,
+      agentsCount: this.currentAgents.length,
+      visibleDepartmentLabelsCount: this.visibleDepartmentLabelsCount,
+      visibleAgentLabelsCount: this.visibleAgentLabelsCount,
+      suppressedOverlapLabelsCount: this.suppressedOverlapLabelsCount,
+      sharedGeometriesCount: this.furniturePool.getGeometriesCount(),
+      sharedMaterialsCount: this.furniturePool.getMaterialsCount(),
+    };
+  }
+
   private setupLighting(): void {
-    const ambient = new THREE.AmbientLight(0x2d3e58, 2.1);
+    const ambient = new THREE.AmbientLight(0x334766, 2.25);
     this.lightsGroup.add(ambient);
 
-    const dirLight = new THREE.DirectionalLight(0xffffff, 2.4);
+    const dirLight = new THREE.DirectionalLight(0xf8fafc, 2.5);
     dirLight.position.set(18, 32, 16);
-    dirLight.castShadow = true;
-    dirLight.shadow.mapSize.width = 1024;
-    dirLight.shadow.mapSize.height = 1024;
+    dirLight.castShadow = this.qualityProfile !== 'low';
+    const shadowSize = this.qualityProfile === 'high' ? 2048 : 1024;
+    dirLight.shadow.mapSize.width = shadowSize;
+    dirLight.shadow.mapSize.height = shadowSize;
     dirLight.shadow.camera.near = 0.5;
-    dirLight.shadow.camera.far = 80;
-    const d = 16;
+    dirLight.shadow.camera.far = 90;
+    const d = 18;
     dirLight.shadow.camera.left = -d;
     dirLight.shadow.camera.right = d;
     dirLight.shadow.camera.top = d;
     dirLight.shadow.camera.bottom = -d;
+    this.mainDirLight = dirLight;
     this.lightsGroup.add(dirLight);
 
-    const fillLight = new THREE.DirectionalLight(0x38bdf8, 1.2);
+    const fillLight = new THREE.DirectionalLight(0x38bdf8, 1.15);
     fillLight.position.set(-20, 15, -15);
     this.lightsGroup.add(fillLight);
 
-    this.roomSpotlight = new THREE.SpotLight(0x60a5fa, 4, 30, Math.PI / 4, 0.35, 1);
+    this.roomSpotlight = new THREE.SpotLight(0x60a5fa, 3.8, 32, Math.PI / 4, 0.4, 1);
     this.roomSpotlight.position.set(-5, 12, -3.1);
-    this.roomSpotlight.castShadow = true;
+    this.roomSpotlight.castShadow = this.qualityProfile === 'high';
     this.lightsGroup.add(this.roomSpotlight);
   }
 
   private buildWorld(): void {
     this.rebuildGround();
 
-    // Central Connecting Atrium Walkway & Hub
-    const atriumGeo = new THREE.CylinderGeometry(3.6, 3.6, 0.1, 32);
+    // 1. Central Coordination Atrium Hub (Radius 3.4, connected to all department corridors)
+    const atriumGeo = new THREE.CylinderGeometry(3.4, 3.55, 0.14, 36);
     const atriumMat = new THREE.MeshStandardMaterial({
-      color: 0x1e293b,
-      roughness: 0.4,
-      metalness: 0.5,
+      color: 0x17253b,
+      roughness: 0.35,
+      metalness: 0.45,
     });
     const atrium = new THREE.Mesh(atriumGeo, atriumMat);
-    atrium.position.y = 0.05;
+    atrium.position.y = 0.07;
     atrium.receiveShadow = true;
     this.scene.add(atrium);
 
-    // Center Logo / Compass Marker
-    const compassGeo = new THREE.RingGeometry(1.0, 1.25, 32);
+    // Atrium Perimeter Ring Curb
+    const outerRingGeo = new THREE.RingGeometry(3.25, 3.45, 36);
+    outerRingGeo.rotateX(-Math.PI / 2);
+    const outerRingMat = new THREE.MeshBasicMaterial({
+      color: 0x38bdf8,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.55,
+    });
+    const outerRing = new THREE.Mesh(outerRingGeo, outerRingMat);
+    outerRing.position.y = 0.145;
+    this.scene.add(outerRing);
+
+    // Center Compass / Coordination Table Hub
+    const compassGeo = new THREE.RingGeometry(0.95, 1.2, 32);
     compassGeo.rotateX(-Math.PI / 2);
     const compassMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide });
     const compass = new THREE.Mesh(compassGeo, compassMat);
-    compass.position.y = 0.11;
+    compass.position.y = 0.15;
     this.scene.add(compass);
 
-    // 2. Circulation Walkways connecting central hub to all departments
+    // 2. Connected Architectural Corridors linking the Central Atrium to each Department Doorway
     this.buildWalkways();
 
-    // 3. Department Pavilions with complete office interior (desks, chairs, monitors, meeting zone)
+    // 3. Department Pavilions with complete office interior (desks, chairs, monitors, meeting zone, open doorways)
     this.rooms.forEach((room) => {
       this.buildRoom(room);
     });
@@ -326,105 +429,156 @@ export class ThreeOfficeScene {
       this.groundGroup.remove(child);
       this.disposeHierarchy(child);
     }
-    const halfWidth = Math.max(14, ...this.rooms.map((room) => Math.abs(room.x) + room.width / 2 + 2));
-    const halfDepth = Math.max(11, ...this.rooms.map((room) => Math.abs(room.z) + room.depth / 2 + 2));
+    const halfWidth = Math.max(14, ...this.rooms.map((room) => Math.abs(room.x) + room.width / 2 + 2.5));
+    const halfDepth = Math.max(11, ...this.rooms.map((room) => Math.abs(room.z) + room.depth / 2 + 2.5));
     const width = halfWidth * 2;
     const depth = halfDepth * 2;
-    const ground = new THREE.Mesh(
-      new THREE.BoxGeometry(width, 0.4, depth),
-      new THREE.MeshStandardMaterial({ color: 0x0d1829, roughness: 0.85, metalness: 0.15 })
+
+    // Continuous Corporate Campus Floor Slab
+    const campusSlab = new THREE.Mesh(
+      new THREE.BoxGeometry(width - 1.5, 0.12, depth - 1.5),
+      new THREE.MeshStandardMaterial({ color: 0x0f1d33, roughness: 0.75, metalness: 0.2 })
     );
-    ground.position.y = -0.2;
+    campusSlab.position.y = -0.04;
+    campusSlab.receiveShadow = true;
+    this.groundGroup.add(campusSlab);
+
+    const ground = new THREE.Mesh(
+      new THREE.BoxGeometry(width + 6, 0.4, depth + 6),
+      new THREE.MeshStandardMaterial({ color: 0x091322, roughness: 0.9, metalness: 0.1 })
+    );
+    ground.position.y = -0.26;
     ground.receiveShadow = true;
     this.groundGroup.add(ground);
 
     const gridSize = Math.max(width, depth);
-    const grid = new THREE.GridHelper(gridSize, Math.ceil(gridSize), 0x38bdf8, 0x1e3a5f);
-    grid.position.y = 0.01;
+    const grid = new THREE.GridHelper(gridSize, Math.ceil(gridSize), 0x2563eb, 0x172b47);
+    grid.position.y = 0.025;
     this.groundGroup.add(grid);
   }
 
   private buildWalkways(): void {
     const walkwayMat = new THREE.MeshStandardMaterial({
-      color: 0x142238,
-      roughness: 0.6,
+      color: 0x16263f,
+      roughness: 0.55,
       metalness: 0.3,
     });
+    const holdingWalkwayMat = new THREE.MeshStandardMaterial({
+      color: 0x1e293b,
+      roughness: 0.75,
+      metalness: 0.15,
+    });
 
-    this.rooms.forEach((room) => {
-      const target = new THREE.Vector3(room.x, 0, room.z);
-      const distance = target.length();
-      const angle = Math.atan2(room.x, room.z);
+    const navGraph = buildCampusNavGraph(this.rooms);
 
-      const pathGeo = new THREE.BoxGeometry(1.1, 0.06, distance);
-      const path = new THREE.Mesh(pathGeo, walkwayMat);
-      path.position.set(room.x * 0.5, 0.03, room.z * 0.5);
+    for (const seg of navGraph.corridors) {
+      const room = this.rooms.find((r) => r.id === seg.fromRoomId);
+      const dx = seg.endX - seg.startX;
+      const dz = seg.endZ - seg.startZ;
+      const distance = Math.max(0.6, Math.hypot(dx, dz));
+      const midX = (seg.startX + seg.endX) * 0.5;
+      const midZ = (seg.startZ + seg.endZ) * 0.5;
+      const angle = Math.atan2(dx, dz);
+
+      const pathGeo = new THREE.BoxGeometry(seg.width, 0.08, distance + 0.5);
+      const path = new THREE.Mesh(
+        pathGeo,
+        seg.isUnassignedWing ? holdingWalkwayMat : walkwayMat
+      );
+      path.position.set(midX, 0.04, midZ);
       path.rotation.y = angle;
       path.receiveShadow = true;
       this.walkwaysGroup.add(path);
 
-      const stripGeo = new THREE.BoxGeometry(0.08, 0.08, distance);
-      const stripMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(room.accentColor).multiplyScalar(0.7) });
+      // Side Guide Strips along the corridor
+      const accentHex = room?.accentColor || '#38bdf8';
+      const stripGeo = new THREE.BoxGeometry(0.06, 0.09, distance + 0.4);
+      const stripMat = new THREE.MeshBasicMaterial({
+        color: new THREE.Color(accentHex).multiplyScalar(seg.isUnassignedWing ? 0.55 : 0.75),
+      });
+
+      const offset = seg.width * 0.46;
       const stripLeft = new THREE.Mesh(stripGeo, stripMat);
-      stripLeft.position.set(room.x * 0.5 - Math.cos(angle) * 0.55, 0.04, room.z * 0.5 + Math.sin(angle) * 0.55);
+      stripLeft.position.set(
+        midX - Math.cos(angle) * offset,
+        0.05,
+        midZ + Math.sin(angle) * offset
+      );
       stripLeft.rotation.y = angle;
       this.walkwaysGroup.add(stripLeft);
-    });
+
+      const stripRight = new THREE.Mesh(stripGeo, stripMat);
+      stripRight.position.set(
+        midX + Math.cos(angle) * offset,
+        0.05,
+        midZ - Math.sin(angle) * offset
+      );
+      stripRight.rotation.y = angle;
+      this.walkwaysGroup.add(stripRight);
+    }
   }
 
   private buildRoom(room: OfficeRoomConfig): void {
     const roomGroup = new THREE.Group();
     roomGroup.position.set(room.x, 0, room.z);
+    const isUnassignedHolding =
+      room.kind === 'unassigned-holding' || room.id === 'unit-unassigned';
 
-    // Platform Slab (Interactive room target)
+    // Platform Slab (Interactive room target — ONLY mesh added to interactiveMeshes for rooms)
     const platGeo = new THREE.BoxGeometry(room.width, 0.35, room.depth);
     const platMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(room.color).multiplyScalar(0.7),
-      roughness: 0.6,
-      metalness: 0.3,
+      color: new THREE.Color(room.color).multiplyScalar(isUnassignedHolding ? 0.55 : 0.72),
+      roughness: isUnassignedHolding ? 0.8 : 0.58,
+      metalness: isUnassignedHolding ? 0.15 : 0.3,
     });
     const platform = new THREE.Mesh(platGeo, platMat);
     platform.position.y = 0.175;
     platform.receiveShadow = true;
     platform.castShadow = true;
-    platform.userData = { type: 'room', id: room.id, name: room.name, code: room.code };
+    platform.userData = {
+      type: 'room',
+      id: room.id,
+      name: room.name,
+      code: room.code,
+      kind: room.kind ?? 'canonical-department',
+    };
     roomGroup.add(platform);
 
     this.roomPlatforms.set(room.id, platform);
     this.interactiveMeshes.push(platform);
 
-    // Perimeter Accent Border
-    const borderGeo = new THREE.BoxGeometry(room.width + 0.1, 0.06, room.depth + 0.1);
+    // Perimeter Accent Border (dashed/muted for unassigned holding wing vs crisp accent for canonical departments)
+    const borderGeo = new THREE.BoxGeometry(room.width + 0.08, 0.06, room.depth + 0.08);
     const borderMat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(room.accentColor),
+      color: new THREE.Color(room.accentColor).multiplyScalar(isUnassignedHolding ? 0.7 : 1.0),
     });
     const border = new THREE.Mesh(borderGeo, borderMat);
-    border.position.y = 0.38;
+    border.position.y = 0.37;
     roomGroup.add(border);
 
-    // Interior Carpet Flooring Pad (recognizably an office department floor)
-    const carpetGeo = new THREE.BoxGeometry(room.width - 0.35, 0.02, room.depth - 0.35);
+    // Interior Flooring Pad
+    const carpetGeo = new THREE.BoxGeometry(room.width - 0.32, 0.02, room.depth - 0.32);
     const carpetMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(room.color).multiplyScalar(0.45),
-      roughness: 0.9,
-      metalness: 0.05,
+      color: new THREE.Color(room.color).multiplyScalar(isUnassignedHolding ? 0.38 : 0.48),
+      roughness: 0.88,
+      metalness: 0.06,
     });
     const carpet = new THREE.Mesh(carpetGeo, carpetMat);
     carpet.position.y = 0.36;
     carpet.receiveShadow = true;
     roomGroup.add(carpet);
 
-    // Translucent Corner Glass Pillars
-    const pillarGeo = new THREE.BoxGeometry(0.18, 1.8, 0.18);
+    // Translucent Corner Structural Columns
+    const pillarGeo = new THREE.BoxGeometry(0.16, 1.75, 0.16);
     const pillarMat = new THREE.MeshStandardMaterial({
-      color: 0x93c5fd,
+      color: isUnassignedHolding ? 0x94a3b8 : 0x93c5fd,
       transparent: true,
-      opacity: 0.45,
-      roughness: 0.1,
-      metalness: 0.9,
+      opacity: isUnassignedHolding ? 0.3 : 0.45,
+      roughness: 0.15,
+      metalness: 0.85,
     });
-    const hw = room.width / 2 - 0.15;
-    const hd = room.depth / 2 - 0.15;
+    const hw = room.width / 2 - 0.14;
+    const hd = room.depth / 2 - 0.14;
     const corners = [
       [-hw, -hd],
       [hw, -hd],
@@ -433,52 +587,64 @@ export class ThreeOfficeScene {
     ];
     corners.forEach(([cx, cz]) => {
       const p = new THREE.Mesh(pillarGeo, pillarMat);
-      p.position.set(cx, 1.1, cz);
+      p.position.set(cx, 1.08, cz);
       p.castShadow = true;
       roomGroup.add(p);
     });
 
-    // Architectural Perimeter Half-Walls & Glass Dividers
-    this.buildRoomArchitecture(roomGroup, room);
+    // Architectural Perimeter Walls & Open Doorway Entrance
+    this.buildRoomArchitecture(roomGroup, room, isUnassignedHolding);
 
-    // Complete Office Workstations (Desks, Ergonomic Chairs, Monitors, Keyboards) + Meeting Table
-    this.buildOfficeWorkstationsAndMeetingZone(roomGroup, room);
+    // Office Workstations / Holding Stations + Meeting Zone
+    this.buildOfficeWorkstationsAndMeetingZone(roomGroup, room, isUnassignedHolding);
 
     // Department Specific Accent Equipment
-    if (this.options.demoFurniture ?? true) {
+    if (!isUnassignedHolding && (this.options.demoFurniture ?? true)) {
       this.buildDepartmentAccentEquipment(roomGroup, room);
     }
 
-    // Floating Department Label Sprite
-    const labelSprite = this.createDepartmentLabelSprite(room.code, room.name, room.accentColor);
-    labelSprite.position.set(0, 2.45, 0);
+    // Floating Department Label Sprite (managed by Adaptive Label System)
+    const labelSprite = this.createDepartmentLabelSprite(
+      room.code,
+      room.name,
+      room.accentColor,
+      isUnassignedHolding
+    );
+    labelSprite.position.set(0, 2.38, 0);
     roomGroup.add(labelSprite);
+    this.roomLabels.set(room.id, labelSprite);
 
     this.roomsGroup.add(roomGroup);
   }
 
   /**
-   * Builds 4 complete workstation islands (desk + ergonomic office chair + dual monitors + keyboard + mouse)
-   * and a collaborative meeting table with chairs inside every department room.
-   * Uses SharedFurniturePool geometries and materials for scalability.
+   * Builds workstation islands inside canonical departments, or neutral holding stations
+   * inside the `unit-unassigned` holding bay so unassigned agents are visually differentiated
+   * from active corporate departments.
    */
-  private buildOfficeWorkstationsAndMeetingZone(group: THREE.Group, room: OfficeRoomConfig): void {
+  private buildOfficeWorkstationsAndMeetingZone(
+    group: THREE.Group,
+    room: OfficeRoomConfig,
+    isUnassignedHolding: boolean
+  ): void {
     const layout = buildDepartmentInteriorLayout(room);
     const screenMat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(room.accentColor).multiplyScalar(1.15),
+      color: new THREE.Color(room.accentColor).multiplyScalar(isUnassignedHolding ? 0.45 : 1.15),
     });
     const chairAccentMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(room.accentColor).multiplyScalar(0.75),
-      roughness: 0.5,
-      metalness: 0.25,
+      color: new THREE.Color(room.accentColor).multiplyScalar(isUnassignedHolding ? 0.5 : 0.75),
+      roughness: 0.55,
+      metalness: 0.2,
     });
 
     for (const slot of layout.workstations) {
-      // 1. Office Desk (tabletop + 2 side legs + dual monitors + keyboard + mouse)
       const deskGroup = new THREE.Group();
       deskGroup.position.set(slot.deskLocalX, 0.36, slot.deskLocalZ);
 
-      const top = new THREE.Mesh(this.furniturePool.deskTopGeo, this.furniturePool.deskWoodMat);
+      const top = new THREE.Mesh(
+        this.furniturePool.deskTopGeo,
+        isUnassignedHolding ? this.furniturePool.holdingDeskMat : this.furniturePool.deskWoodMat
+      );
       top.position.y = 0.44;
       top.castShadow = true;
       top.receiveShadow = true;
@@ -492,63 +658,75 @@ export class ThreeOfficeScene {
       rightLeg.position.set(0.42, 0.21, 0);
       deskGroup.add(rightLeg);
 
-      // Dual Monitors on stands
-      const monLeft = new THREE.Mesh(this.furniturePool.monitorPanelGeo, screenMat);
-      monLeft.position.set(-0.2, 0.64, -0.1);
-      monLeft.rotation.y = 0.14;
-      deskGroup.add(monLeft);
+      if (!isUnassignedHolding) {
+        // Canonical Department: Dual Monitors + Keyboard + Mouse
+        const monLeft = new THREE.Mesh(this.furniturePool.monitorPanelGeo, screenMat);
+        monLeft.position.set(-0.2, 0.64, -0.1);
+        monLeft.rotation.y = 0.14;
+        deskGroup.add(monLeft);
 
-      const standLeft = new THREE.Mesh(this.furniturePool.monitorStandGeo, this.furniturePool.metalLegMat);
-      standLeft.position.set(-0.2, 0.51, -0.12);
-      deskGroup.add(standLeft);
+        const standLeft = new THREE.Mesh(this.furniturePool.monitorStandGeo, this.furniturePool.metalLegMat);
+        standLeft.position.set(-0.2, 0.51, -0.12);
+        deskGroup.add(standLeft);
 
-      const monRight = new THREE.Mesh(this.furniturePool.monitorPanelGeo, screenMat);
-      monRight.position.set(0.2, 0.64, -0.1);
-      monRight.rotation.y = -0.14;
-      deskGroup.add(monRight);
+        const monRight = new THREE.Mesh(this.furniturePool.monitorPanelGeo, screenMat);
+        monRight.position.set(0.2, 0.64, -0.1);
+        monRight.rotation.y = -0.14;
+        deskGroup.add(monRight);
 
-      const standRight = new THREE.Mesh(this.furniturePool.monitorStandGeo, this.furniturePool.metalLegMat);
-      standRight.position.set(0.2, 0.51, -0.12);
-      deskGroup.add(standRight);
+        const standRight = new THREE.Mesh(this.furniturePool.monitorStandGeo, this.furniturePool.metalLegMat);
+        standRight.position.set(0.2, 0.51, -0.12);
+        deskGroup.add(standRight);
 
-      // Keyboard & Mouse facing the chair (+Z side of desk)
-      const keyboard = new THREE.Mesh(this.furniturePool.keyboardGeo, this.furniturePool.keyboardMat);
-      keyboard.position.set(-0.04, 0.48, 0.1);
-      deskGroup.add(keyboard);
+        const keyboard = new THREE.Mesh(this.furniturePool.keyboardGeo, this.furniturePool.keyboardMat);
+        keyboard.position.set(-0.04, 0.48, 0.1);
+        deskGroup.add(keyboard);
 
-      const mouse = new THREE.Mesh(this.furniturePool.mouseGeo, this.furniturePool.keyboardMat);
-      mouse.position.set(0.2, 0.48, 0.1);
-      deskGroup.add(mouse);
+        const mouse = new THREE.Mesh(this.furniturePool.mouseGeo, this.furniturePool.keyboardMat);
+        mouse.position.set(0.2, 0.48, 0.1);
+        deskGroup.add(mouse);
+      } else {
+        // Unassigned Holding Station: Single standby terminal in sleep mode
+        const standbyMon = new THREE.Mesh(this.furniturePool.monitorPanelGeo, screenMat);
+        standbyMon.position.set(0, 0.62, -0.1);
+        deskGroup.add(standbyMon);
+
+        const standbyStand = new THREE.Mesh(this.furniturePool.monitorStandGeo, this.furniturePool.metalLegMat);
+        standbyStand.position.set(0, 0.5, -0.12);
+        deskGroup.add(standbyStand);
+      }
 
       group.add(deskGroup);
 
-      // 2. Ergonomic Office Chair at (slot.chairLocalX, slot.chairLocalZ) facing -Z (toward desk)
+      // Ergonomic Chair at (slot.chairLocalX, slot.chairLocalZ)
       const chairGroup = this.buildErgonomicChair(chairAccentMat);
       chairGroup.position.set(slot.chairLocalX, 0.36, slot.chairLocalZ);
       chairGroup.rotation.y = slot.facingAngle;
       group.add(chairGroup);
     }
 
-    // 3. Collaborative Meeting Table + 2 Facing Chairs in the central front nook
-    const meetingGroup = new THREE.Group();
-    meetingGroup.position.set(layout.meetingTableLocal.x, 0.36, layout.meetingTableLocal.z);
+    // Collaborative Meeting Table in canonical departments
+    if (!isUnassignedHolding) {
+      const meetingGroup = new THREE.Group();
+      meetingGroup.position.set(layout.meetingTableLocal.x, 0.36, layout.meetingTableLocal.z);
 
-    const tableTop = new THREE.Mesh(
-      this.furniturePool.meetingTableTopGeo,
-      this.furniturePool.meetingTableMat
-    );
-    tableTop.position.y = 0.42;
-    tableTop.castShadow = true;
-    meetingGroup.add(tableTop);
+      const tableTop = new THREE.Mesh(
+        this.furniturePool.meetingTableTopGeo,
+        this.furniturePool.meetingTableMat
+      );
+      tableTop.position.y = 0.42;
+      tableTop.castShadow = true;
+      meetingGroup.add(tableTop);
 
-    const tablePed = new THREE.Mesh(
-      this.furniturePool.meetingTablePedGeo,
-      this.furniturePool.metalLegMat
-    );
-    tablePed.position.y = 0.2;
-    meetingGroup.add(tablePed);
+      const tablePed = new THREE.Mesh(
+        this.furniturePool.meetingTablePedGeo,
+        this.furniturePool.metalLegMat
+      );
+      tablePed.position.y = 0.2;
+      meetingGroup.add(tablePed);
 
-    group.add(meetingGroup);
+      group.add(meetingGroup);
+    }
   }
 
   private buildErgonomicChair(backrestAccentMat: THREE.Material): THREE.Group {
@@ -567,7 +745,6 @@ export class ThreeOfficeScene {
     seat.castShadow = true;
     chair.add(seat);
 
-    // Backrest on the back of the seat (-Z in local space when rotation.y = Math.PI means +Z in world)
     const back = new THREE.Mesh(this.furniturePool.chairBackGeo, backrestAccentMat);
     back.position.set(0, 0.46, -0.15);
     back.castShadow = true;
@@ -584,49 +761,80 @@ export class ThreeOfficeScene {
     return chair;
   }
 
-  private buildRoomArchitecture(group: THREE.Group, room: OfficeRoomConfig): void {
+  /**
+   * Builds perimeter walls, acoustic glass partitions, and an open architectural doorway
+   * on the entrance side facing the Central Coordination Atrium.
+   */
+  private buildRoomArchitecture(
+    group: THREE.Group,
+    room: OfficeRoomConfig,
+    isUnassignedHolding: boolean
+  ): void {
     const wallMat = new THREE.MeshStandardMaterial({
-      color: 0x1b283d,
+      color: isUnassignedHolding ? 0x1e293b : 0x1b283d,
       roughness: 0.6,
       metalness: 0.3,
     });
     const glassMat = new THREE.MeshStandardMaterial({
-      color: 0x60a5fa,
+      color: isUnassignedHolding ? 0x94a3b8 : 0x60a5fa,
       transparent: true,
-      opacity: 0.35,
-      roughness: 0.1,
-      metalness: 0.9,
+      opacity: isUnassignedHolding ? 0.22 : 0.32,
+      roughness: 0.12,
+      metalness: 0.85,
     });
 
     const isTopRow = room.z < 0;
     const backZ = isTopRow ? -room.depth / 2 + 0.12 : room.depth / 2 - 0.12;
+    const frontZ = isTopRow ? room.depth / 2 - 0.1 : -room.depth / 2 + 0.1;
 
-    // Back Solid Architectural Wall (low profile)
-    const backWallGeo = new THREE.BoxGeometry(room.width - 0.6, 0.95, 0.14);
+    // 1. Back Solid Architectural Wall
+    const backWallGeo = new THREE.BoxGeometry(room.width - 0.5, 0.95, 0.14);
     const backWall = new THREE.Mesh(backWallGeo, wallMat);
     backWall.position.set(0, 0.82, backZ);
     backWall.castShadow = true;
     backWall.receiveShadow = true;
     group.add(backWall);
 
-    // Wall Presentation Board / Screen on Back Wall
-    const boardGeo = new THREE.BoxGeometry(1.5, 0.52, 0.04);
+    // Wall Presentation Board / Status Header on Back Wall
+    const boardGeo = new THREE.BoxGeometry(1.5, 0.48, 0.04);
     const boardMat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(room.accentColor).multiplyScalar(0.95),
+      color: new THREE.Color(room.accentColor).multiplyScalar(isUnassignedHolding ? 0.65 : 0.95),
     });
     const board = new THREE.Mesh(boardGeo, boardMat);
-    board.position.set(0, 1.05, backZ + (isTopRow ? 0.09 : -0.09));
+    board.position.set(0, 1.02, backZ + (isTopRow ? 0.09 : -0.09));
     group.add(board);
 
-    // Translucent Glass Acoustic Partitions on Sides
-    const sideGlassGeo = new THREE.BoxGeometry(0.08, 0.85, room.depth * 0.55);
+    // 2. Side Translucent Glass Acoustic Partitions
+    const sideGlassGeo = new THREE.BoxGeometry(0.08, 0.88, room.depth * 0.68);
     const sideGlassLeft = new THREE.Mesh(sideGlassGeo, glassMat);
-    sideGlassLeft.position.set(-room.width / 2 + 0.14, 0.78, 0);
+    sideGlassLeft.position.set(-room.width / 2 + 0.12, 0.8, 0);
     group.add(sideGlassLeft);
 
     const sideGlassRight = new THREE.Mesh(sideGlassGeo, glassMat);
-    sideGlassRight.position.set(room.width / 2 - 0.14, 0.78, 0);
+    sideGlassRight.position.set(room.width / 2 - 0.12, 0.8, 0);
     group.add(sideGlassRight);
+
+    // 3. Front Entrance Wall with Open Central Doorway (1.4u gap so agents walk through cleanly)
+    const doorwayWidth = 1.4;
+    const frontPanelWidth = Math.max(0.5, (room.width - doorwayWidth - 0.4) / 2);
+    const frontGlassGeo = new THREE.BoxGeometry(frontPanelWidth, 0.85, 0.08);
+
+    const frontLeft = new THREE.Mesh(frontGlassGeo, glassMat);
+    frontLeft.position.set(-doorwayWidth / 2 - frontPanelWidth / 2, 0.78, frontZ);
+    group.add(frontLeft);
+
+    const frontRight = new THREE.Mesh(frontGlassGeo, glassMat);
+    frontRight.position.set(doorwayWidth / 2 + frontPanelWidth / 2, 0.78, frontZ);
+    group.add(frontRight);
+
+    // Doorway Header Portal Arch
+    const lintelGeo = new THREE.BoxGeometry(doorwayWidth + 0.2, 0.1, 0.14);
+    const lintelMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(room.accentColor),
+    });
+    const lintel = new THREE.Mesh(lintelGeo, lintelMat);
+    lintel.position.set(0, 1.26, frontZ);
+    group.add(lintel);
   }
 
   private buildDepartmentAccentEquipment(group: THREE.Group, room: OfficeRoomConfig): void {
@@ -639,38 +847,51 @@ export class ThreeOfficeScene {
     }
   }
 
-  private createDepartmentLabelSprite(code: string, name: string, accentColor: string): THREE.Sprite {
+  private createDepartmentLabelSprite(
+    code: string,
+    name: string,
+    accentColor: string,
+    isUnassignedHolding = false
+  ): THREE.Sprite {
     const canvas = document.createElement('canvas');
-    canvas.width = 256;
+    canvas.width = 280;
     canvas.height = 96;
     const ctx = canvas.getContext('2d');
     if (ctx) {
-      ctx.fillStyle = 'rgba(10, 22, 40, 0.9)';
+      ctx.fillStyle = isUnassignedHolding ? 'rgba(30, 41, 59, 0.92)' : 'rgba(10, 22, 40, 0.92)';
       ctx.strokeStyle = accentColor;
-      ctx.lineWidth = 4;
+      ctx.lineWidth = isUnassignedHolding ? 3 : 4;
+      if (isUnassignedHolding && typeof ctx.setLineDash === 'function') {
+        ctx.setLineDash([8, 5]);
+      }
       ctx.beginPath();
-      ctx.roundRect(6, 6, 244, 84, 16);
+      ctx.roundRect(6, 6, 268, 84, 14);
       ctx.fill();
       ctx.stroke();
 
       ctx.textAlign = 'center';
-      ctx.font = 'bold 34px sans-serif';
+      ctx.font = 'bold 30px sans-serif';
       ctx.fillStyle = accentColor;
-      ctx.fillText(code, 128, 44);
+      ctx.fillText(isUnassignedHolding ? `⚠ ${code}` : code, 140, 42);
 
-      ctx.font = '500 19px sans-serif';
-      ctx.fillStyle = '#ffffff';
-      ctx.fillText(name.slice(0, 18), 128, 72);
+      ctx.font = '600 17px sans-serif';
+      ctx.fillStyle = '#f8fafc';
+      ctx.fillText(name.slice(0, 22), 140, 72);
     }
 
     const texture = new THREE.CanvasTexture(canvas);
-    const spriteMat = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
+    const spriteMat = new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true,
+      depthTest: false,
+    });
     const sprite = new THREE.Sprite(spriteMat);
-    sprite.scale.set(3.0, 1.1, 1);
+    sprite.scale.set(2.9, 1.02, 1);
     return sprite;
   }
 
   public updateAgents(agents: AgentIdentity[], nowMs = Date.now()): void {
+    const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
     this.currentAgents = [...agents];
     this.lastStateEvaluationMs = nowMs;
 
@@ -720,22 +941,20 @@ export class ThreeOfficeScene {
       });
 
       const agentGroup = this.buildAgentAvatar(agent, placement.activity);
-      agentGroup.position.set(startX, 0.35, startZ);
+      agentGroup.position.set(startX, 0.37, startZ);
+      const parts = agentGroup.userData.parts as AvatarSemanticParts;
+      if (parts?.characterRig) {
+        parts.characterRig.rotation.y = startAngle;
+      }
+
       agentGroup.userData = {
         ...agentGroup.userData,
         type: 'agent',
         id: agent.id,
         unitId: agent.unitId,
-        name: agent.name,
         agentType: agent.type,
         activity: placement.activity,
-        workstationSlotIndex: placement.workstationSlot.slotIndex,
       };
-
-      const parts = agentGroup.userData.parts as AvatarSemanticParts | undefined;
-      if (parts?.characterRig) {
-        parts.characterRig.rotation.y = startAngle;
-      }
 
       this.agentsGroup.add(agentGroup);
       this.agentMeshes.set(agent.id, agentGroup);
@@ -749,10 +968,64 @@ export class ThreeOfficeScene {
       });
     });
 
-    // Update selection ring if active agent exists
     if (this.activeAgentId) {
       this.selectAgent(this.activeAgentId);
     }
+
+    this.syncAdaptiveLabels();
+    const t1 = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    this.lastStateUpdateDurationMs = Math.max(0, t1 - t0);
+  }
+
+  /**
+   * Synchronizes department and agent 3D labels with the Adaptive Label LOD & De-overlapping Engine.
+   */
+  public syncAdaptiveLabels(): void {
+    const placementCoords = new Map<string, { x: number; z: number; activity: ProjectedAgentActivity }>();
+    this.agentRuntimeStates.forEach((rt, id) => {
+      placementCoords.set(id, {
+        x: rt.currentX,
+        z: rt.currentZ,
+        activity: rt.placement.activity,
+      });
+    });
+
+    const labelResult = computeAdaptiveLabelStates({
+      rooms: this.rooms,
+      agents: this.currentAgents,
+      placements: placementCoords,
+      cameraDistance: this.cameraDistance,
+      cameraAngleDeg: this.cameraAngle,
+      cameraTargetX: this.cameraTarget.x,
+      cameraTargetZ: this.cameraTarget.z,
+      selectedRoomId: this.activeRoomId,
+      selectedAgentId: this.activeAgentId,
+    });
+
+    this.visibleDepartmentLabelsCount = labelResult.visibleDepartmentCount;
+    this.visibleAgentLabelsCount = labelResult.visibleAgentCount;
+    this.suppressedOverlapLabelsCount = labelResult.suppressedOverlapCount;
+
+    this.roomLabels.forEach((sprite, roomId) => {
+      const state = labelResult.departments.get(roomId);
+      if (!state) return;
+      sprite.visible = state.visible;
+      sprite.position.y = state.yOffset;
+      sprite.scale.set(2.9 * state.scale, 1.02 * state.scale, 1);
+    });
+
+    this.agentMeshes.forEach((group, agentId) => {
+      const parts = group.userData?.parts as AvatarSemanticParts | undefined;
+      if (!parts?.nameLabel) return;
+      const state = labelResult.agents.get(agentId);
+      if (!state) {
+        parts.nameLabel.visible = false;
+        return;
+      }
+      parts.nameLabel.visible = state.visible;
+      parts.nameLabel.position.y = state.yOffset;
+      parts.nameLabel.scale.set(1.58 * state.scale, 0.5 * state.scale, 1);
+    });
   }
 
   /**
@@ -760,6 +1033,7 @@ export class ThreeOfficeScene {
    * without recreating meshes, allowing smooth transitions when leases expire or states change.
    */
   public refreshAgentActivities(nowMs = Date.now()): void {
+    const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
     this.lastStateEvaluationMs = nowMs;
     if (this.currentAgents.length === 0) return;
 
@@ -782,6 +1056,9 @@ export class ThreeOfficeScene {
         }
       }
     }
+    this.syncAdaptiveLabels();
+    const t1 = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    this.lastStateUpdateDurationMs = Math.max(0, t1 - t0);
   }
 
   public getInteractiveMeshesCount(): number {
@@ -817,6 +1094,43 @@ export class ThreeOfficeScene {
     return this.desiredTarget.clone();
   }
 
+  public getCurrentLodTier(): OfficeLabelLodTier {
+    return deriveLabelLodTier(this.cameraDistance);
+  }
+
+  public setFollowAgent(enabled: boolean): void {
+    this.followSelectedAgent = enabled;
+    if (enabled && this.activeAgentId) {
+      const group = this.agentMeshes.get(this.activeAgentId);
+      if (group) {
+        this.desiredTarget.set(group.position.x, 0, group.position.z);
+        this.updateCameraPosition();
+      }
+    }
+  }
+
+  public isFollowingAgent(): boolean {
+    return this.followSelectedAgent;
+  }
+
+  public panCamera(deltaX: number, deltaZ: number): void {
+    this.followSelectedAgent = false;
+    const bounds = computeCampusBounds(this.rooms);
+    this.desiredTarget.x = Math.max(
+      bounds.minX,
+      Math.min(bounds.maxX, this.desiredTarget.x + deltaX)
+    );
+    this.desiredTarget.z = Math.max(
+      bounds.minZ,
+      Math.min(bounds.maxZ, this.desiredTarget.z + deltaZ)
+    );
+    if (this.options.reducedMotion) {
+      this.cameraTarget.copy(this.desiredTarget);
+    }
+    this.updateCameraPosition();
+    this.syncAdaptiveLabels();
+  }
+
   private buildAgentAvatar(agent: AgentIdentity, activity: ProjectedAgentActivity): THREE.Group {
     const group = new THREE.Group();
 
@@ -835,79 +1149,100 @@ export class ThreeOfficeScene {
     const haloMat = new THREE.MeshBasicMaterial({
       color: haloColor,
       side: THREE.DoubleSide,
-      transparent: true,
-      opacity: 0.85,
     });
     const halo = new THREE.Mesh(haloGeo, haloMat);
     halo.position.y = 0.02;
     group.add(halo);
 
-    // children[1]: Primary Type Geometry (Preserves exact Defect 2 test contract!)
+    // children[1]: Primary Agent Geometry (Preserves exact Defect 2 test contract!)
     let primaryGeometry: THREE.Mesh;
     if (isStanding) {
-      const pedGeo = new THREE.CylinderGeometry(0.22, 0.26, 0.12, 16);
-      const pedMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.5 });
+      const pedGeo = new THREE.CylinderGeometry(0.24, 0.28, 0.1, 16);
+      const pedMat = new THREE.MeshStandardMaterial({
+        color: 0x1e293b,
+        roughness: 0.4,
+        metalness: 0.6,
+      });
       primaryGeometry = new THREE.Mesh(pedGeo, pedMat);
       primaryGeometry.position.y = 0.06;
+      primaryGeometry.castShadow = true;
       group.add(primaryGeometry);
     } else if (isEphemeral) {
-      const crystalGeo = new THREE.OctahedronGeometry(0.28, 0);
-      const crystalMat = new THREE.MeshStandardMaterial({
+      const bodyGeo = new THREE.OctahedronGeometry(0.28, 0);
+      const bodyMat = new THREE.MeshStandardMaterial({
         color: bodyColor,
-        roughness: 0.1,
-        metalness: 0.8,
-        transparent: true,
-        opacity: 0.88,
+        roughness: 0.15,
+        metalness: 0.75,
+        emissive: new THREE.Color(bodyColor).multiplyScalar(0.35),
       });
-      primaryGeometry = new THREE.Mesh(crystalGeo, crystalMat);
+      primaryGeometry = new THREE.Mesh(bodyGeo, bodyMat);
       primaryGeometry.position.y = 0.58;
       primaryGeometry.castShadow = true;
       group.add(primaryGeometry);
     } else {
-      const unknownGeo = new THREE.BoxGeometry(0.32, 0.55, 0.32);
-      const unknownMat = new THREE.MeshStandardMaterial({
-        color: 0x64748b,
-        roughness: 0.5,
+      const bodyGeo = new THREE.CylinderGeometry(0.2, 0.2, 0.1, 12);
+      const bodyMat = new THREE.MeshStandardMaterial({
+        color: bodyColor,
+        roughness: 0.6,
         metalness: 0.2,
       });
-      primaryGeometry = new THREE.Mesh(unknownGeo, unknownMat);
-      primaryGeometry.position.y = 0.38;
+      primaryGeometry = new THREE.Mesh(bodyGeo, bodyMat);
+      primaryGeometry.position.y = 0.06;
       primaryGeometry.castShadow = true;
       group.add(primaryGeometry);
     }
 
     // children[2]: Articulated Character Rig (Torso, Head, Visor, Arms, Legs)
     const characterRig = new THREE.Group();
-    const limbMat = new THREE.MeshStandardMaterial({
+    const suitMat = new THREE.MeshStandardMaterial({
       color: bodyColor,
-      roughness: 0.38,
+      roughness: 0.35,
+      metalness: 0.4,
+      emissive:
+        activity.kind === 'TYPING_DEV' ||
+        activity.kind === 'TYPING_AUDIT' ||
+        activity.kind === 'TYPING_DOCS'
+          ? new THREE.Color(bodyColor).multiplyScalar(0.22)
+          : new THREE.Color(0x000000),
+    });
+    const limbMat = new THREE.MeshStandardMaterial({
+      color: isStanding ? 0x1e40af : isEphemeral ? 0x0e7490 : 0x475569,
+      roughness: 0.45,
       metalness: 0.3,
     });
-    const headMat = new THREE.MeshStandardMaterial({
-      color: 0xf1f5f9,
-      roughness: 0.2,
-      metalness: 0.5,
-    });
-    const visorMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8 });
 
-    // Torso
-    const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.18, 0.44, 14), limbMat);
-    torso.position.y = 0.48;
+    const torsoGeo = new THREE.BoxGeometry(0.3, 0.38, 0.18);
+    const torso = new THREE.Mesh(torsoGeo, suitMat);
+    torso.position.y = 0.44;
     torso.castShadow = true;
     characterRig.add(torso);
 
-    // Head + Directional Visor
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.14, 14, 14), headMat);
-    head.position.y = 0.82;
+    const headGeo = new THREE.SphereGeometry(0.15, 14, 14);
+    const headMat = new THREE.MeshStandardMaterial({
+      color: 0xe2e8f0,
+      roughness: 0.3,
+      metalness: 0.2,
+    });
+    const head = new THREE.Mesh(headGeo, headMat);
+    head.position.y = 0.76;
     head.castShadow = true;
     characterRig.add(head);
 
-    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.05, 0.06), visorMat);
-    visor.position.set(0, 0.83, 0.12);
+    const visorColor =
+      activity.kind === 'TYPING_AUDIT'
+        ? 0x10b981
+        : activity.kind === 'TYPING_DOCS'
+        ? 0xa855f7
+        : activity.kind === 'CONVERSING'
+        ? 0xf59e0b
+        : 0x38bdf8;
+    const visorGeo = new THREE.BoxGeometry(0.2, 0.06, 0.06);
+    const visorMat = new THREE.MeshBasicMaterial({ color: visorColor });
+    const visor = new THREE.Mesh(visorGeo, visorMat);
+    visor.position.set(0, 0.77, 0.13);
     characterRig.add(visor);
 
-    // Articulated Left & Right Arms (for typing & conversation gestures)
-    const armGeo = new THREE.BoxGeometry(0.07, 0.3, 0.07);
+    const armGeo = new THREE.BoxGeometry(0.08, 0.28, 0.08);
     const leftArm = new THREE.Mesh(armGeo, limbMat);
     leftArm.position.set(-0.21, 0.46, 0.06);
     characterRig.add(leftArm);
@@ -916,7 +1251,6 @@ export class ThreeOfficeScene {
     rightArm.position.set(0.21, 0.46, 0.06);
     characterRig.add(rightArm);
 
-    // Articulated Left & Right Legs (for seated chair posture & corridor walking)
     const legGeo = new THREE.BoxGeometry(0.08, 0.26, 0.08);
     const leftLeg = new THREE.Mesh(legGeo, limbMat);
     leftLeg.position.set(-0.08, 0.18, 0);
@@ -934,10 +1268,18 @@ export class ThreeOfficeScene {
     speechBubble.visible = activity.kind === 'CONVERSING';
     group.add(speechBubble);
 
-    // children[4]: Name & Activity Badge Sprite
+    // children[4]: Name, Activity & Provenance Badge Sprite
+    const provTag =
+      activity.provenance === 'LIVE_VERIFIED_EVIDENCE'
+        ? 'LIVE'
+        : activity.provenance === 'DEMO_SIMULATION'
+        ? 'DEMO'
+        : activity.provenance === 'AMBIENT_ANIMATION'
+        ? 'AMB'
+        : 'UNK';
     const nameLabel = this.createAgentNameSprite(
       agent.name.split(' ')[0],
-      activity.shortBadge,
+      `${activity.shortBadge} · ${provTag}`,
       haloColor
     );
     nameLabel.position.set(0, 1.24, 0);
@@ -964,27 +1306,28 @@ export class ThreeOfficeScene {
 
   private createSpeechBubbleSprite(): THREE.Sprite {
     const canvas = document.createElement('canvas');
-    canvas.width = 96;
-    canvas.height = 48;
+    canvas.width = 128;
+    canvas.height = 64;
     const ctx = canvas.getContext('2d');
     if (ctx) {
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.94)';
-      ctx.strokeStyle = '#38bdf8';
-      ctx.lineWidth = 3;
+      ctx.fillStyle = 'rgba(254, 243, 199, 0.96)';
+      ctx.strokeStyle = '#f59e0b';
+      ctx.lineWidth = 4;
       ctx.beginPath();
-      ctx.roundRect(6, 4, 84, 36, 12);
+      ctx.roundRect(8, 6, 112, 44, 14);
       ctx.fill();
       ctx.stroke();
 
       ctx.textAlign = 'center';
-      ctx.font = 'bold 20px sans-serif';
-      ctx.fillStyle = '#f8fafc';
-      ctx.fillText('💬 ...', 48, 28);
+      ctx.font = 'bold 22px sans-serif';
+      ctx.fillStyle = '#92400e';
+      ctx.fillText('💬 ...', 64, 35);
     }
+
     const texture = new THREE.CanvasTexture(canvas);
-    const mat = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
+    const mat = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: true });
     const sprite = new THREE.Sprite(mat);
-    sprite.scale.set(0.85, 0.42, 1);
+    sprite.scale.set(0.95, 0.48, 1);
     return sprite;
   }
 
@@ -994,38 +1337,43 @@ export class ThreeOfficeScene {
     borderColor: number
   ): THREE.Sprite {
     const canvas = document.createElement('canvas');
-    canvas.width = 192;
-    canvas.height = 60;
+    canvas.width = 216;
+    canvas.height = 64;
     const ctx = canvas.getContext('2d');
     if (ctx) {
       const hex = '#' + borderColor.toString(16).padStart(6, '0');
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+      ctx.fillStyle = 'rgba(10, 18, 34, 0.94)';
       ctx.strokeStyle = hex;
       ctx.lineWidth = 3;
       ctx.beginPath();
-      ctx.roundRect(4, 4, 184, 52, 10);
+      ctx.roundRect(4, 4, 208, 56, 10);
       ctx.fill();
       ctx.stroke();
 
       ctx.textAlign = 'center';
-      ctx.font = 'bold 18px sans-serif';
+      ctx.font = 'bold 17px sans-serif';
       ctx.fillStyle = '#ffffff';
-      ctx.fillText(shortName.slice(0, 11), 96, 25);
+      ctx.fillText(shortName.slice(0, 14), 108, 25);
 
-      ctx.font = '600 13px sans-serif';
+      ctx.font = '600 12px sans-serif';
       ctx.fillStyle = '#7dd3fc';
-      ctx.fillText(activityBadge.slice(0, 16), 96, 45);
+      ctx.fillText(activityBadge.slice(0, 22), 108, 46);
     }
 
     const texture = new THREE.CanvasTexture(canvas);
-    const spriteMat = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
+    const spriteMat = new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true,
+      depthTest: true,
+    });
     const sprite = new THREE.Sprite(spriteMat);
-    sprite.scale.set(1.55, 0.48, 1);
+    sprite.scale.set(1.58, 0.5, 1);
     return sprite;
   }
 
   public selectRoom(roomId: string, animate = true): void {
     this.activeRoomId = roomId;
+    this.followSelectedAgent = false;
     const roomConfig = this.rooms.find((r) => r.id === roomId);
     if (!roomConfig) return;
 
@@ -1057,14 +1405,20 @@ export class ThreeOfficeScene {
       this.cameraDistance = this.desiredDistance;
       this.updateCameraPosition();
     }
+    this.syncAdaptiveLabels();
   }
 
   public selectAgent(agentId: string | null): void {
     this.activeAgentId = agentId;
-    if (!this.selectionRing) return;
+    if (!this.selectionRing) {
+      this.syncAdaptiveLabels();
+      return;
+    }
 
     if (!agentId) {
       this.selectionRing.visible = false;
+      this.followSelectedAgent = false;
+      this.syncAdaptiveLabels();
       return;
     }
 
@@ -1080,32 +1434,41 @@ export class ThreeOfficeScene {
     } else {
       this.selectionRing.visible = false;
     }
+    this.syncAdaptiveLabels();
   }
 
   public rotateCamera(deltaAngleDegrees: number): void {
     this.cameraAngle = (this.cameraAngle + deltaAngleDegrees) % 360;
     this.updateCameraPosition();
+    this.syncAdaptiveLabels();
   }
 
   public zoomCamera(deltaFactor: number): void {
-    this.desiredDistance = Math.max(this.minDistance, Math.min(this.maxDistance, this.desiredDistance * deltaFactor));
+    this.desiredDistance = Math.max(
+      this.minDistance,
+      Math.min(this.maxDistance, this.desiredDistance * deltaFactor)
+    );
     if (this.options.reducedMotion) {
       this.cameraDistance = this.desiredDistance;
       this.updateCameraPosition();
     }
+    this.syncAdaptiveLabels();
   }
 
   public resetCamera(): void {
+    this.followSelectedAgent = false;
+    const bounds = computeCampusBounds(this.rooms);
     this.cameraAngle = 35;
     this.cameraElevation = 42;
-    this.desiredDistance = 24;
-    this.desiredTarget.set(0, 0, 0);
+    this.desiredDistance = bounds.recommendedOverviewDistance;
+    this.desiredTarget.set(bounds.centerX, 0, bounds.centerZ);
 
     if (this.options.reducedMotion) {
-      this.cameraTarget.set(0, 0, 0);
-      this.cameraDistance = 24;
+      this.cameraTarget.set(bounds.centerX, 0, bounds.centerZ);
+      this.cameraDistance = bounds.recommendedOverviewDistance;
       this.updateCameraPosition();
     }
+    this.syncAdaptiveLabels();
   }
 
   public setCameraPreset(preset: OfficeCameraPreset): void {
@@ -1113,25 +1476,30 @@ export class ThreeOfficeScene {
       this.resetCamera();
       return;
     }
+    const bounds = computeCampusBounds(this.rooms);
     if (preset === 'isometric') {
+      this.followSelectedAgent = false;
       this.cameraAngle = 45;
       this.cameraElevation = 40;
       this.desiredDistance = 20;
-      this.desiredTarget.set(0, 0, 0);
+      this.desiredTarget.set(bounds.centerX, 0, bounds.centerZ);
     } else if (preset === 'top-down') {
+      this.followSelectedAgent = false;
       this.cameraAngle = 0;
       this.cameraElevation = 78;
-      this.desiredDistance = 25;
-      this.desiredTarget.set(0, 0, 0);
+      this.desiredDistance = Math.max(25, bounds.recommendedOverviewDistance);
+      this.desiredTarget.set(bounds.centerX, 0, bounds.centerZ);
     } else if (preset === 'agent-focus') {
       this.cameraElevation = 34;
       if (this.activeAgentId) {
         const agentGroup = this.agentMeshes.get(this.activeAgentId);
         if (agentGroup) {
+          this.followSelectedAgent = true;
           this.desiredTarget.set(agentGroup.position.x, 0, agentGroup.position.z);
           this.desiredDistance = 10;
         }
       } else {
+        this.followSelectedAgent = false;
         const roomConfig = this.rooms.find((r) => r.id === this.activeRoomId);
         if (roomConfig) {
           this.desiredTarget.set(roomConfig.x, 0, roomConfig.z);
@@ -1145,6 +1513,7 @@ export class ThreeOfficeScene {
       this.cameraDistance = this.desiredDistance;
     }
     this.updateCameraPosition();
+    this.syncAdaptiveLabels();
   }
 
   public getCameraState(): CameraViewState {
@@ -1154,6 +1523,8 @@ export class ThreeOfficeScene {
       distance: this.cameraDistance,
       targetX: this.cameraTarget.x,
       targetZ: this.cameraTarget.z,
+      lodTier: deriveLabelLodTier(this.cameraDistance),
+      followAgentId: this.followSelectedAgent ? this.activeAgentId : null,
     };
   }
 
@@ -1189,7 +1560,9 @@ export class ThreeOfficeScene {
 
   private handleContextRestored = (): void => {
     this.contextLost = false;
+    this.applyQualityProfileToRenderer();
     this.updateCameraPosition();
+    this.syncAdaptiveLabels();
     this.renderer.render(this.scene, this.camera);
   };
 
@@ -1212,6 +1585,7 @@ export class ThreeOfficeScene {
         this.cameraElevation = Math.max(15, Math.min(80, this.cameraElevation + deltaY * 0.25));
         this.pointerDownPos.set(e.clientX, e.clientY);
         this.updateCameraPosition();
+        this.syncAdaptiveLabels();
         return;
       }
     }
@@ -1282,10 +1656,30 @@ export class ThreeOfficeScene {
 
   public stepAnimation(time: number): void {
     if (this.isDisposed || this.contextLost) return;
+    const stepStartMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
 
-    // Decoupled state evaluation every 2000ms (separates state frequency from render frame frequency)
-    if (time - this.lastStateEvaluationMs >= 2000 && this.currentAgents.length > 0) {
+    if (this.lastFrameTimestampMs > 0 && time > this.lastFrameTimestampMs) {
+      const dt = time - this.lastFrameTimestampMs;
+      if (dt <= 50) {
+        const instFps = 1000 / Math.max(1, dt);
+        this.smoothedFps = this.smoothedFps * 0.85 + Math.min(120, instFps) * 0.15;
+      }
+    }
+    this.lastFrameTimestampMs = time;
+
+    let shouldRefreshLabels = false;
+    // Decoupled state & label evaluation every 1500ms
+    if (time - this.lastStateEvaluationMs >= 1500 && this.currentAgents.length > 0) {
       this.lastStateEvaluationMs = time;
+      shouldRefreshLabels = true;
+    }
+
+    // Optional Agent Follow Mode: smoothly track activeAgentId position
+    if (this.followSelectedAgent && this.activeAgentId) {
+      const followedGroup = this.agentMeshes.get(this.activeAgentId);
+      if (followedGroup) {
+        this.desiredTarget.set(followedGroup.position.x, 0, followedGroup.position.z);
+      }
     }
 
     // 1. Smooth camera panning and smart zooming
@@ -1301,6 +1695,7 @@ export class ThreeOfficeScene {
       }
       if (needsCameraUpdate) {
         this.updateCameraPosition();
+        shouldRefreshLabels = true;
       }
     }
 
@@ -1325,7 +1720,6 @@ export class ThreeOfficeScene {
         const kind = placement.activity.kind;
         const phase = (stableAgentHash(agentId) % 100) * 0.1;
 
-        // Compute target coordinates (waypoint route when WALKING, workstation/meeting spot otherwise)
         let destX = placement.targetWorldX;
         let destZ = placement.targetWorldZ;
         let destAngle = placement.targetFacingAngle;
@@ -1341,7 +1735,7 @@ export class ThreeOfficeScene {
           destAngle = sampled.facingAngle;
         }
 
-        // Smooth position & orientation interpolation (prevents abrupt visual jumps on state transitions)
+        // Smooth position & orientation interpolation
         runtime.currentX += (destX - runtime.currentX) * 0.12;
         runtime.currentZ += (destZ - runtime.currentZ) * 0.12;
         runtime.currentAngle += (destAngle - runtime.currentAngle) * 0.15;
@@ -1350,9 +1744,7 @@ export class ThreeOfficeScene {
         group.position.z = runtime.currentZ;
         parts.characterRig.rotation.y = runtime.currentAngle;
 
-        // Articulated limb kinematics by activity kind
         if (kind === 'TYPING_DEV' || kind === 'TYPING_AUDIT' || kind === 'TYPING_DOCS') {
-          // Seated in chair facing desk monitors, typing with both arms
           parts.characterRig.position.y = -0.06;
           if (parts.leftLeg) parts.leftLeg.rotation.x = -Math.PI / 2.5;
           if (parts.rightLeg) parts.rightLeg.rotation.x = -Math.PI / 2.5;
@@ -1367,7 +1759,6 @@ export class ThreeOfficeScene {
           }
           if (parts.speechBubble) parts.speechBubble.visible = false;
         } else if (kind === 'CONVERSING') {
-          // Standing facing conversation partner with expressive arm gestures & speech bubble
           parts.characterRig.position.y = 0;
           if (parts.leftLeg) parts.leftLeg.rotation.x = 0;
           if (parts.rightLeg) parts.rightLeg.rotation.x = 0;
@@ -1385,7 +1776,6 @@ export class ThreeOfficeScene {
             parts.speechBubble.position.y = 1.56 + Math.sin(time * 0.006 + phase) * 0.04;
           }
         } else if (kind === 'WALKING') {
-          // Walking along corridor waypoints with natural stride
           parts.characterRig.position.y = Math.abs(Math.sin(time * 0.01 + phase)) * 0.03;
           const stride = Math.sin(time * 0.01 + phase);
           if (parts.leftLeg) parts.leftLeg.rotation.x = stride * 0.45;
@@ -1395,7 +1785,6 @@ export class ThreeOfficeScene {
           if (parts.head) parts.head.rotation.y = 0;
           if (parts.speechBubble) parts.speechBubble.visible = false;
         } else if (kind === 'IDLE_DESK') {
-          // Seated calmly in workstation chair without typing
           parts.characterRig.position.y = -0.06;
           if (parts.leftLeg) parts.leftLeg.rotation.x = -Math.PI / 2.5;
           if (parts.rightLeg) parts.rightLeg.rotation.x = -Math.PI / 2.5;
@@ -1404,7 +1793,6 @@ export class ThreeOfficeScene {
           if (parts.head) parts.head.rotation.y = 0;
           if (parts.speechBubble) parts.speechBubble.visible = false;
         } else {
-          // DISCONNECTED or UNKNOWN_NEUTRAL: completely neutral stationary pose
           parts.characterRig.position.y = 0;
           if (parts.leftLeg) parts.leftLeg.rotation.x = 0;
           if (parts.rightLeg) parts.rightLeg.rotation.x = 0;
@@ -1415,7 +1803,6 @@ export class ThreeOfficeScene {
         }
       });
 
-      // Keep selection ring synced with active agent position
       if (this.selectionRing && this.selectionRing.visible && this.activeAgentId) {
         const activeGroup = this.agentMeshes.get(this.activeAgentId);
         if (activeGroup) {
@@ -1426,6 +1813,12 @@ export class ThreeOfficeScene {
         this.selectionRing.scale.set(s, s, s);
       }
     }
+
+    if (shouldRefreshLabels) {
+      this.syncAdaptiveLabels();
+    }
+    const stepEndMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    this.lastFrameDurationMs = Number(Math.max(0.01, stepEndMs - stepStartMs).toFixed(2));
   }
 
   private animate(time: number): void {

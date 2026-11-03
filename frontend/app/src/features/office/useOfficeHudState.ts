@@ -4,6 +4,7 @@ import type {
   CameraViewState,
   OfficeBottomDeckState,
   OfficeCameraPreset,
+  OfficeGraphicsQuality,
   OfficeHudTabId,
   OfficeLayoutMode,
   OfficeViewMode,
@@ -36,6 +37,8 @@ export interface PersistedHudPreferences {
   isMinimapOpen: boolean;
   autoSyncContext: boolean;
   panelOrder: OfficeHudTabId[];
+  qualityProfile: OfficeGraphicsQuality;
+  isToolbarCollapsed: boolean;
 }
 
 const DEFAULT_PREFERENCES: PersistedHudPreferences = {
@@ -51,6 +54,8 @@ const DEFAULT_PREFERENCES: PersistedHudPreferences = {
   isMinimapOpen: true,
   autoSyncContext: true,
   panelOrder: [...DEFAULT_PANEL_ORDER],
+  qualityProfile: 'balanced',
+  isToolbarCollapsed: false,
 };
 
 function isValidTabId(val: unknown): val is OfficeHudTabId {
@@ -97,6 +102,14 @@ export function loadPersistedHudPreferences(): PersistedHudPreferences {
     const isInspectorOpen = typeof parsed.isInspectorOpen === 'boolean' ? parsed.isInspectorOpen : true;
     const isMinimapOpen = typeof parsed.isMinimapOpen === 'boolean' ? parsed.isMinimapOpen : true;
     const autoSyncContext = typeof parsed.autoSyncContext === 'boolean' ? parsed.autoSyncContext : true;
+    const qualityProfile: OfficeGraphicsQuality =
+      parsed.qualityProfile === 'low' ||
+      parsed.qualityProfile === 'balanced' ||
+      parsed.qualityProfile === 'high'
+        ? parsed.qualityProfile
+        : 'balanced';
+    const isToolbarCollapsed =
+      typeof parsed.isToolbarCollapsed === 'boolean' ? parsed.isToolbarCollapsed : false;
 
     let panelOrder: OfficeHudTabId[] = [...DEFAULT_PANEL_ORDER];
     if (Array.isArray(parsed.panelOrder)) {
@@ -120,6 +133,8 @@ export function loadPersistedHudPreferences(): PersistedHudPreferences {
       isMinimapOpen,
       autoSyncContext,
       panelOrder,
+      qualityProfile,
+      isToolbarCollapsed,
     };
   } catch {
     return { ...DEFAULT_PREFERENCES, panelOrder: [...DEFAULT_PANEL_ORDER] };
@@ -273,6 +288,7 @@ export function useOfficeHudState({ initialViewMode, availableTabs, agents }: Us
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [contextProjectId, setContextProjectId] = useState<string | null>(null);
   const [zenMode, setZenMode] = useState<boolean>(false);
+  const [followAgent, setFollowAgent] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [typeFilter, setTypeFilter] = useState<'ALL' | 'STANDING' | 'EPHEMERAL'>('ALL');
   const [reducedMotion, setReducedMotion] = useState<boolean>(() => {
@@ -383,6 +399,23 @@ export function useOfficeHudState({ initialViewMode, availableTabs, agents }: Us
     setPrefs((prev) => ({ ...prev, autoSyncContext }));
   }, []);
 
+  const setQualityProfile = useCallback((qualityProfile: OfficeGraphicsQuality) => {
+    setPrefs((prev) => ({ ...prev, qualityProfile }));
+  }, []);
+
+  const setIsToolbarCollapsed = useCallback(
+    (isToolbarCollapsed: boolean | ((prev: boolean) => boolean)) => {
+      setPrefs((prev) => ({
+        ...prev,
+        isToolbarCollapsed:
+          typeof isToolbarCollapsed === 'function'
+            ? isToolbarCollapsed(prev.isToolbarCollapsed)
+            : isToolbarCollapsed,
+      }));
+    },
+    []
+  );
+
   const moveTabOrder = useCallback((tabId: OfficeHudTabId, direction: 'left' | 'right') => {
     setPrefs((prev) => {
       const order = [...prev.panelOrder];
@@ -459,6 +492,10 @@ export function useOfficeHudState({ initialViewMode, availableTabs, agents }: Us
     setIsMinimapOpen,
     autoSyncContext: prefs.autoSyncContext,
     setAutoSyncContext,
+    qualityProfile: prefs.qualityProfile,
+    setQualityProfile,
+    isToolbarCollapsed: prefs.isToolbarCollapsed,
+    setIsToolbarCollapsed,
     panelOrder: prefs.panelOrder,
     moveTabOrder,
     resetHudPreferences,
@@ -476,6 +513,8 @@ export function useOfficeHudState({ initialViewMode, availableTabs, agents }: Us
     setContextProjectId,
     zenMode,
     setZenMode,
+    followAgent,
+    setFollowAgent,
     cameraState,
     setCameraState,
     searchQuery,

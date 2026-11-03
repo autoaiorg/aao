@@ -38,7 +38,7 @@ export const Office2DPlan: React.FC<Office2DPlanProps> = ({
         boxShadow: 'var(--shadow-sm)',
       }}
     >
-      {units.map((unit, unitIndex) => {
+      {units.filter((u) => u.id !== 'unit-unassigned').map((unit, unitIndex) => {
         const room = OFFICE_ROOMS.find((candidate) => candidate.id === unit.id) ||
           OFFICE_ROOMS[unitIndex % OFFICE_ROOMS.length];
         const roomAgents = agents.filter((a) => a.unitId === unit.id);
@@ -47,7 +47,7 @@ export const Office2DPlan: React.FC<Office2DPlanProps> = ({
 
         return (
           <div
-            key={room.id}
+            key={unit.id}
             style={{
               display: 'flex',
               flexDirection: 'column',

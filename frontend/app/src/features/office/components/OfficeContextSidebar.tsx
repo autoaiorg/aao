@@ -1,6 +1,7 @@
 import React from 'react';
 import type { AgentIdentity, OrgUnit } from '../../../domain/models';
 import { OFFICE_ROOMS } from '../types';
+import type { OrganizationAttributionDiagnostics } from '../liveOfficeLayout';
 import { projectAgentOperationalActivity } from '../engine/officeLifeEngine';
 
 export interface OfficeContextSidebarProps {
@@ -12,6 +13,7 @@ export interface OfficeContextSidebarProps {
   onNavigate?: (target: 'organization' | 'kanban' | 'projects', projectId?: string) => void;
   onOpenAgentDetail?: (agent: AgentIdentity) => void;
   isDemo?: boolean;
+  attributionDiagnostics?: OrganizationAttributionDiagnostics;
 }
 
 export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
@@ -23,6 +25,7 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
   onNavigate,
   onOpenAgentDetail,
   isDemo = false,
+  attributionDiagnostics,
 }) => {
   const isUnassignedRoom = selectedRoomId === 'unit-unassigned';
   const roomConfig =
@@ -148,6 +151,38 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
               ? 'Sin adscripción departamental canónica confirmada en el núcleo.'
               : 'Sin descripción organizativa declarada.')}
         </p>
+
+        {/* Phase 1 P0: Actionable Organizational Attribution Diagnostics for unit-unassigned in LIVE */}
+        {isUnassignedRoom && !isDemo && attributionDiagnostics && (
+          <div
+            role="region"
+            aria-label="Diagnóstico de adscripción desconocida"
+            style={{
+              padding: '9px 11px',
+              borderRadius: 'var(--radius-md, 8px)',
+              backgroundColor: 'var(--status-warning-bg)',
+              border: '1px dashed var(--status-warning-border)',
+              color: 'var(--status-warning-text)',
+              fontSize: '11px',
+              lineHeight: 1.45,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '5px',
+            }}
+          >
+            <div style={{ fontWeight: 700 }}>
+              🧭 Ala de Adscripción Pendiente (No es un departamento operativo)
+            </div>
+            <div>{attributionDiagnostics.explanation}</div>
+            {attributionDiagnostics.unassignedAgentsCount > 0 && (
+              <div style={{ fontSize: '10px', opacity: 0.92 }}>
+                Origen en núcleo: {attributionDiagnostics.breakdown.executionNoProfile} en cola de ejecución ·{' '}
+                {attributionDiagnostics.breakdown.reviewNoProfile} en revisiones ·{' '}
+                {attributionDiagnostics.disabledCredentialsCount} con credencial deshabilitada.
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Operational Indicators Row */}
         <div
@@ -555,6 +590,20 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
               Procedencia y Evidencia:
             </div>
             <div>{activeAgent.evidenceDescription || 'Sin evidencia adicional registrada en el núcleo.'}</div>
+            {!isDemo && attributionDiagnostics && (() => {
+              const agentDiag = attributionDiagnostics.byAgentId.get(activeAgent.id);
+              if (!agentDiag) return null;
+              return (
+                <div style={{ marginTop: '4px', fontSize: '10px', color: 'var(--text-secondary)' }}>
+                  <strong>Adscripción organizativa:</strong> {agentDiag.reasonLabel}
+                  {agentDiag.credentialStatus && (
+                    <span style={{ marginLeft: '6px', fontWeight: 700 }}>
+                      [Credencial: {agentDiag.credentialStatus}]
+                    </span>
+                  )}
+                </div>
+              );
+            })()}
             <div style={{ marginTop: '4px', fontSize: '10px', color: 'var(--text-muted)' }}>
               {activeAgent.lastEvidenceAt
                 ? `Marca temporal de evidencia en núcleo: ${new Date(activeAgent.lastEvidenceAt).toLocaleString()}`

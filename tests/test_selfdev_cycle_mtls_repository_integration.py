@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+TEST_CHAIN = b"-----BEGIN CERTIFICATE-----\ntest-public-chain\n-----END CERTIFICATE-----\n"
+
 pytestmark = pytest.mark.skipif(
     not os.getenv("AAO_TEST_POSTGRES_URL") or os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
     reason="Explicit disposable PostgreSQL database required",
@@ -97,10 +99,14 @@ def runtime_role(monkeypatch):
             db.execute("CREATE ROLE aao_runtime NOLOGIN")
     # The migration is deliberately rerun after role creation: migrations must
     # grant only the bounded API functions, and tests must observe real ACLs.
-    migration = Path(__file__).parents[1] / "db/postgres/046_selfdev_cycle_mtls_intents.sql"
+    migrations = Path(__file__).parents[1] / "db/postgres"
     with connect_postgres() as db:
-        db.execute(migration.read_text())
-        db.commit()
+        for migration_name in (
+            "046_selfdev_cycle_mtls_intents.sql",
+            "047_selfdev_cycle_mtls_certificate_replay.sql",
+        ):
+            db.execute((migrations / migration_name).read_text())
+            db.commit()
     yield
     if created:
         with connect_postgres() as db:
@@ -137,13 +143,26 @@ def test_real_migrator_accepts_legacy_045_ledger_and_applies_current_045_046(mon
         with connect_postgres(clone_dsn) as db:
             # Reconstruct the schema/ledger left by the earlier published draft
             # that used 045 for cycle mTLS before 045 was reassigned.
-            db.execute("DELETE FROM schema_migrations WHERE version IN (%s,%s)", (
-                "045_organization_execution",
-                "046_selfdev_cycle_mtls_intents",
-            ))
-            db.execute("DELETE FROM schema_migrations WHERE version=%s", (
-                "045_selfdev_cycle_mtls_intents",
-            ))
+            db.execute(
+                "DELETE FROM schema_migrations WHERE version IN (%s,%s,%s)",
+                (
+                    "045_organization_execution",
+                    "046_selfdev_cycle_mtls_intents",
+                    "047_selfdev_cycle_mtls_certificate_replay",
+                ),
+            )
+            db.execute(
+                "DROP FUNCTION IF EXISTS public.get_selfdev_cycle_mtls_certificate(text,text,text,text)"
+            )
+            db.execute(
+                "DROP FUNCTION IF EXISTS public.complete_selfdev_cycle_mtls_binding(uuid,text,text,text)"
+            )
+            db.execute(
+                "ALTER TABLE workload_identity_bindings DROP CONSTRAINT IF EXISTS workload_identity_bindings_public_chain_check"
+            )
+            db.execute(
+                "ALTER TABLE workload_identity_bindings DROP COLUMN IF EXISTS certificate_chain_pem"
+            )
             db.execute(
                 "ALTER TABLE selfdev_cycle_mtls_intents "
                 "DROP CONSTRAINT IF EXISTS selfdev_cycle_mtls_intents_principal_id_key"
@@ -154,8 +173,12 @@ def test_real_migrator_accepts_legacy_045_ledger_and_applies_current_045_046(mon
             )
             db.commit()
             count, applied = apply_migrations(db)
-            assert count == 2
-            assert applied == ["045_organization_execution", "046_selfdev_cycle_mtls_intents"]
+            assert count == 3
+            assert applied == [
+                "045_organization_execution",
+                "046_selfdev_cycle_mtls_intents",
+                "047_selfdev_cycle_mtls_certificate_replay",
+            ]
             rows = db.execute(
                 "SELECT version FROM schema_migrations WHERE version IN (%s,%s) ORDER BY version",
                 ("045_organization_execution", "046_selfdev_cycle_mtls_intents"),
@@ -196,11 +219,11 @@ def test_create_intent_replay_and_concurrent_completion_are_idempotent(seeded_in
 
     def complete(_):
         barrier.wait(timeout=10)
-        repo.complete_binding(intent, "a" * 64, "b" * 64)
+        repo.complete_binding(intent, "a" * 64, "b" * 64, TEST_CHAIN)
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(complete, range(8)))
-    assert repo.get_completed_binding(intent.intent_id) == ("a" * 64, "b" * 64)
+    assert repo.get_completed_binding(intent.intent_id) == ("a" * 64, "b" * 64, TEST_CHAIN)
     from aao.postgresql_connection import connect_postgres
 
     with connect_postgres() as db:
@@ -230,9 +253,7 @@ def test_migration_upgrades_legacy_runtime_column_grants_and_principal_uniquenes
     with connect_postgres() as db:
         # Recreate the legacy ACL, then run the idempotent migration as an
         # upgrade would. This proves the migration removes existing column ACLs.
-        db.execute(
-            "GRANT UPDATE(enabled,revoked_at) ON workload_identity_bindings TO aao_runtime"
-        )
+        db.execute("GRANT UPDATE(enabled,revoked_at) ON workload_identity_bindings TO aao_runtime")
         db.execute(
             "ALTER TABLE selfdev_cycle_mtls_intents "
             "DROP CONSTRAINT selfdev_cycle_mtls_intents_principal_id_key"
@@ -326,7 +347,9 @@ def test_completion_waits_for_intent_row_lock_before_commit(seeded_intent):
             "SELECT intent_id FROM selfdev_cycle_mtls_intents WHERE intent_id=%s FOR UPDATE",
             (seeded_intent.intent_id,),
         )
-        future = pool.submit(repo.complete_binding, seeded_intent, "a" * 64, "b" * 64)
+        future = pool.submit(
+            repo.complete_binding, seeded_intent, "a" * 64, "b" * 64, TEST_CHAIN
+        )
         blocked = False
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
@@ -345,7 +368,7 @@ def test_completion_waits_for_intent_row_lock_before_commit(seeded_intent):
         # completes normally. Await only after release to avoid deadlocking.
     future.result(timeout=5)
     pool.shutdown(wait=True)
-    assert repo.get_completed_binding(seeded_intent.intent_id) == ("a" * 64, "b" * 64)
+    assert repo.get_completed_binding(seeded_intent.intent_id) == ("a" * 64, "b" * 64, TEST_CHAIN)
 
 
 def test_expired_intent_cannot_be_loaded_or_completed(seeded_intent):
@@ -363,7 +386,7 @@ def test_expired_intent_cannot_be_loaded_or_completed(seeded_intent):
     )
     repo.create_intent(old)
     with pytest.raises(CycleMtlError, match="expired"):
-        repo.complete_binding(old, "c" * 64, "d" * 64)
+        repo.complete_binding(old, "c" * 64, "d" * 64, TEST_CHAIN)
     assert repo.get_pending_intent(old.intent_id) is None
     with connect_postgres() as db:
         assert (
@@ -404,8 +427,8 @@ def test_future_not_before_is_not_misclassified_as_expired(seeded_intent):
     repo.create_intent(future)
     with connect_postgres() as db:
         status = db.execute(
-            "SELECT complete_selfdev_cycle_mtls_binding(%s,%s,%s)",
-            (future.intent_id, "c" * 64, "d" * 64),
+            "SELECT complete_selfdev_cycle_mtls_binding(%s,%s,%s,%s)",
+            (future.intent_id, "c" * 64, "d" * 64, TEST_CHAIN.decode()),
         ).fetchone()[0]
         state = db.execute(
             "SELECT state FROM selfdev_cycle_mtls_intents WHERE intent_id=%s",
@@ -421,7 +444,7 @@ def test_revoke_disables_binding_and_principal_atomically(seeded_intent):
 
     repo = PostgresCycleIntentRepository()
     intent = repo.create_intent(seeded_intent)
-    repo.complete_binding(intent, "e" * 64, "f" * 64)
+    repo.complete_binding(intent, "e" * 64, "f" * 64, TEST_CHAIN)
     assert repo.revoke(intent.intent_id) is True
     assert repo.revoke(intent.intent_id) is True
     assert repo.get_completed_binding(intent.intent_id) is None
@@ -453,9 +476,11 @@ def test_runtime_cannot_write_binding_or_complete_intent(seeded_intent, runtime_
             "has_table_privilege('aao_runtime','workload_identity_bindings','UPDATE'),"
             "has_table_privilege('aao_runtime','selfdev_cycle_mtls_intents','INSERT'),"
             "has_function_privilege('aao_runtime',"
-            "'complete_selfdev_cycle_mtls_binding(uuid,text,text)','EXECUTE')"
+            "'complete_selfdev_cycle_mtls_binding(uuid,text,text,text)','EXECUTE'),"
+            "has_function_privilege('aao_runtime',"
+            "'get_selfdev_cycle_mtls_certificate(text,text,text,text)','EXECUTE')"
         ).fetchone()
-    assert privileges == (False, False, False, False)
+    assert privileges == (False, False, False, False, True)
 
     with connect_postgres() as db:
         db.execute("SET LOCAL ROLE aao_runtime")
@@ -499,7 +524,85 @@ def test_runtime_cannot_write_binding_or_complete_intent(seeded_intent, runtime_
         db.execute("SET LOCAL ROLE aao_runtime")
         with pytest.raises(Exception) as denied:
             db.execute(
-                "SELECT complete_selfdev_cycle_mtls_binding(%s,%s,%s)",
-                (seeded_intent.intent_id, "1" * 64, "2" * 64),
+                "SELECT complete_selfdev_cycle_mtls_binding(%s,%s,%s,%s)",
+                (seeded_intent.intent_id, "1" * 64, "2" * 64, TEST_CHAIN.decode()),
             )
         assert getattr(denied.value, "sqlstate", None) == "42501"
+
+
+def test_certificate_chain_replay_is_bound_to_authenticated_identity_and_live_state(seeded_intent):
+    from aao.postgresql_connection import connect_postgres
+    from aao.selfdev_cycle_mtls_repository import PostgresCycleIntentRepository
+
+    repo = PostgresCycleIntentRepository()
+    repo.create_intent(seeded_intent)
+    repo.complete_binding(seeded_intent, "a" * 64, "b" * 64, TEST_CHAIN)
+    with connect_postgres() as db:
+        digest = db.execute(
+            "SELECT token_digest FROM principal_credentials WHERE principal_id=%s",
+            (seeded_intent.principal_id,),
+        ).fetchone()[0]
+    assert repo.get_active_certificate(
+        seeded_intent.principal_id, digest, seeded_intent.kind, "a" * 64
+    ) == (TEST_CHAIN, "a" * 64, seeded_intent.not_after)
+    assert (
+        repo.get_active_certificate(
+            seeded_intent.principal_id, "0" * 64, seeded_intent.kind, "a" * 64
+        )
+        is None
+    )
+    assert (
+        repo.get_active_certificate(
+            seeded_intent.principal_id,
+            digest,
+            "AUDITOR" if seeded_intent.kind == "AGENT" else "AGENT",
+            "a" * 64,
+        )
+        is None
+    )
+    assert (
+        repo.get_active_certificate(
+            seeded_intent.principal_id, digest, seeded_intent.kind, "c" * 64
+        )
+        is None
+    )
+
+    with connect_postgres() as db:
+        db.execute(
+            "UPDATE workload_identity_bindings SET expires_at=clock_timestamp()-interval '1 second' "
+            "WHERE intent_id=%s",
+            (seeded_intent.intent_id,),
+        )
+    assert (
+        repo.get_active_certificate(
+            seeded_intent.principal_id, digest, seeded_intent.kind, "a" * 64
+        )
+        is None
+    )
+
+
+def test_certificate_chain_replay_fails_closed_after_intent_revocation(seeded_intent):
+    from aao.postgresql_connection import connect_postgres
+    from aao.selfdev_cycle_mtls_repository import PostgresCycleIntentRepository
+
+    repo = PostgresCycleIntentRepository()
+    repo.create_intent(seeded_intent)
+    repo.complete_binding(seeded_intent, "a" * 64, "b" * 64, TEST_CHAIN)
+    with connect_postgres() as db:
+        digest = db.execute(
+            "SELECT token_digest FROM principal_credentials WHERE principal_id=%s",
+            (seeded_intent.principal_id,),
+        ).fetchone()[0]
+    assert (
+        repo.get_active_certificate(
+            seeded_intent.principal_id, digest, seeded_intent.kind, "a" * 64
+        )
+        is not None
+    )
+    assert repo.revoke(seeded_intent.intent_id)
+    assert (
+        repo.get_active_certificate(
+            seeded_intent.principal_id, digest, seeded_intent.kind, "a" * 64
+        )
+        is None
+    )

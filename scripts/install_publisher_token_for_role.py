@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import fcntl
 import hashlib
 import hmac
 import os
@@ -36,6 +37,10 @@ RUNTIME_ROOT = Path("/run/user")
 
 class TokenInstallError(RuntimeError):
     pass
+
+
+class TokenReplaceCommittedError(TokenInstallError):
+    """Rename completed, but durability or verification could not be confirmed."""
 
 
 def target_path(account: str, token_kind: str = "publisher") -> Path:
@@ -110,6 +115,30 @@ def _clean_stale_temps(dir_fd: int, name: str) -> None:
             os.unlink(entry, dir_fd=dir_fd)
 
 
+@contextlib.contextmanager
+def _replace_lock(dir_fd: int, name: str):
+    """Serialize replacement and stale-temp cleanup for one token target."""
+    lock_name = f".{name}.lock"
+    flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(lock_name, flags, 0o600, dir_fd=dir_fd)
+    except OSError:
+        raise TokenInstallError("token replacement lock is unavailable") from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid():
+            raise TokenInstallError("token replacement lock is unsafe")
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        info = os.fstat(fd)
+        if stat.S_IMODE(info.st_mode) != 0o600:
+            raise TokenInstallError("token replacement lock is unsafe")
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 def _read_private(dir_fd: int, name: str) -> bytes:
     """Read a role-owned, regular, single-link 0600 file without following links."""
     before = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
@@ -133,12 +162,12 @@ def _read_private(dir_fd: int, name: str) -> bytes:
 
 
 def replace(path: Path, token: str) -> None:
-    """Atomically replace (or create) ``path`` with ``token``.
+    """Replace ``path`` under a per-target lock; distinguish post-rename errors.
 
-    A crash at any point leaves either the previous file intact or the new file
-    complete: the token is written and fsynced in a same-directory temp file
-    created with O_EXCL|O_NOFOLLOW, then renamed over the target, then the
-    directory is fsynced. Stale temps from a crashed run are removed first.
+    A crash before rename leaves the previous token intact. After rename, the
+    new token is installed; if directory durability or post-write verification
+    fails, ``TokenReplaceCommittedError`` tells callers to inspect the target
+    and not assume the previous token remains installed.
     """
     name = path.name
     try:
@@ -149,53 +178,62 @@ def replace(path: Path, token: str) -> None:
         info = os.fstat(dir_fd)
         if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
             raise TokenInstallError("token directory ownership or mode is unsafe")
-        _clean_stale_temps(dir_fd, name)
-        payload = (token + "\n").encode("utf-8")
-        try:
-            existing = _read_private(dir_fd, name)
-        except FileNotFoundError:
-            existing = None
-        except OSError:
-            raise TokenInstallError("existing token is a symlink or unreadable") from None
-        if existing is not None and hmac.compare_digest(existing, payload):
-            raise TokenInstallError("new token equals the installed token; refusing replace")
-
-        temp = f"{_temp_prefix(name)}{secrets.token_hex(8)}.tmp"
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-        try:
-            fd = os.open(temp, flags, 0o600, dir_fd=dir_fd)
-        except FileExistsError:
-            raise TokenInstallError("temporary token file already exists") from None
-        try:
+        with _replace_lock(dir_fd, name):
+            _clean_stale_temps(dir_fd, name)
+            payload = (token + "\n").encode("utf-8")
             try:
-                os.fchmod(fd, 0o600)
-                view = memoryview(payload)
-                while view:
-                    view = view[os.write(fd, view) :]
-                os.fsync(fd)
-            finally:
-                os.close(fd)
-            os.replace(temp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
-        except BaseException:
-            with contextlib.suppress(FileNotFoundError):
-                os.unlink(temp, dir_fd=dir_fd)
-            raise
-        os.fsync(dir_fd)
+                existing = _read_private(dir_fd, name)
+            except FileNotFoundError:
+                existing = None
+            except OSError:
+                raise TokenInstallError("existing token is a symlink or unreadable") from None
+            if existing is not None and hmac.compare_digest(existing, payload):
+                raise TokenInstallError("new token equals the installed token; refusing replace")
 
-        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
-        try:
-            new = os.fstat(fd)
-            written = os.read(fd, 4097)
-        finally:
-            os.close(fd)
-        if (
-            not stat.S_ISREG(new.st_mode)
-            or new.st_nlink != 1
-            or new.st_uid != os.geteuid()
-            or stat.S_IMODE(new.st_mode) != 0o600
-            or hashlib.sha256(written).digest() != hashlib.sha256(payload).digest()
-        ):
-            raise TokenInstallError("replaced token file failed post-write verification")
+            temp = f"{_temp_prefix(name)}{secrets.token_hex(8)}.tmp"
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+            try:
+                fd = os.open(temp, flags, 0o600, dir_fd=dir_fd)
+            except FileExistsError:
+                raise TokenInstallError("temporary token file already exists") from None
+            renamed = False
+            try:
+                try:
+                    os.fchmod(fd, 0o600)
+                    view = memoryview(payload)
+                    while view:
+                        view = view[os.write(fd, view) :]
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+                os.replace(temp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+                renamed = True
+            except BaseException:
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(temp, dir_fd=dir_fd)
+                raise
+            try:
+                os.fsync(dir_fd)
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+                try:
+                    new = os.fstat(fd)
+                    written = os.read(fd, 4097)
+                finally:
+                    os.close(fd)
+                if (
+                    not stat.S_ISREG(new.st_mode)
+                    or new.st_nlink != 1
+                    or new.st_uid != os.geteuid()
+                    or stat.S_IMODE(new.st_mode) != 0o600
+                    or hashlib.sha256(written).digest() != hashlib.sha256(payload).digest()
+                ):
+                    raise OSError("post-write verification mismatch")
+            except OSError:
+                if renamed:
+                    raise TokenReplaceCommittedError(
+                        "replacement committed; durability or post-write verification failed"
+                    ) from None
+                raise
     finally:
         os.close(dir_fd)
 
@@ -266,6 +304,9 @@ def main() -> int:
             f"{TOKEN_NAMES[args.token]} target verified for {args.account}; credential not displayed."
         )
         return 0
+    except TokenReplaceCommittedError as exc:
+        print(f"Publisher token operation requires recovery: {exc}", file=sys.stderr)
+        return 3
     except (TokenInstallError, OSError, UnicodeError) as exc:
         print(f"Publisher token operation failed: {exc}", file=sys.stderr)
         return 1

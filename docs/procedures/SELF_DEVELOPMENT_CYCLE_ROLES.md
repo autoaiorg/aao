@@ -137,24 +137,38 @@ the role account, `install_publisher_token_for_role.py --replace`:
 2. Opens the runtime directory with `O_NOFOLLOW` and refuses unless it is owned
    by the role and mode `0700`. All following steps are relative to that
    directory descriptor.
-3. Removes leftover `.<token-name>.*.tmp` files that a crashed earlier run
-   left for the same token name.
-4. If the target exists, refuses unless it is a regular, single-link file
+3. Takes an exclusive advisory `flock` on the stable
+   `.<token-name>.lock` file (role-owned, regular, single-link, mode `0600`).
+   The lock is held through stale-temp cleanup, rename, directory fsync and
+   post-write verification. It is intentionally persistent; do not delete it
+   during normal cleanup. This serializes replacement calls for one token path
+   and prevents stale-temp cleanup from unlinking another call's active temp.
+   The lifecycle caller must also serialize the broader issue/install/revoke
+   sequence with its own cycle lock; the installer lock covers replacement,
+   not API issuance or cycle state transitions.
+4. Removes leftover `.<token-name>.*.tmp` files that a crashed earlier run
+   left for the same token name, while holding that lock.
+5. If the target exists, refuses unless it is a regular, single-link file
    owned by the role with mode `0600`. Symlinks, FIFOs and directories are
    refused. It also refuses if the new token equals the installed one; this
    comparison happens in memory only.
-5. Creates `.<token-name>.<random>.tmp` with
+6. Creates `.<token-name>.<random>.tmp` with
    `O_CREAT|O_EXCL|O_NOFOLLOW` and mode `0600`, writes the token, then fsyncs
    it. It renames the file over the target with `os.replace` and fsyncs the
    directory.
-6. Checks the result: a regular, single-link, role-owned `0600` file whose
+7. Checks the result: a regular, single-link, role-owned `0600` file whose
    SHA-256 matches the new token.
 
 If the target is absent, `replace` creates it the same way, so it acts like
 `install`. If the process crashes before the rename, the previous file stays
 intact. If it crashes after the rename, the new file is complete. A partial
 target file is never left behind. Any leftover temp file is removed on the
-next `replace`.
+next `replace`. Exit code `3` means rename completed but directory fsync or
+post-write verification failed; the target may already contain the new token.
+The caller must not revoke the new principal or assume the old file remains in
+place. It must inspect/verify the target through the role helper and reconcile
+the lifecycle state without printing or logging token material. Other
+non-zero results from before rename leave the prior target unchanged.
 
 **One-time host reinstall required.** The root-owned copies in
 `/usr/local/libexec/aao` do not update themselves. Until a host administrator

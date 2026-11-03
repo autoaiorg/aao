@@ -1,9 +1,9 @@
 # Ciclo de vida desatendido de credenciales de ciclo Self Development (diseño)
 
 Estado: **diseño actualizado; renovación desatendida aún no implementada**.
-Revisión base: `120f222` (origin/main, 2026-11-03). Actualiza el diseño
-publicado en el PR #357. Este documento no emite, concede ni amplía
-credenciales. Toca la
+Revisión base: `5531466` (origin/main, 2026-11-03), tras #377. Actualiza el diseño
+publicado en el PR #357 y la implementación de ciclo fusionada. Este documento
+no emite, concede ni amplía credenciales. Toca la
 emisión de credenciales: exige auditoría independiente (GOV-REV-001) antes de
 fusionarse y antes de cualquier implementación derivada.
 
@@ -17,19 +17,25 @@ intervención humana. Hay dos condiciones simultáneas:
 
 ## 1. Conclusión
 
-Con la superficie actual de la API, el ciclo **no puede cerrarse sin
-intervención privilegiada**. Hay dos bloqueos duros:
+La API actual resuelve la emisión y revocación de varios bloqueos de ciclo
+(PR #377, migración 041): vincula al host el implementador nuevo, hereda un
+perfil organizativo elegible y, al revocar, retira el vínculo, deshabilita el
+perfil y escala el trabajo sin ejecución activa. El DELETE de un ciclo nunca
+emitido devuelve 404. Esto **no demuestra que exista renovación automática
+operativa en el host**.
 
-1. **Vínculo host del principal nuevo (G1; pendiente).** Cada ciclo crea un
-   principal implementador nuevo (`aao-selfdev-impl-<cycle>`). Para reclamar
-   ejecuciones, ese principal necesita exactamente un `host_worker_bindings`
-   ACTIVE. Ese vínculo solo se crea con `aao-ops register-host-worker`, que
-   requiere DSN de base de datos o root. La solución exige cambiar la API, así
-   que este documento se queda en el diseño (§7).
-2. **Instalación atómica (G2; resuelto en código).** #361 añadió `--replace`
-   atómico al instalador y la operación permitida por el helper. El despliegue
-   actualizado en el host aún debe verificarse; no se presenta como una segunda
-   brecha de API.
+Bloqueos restantes principales:
+
+1. **No hay orquestador de renovación instalado.** El flujo descrito en este
+   documento sigue siendo diseño; no existe todavía un script/timer operativo
+   que emita, instale, verifique y revoque ciclos de forma recuperable.
+2. **El worker no está desplegado.** En las comprobaciones aportadas por el
+   operador el 2026-11-03, `aao-selfdev-codex-worker` era `LoadState=not-found`
+   y faltaban `/etc/aao/selfdev-codex-worker.env` y
+   `/run/user/1002/aao-self-development-agent.token`.
+3. **El reemplazo atómico (#361) está implementado en código, pero no verificado
+   en el host.** El helper root instalado debe admitir `replace` antes de
+   habilitar la renovación.
 
 Por tanto **no se implementa `scripts/rotate_selfdev_cycle_credentials.py`**.
 Un script así acabaría en un paso con sudo/DSN o tendría que modificar un
@@ -58,17 +64,18 @@ Notación: `rw` = `require_worker` (bearer AGENT individual,
 | Leer token PM | Sí | `scripts/request_selfdev_cycle_roles.py:49-69` (`/run/user/<uid>/aao-pm.token`, 0600) |
 | Emitir par de ciclo N+1 (TTL ≤ 2 h) | Sí, si el grant emisor sigue vigente | `POST /v1/projects/{id}/selfdev-cycle-roles` (`:907`), `rw` + PM-issuer; TTL `SELFDEV_CYCLE_TTL` (`:885`) |
 | Idempotencia ante respuesta perdida | Sí (fail-closed) | Repetir el POST con el mismo `cycle_id` devuelve 409 (`:938-939`) y no reemite; recuperar con DELETE del mismo ID |
-| Revocar ciclo N | Sí, idempotente | `DELETE …/selfdev-cycle-roles/{cycle_id}` (`:967`), `rw` + PM-issuer; `already_revoked` (`:1001-1002`). Un `cycle_id` que nunca llegó a existir devuelve **409** y no 404 (conjunto vacío ≠ grants, `:994-998`; G7) |
+| Revocar ciclo N | Sí, idempotente | DELETE requiere `rw` + PM-issuer y migración 041 para retirar el binding; `already_revoked` verifica/repara limpieza; un ciclo nunca emitido devuelve 404 `CYCLE_NOT_FOUND`. |
 | Verificar identidad del implementador | Sí | `GET /v1/principals/me` (`:861`, `rw`) con el token nuevo |
 | Verificar identidad del revisor | Parcial | No existe `/v1/auditors/me`; `GET /v1/auditors/me/grants` (`:1219`, `require_reviewer`) devuelve principal y grants |
 | Observar el drenaje del worker antiguo | Sí | `GET /v1/projects/{id}/board` (`:3771`, `read_principal` + `project.read`, que el PM tiene) expone `executions[].worker_id/status` y `assigned_principal_id` |
 | Comprobar / instalar / verificar fichero de rol | Sí, con helper actualizado; `--replace` cubre destinos existentes | `sudo /usr/local/libexec/aao/selfdev_role_token_helper.py` (`scripts/selfdev_role_token_helper.py:18-22`), con el instalador `install` `O_EXCL` (`scripts/install_publisher_token_for_role.py:73-78`) |
 | **Reemplazar atómicamente el fichero existente** | Sí en el código de #361; despliegue host no verificado | `install_publisher_token_for_role.py --replace`; helper actualizado para permitir `replace` |
 | **Borrar el fichero del ciclo N** | Sí con el helper actualizado; despliegue host no verificado | Operación `remove` del helper; el PM no conserva el token antiguo |
-| **Vincular el implementador nuevo al host** | **No (G1)** | `claim` → `active_host_fence_epoch(worker_id)` (`src/aao/execution_queue.py:152-179, 215`); solo escribe `aao-ops register-host-worker` (`src/aao/ops.py:527-539`, `src/aao/backup.py:1000-1014`) mediante `AAO_POSTGRES_URL` (`src/aao/postgresql_connection.py:14`); los docs lo ejecutan con `sudo` (`docs/procedures/W2_REAL_GITHUB_APPS.md:46`) |
+| **Vincular el implementador nuevo al host** | Sí, en código (#377) | La emisión usa `current_host_id()` y `register_host_worker(..., new_worker_only=True)` dentro de la transacción; requiere host activo y sin cercar. |
 | Parar o reiniciar el worker de `aao-impl-codex` | No, y el diseño no lo requiere | #356 está fusionado: worker opt-in, identidad comprobada por ejecución y configuración de servicio. La instalación/activación real del servicio sigue sin verificarse aquí. |
-| Reasignar hijos de grupo al principal nuevo | **No (G3)** | `work.assign` del PM existe, pero la asignación PM exige un perfil con competencias (`work_management_api.py:3155-3168`), y `PUT /v1/organization/profiles` es `require_ceo` (`:1551-1552`) |
-| Escalar el trabajo asignado al ciclo revocado | **No (G4)** | El DELETE de ciclo (`:967-1012`) no escala, a diferencia de `/principals/{id}/revoke` (`:1270-1300`, CEO) |
+| Heredar perfil organizativo elegible | Sí, en código (#377) | Copia el perfil activo más reciente de un implementador previo elegible del mismo proyecto; no inventa competencias ni crea perfil si no hay fuente. |
+| Transferir automáticamente las asignaciones al ciclo nuevo | No | La revocación escala el trabajo no reclamado para reasignación; no lo transfiere automáticamente al nuevo principal. |
+| Escalar el trabajo asignado al ciclo revocado | Sí, en código (#377), sujeto a migración 041 | DELETE deshabilita credencial, retira binding y escala trabajo no reclamado en la misma transacción. |
 | Renovar el grant emisor del PM (30 días) | **No: CEO, por diseño** | `SELFDEV_CYCLE_ISSUER_GRANT_TTL` (`:886`); concesión de grants solo `require_ceo` |
 | Autenticación de principals en `AAO_ENV=production` | **No** (fuera de este alcance) | `_development_credentials_enabled` solo admite `development` y `test` (`principal_credentials.py:16-19`) |
 
@@ -77,13 +84,16 @@ fichero `aao-self-development-reviewer.token` fuera del instalador.
 `scripts/self_development_cycle.py:30` usa `aao-auditor.token`. El ciclo de
 vida del revisor está, por tanto, definido solo a medias (G5).
 
-## 3. Quién lo ejecuta
+## 3. Orquestador de renovación: aún propuesto
 
-- Unidad systemd de usuario de `aao-pm`:
+- El diseño propone una unidad systemd de usuario de `aao-pm`:
   `aao-selfdev-cycle-credentials@<project>.service` (oneshot) más un `.timer`
   (`OnUnitActiveSec=5min`, `Persistent=true`). Usa el árbol y el venv
   congelados de `/srv/aao/frozen/aao-pm`, igual que el coordinador.
-- La unidad **no** puede llevar `NoNewPrivileges=yes`, porque necesita `sudo`
+- **No hay evidencia de que este timer, servicio o su script estén implementados
+  o instalados.** El host informó el 2026-11-03 que el coordinador PM está
+  activo, pero eso no es el orquestador de renovación.
+- La unidad propuesta **no** puede llevar `NoNewPrivileges=yes`, porque necesita `sudo`
   hacia el wrapper root. Es la diferencia consciente respecto de
   `deploy/systemd/user/aao-project-coordinator@.service`. Compensación: el
   sudoers solo permite el wrapper (`SELF_DEVELOPMENT_CYCLE_ROLES.md` §setup 3).
@@ -98,7 +108,7 @@ vida del revisor está, por tanto, definido solo a medias (G5).
 | Principal PM | `project.read`, `work.coordinate`, `credential.issue_selfdev_cycle_roles` (≤ 30 días) en Self Development | Sí (#347/#348/#349; aplicación en host **no verificada** aquí) |
 | Linux `aao-pm` | `sudo` NOPASSWD solo sobre `/usr/local/libexec/aao/selfdev_role_token_helper.py` | Diseñado en #347; aplicación en host no verificada |
 | Wrapper root | Operación `replace` | Implementada en #361; despliegue en host no verificado |
-| API (`aao_runtime`) | `INSERT` sobre `host_worker_bindings` (G1) | Sí (`scripts/bootstrap/apply_api_grants.sql:31`); falta el código |
+| API (`aao_runtime`) | Permisos requeridos por #377, incluida la función restringida de la migración 041 | Implementado en la línea de migraciones; despliegue/ejecución en el host no se demuestra aquí |
 
 No se necesita `work.assign` para el ciclo en sí. Solo hace falta si se
 resuelve G3 por reasignación.
@@ -174,29 +184,16 @@ acción idempotente del estado persistido):
 
 ## 7. Huecos y propuestas exactas
 
-Estado de integración a la fecha de esta revisión: G1/G3/G4/G7 siguen siendo
-propuestas. No hay una implementación de esas cuatro brechas fusionada en
-`origin/main`; tampoco se ha verificado una rama/PR de implementación ni su
-despliegue. No tratar las propuestas siguientes como comportamiento actual.
+Estado de integración en `origin/main` 5531466 (PR #377): G1, herencia de
+perfil G3, G4 y G7 están implementados. La transferencia de asignaciones entre
+ciclos no está implementada por la emisión. Las propuestas históricas siguientes
+se conservan como contexto, no como estado actual.
 
-**G1. Vínculo host del implementador del ciclo** (necesita cambio de API; sin
-migración).
-
-- En `issue_selfdev_cycle_roles` (`:907`), dentro de la misma transacción y
-  solo para el rol `aao-selfdev-impl-<cycle>`: `pg_advisory_xact_lock`
-  sobre `host_id`, después `INSERT INTO host_worker_bindings(host_id,
-  worker_id, status, fence_epoch) SELECT %s, %s, 'ACTIVE',
-  COALESCE(MAX(fence_epoch),1) FROM host_worker_bindings WHERE host_id=%s`.
-- `host_id` sale de `current_host_id(allow_test_override=False)` en el
-  proceso de la API. No se acepta del cliente.
-- Debe ser un INSERT simple, sin `ON CONFLICT DO UPDATE`: `aao_runtime` solo
-  tiene `SELECT, INSERT` (`apply_api_grants.sql:31`) y el principal es nuevo
-  por construcción.
-- Hay que rechazar la emisión si el host está cercado (ningún ACTIVE con epoch
-  coherente) y auditar `host_id` en `principal.selfdev_cycle_role.issued`.
-- Revocación: no hace falta un UPDATE del vínculo. `claim` ya falla en
-  `verify_execution_principal` con la credencial deshabilitada. Las filas
-  ACTIVE de ciclos revocados las limpia el rol `aao_fencer`.
+**G1. Vínculo host — implementado por #377.** La emisión vincula el nuevo
+principal implementador al host protegido de la API; la revocación limpia el
+binding mediante la función restringida de la migración 041. No sustituir este
+flujo por `register-host-worker` manual en cada renovación. La instalación de
+041 y los grants del runtime deben verificarse en el host.
 
 **G2. Operación `replace` del instalador — implementada por #361.**
 El código admite reemplazo atómico, restringido a tokens Self Development, y
@@ -213,21 +210,15 @@ esté instalado en el host; no se hizo ninguna acción de host para este PR.
 - El helper permite `replace`. Un administrador debe desplegar la revisión
   actualizada en `/usr/local/libexec/aao`; el sudoers no necesita cambiar.
 
-**G3. Perfil y reasignación de hijos de grupo** (necesita cambio de API).
+**G3. Herencia del perfil — resuelta en código (#377); transferencia de tareas
+— pendiente.** La API copia solo el perfil activo más reciente de un
+implementador previo elegible del mismo proyecto. Al revocar, el trabajo no
+reclamado se escala para que un coordinador lo reasigne; no se transfiere
+automáticamente al implementador nuevo.
 
-- Opción preferida: que la emisión copie al implementador N+1 el perfil
-  organizativo (competencias) del implementador del ciclo anterior **solo** si
-  este pertenece al mismo proyecto y es un `aao-selfdev-impl-*`. Así no hace
-  falta un nuevo endpoint CEO.
-- Además, `POST /v1/projects/{id}/selfdev-cycle-roles/{new}/inherit-assignments`
-  (`rw` + PM-issuer): reasigna los hijos en `INBOX`/`READY`/`IN_PROGRESS` del
-  `impl` antiguo, sin ejecuciones activas, al nuevo, y audita `work.assigned`
-  con `previous_principal_id`.
-- Sin G3, los hijos de grupo asignados al ciclo N quedan huérfanos.
-
-**G4. Escalado al revocar un ciclo** (cambio de API). El DELETE de ciclo debe
-reutilizar el escalado de `/principals/{id}/revoke` (`:1270-1300`) para el
-trabajo asignado que G3 no haya heredado.
+**G4. Escalado al revocar un ciclo — resuelto en código (#377).** El DELETE
+deshabilita la credencial, retira el binding mediante la función de migración
+041 y escala trabajo no reclamado dentro de la misma transacción.
 
 **G5. Consumidor del token revisor.** Hay que definir qué proceso usa
 `aao-self-development-reviewer.token`, o dejar de emitirlo en las
@@ -240,13 +231,9 @@ renovaciones mientras no exista consumidor. Hoy no hay ninguno en el repo.
   `StartLimit`.
 - Nunca debe actuar sin una identidad verificada.
 
-**G7. DELETE de un ciclo inexistente** (cambio menor de API).
-
-- Si ninguno de los dos principals del ciclo existe, `DELETE
-  …/selfdev-cycle-roles/{cycle_id}` debe devolver `404 {"code":
-  "CYCLE_NOT_FOUND"}`.
-- Así la recuperación de una respuesta perdida distingue entre «nunca se
-  emitió» y «conjunto alterado». Hoy ambos casos devuelven 409.
+**G7. DELETE de un ciclo inexistente — resuelto en código (#377).** Si ninguno
+de los dos principals existe, la API devuelve 404 `CYCLE_NOT_FOUND`; el estado
+parcial inesperado continúa fallando cerrado.
 
 ## 8. Eventos de auditoría
 
@@ -254,7 +241,7 @@ Los de la API ya existen: `principal.selfdev_cycle_role.issued` y
 `principal.selfdev_cycle_role.revoked` (`:956-960`, `:1008-1011`), con
 `issuer_principal_id`.
 
-Locales (journal de la unidad, sin secretos):
+Propuestos para el orquestador (aún no implementado; journal sin secretos):
 
 - `selfdev_cycle.renewal_started{current,next,expires_at}`
 - `…installed{next}`, `…verified{next,impl,reviewer}`
@@ -262,29 +249,34 @@ Locales (journal de la unidad, sin secretos):
 - `…failed{phase,cycle,reason}`
 - `…expired_without_successor{old}` (alerta)
 
-Propuesta asociada a G1: añadir `host_id` al evento de emisión.
+El evento API de emisión incluye `host_id` y `profile_inherited_from` cuando
+aplica. Los eventos locales de renovación aún no existen porque falta el
+orquestador.
 
 ## 9. Decisiones reservadas al CEO (estratégicas o de gobernanza)
 
 1. Aceptar que el grant `credential.issue_selfdev_cycle_roles` se renueve cada
    ≤ 30 días como punto de control humano recurrente, o fijar otro plazo. La
    renovación es una concesión de autoridad y no se automatiza aquí.
-2. Aprobar que la API cree vínculos host para los implementadores de ciclo
-   (G1) y que se hereden perfiles y asignaciones (G3). Ambas cosas amplían lo
-   que hace hoy la emisión delegada de #347, aunque no amplían grants.
+2. La aprobación CEO para G1 y la herencia de perfiles G3 fue comunicada el
+   2026-11-03 durante el desarrollo de #377. No se ha localizado en esta revisión
+   un registro formal del repositorio; enlazarlo antes de elevar autonomía.
 
-G2 está implementado en código por #361; su despliegue en el host requiere un
-administrador. G5, G6 y G7 son decisiones técnicas del propietario del
-componente. No son decisiones estratégicas.
+G2 está implementado por #361, pero su despliegue en host requiere un
+administrador. G5 (consumidor del token revisor) y G6 (recuperación del worker
+tras fallos) siguen siendo huecos técnicos.
 
 ## 10. Límites de este documento
 
-- Análisis estático de `120f222`. No se ejecutó nada contra el host, la API ni
-  la base de datos, y no se usaron tokens.
+- El análisis original fue estático de `120f222`; las referencias de código se
+  actualizaron tras #377. Esta revisión documental no usó tokens.
 - No se ha verificado si #349 (`restore_pm_cycle_authority.py`) se ejecutó en
   el host ni si el grant emisor está vigente.
 - #356 está fusionado en main. Este documento no verifica la instalación,
   activación ni funcionamiento del worker en el host.
-- G1/G3/G4/G7 continúan sin implementación fusionada; #361 resuelve solo el
-  reemplazo atómico G2 en código.
+- #377 implementa el binding y la limpieza de ciclo con migración 041; #361
+  implementa `replace`. Estas fusiones no demuestran que el helper, la unidad
+  worker o el orquestador estén desplegados en el host.
+- El estado de host citado en §1 procede de metadatos aportados por el operador
+  el 2026-11-03; no se inspeccionaron ficheros de entorno ni tokens.
 - Tests y CI no constituyen auditoría independiente (GOV-REV-001).

@@ -1,6 +1,7 @@
 """Unattended Self Development cycle renewal runner: state machine with fakes."""
 
 import io
+import itertools
 import json
 import os
 from datetime import UTC, datetime, timedelta
@@ -38,6 +39,7 @@ class FakeServer:
         self.cycles = {}  # id -> {"expires": dt, "revoked": bool}
         self.calls = []
         self.busy_worker = None
+        self.executions = None  # explicit board executions
         self.fail = {}  # method -> callable returning (status, body) or raising
         self.crash_after = None  # method name: perform the action, then crash
 
@@ -92,7 +94,7 @@ class FakeServer:
             return override
         if self.crash_after == "board":
             raise Crash
-        executions = []
+        executions = list(self.executions or [])
         if self.busy_worker:
             executions.append({"id": "e1", "status": "RUNNING", "worker_id": self.busy_worker,
                                "attempts": 1})
@@ -236,7 +238,7 @@ CRASH_POINTS = [
 
 @pytest.mark.parametrize(("where", "point"), CRASH_POINTS)
 def test_crash_during_issuance_revokes_next_and_keeps_current(env, where, point):
-    _clock, server, installer, store, _logs, make = env
+    clock, server, installer, store, _logs, make = env
     c1 = _bootstrap(env)
     _to_renewal(env)
     if where == "server":
@@ -251,13 +253,17 @@ def test_crash_during_issuance_revokes_next_and_keeps_current(env, where, point)
     server.crash_after = installer.crash_at = None
 
     server.calls.clear()
-    # Recovery closes c2 first, then (same tick) renews with a fresh cycle ID.
+    # Recovery closes c2 and backs off; the next attempt renews with a fresh ID.
+    assert make().tick() == 1
+    assert server.calls == [("revoke", c2)]
+    assert store.load()["current_cycle_id"] == c1 and not server.cycles[c1]["revoked"]
+    server.calls.clear()
+    clock.advance(minutes=5)
     assert make().tick() == 0
     state = store.load()
     assert state["phase"] == "ACTIVE" and state["current_cycle_id"] not in {c1, c2}
     names = [c[0] for c in server.calls]
-    assert names[0] == "revoke" and server.calls[0][1] == c2
-    assert names.index("issue") > 0
+    assert names.index("issue") < names.index("revoke")
     assert server.cycles[c1]["revoked"]
     if c2 in server.cycles:
         assert server.cycles[c2]["revoked"]
@@ -328,8 +334,10 @@ def test_lost_issue_response_with_delete_unavailable_never_issues_third_cycle(en
     clock.now = server.cycles[store.load()["next_cycle_id"]]["issued"] + renew.CYCLE_TTL \
         + renew.CLOCK_SKEW
     c2 = store.load()["next_cycle_id"]
-    # c2 is past its TTL: closed with an alert; c1 has expired too, so a fresh
-    # cycle is issued directly and the unrevokable expired c1 is left behind.
+    # c2 is past its TTL: closed with an alert and a backoff; c1 has expired too,
+    # so after the backoff a fresh cycle is issued directly.
+    assert make().tick() == 1
+    clock.advance(minutes=5)
     assert make().tick() == 0
     state = store.load()
     assert state["phase"] == "ACTIVE" and state["current_cycle_id"] not in {c1, c2}
@@ -337,12 +345,13 @@ def test_lost_issue_response_with_delete_unavailable_never_issues_third_cycle(en
     assert "selfdev_cycle.expired_without_successor" in [e["event"] for e in logs]
 
 
+@pytest.mark.parametrize("rc", [1, 2])
 @pytest.mark.parametrize("account", ["aao-auditor", "aao-impl-codex"])
-def test_install_failure_keeps_old_credentials_valid(env, account):
+def test_install_failure_keeps_old_credentials_valid(env, account, rc):
     _clock, server, installer, store, _logs, make = env
     c1 = _bootstrap(env)
     _to_renewal(env)
-    installer.rc[(account, "replace")] = 1
+    installer.rc[(account, "replace")] = rc
     assert make().tick() == 1
     state = store.load()
     assert state["phase"] == "ACTIVE" and state["current_cycle_id"] == c1
@@ -627,3 +636,182 @@ def test_user_units_are_oneshot_without_no_new_privileges():
                       "RestrictAddressFamilies", "SystemCallFilter"):
         assert not any(line.startswith(forbidden) for line in directives)
     assert "OnUnitActiveSec=5min" in timer and "Unit=aao-selfdev-cycle-renew.service" in timer
+    assert "OnFailure=aao-selfdev-cycle-renew-alert.service" in directives
+    alert = (unit_dir / "aao-selfdev-cycle-renew-alert.service").read_text()
+    assert "-p err" in alert and "[Install]" not in alert
+
+
+def _issue_times(server):
+    return sorted(v["issued"] for v in server.cycles.values())
+
+
+def test_persistent_failure_issues_bounded_pairs_then_breaker_until_reset(env):
+    clock, server, installer, store, logs, make = env
+    c1 = _bootstrap(env)
+    installer.rc[("aao-impl-codex", "replace")] = 2  # wrapper without `replace`
+    _to_renewal(env)
+    results = []
+    for _ in range(288):  # 24 h of 5 min ticks
+        results.append(make().tick())
+        clock.advance(minutes=5)
+    assert len(server.cycles) - 1 == renew.BREAKER_THRESHOLD
+    assert store.load()["phase"] == "BREAKER_OPEN"
+    assert results[-1] == 1
+    assert all(v["revoked"] for k, v in server.cycles.items() if k != c1)
+    times = _issue_times(server)[1:]
+    gaps = [b - a for a, b in itertools.pairwise(times)]
+    assert gaps == [timedelta(minutes=m) for m in (5, 10, 20, 60)]
+    assert "selfdev_cycle.breaker_open" in [e["event"] for e in logs]
+    # Operator reset after fixing the wrapper: renews again.
+    installer.rc.clear()
+    assert make().tick(reset_breaker=True) == 0
+    state = store.load()
+    assert state["phase"] == "ACTIVE" and state["consecutive_failures"] == 0
+    assert server.live() == [state["current_cycle_id"]]
+
+
+def test_reset_breaker_refused_when_not_open(env):
+    *_rest, make = env
+    _bootstrap(env)
+    with pytest.raises(renew.RenewError, match="not open"):
+        make().tick(reset_breaker=True)
+
+
+def test_backoff_blocks_issuance_and_success_resets_counter(env):
+    clock, server, _installer, store, _logs, make = env
+    _bootstrap(env)
+    _to_renewal(env)
+    server.fail["issue"] = lambda _c: (500, None)
+    assert make().tick() == 1
+    assert store.load()["consecutive_failures"] == 1
+    clock.advance(minutes=4)
+    assert make().tick() == 1  # inside backoff: no new issuance
+    assert [c[0] for c in server.calls].count("issue") == 2  # bootstrap + failed one
+    del server.fail["issue"]
+    clock.advance(minutes=1)
+    assert make().tick() == 0
+    state = store.load()
+    assert state["consecutive_failures"] == 0 and state["next_attempt_at"] is None
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
+def test_definitive_issue_rejection_opens_breaker_without_waiting(env, status):
+    _clock, server, installer, store, _logs, make = env
+    c1 = _bootstrap(env)
+    _to_renewal(env)
+    server.fail["issue"] = lambda _c: (status, {"detail": "no"})
+    server.calls.clear()
+    assert make().tick() == 1
+    state = store.load()
+    assert state["phase"] == "BREAKER_OPEN" and state["next_cycle_id"] is None
+    assert state["current_cycle_id"] == c1
+    assert [c[0] for c in server.calls] == ["issue"]
+    assert installer.files["aao-impl-codex"] == f"SECRET-impl-{c1}"
+
+
+def test_revoke_409_closes_failed_issue_but_keeps_failed_install_open(env):
+    clock, server, installer, store, logs, make = env
+    c1 = _bootstrap(env)
+    _to_renewal(env)
+    server.fail["revoke"] = lambda _c: (409, {"detail": "role set does not match"})
+    server.fail["issue"] = lambda _c: (500, None)
+    assert make().tick() == 1
+    assert store.load()["phase"] == "ACTIVE"  # nothing on disk: closed with alert
+    del server.fail["issue"]
+    installer.rc[("aao-impl-codex", "verify")] = 1
+    clock.advance(minutes=5)
+    assert make().tick() == 1
+    state = store.load()
+    assert state["phase"] == "FAILED_INSTALL" and state["next_cycle_id"]
+    c3 = state["next_cycle_id"]
+    for _ in range(3):
+        clock.advance(minutes=5)
+        assert make().tick() == 1
+        assert store.load()["next_cycle_id"] == c3  # live cycle, tokens on disk
+    assert any("kept open" in e.get("reason", "") for e in logs)
+    clock.now = server.cycles[c3]["issued"] + renew.CYCLE_TTL + renew.CLOCK_SKEW
+    make().tick()
+    assert store.load()["next_cycle_id"] != c3
+    assert c1 in server.cycles
+
+
+@pytest.mark.parametrize(("executions", "drained"), [
+    ([{"status": "QUEUED", "attempts": 1}], False),
+    ([{"status": "QUEUED", "attempts": 0}], True),
+    ([{"status": "UNCERTAIN", "attempts": 1}], False),
+    ([{"status": "SUCCEEDED", "attempts": 1}], True),
+])
+def test_drain_predicate(env, executions, drained):
+    _clock, server, _installer, store, _logs, make = env
+    c1 = _bootstrap(env)
+    _to_renewal(env)
+    server.executions = [{**e, "worker_id": f"aao-selfdev-impl-{c1}"} for e in executions]
+    assert make().tick() == 0
+    assert server.cycles[c1]["revoked"] is drained
+    assert store.load()["phase"] == ("ACTIVE" if drained else "VERIFIED")
+
+
+@pytest.mark.parametrize("offset", [
+    renew.CYCLE_TTL + renew.CLOCK_SKEW + timedelta(seconds=1),
+    timedelta(0),
+])
+def test_issue_expiry_outside_bounds_is_rejected(env, offset):
+    clock, server, installer, _store, _logs, make = env
+    c1 = _bootstrap(env)
+    _to_renewal(env)
+    real_issue = FakeServer.issue
+
+    def bad_expiry(cycle_id):
+        server.fail.pop("issue")
+        status, body = real_issue(server, cycle_id)
+        body["expires_at"] = (clock.now + offset).isoformat()
+        return status, body
+
+    server.fail["issue"] = bad_expiry
+    assert make().tick() == 1
+    assert installer.files["aao-impl-codex"] == f"SECRET-impl-{c1}"
+    assert all(v["revoked"] for k, v in server.cycles.items() if k != c1)
+
+
+def test_runtime_dir_must_be_private(tmp_path, monkeypatch):
+    runtime = tmp_path / "run"
+    runtime.mkdir()
+    runtime.chmod(0o755)
+    monkeypatch.setattr(renew, "runtime_dir", lambda: runtime)
+
+    def forbidden():
+        raise AssertionError("token must not be read")
+
+    monkeypatch.setattr(renew, "read_pm_token", forbidden)
+    assert renew.main(["--project-id", PROJECT]) == 1
+    assert not (runtime / "aao-selfdev-cycle.lock").exists()
+
+
+def test_failure_counter_must_be_a_plain_bounded_int(env):
+    _clock, server, _installer, store, _logs, make = env
+    _bootstrap(env)
+    state = store.load()
+    for bad in (True, -1, renew.BREAKER_THRESHOLD + 1, "1"):
+        store.path.write_text(json.dumps({**state, "consecutive_failures": bad}))
+        server.calls.clear()
+        with pytest.raises(renew.RenewError, match="failure counter"):
+            make().tick()
+        assert server.calls == []
+
+
+@pytest.mark.parametrize("how", ["partial_replace", "crash_mid_install"])
+def test_tokens_possibly_on_disk_are_failed_install_and_not_closed_on_409(env, how):
+    _clock, server, installer, store, _logs, make = env
+    _bootstrap(env)
+    _to_renewal(env)
+    if how == "partial_replace":
+        installer.rc[("aao-impl-codex", "replace")] = 1  # reviewer already replaced
+    else:
+        installer.crash_at = ("aao-auditor", "replace")
+        with pytest.raises(Crash):
+            make().tick()
+        installer.crash_at = None
+    server.fail["revoke"] = lambda _c: (409, {"detail": "mismatch"})
+    assert make().tick() == 1
+    state = store.load()
+    assert state["phase"] == "FAILED_INSTALL" and state["next_cycle_id"]

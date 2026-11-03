@@ -5,7 +5,8 @@ One invocation is one tick of the persisted state machine described in
 docs/procedures/SELFDEV_CYCLE_CREDENTIAL_LIFECYCLE.md section 5:
 
     ACTIVE -> ISSUING -> INSTALLED_PENDING -> VERIFIED -> REVOKING_OLD -> ACTIVE
-    FAILED_ISSUE / FAILED_INSTALL / FAILED_EXPIRED for recovery.
+    FAILED_ISSUE / FAILED_INSTALL / FAILED_EXPIRED for recovery, and
+    BREAKER_OPEN after repeated or definitive issuance failures (operator reset).
 
 Only the PM token is used. Role tokens exist only in process memory between the
 issuing POST and the root wrapper's ``replace`` (stdin). They are never written
@@ -43,13 +44,22 @@ RENEW_MARGIN = CYCLE_TTL / 2
 # Drain wait cap: 30 min max lease + 5 min (#356 TimeoutStopSec margin).
 DRAIN_CAP = timedelta(minutes=35)
 CLOCK_SKEW = timedelta(minutes=1)
+# Wait after the 1st..4th consecutive failed issuance; the 5th opens the breaker,
+# so a persistent failure issues at most BREAKER_THRESHOLD pairs until an operator
+# runs --reset-breaker.
+BACKOFF = tuple(timedelta(minutes=m) for m in (5, 10, 20, 60))
+BREAKER_THRESHOLD = 5
+# POST rejections that cannot succeed on retry; nothing was issued server-side.
+DEFINITIVE_REJECTIONS = {400, 401, 403, 404, 422}
 PHASES = {
     "ACTIVE", "ISSUING", "INSTALLED_PENDING", "VERIFIED", "REVOKING_OLD",
-    "FAILED_ISSUE", "FAILED_INSTALL", "FAILED_EXPIRED",
+    "FAILED_ISSUE", "FAILED_INSTALL", "FAILED_EXPIRED", "BREAKER_OPEN",
 }
+NO_NEXT_PHASES = {"ACTIVE", "FAILED_EXPIRED", "BREAKER_OPEN"}
 STATE_KEYS = {
     "phase", "project_id", "current_cycle_id", "current_expires_at",
     "next_cycle_id", "next_expires_at", "next_issued_at", "updated_at",
+    "consecutive_failures", "next_attempt_at",
 }
 CYCLE_RE = re.compile(r"[0-9a-f]{32}")
 BUSY_STATUSES = {"RUNNING", "UNCERTAIN"}
@@ -173,7 +183,11 @@ def _validate_state(data, project_id: str) -> dict:
             isinstance(data[key], str) and CYCLE_RE.fullmatch(data[key])
         ):
             raise RenewError("state file cycle id is invalid")
-    for key in ("current_expires_at", "next_expires_at", "next_issued_at", "updated_at"):
+    failures = data["consecutive_failures"]
+    if type(failures) is not int or not 0 <= failures <= BREAKER_THRESHOLD:
+        raise RenewError("state file failure counter is invalid")
+    for key in ("current_expires_at", "next_expires_at", "next_issued_at", "updated_at",
+                "next_attempt_at"):
         if data[key] is not None:
             try:
                 _parse_time(data[key])
@@ -186,11 +200,11 @@ def _validate_state(data, project_id: str) -> dict:
     has_next = data["next_cycle_id"] is not None
     if has_next != (data["next_issued_at"] is not None):
         raise RenewError("state file next cycle is incomplete")
-    if data["phase"] == "ACTIVE" and has_next:
-        raise RenewError("state file ACTIVE phase with an open next cycle")
+    if data["phase"] in NO_NEXT_PHASES - {"FAILED_EXPIRED"} and has_next:
+        raise RenewError("state file phase with an open next cycle")
     if data["phase"] in {"VERIFIED", "REVOKING_OLD"} and data["next_expires_at"] is None:
         raise RenewError("state file verified phase without next expiry")
-    if data["phase"] not in {"ACTIVE", "FAILED_EXPIRED"} and not has_next:
+    if data["phase"] not in NO_NEXT_PHASES and not has_next:
         raise RenewError("state file phase requires a next cycle")
     return data
 
@@ -393,6 +407,11 @@ class Runner:
                     return False
         return True
 
+    def _fail(self, state: dict, phase: str, reason: str) -> dict:
+        self._event("failed", phase=state["phase"], cycle=state["next_cycle_id"], reason=reason)
+        failures = min(state["consecutive_failures"] + 1, BREAKER_THRESHOLD)
+        return self._save(state, phase, consecutive_failures=failures)
+
     # -- phases -----------------------------------------------------------
     def _issue(self, state: dict) -> dict:
         """ISSUING: persist the new ID first, POST, verify via API, then install."""
@@ -405,54 +424,73 @@ class Runner:
         try:
             status, body = self.api.issue(cycle_id)
         except ApiUnavailable:
-            self._event("failed", phase="ISSUING", cycle=cycle_id, reason="issue unavailable")
-            return self._save(state, "FAILED_ISSUE")
+            return self._fail(state, "FAILED_ISSUE", "issue unavailable")
+        if status in DEFINITIVE_REJECTIONS:
+            # Rejected before issuance (auth, grant, validation): retrying cannot
+            # help, and nothing exists server-side to revoke.
+            self._event("failed", phase="ISSUING", cycle=cycle_id,
+                        reason=f"issue rejected definitively (HTTP {status})")
+            self._event("breaker_open", reason=f"HTTP {status}")
+            return self._save(state, "BREAKER_OPEN", next_cycle_id=None, next_expires_at=None,
+                              next_issued_at=None, consecutive_failures=BREAKER_THRESHOLD,
+                              next_attempt_at=None)
         try:
             expires, tokens, ids = self._check_issue_response(cycle_id, status, body, now)
             # Identity is verified with the in-memory tokens BEFORE any file is
             # touched, so a mismatch leaves cycle N's files and credentials intact.
             self._verify_identities(tokens, ids)
         except RenewError as exc:
-            self._event("failed", phase="ISSUING", cycle=cycle_id, reason=str(exc))
-            return self._save(state, "FAILED_ISSUE")
-        state = self._save(state, "ISSUING", next_expires_at=_iso(expires))
+            return self._fail(state, "FAILED_ISSUE", str(exc))
+        # From here on a role file may hold N+1 (INSTALLED_PENDING = "may hold").
+        state = self._save(state, "INSTALLED_PENDING", next_expires_at=_iso(expires))
         # Reviewer first: the implementer file (live worker consumer) changes last,
-        # so any earlier failure leaves it holding cycle N.
+        # so any failure leaves it holding cycle N. The two files live in two
+        # accounts' runtime dirs, so no single rename can switch both.
+        written = False
         for (account, kind_name, _kind), token in reversed(list(zip(ROLES, tokens, strict=True))):
             rc = self.installer.run(account, kind_name, "replace", token)
             # rc 3: rename committed but post-write check failed; the verify step
             # below decides. Any other failure happened before rename.
             if rc not in {0, REPLACE_COMMITTED}:
-                self._event("failed", phase="ISSUING", cycle=cycle_id,
-                            reason=f"replace failed for {account} (rc {rc})")
-                return self._save(state, "FAILED_ISSUE")
-        state = self._save(state, "INSTALLED_PENDING")
+                return self._fail(state, "FAILED_INSTALL" if written else "FAILED_ISSUE",
+                                  f"replace failed for {account} (rc {rc})")
+            written = True
         self._event("installed", next=cycle_id)
         for (account, kind_name, _kind), token in zip(ROLES, tokens, strict=True):
             if self.installer.run(account, kind_name, "verify", token) != 0:
-                self._event("failed", phase="INSTALLED_PENDING", cycle=cycle_id,
-                            reason=f"file verify failed for {account}")
-                return self._save(state, "FAILED_INSTALL")
+                return self._fail(state, "FAILED_INSTALL", f"file verify failed for {account}")
         self._event("verified", next=cycle_id, impl=ids[0], reviewer=ids[1])
-        return self._save(state, "VERIFIED")
+        return self._save(state, "VERIFIED", consecutive_failures=0, next_attempt_at=None)
 
     def _close_failed_next(self, state: dict) -> tuple[dict, bool]:
         cycle_id = state["next_cycle_id"]
         outcome = self._revoke(cycle_id)
-        issued = _parse_time(state["next_issued_at"])
-        if outcome == "error" and self.clock() < issued + CYCLE_TTL + CLOCK_SKEW:
+        now = self.clock()
+        expired = now >= _parse_time(state["next_issued_at"]) + CYCLE_TTL + CLOCK_SKEW
+        # FAILED_ISSUE: no N+1 token reached disk, so a 409 (role set altered) can be
+        # closed with an alert. FAILED_INSTALL: N+1 tokens may be on disk; only a
+        # confirmed revoke or N+1's own expiry closes it.
+        closable = outcome in {"revoked", "already", "never_issued"} or expired or (
+            outcome == "mismatch" and state["phase"] == "FAILED_ISSUE"
+        )
+        if not closable:
             self._event("failed", phase=state["phase"], cycle=cycle_id,
-                        reason="revoke of unconfirmed next cycle unavailable")
+                        reason=f"next cycle revoke {outcome}; kept open")
             return state, False
         if outcome in {"mismatch", "error"}:
             self._event("failed", phase=state["phase"], cycle=cycle_id,
                         reason=f"next cycle revoke {outcome}; closed (tokens lost, expires)")
         else:
             self._event("next_revoked", next=cycle_id, outcome=outcome)
-        return self._save(state, "ACTIVE", next_cycle_id=None, next_expires_at=None,
-                          next_issued_at=None), True
+        failures = state["consecutive_failures"]
+        cleared = {"next_cycle_id": None, "next_expires_at": None, "next_issued_at": None}
+        if failures >= BREAKER_THRESHOLD:
+            self._event("breaker_open", reason=f"{failures} consecutive failures")
+            return self._save(state, "BREAKER_OPEN", next_attempt_at=None, **cleared), True
+        wait = BACKOFF[min(max(failures, 1), len(BACKOFF)) - 1]
+        return self._save(state, "ACTIVE", next_attempt_at=_iso(now + wait), **cleared), True
 
-    def tick(self, *, bootstrap: bool = False) -> int:
+    def tick(self, *, bootstrap: bool = False, reset_breaker: bool = False) -> int:
         state = self.store.load()
         if state is None:
             if not bootstrap:
@@ -461,15 +499,21 @@ class Runner:
                 "phase": "ACTIVE", "project_id": self.project_id,
                 "current_cycle_id": None, "current_expires_at": None,
                 "next_cycle_id": None, "next_expires_at": None, "next_issued_at": None,
-                "updated_at": _iso(self.clock()),
+                "updated_at": _iso(self.clock()), "consecutive_failures": 0,
+                "next_attempt_at": None,
             }
         elif bootstrap:
             raise RenewError("renewal state already exists; refusing --bootstrap")
+        if reset_breaker:
+            if state["phase"] != "BREAKER_OPEN":
+                raise RenewError("breaker is not open; refusing --reset-breaker")
+            self._event("breaker_reset", failures=state["consecutive_failures"])
+            state = self._save(state, "ACTIVE", consecutive_failures=0, next_attempt_at=None)
         # Crash recovery: tokens of an in-flight issuance are lost with the process.
-        if state["phase"] in {"ISSUING", "INSTALLED_PENDING"}:
-            self._event("failed", phase=state["phase"], cycle=state["next_cycle_id"],
-                        reason="interrupted; tokens lost")
-            state = self._save(state, "FAILED_ISSUE")
+        if state["phase"] == "ISSUING":
+            state = self._fail(state, "FAILED_ISSUE", "interrupted; tokens lost")
+        elif state["phase"] == "INSTALLED_PENDING":
+            state = self._fail(state, "FAILED_INSTALL", "interrupted; files may hold next")
         issued_this_tick = False
         for _ in range(8):
             phase = state["phase"]
@@ -477,6 +521,10 @@ class Runner:
             current_exp = (
                 _parse_time(state["current_expires_at"]) if state["current_cycle_id"] else None
             )
+            if phase == "BREAKER_OPEN":
+                self._event("breaker_open", reason="operator --reset-breaker required",
+                            failures=state["consecutive_failures"])
+                return 1
             if phase in {"FAILED_ISSUE", "FAILED_INSTALL"}:
                 state, closed = self._close_failed_next(state)
                 if not closed:
@@ -486,6 +534,10 @@ class Runner:
                     return 0
                 if issued_this_tick:
                     return 1  # one issuance attempt per tick
+                if state["next_attempt_at"] and now < _parse_time(state["next_attempt_at"]):
+                    self._event("backoff_wait", until=state["next_attempt_at"],
+                                failures=state["consecutive_failures"])
+                    return 1  # renewal is due and failing: keep the unit visibly failed
                 if current_exp is not None and now >= current_exp and phase != "FAILED_EXPIRED":
                     self._event("expired_without_successor", old=state["current_cycle_id"])
                     state = self._save(state, "FAILED_EXPIRED")
@@ -535,6 +587,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--api", default="http://127.0.0.1:8001")
     parser.add_argument("--bootstrap", action="store_true",
                         help="create the initial state and issue the first cycle")
+    parser.add_argument("--reset-breaker", action="store_true",
+                        help="operator reset of an open circuit breaker, then run one tick")
     args = parser.parse_args(argv)
     runtime = runtime_dir()
     lock_path = runtime / "aao-selfdev-cycle.lock"
@@ -552,7 +606,7 @@ def main(argv: list[str] | None = None) -> int:
             runner = Runner(project_id=args.project_id, api=api, installer=WrapperInstaller(),
                             store=StateStore(state_path, args.project_id),
                             clock=lambda: datetime.now(UTC), log=_log)
-            return runner.tick(bootstrap=args.bootstrap)
+            return runner.tick(bootstrap=args.bootstrap, reset_breaker=args.reset_breaker)
     except (RenewError, ProvisionError) as exc:
         _log({"event": "selfdev_cycle.failed", "phase": "startup", "reason": str(exc)})
         return 1

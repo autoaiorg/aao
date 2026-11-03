@@ -14,6 +14,8 @@
 [Unit]
 Description=AAO Self Development cycle credential renewal (one tick)
 ConditionPathExists=%h/.config/aao/selfdev-cycle-renew.env
+# Every non-zero tick (failure, backoff, open breaker) emits a priority-err alert.
+OnFailure=aao-selfdev-cycle-renew-alert.service
 
 [Service]
 Type=oneshot

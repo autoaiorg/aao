@@ -31,7 +31,7 @@ Bloqueos restantes principales:
 
 1. **El orquestador de renovación existe en código, pero no está instalado.**
    `scripts/renew_selfdev_cycle_credentials.py` y las unidades
-   `deploy/systemd/user/aao-selfdev-cycle-renew.{service,timer}` implementan
+   `deploy/systemd/user/aao-selfdev-cycle-renew{.service,.timer,-alert.service}` implementan
    §3–§6 y están probados solo con dobles (fakes). No se ha ejecutado contra la
    API real, el helper root ni el host; nada se ha habilitado.
 2. **El worker no está desplegado.** En las comprobaciones aportadas por el
@@ -98,7 +98,12 @@ vida del revisor está, por tanto, definido solo a medias (G5).
   antes (`aao-selfdev-cycle-credentials@<project>`):
   `deploy/systemd/user/aao-selfdev-cycle-renew.service` (oneshot) y
   `aao-selfdev-cycle-renew.timer` (`OnActiveSec=1min`,
-  `OnUnitActiveSec=5min`). El proyecto se lee de
+  `OnUnitActiveSec=5min`), más `aao-selfdev-cycle-renew-alert.service`, que
+  la unidad principal lanza con `OnFailure=`. No hay canal de alerta externo:
+  la unidad de alerta escribe una entrada `systemd-cat -p err` en el journal y
+  alguien debe vigilarla. Cada tick con código distinto de cero (fallo, espera
+  de backoff con renovación vencida o cortacircuitos abierto) la dispara. El
+  proyecto se lee de
   `~/.config/aao/selfdev-cycle-renew.env` (`AAO_PROJECT_ID=<uuid>`). Usan el
   árbol y el venv congelados de `/srv/aao/frozen/aao-pm`, igual que el
   coordinador. **Este cambio no las instala ni las habilita.**
@@ -112,6 +117,16 @@ vida del revisor está, por tanto, definido solo a medias (G5).
   diferencia consciente respecto de `aao-project-coordinator@.service`.
   Compensación: el sudoers solo permite el wrapper
   (`SELF_DEVELOPMENT_CYCLE_ROLES.md` §setup 3).
+- **Radio de daño sin `NoNewPrivileges`.** Cualquier código que se ejecute en
+  esta unidad como `aao-pm` puede usar todos los binarios setuid del host, no
+  solo `sudo`. Por la regla sudoers, puede ejecutar el wrapper root con
+  `check|install|verify|remove|replace` sobre los dos ficheros fijos de
+  `aao-impl-codex` y `aao-auditor`. Con `replace` puede sustituir el token del
+  worker por cualquier valor (denegación de servicio o sustitución por otro
+  principal que controle). Ese poder ya lo tiene la cuenta `aao-pm` fuera de la
+  unidad, por el sudoers; la unidad no lo amplía. Lo que la unidad sí pierde es
+  el aislamiento de sistema de ficheros y de syscalls del coordinador. El
+  código ejecutado es el árbol congelado de `/srv/aao/frozen/aao-pm`.
 - Lock exclusivo no bloqueante `flock` en
   `/run/user/<uid-pm>/aao-selfdev-cycle.lock`. Un segundo tick concurrente sale
   con código 75 (`SuccessExitStatus=75`) sin leer el token ni actuar.
@@ -142,11 +157,14 @@ vida del revisor está, por tanto, definido solo a medias (G5).
 4. CEO: confirmar que el grant `credential.issue_selfdev_cycle_roles` del PM
    está vigente (≤ 30 días) y que existe un perfil semilla del implementador.
 5. `aao-pm`:
-   - Copiar las dos unidades a `~/.config/systemd/user/`.
+   - Copiar las tres unidades a `~/.config/systemd/user/`.
    - Crear `~/.config/aao/selfdev-cycle-renew.env`.
    - Ejecutar una vez
      `renew_selfdev_cycle_credentials.py --project-id <uuid> --bootstrap`
      (§5).
+   - Tras corregir la causa de un cortacircuitos abierto, y solo entonces,
+     ejecutar `renew_selfdev_cycle_credentials.py --project-id <uuid>
+     --reset-breaker`.
    - Solo después, y con autorización, ejecutar
      `systemctl --user enable --now aao-selfdev-cycle-renew.timer`.
 
@@ -172,8 +190,22 @@ un solo enlace y propiedad de `aao-pm`. La escritura es atómica: temp
 ```json
 {"phase": "...", "project_id": "<uuid>", "current_cycle_id": "<hex32|null>",
  "current_expires_at": "...", "next_cycle_id": "<hex32|null>",
- "next_expires_at": "...", "next_issued_at": "...", "updated_at": "..."}
+ "next_expires_at": "...", "next_issued_at": "...", "updated_at": "...",
+ "consecutive_failures": 0, "next_attempt_at": "<iso|null>"}
 ```
+
+**Backoff y cortacircuitos.** Cada emisión fallida (POST, verificación,
+instalación, `verify` de fichero o caída a mitad) incrementa
+`consecutive_failures`. Al cerrar el N+1 fallido, el runner fija
+`next_attempt_at` a 5, 10, 20 y 60 min tras los fallos 1.º a 4.º. El 5.º abre
+`BREAKER_OPEN`. Un POST rechazado de forma definitiva (400, 401, 403, 404 o
+422) abre el cortacircuitos directamente: la API no emitió nada, así que no se
+espera ni se revoca. En `BREAKER_OPEN` no se emite nada y cada tick sale con
+código 1 (alerta) hasta que un operador ejecute `--reset-breaker`, que solo se
+acepta con el cortacircuitos abierto. Una renovación verificada pone el
+contador a 0. Con un fallo persistente, por tanto, se emiten como máximo 5
+pares de ciclo antes de exigir intervención (antes: un par cada 5 min, ~288
+al día).
 
 Diferencia con el diseño previo: el estado vive en el runtime dir y no en
 `~/.local/state`, igual que los tokens que describe. Tras un reinicio,
@@ -196,26 +228,47 @@ los logs. Los tokens viven solo en la memoria del proceso entre el POST y el
 | Estado | Significado | Transición normal | Fallo |
 |---|---|---|---|
 | `ACTIVE` | El ciclo N está instalado y verificado, y le queda más del margen | Al cruzar el umbral de renovación (§6): genera `next_cycle_id`, **persiste** y pasa a `ISSUING` | — |
-| `ISSUING` | El ID N+1 y `next_issued_at` están persistidos antes del POST | POST correcto → verificación de identidad por API → `replace` del revisor y después del implementador (el fichero con consumidor vivo cambia el último) → `INSTALLED_PENDING`. Si `replace` devuelve el código 3 (renombrado hecho, comprobación posterior fallida), decide el `verify` siguiente | Error, 409, 5xx, timeout, desajuste de identidad o fallo de `replace` → `FAILED_ISSUE` |
-| `INSTALLED_PENDING` | Los ficheros contienen N+1; falta verificarlos | `verify` de fichero con el token en memoria → `VERIFIED`. La verificación por API (IDs, kind y grants exactos) ya se hizo en `ISSUING`, antes de instalar, para que un desajuste deje intactos los ficheros de N | → `FAILED_INSTALL` |
+| `ISSUING` | El ID N+1 y `next_issued_at` están persistidos antes del POST; ningún fichero se ha tocado | POST correcto → verificación de identidad por API (IDs, kind y grants exactos) → `INSTALLED_PENDING` | Error, 409, 5xx, timeout o desajuste de identidad → `FAILED_ISSUE`. 400/401/403/404/422 → `BREAKER_OPEN` |
+| `INSTALLED_PENDING` | Se persiste **antes** del primer `replace`: los ficheros **pueden** contener N+1 | `replace` del revisor y después del implementador (el fichero con consumidor vivo cambia el último) → `verify` de ambos ficheros con el token en memoria → `VERIFIED`. Si `replace` devuelve 3 (renombrado hecho, comprobación posterior fallida), decide el `verify` | Fallo del primer `replace` (antes de renombrar; nada escrito) → `FAILED_ISSUE`. Fallo posterior o de `verify` → `FAILED_INSTALL` |
 | `VERIFIED` | N+1 está verificado; el worker lo recoge en la siguiente iteración | Si el board no muestra ejecuciones `RUNNING`/`UNCERTAIN`/`QUEUED` con `attempts>0` y `worker_id = impl-N`, o si N ya caducó → `REVOKING_OLD` | Plazo de drenaje superado → `REVOKING_OLD` igualmente (§6) |
 | `REVOKING_OLD` | Se revoca el ciclo N | DELETE N devuelve `revoked`, `already_revoked` o `CYCLE_NOT_FOUND` → `current := next` y `next := null` → `ACTIVE` | Error → se queda en `REVOKING_OLD` y reintenta en cada tick. Si N ya caducó, avanza con alerta para no bloquear la renovación de N+1 |
-| `FAILED_ISSUE` | N+1 puede existir o no en el servidor | DELETE N+1. Con `revoked`, `already_revoked` o 404 con `detail.code == "CYCLE_NOT_FOUND"` → `next := null` → `ACTIVE`, y se vuelve a emitir con un ID **nuevo** (como máximo una emisión por tick) | 409 (conjunto alterado): se alerta y se cierra igualmente, porque N+1, si existe, caduca en ≤ 2 h y sus tokens se perdieron. Otro 404, 5xx o error de red: se mantiene hasta `next_issued_at + 2 h + 1 min` y entonces se cierra con alerta. Mientras se mantiene, nunca se emite otro ciclo |
-| `FAILED_INSTALL` | Falló el `verify` posterior a la instalación; un fichero puede contener N+1 | Igual que `FAILED_ISSUE` (DELETE N+1). Si el fichero del implementador ya tenía N+1, el worker falla cerrado (403) hasta la siguiente emisión correcta, que el runner intenta en el siguiente tick | — |
+| `FAILED_ISSUE` | N+1 puede existir o no en el servidor; ningún token suyo llegó a disco | DELETE N+1. Con `revoked`, `already_revoked` o 404 con `detail.code == "CYCLE_NOT_FOUND"` → `next := null` → `ACTIVE` con backoff (o `BREAKER_OPEN` al 5.º fallo); la siguiente emisión usa un ID **nuevo** | 409 (conjunto alterado): se alerta y se cierra igualmente, porque no hay tokens de N+1 en disco y caduca en ≤ 2 h. Otro 404, 5xx o error de red: se mantiene hasta `next_issued_at + 2 h + 1 min` y entonces se cierra con alerta. Mientras se mantiene, nunca se emite otro ciclo |
+| `FAILED_INSTALL` | Un fichero puede contener N+1 | DELETE N+1; solo una revocación confirmada (`revoked`, `already_revoked`, `CYCLE_NOT_FOUND`) o la caducidad de N+1 (`next_issued_at + 2 h + 1 min`) lo cierra, con backoff | 409, 5xx o error de red → **se mantiene** y alerta en cada tick: no se olvida un ciclo vivo con tokens en disco. Mientras, no se emite otro ciclo |
+| `BREAKER_OPEN` | Fallos repetidos o rechazo definitivo; no hay N+1 abierto | Ninguna: cada tick sale con código 1 (alerta). `--reset-breaker` del operador → `ACTIVE`, contador a 0 | — |
 | `FAILED_EXPIRED` | `current_expires_at` ya pasó y no hay ciclo válido instalado | Emite directamente (`ISSUING`) sin drenaje; el worker estaba fallando cerrado | Se mantiene; alerta crítica |
 
 Recuperación tras una caída (en cada tick se lee el estado y se hace la
 acción idempotente del estado persistido):
 
 - **Caída antes de persistir `next_cycle_id`:** no se ha emitido nada.
-- **Caída en `ISSUING`, tras el POST y antes del `replace`:** los tokens se
-  perdieron. Se aplica `FAILED_ISSUE` (DELETE N+1). El ciclo N sigue intacto
-  en los ficheros.
+- **Caída en `ISSUING`, tras el POST y antes de instalar:** los tokens se
+  perdieron. Se aplica `FAILED_ISSUE` (DELETE N+1). Ningún fichero se tocó en
+  `ISSUING`, así que ambos ficheros siguen con N.
 - **Caída en `INSTALLED_PENDING`:** el token no está en memoria, así que no se
-  puede usar `verify` con stdin. Se hace DELETE N+1 y se pasa a
-  `FAILED_ISSUE`. Si un fichero ya tenía N+1, el worker recibirá 403 hasta el
-  siguiente tick correcto. Esto es aceptable: falla cerrado y no usa una
-  credencial ambigua.
+  puede usar `verify` con stdin. Se pasa a `FAILED_INSTALL` (DELETE N+1, que
+  solo se cierra con revocación confirmada o caducidad). Si un fichero ya tenía
+  N+1, su consumidor recibirá 403 hasta la siguiente emisión correcta. Esto
+  falla cerrado y no usa una credencial ambigua.
+
+**Fallo parcial de instalación (elección y límite).** Los dos ficheros viven
+en los runtime dirs de dos cuentas distintas (`aao-auditor`,
+`aao-impl-codex`), así que ningún `rename` único puede conmutar ambos. Un
+directorio versionado con enlace sería por cuenta y exigiría cambiar el
+wrapper root. La opción más simple y segura elegida es:
+
+- verificar ambos tokens por API **antes** de tocar ningún fichero;
+- reemplazar el del revisor primero y el del implementador el último, de modo
+  que el fichero con consumidor vivo solo cambia cuando el revisor ya está
+  escrito.
+
+Consecuencia: **el fichero del implementador conserva N** ante cualquier fallo
+de instalación. **El fichero del revisor, no:** si el `replace` del
+implementador falla tras escribir el del revisor, el revisor queda con el
+token de N+1, que se revoca. El token del revisor de N se pierde, porque el PM
+no conserva tokens. Hoy no tiene consumidor (G5), así que el impacto es nulo.
+Cuando lo tenga, hará falta una instalación en dos fases en el wrapper
+(`stage` + `commit`), que requiere reinstalación root y auditoría. El
+cortacircuitos acota la repetición.
 - **Caída en `VERIFIED` o `REVOKING_OLD`:** se repite la consulta del board y
   el DELETE N. Ambos son idempotentes.
 - **Respuesta del POST perdida:** nunca se reenvía el POST con el mismo ID (la
@@ -314,10 +367,13 @@ secretos):
 - `…drain_waited{old,seconds}`, `…old_revoked{old,already}`
 - `…failed{phase,cycle,reason}`, `…next_revoked{next,outcome}`
 - `…expired_without_successor{old}` (alerta), `…lock_busy`
+- `…backoff_wait{until,failures}`, `…breaker_open{reason}`,
+  `…breaker_reset{failures}`
 
 El evento API de emisión incluye `host_id` y `profile_inherited_from` cuando
 aplica. Todavía no hay alertas externas: un fallo deja la unidad oneshot en
-`failed` y el evento en el journal, y alguien debe vigilarlo.
+`failed`, el evento en el journal y una entrada `err` de la unidad de alerta
+(`OnFailure=`). Alguien debe vigilarlas.
 
 ## 9. Decisiones reservadas al CEO (estratégicas o de gobernanza)
 
@@ -363,9 +419,20 @@ revisor, aunque no tenga consumidor (G5).
   - La autenticación de principals solo funciona si la API corre con
     `AAO_ENV` igual a `development` o `test` (`principal_credentials.py:16-19`).
   - Con un fallo persistente de despliegue (por ejemplo, el wrapper sin
-    `replace`, que devuelve el código 2), cada tick de 5 min emite y revoca un
-    par de ciclo, con su vínculo host. El código de salida queda en el evento
+    `replace`, que devuelve el código 2), se emiten y revocan como máximo 5
+    pares de ciclo (con su vínculo host) en ~95 min. Después el cortacircuitos
+    exige `--reset-breaker`. El código de salida del wrapper queda en el evento
     `failed`.
+- **Riesgo: separación de funciones colapsada en el PM.** El proceso del PM
+  recibe en memoria **ambos** tokens del ciclo: el del implementador y el del
+  revisor de ciclo de vida. Un PM comprometido podría actuar como implementador
+  y como revisor de la API a la vez durante ≤ 2 h. Esto ya ocurría con
+  `request_selfdev_cycle_roles.py` (#347); el runner lo hace desatendido y
+  periódico. El revisor de la API no es un auditor GOV-REV-001, pero la
+  separación autor/revisor que impone la API pierde fuerza frente a un PM
+  comprometido. Mitigaciones posibles (no implementadas): que cada cuenta de
+  rol pida su propio token, o dejar de emitir el revisor mientras no tenga
+  consumidor (G5).
 - El worker (`run_self_development_worker.py`, `run()`) vuelve a leer el fichero
   de token en cada iteración. Por eso recoge N+1 en la siguiente iteración sin
   reiniciarse; el drenaje de §5 depende de ello.

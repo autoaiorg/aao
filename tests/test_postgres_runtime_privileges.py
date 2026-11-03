@@ -348,7 +348,7 @@ def test_bootstrap_removes_preexisting_parent_memberships():
     not os.getenv("AAO_TEST_POSTGRES_URL") or os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
     reason="Explicit disposable PostgreSQL database required",
 )
-def test_api_runtime_grants_for_organization_execution_journal():
+def test_api_runtime_grants_for_organization_execution_journal(monkeypatch):
     """Exercise the exact API grants as an isolated, non-owner role."""
     import psycopg
     from psycopg import sql
@@ -356,6 +356,7 @@ def test_api_runtime_grants_for_organization_execution_journal():
 
     from aao.postgresql_connection import connect_postgres
 
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
     role = "org_exec_test_" + uuid4().hex
     password = uuid4().hex + uuid4().hex
     database = Path(__file__).resolve().parents[1] / "scripts/bootstrap/apply_api_grants.sql"

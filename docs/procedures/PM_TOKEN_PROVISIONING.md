@@ -23,6 +23,7 @@
 - **Principal propio**, `kind=AGENT`, p. ej. `aao-pm-coordinator-<YYYYmmddHHMMSS>-<nonce>`. Debe ser distinto del principal W2 `aao-publisher-pm-*`: en el mismo directorio runtime convivirán dos tokens distintos. **Nunca copiar `aao-publisher.token` a `aao-pm.token`** ni conceder `code.publish` al coordinador.
 - **Grants requeridos** sobre el proyecto (`REQUIRED_GRANTS` del preflight): `project.read`, `work.coordinate`, `work.assign`.
 - **Solo si el CEO aprueba aparte `--materialize-routines`:** `work.create`.
+  - *Nota 2026-11-03:* [`CEO-DEC-PM-WORK-CREATION-2026-11-03`](../decisions/CEO-DEC-PM-WORK-CREATION-2026-11-03.md) delega en el PM la creación de trabajo **solo `INBOX`** en Self Development. La vía es el endpoint acotado `POST /v1/projects/{id}/selfdev-cycle-work` (PR #355), con `work.coordinate` y un tope de 20 por principal y 24 h. **No** concede `work.create`; la regla anterior sigue vigente para la ruta AGENT general y `--materialize-routines`.
 - **Excluidos:** `code.publish`, `code.propose`, `work.admit`, `work.progress`, `work.review`, `execution.*`, `effect.*`, `evidence.submit`.
 - **Caducidad: decisión del CEO, sin valor por defecto.**
   - Con caducidad (W2 usa 8 h): al vencer, el servicio `--watch` pierde autoridad y falla; es el comportamiento buscado, pero exige renovar.
@@ -45,6 +46,8 @@ Se reutiliza `scripts/install_publisher_token_for_role.py` con `--account aao-pm
 `bootstrap_self_dev_agent.py` tiene grants fijos de worker y escribe en el runtime del invocante; `provision_w2_publishers.py` fija `code.publish`. Por eso existe un emisor propio. **No se debe sustituir por `curl`**: pondría el token CEO o el del PM en argv, entorno, historial o terminal.
 
 El emisor reutiliza los helpers de `provision_w2_publishers.py` (`local_api_url`, `issue_agent_credential`, `grant_exactly`, `cleanup`, `_run_role_helper` con `token_kind="pm"`). Concede exactamente `project.read`, `work.coordinate`, `work.assign`; **no** concede `work.create` (no tiene opción para ello). La caducidad es obligatoria y explícita: `--expires-at <ISO-8601 con zona, futura>` o `--no-expiry`; sin una de las dos, el emisor no pide el token CEO ni hace nada. Al extraer los helpers se corrigió además un defecto latente de W2: `_run_role_helper` pasaba `--install`, que el instalador no acepta (instala por defecto).
+
+*Nota 2026-11-03:* el emisor no cambia. La creación `INBOX` delegada por `CEO-DEC-PM-WORK-CREATION-2026-11-03` usa el `work.coordinate` que ya concede. No necesita `work.create`.
 
 Especificación implementada:
 
@@ -117,5 +120,5 @@ Si se interrumpe a mano tras instalar: `--remove` (con el token por stdin, desde
 - No se emite credencial ni se conceden grants: el emisor existe pero no se ha ejecutado; solo tiene tests unitarios con fakes.
 - No se instala ni habilita el servicio, ni se crea el `.env` del coordinador.
 - No se toca trust root, integrador, activación de proveedores ni governance-guard.
-- No se habilita `--auto-consolidate` ni `--materialize-routines`; `work.create` solo con aprobación aparte.
+- No se habilita `--auto-consolidate` ni `--materialize-routines`; `work.create` solo con aprobación aparte. *(Nota 2026-11-03: la creación `INBOX` acotada en Self Development está delegada por `CEO-DEC-PM-WORK-CREATION-2026-11-03` sin `work.create`.)*
 - Tests y CI no constituyen auditoría independiente (GOV-REV-001).

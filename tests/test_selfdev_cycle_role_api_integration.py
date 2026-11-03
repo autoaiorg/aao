@@ -881,21 +881,36 @@ def _seed_issued_events(pm, count, *, kind="AGENT", age="0 hours"):
 def test_live_issuance_daily_cap_is_per_pm_principal_and_rolling(monkeypatch):
     from aao.work_management_api import SELFDEV_CYCLE_ISSUANCE_DAILY_CAP, app
 
-    assert SELFDEV_CYCLE_ISSUANCE_DAILY_CAP == 24
+    # P1 (post-merge audit #388/#387): 2x the ~23/day steady renewal rate.
+    assert SELFDEV_CYCLE_ISSUANCE_DAILY_CAP == 48
     project, pm, token = _seed(monkeypatch)
     _project, _other, other_token = _seed(monkeypatch)
     _seed_issued_events(pm, SELFDEV_CYCLE_ISSUANCE_DAILY_CAP - 2, age="23 hours")
     _seed_issued_events(pm, SELFDEV_CYCLE_ISSUANCE_DAILY_CAP, kind="AUDITOR")  # one per cycle
     _seed_issued_events(pm, 5, age="25 hours")  # outside the rolling window
     with TestClient(app) as client:
-        for _ in range(2):  # the 23rd and 24th issuance in 24 h
+        for _ in range(2):  # the 47th and 48th issuance in 24 h
             response = _issue(client, project, token)
             assert response.status_code == 201, response.text
             assert _revoke(client, project, token, response.json()["cycle_id"]).status_code == 200
-        refused = _issue(client, project, token)
+        refused = _issue(client, project, token)  # the 49th
         assert refused.status_code == 429, refused.text
         assert refused.json()["detail"]["code"] == "SELFDEV_CYCLE_ISSUANCE_DAILY_CAP"
         assert _issue(client, project, other_token).status_code == 201
+
+
+def test_live_concurrency_cap_still_holds_below_the_daily_cap(monkeypatch):
+    """Raising the daily cap must not loosen the concurrency cap of 2."""
+    from aao.work_management_api import SELFDEV_CYCLE_ISSUANCE_DAILY_CAP, app
+
+    project, pm, token = _seed(monkeypatch)
+    _seed_issued_events(pm, SELFDEV_CYCLE_ISSUANCE_DAILY_CAP - 10)
+    with TestClient(app) as client:
+        assert _issue(client, project, token).status_code == 201
+        assert _issue(client, project, token).status_code == 201
+        refused = _issue(client, project, token)
+        assert refused.status_code == 409, refused.text
+        assert refused.json()["detail"]["code"] == "SELFDEV_CYCLE_CONCURRENCY_CAP"
 
 
 def test_live_issue_retires_expired_unrevoked_cycle_after_copying_profile(monkeypatch):
@@ -934,6 +949,44 @@ def test_live_issue_retires_expired_unrevoked_cycle_after_copying_profile(monkey
             "AND details->>'principal_id'=%s", (old_impl,),
         ).fetchone()[0]
         assert details["host_bindings_retired"] == 1 and details["profile_disabled"] is True
+        assert db.execute(
+            "SELECT count(*) FROM events "
+            "WHERE kind='principal.selfdev_cycle_role.binding_retire_refused' "
+            "AND details->>'principal_id'=%s", (old_impl,),
+        ).fetchone()[0] == 0
+
+
+def test_live_issue_warns_when_041_refuses_to_retire_expired_binding(monkeypatch):
+    """Nit (audit #388): a refused retirement gets its own warning event."""
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    project, _pm, token = _seed(monkeypatch)
+    with TestClient(app) as client:
+        old = _issue(client, project, token, lifetime=1)
+        assert old.status_code == 201, old.text
+        old_impl = old.json()["roles"][0]["principal_id"]
+        with connect_postgres() as db:
+            # 041's exact grant/credential expiry match fails: it retires nothing.
+            db.execute(
+                "UPDATE project_grants SET expires_at=expires_at-interval '1 second' "
+                "WHERE principal_id=%s AND capability='work.create'", (old_impl,),
+            )
+        time.sleep(1.1)
+        new = _issue(client, project, token)
+        assert new.status_code == 201, new.text
+    with connect_postgres() as db:
+        warned = db.execute(
+            "SELECT details FROM events "
+            "WHERE kind='principal.selfdev_cycle_role.binding_retire_refused' "
+            "AND details->>'principal_id'=%s", (old_impl,),
+        ).fetchall()
+        assert len(warned) == 1 and warned[0][0]["host_bindings_retired"] == 0
+        assert db.execute(
+            "SELECT status FROM host_worker_bindings WHERE worker_id=%s", (old_impl,),
+        ).fetchone()[0] == "ACTIVE"
+        db.execute("UPDATE host_worker_bindings SET status='FENCED' WHERE worker_id=%s",
+                   (old_impl,))
 
 
 def test_live_revoke_fails_closed_when_binding_stays_active(monkeypatch):

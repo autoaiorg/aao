@@ -97,6 +97,39 @@ def test_worker_result_recovery_uses_api_when_local_database_access_is_denied(
     )]
 
 
+@pytest.mark.parametrize("response", [{}, {"status": "UNKNOWN"}, None, []])
+def test_worker_rejects_malformed_or_unknown_recovery_response(
+    tmp_path, monkeypatch, response,
+):
+    runtime, _ = make_runtime(tmp_path)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setattr(worker.os, "getuid", lambda: os.stat(runtime).st_uid)
+    monkeypatch.setattr(
+        "aao.inert_execution_worker._api_request",
+        lambda *_args, **_kwargs: response,
+    )
+    monkeypatch.setattr(
+        "aao.inert_execution_worker.run_one",
+        lambda *_args, **_kwargs: pytest.fail("unknown response must fail closed"),
+    )
+
+    with pytest.raises(worker.WorkerError, match="invalid recovery response"):
+        worker.run("project-1", "agent-1")
+
+
+def test_worker_rejects_in_review_response_without_work_id(tmp_path, monkeypatch):
+    runtime, _ = make_runtime(tmp_path)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setattr(worker.os, "getuid", lambda: os.stat(runtime).st_uid)
+    monkeypatch.setattr(
+        "aao.inert_execution_worker._api_request",
+        lambda *_args, **_kwargs: {"status": "IN_REVIEW"},
+    )
+
+    with pytest.raises(worker.WorkerError, match="invalid recovery response"):
+        worker.run("project-1", "agent-1")
+
+
 def test_worker_cli_does_not_require_postgresql_driver(tmp_path, monkeypatch, capsys):
     runtime, _ = make_runtime(tmp_path)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))

@@ -96,8 +96,13 @@ def run(project_id: str, principal_id: str) -> dict:
     try:
         path = f"/v1/agent/projects/{urllib.parse.quote(project_id, safe='')}/submit-next-result"
         submitted = _api_request(path, token, body={})
-        if submitted.get("status") == "IN_REVIEW":
-            print(f"Submitted work {submitted['work_id']}: IN_REVIEW")
+        if not isinstance(submitted, dict) or submitted.get("status") not in {"IN_REVIEW", "IDLE"}:
+            raise WorkerError("API returned an invalid recovery response")
+        if submitted["status"] == "IN_REVIEW":
+            work_id = submitted.get("work_id")
+            if not isinstance(work_id, str) or not work_id.strip():
+                raise WorkerError("API returned an invalid recovery response")
+            print(f"Submitted work {work_id}: IN_REVIEW")
         return run_one(
             principal_id, token, project_id=project_id, seconds=MAX_LEASE_SECONDS,
         )

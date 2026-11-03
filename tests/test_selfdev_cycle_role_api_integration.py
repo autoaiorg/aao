@@ -740,6 +740,62 @@ def test_live_cycle_credential_expiry_rejects_authentication(monkeypatch):
             )
 
 
+@pytest.mark.parametrize("retire", ["principal", "binding"])
+def test_completed_cycle_replay_reports_current_liveness(monkeypatch, retire):
+    """A past verifier result must not claim a subsequently inactive identity is verified."""
+    from aao.postgresql_connection import connect_postgres
+    from aao.principal_credentials import digest_token
+    from aao.work_management_api import (
+        AuthenticatedPrincipal,
+        SelfDevCycleIssueRequest,
+        issue_selfdev_cycle_roles,
+    )
+
+    monkeypatch.setattr("aao.work_management_api._production_selfdev_cycle_mtls_ready", lambda: True)
+    project, pm, token = _seed(monkeypatch)
+    monkeypatch.setenv("AAO_ENV", "production")
+    with connect_postgres() as db:
+        fingerprint = uuid4().hex + uuid4().hex
+        db.execute(
+            "INSERT INTO workload_identity_bindings"
+            "(certificate_sha256,principal_id,enabled,expires_at) "
+            "VALUES (%s,%s,true,clock_timestamp()+interval '1 hour')",
+            (fingerprint, pm),
+        )
+    principal = AuthenticatedPrincipal(
+        pm, digest_token(token), "AGENT", workload_fingerprint=fingerprint
+    )
+    cycle = uuid4().hex
+    request = SelfDevCycleIssueRequest(cycle_id=cycle, lifetime_seconds=600)
+    first = issue_selfdev_cycle_roles(project, request, principal)
+    assert all(role["certificate_status"] == "pending_verifier" for role in first["roles"])
+
+    with connect_postgres() as db:
+        for role in first["roles"]:
+            db.execute(
+                "SELECT complete_selfdev_cycle_mtls_binding(%s,%s,%s)",
+                (role["intent_id"], uuid4().hex + uuid4().hex, uuid4().hex + uuid4().hex),
+            )
+    completed = issue_selfdev_cycle_roles(project, request, principal)
+    assert all(role["certificate_status"] == "verified" for role in completed["roles"])
+
+    with connect_postgres() as db:
+        if retire == "principal":
+            db.execute(
+                "UPDATE principal_credentials SET enabled=false WHERE principal_id=%s",
+                (completed["roles"][0]["principal_id"],),
+            )
+        else:
+            db.execute(
+                "UPDATE workload_identity_bindings SET enabled=false WHERE intent_id=%s",
+                (completed["roles"][0]["intent_id"],),
+            )
+    replay = issue_selfdev_cycle_roles(project, request, principal)
+    statuses = {role["principal_id"]: role["certificate_status"] for role in replay["roles"]}
+    assert statuses[completed["roles"][0]["principal_id"]] == "inactive"
+    assert statuses[completed["roles"][1]["principal_id"]] == "verified"
+
+
 
 def _counts(db, cycle):
     impl, reviewer = f"aao-selfdev-impl-{cycle}", f"aao-selfdev-review-{cycle}"

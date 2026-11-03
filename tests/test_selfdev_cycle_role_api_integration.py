@@ -17,6 +17,20 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_live_cycles_from_earlier_tests(monkeypatch):
+    """The concurrency cap is per project; earlier tests' live cycles would consume it."""
+    from aao.postgresql_connection import connect_postgres
+
+    monkeypatch.setenv("AAO_ENV", "test")
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    with connect_postgres() as db:
+        db.execute(
+            "UPDATE principal_credentials SET enabled=false "
+            "WHERE principal_id ~ '^aao-selfdev-(impl|review)-' AND enabled"
+        )
+
+
 def _seed(monkeypatch, *, pm_caps=None):
     from aao.postgresql_connection import connect_postgres
     from aao.principal_credentials import digest_token
@@ -690,85 +704,272 @@ def test_live_issue_binds_host_and_inherits_project_profile_atomically(monkeypat
             assert _counts(db, cycle) == before
 
 
-def test_live_issue_profile_source_requires_active_credential_and_project_grant(monkeypatch):
+@pytest.mark.parametrize(
+    ("decoy", "is_source"),
+    [
+        ("expired-credential", True),
+        ("disabled-credential", True),
+        ("expired-grant", True),
+        ("foreign-project", False),
+        ("disabled-profile", False),
+        ("no-project-read", False),
+        ("prefixed-name", False),
+        ("suffixed-name", False),
+    ],
+)
+def test_live_issue_profile_source_ignores_credential_liveness(monkeypatch, decoy, is_source):
+    """M3/A10: lineage survives expiry or revocation of the source's credential."""
     from aao.postgresql_connection import connect_postgres
     from aao.principal_credentials import digest_token
     from aao.work_management_api import app
 
     project, _pm, token = _seed(monkeypatch)
-    other_project, mandate = str(uuid4()), str(uuid4())
-    # Newer selfdev-looking implementers that are out of project, disabled, or
-    # expired at either the credential or grant layer are not profile sources.
-    foreign = f"aao-selfdev-impl-{uuid4().hex}"
-    disabled = f"aao-selfdev-impl-{uuid4().hex}"
-    expired_credential = f"aao-selfdev-impl-{uuid4().hex}"
-    expired_grant = f"aao-selfdev-impl-{uuid4().hex}"
+    principal_id = {
+        "prefixed-name": f"x-aao-selfdev-impl-{uuid4().hex}",
+        "suffixed-name": f"aao-selfdev-impl-{uuid4().hex}x",
+    }.get(decoy, f"aao-selfdev-impl-{uuid4().hex}")
+    grant_project = project
     with connect_postgres() as db:
-        db.execute(
-            "INSERT INTO mandates(id,title,objective,status,confirmed_by) "
-            "VALUES (%s,'Other','Other','CONFIRMED','integration-test')", (mandate,),
-        )
-        db.execute(
-            "INSERT INTO projects(id,name,mandate_id,state) VALUES (%s,%s,%s,'ACTIVE')",
-            (other_project, f"Other {uuid4().hex}", mandate),
-        )
-        for principal_id, grant_project, enabled, credential_expired, grant_expired in (
-            (foreign, other_project, True, False, False),
-            (disabled, project, False, False, False),
-            (expired_credential, project, True, True, False),
-            (expired_grant, project, True, False, True),
-        ):
+        if decoy == "foreign-project":
+            grant_project, mandate = str(uuid4()), str(uuid4())
             db.execute(
-                "INSERT INTO principal_credentials(principal_id,kind,token_digest,enabled,"
-                "expires_at,created_at) VALUES (%s,'AGENT',%s,%s,"
-                "CASE WHEN %s THEN clock_timestamp()-interval '1 day' ELSE "
-                "clock_timestamp()+interval '1 day' END,clock_timestamp()+interval '1 day')",
-                (principal_id, digest_token(uuid4().hex), enabled, credential_expired),
+                "INSERT INTO mandates(id,title,objective,status,confirmed_by) "
+                "VALUES (%s,'Other','Other','CONFIRMED','integration-test')", (mandate,),
             )
             db.execute(
-                "INSERT INTO project_grants(principal_id,project_id,capability,expires_at) "
-                "VALUES (%s,%s,'execution.claim',CASE WHEN %s THEN "
-                "clock_timestamp()-interval '1 day' ELSE NULL END)",
-                (principal_id, grant_project, grant_expired),
+                "INSERT INTO projects(id,name,mandate_id,state) VALUES (%s,%s,%s,'ACTIVE')",
+                (grant_project, f"Other {uuid4().hex}", mandate),
             )
-    for principal_id, marker in (
-        (foreign, "foreign-only"),
-        (disabled, "disabled-only"),
-        (expired_credential, "expired-credential-only"),
-        (expired_grant, "expired-grant-only"),
-    ):
-        _seed_profile(principal_id, (marker,))
+        # Future-dated created_at makes the decoy the newest candidate.
+        db.execute(
+            "INSERT INTO principal_credentials(principal_id,kind,token_digest,enabled,"
+            "expires_at,created_at) VALUES (%s,'AGENT',%s,%s,clock_timestamp()+%s::interval,"
+            "clock_timestamp()+interval '1 day')",
+            (principal_id, digest_token(uuid4().hex), decoy != "disabled-credential",
+             "-1 day" if decoy == "expired-credential" else "2 days"),
+        )
+        db.execute(
+            "INSERT INTO project_grants(principal_id,project_id,capability,expires_at) "
+            "VALUES (%s,%s,%s,clock_timestamp()+%s::interval)",
+            (principal_id, grant_project,
+             "execution.claim" if decoy == "no-project-read" else "project.read",
+             "-1 day" if decoy == "expired-grant" else "2 days"),
+        )
+    _seed_profile(principal_id, (f"marker-{decoy}",))
+    if decoy == "disabled-profile":
+        with connect_postgres() as db:
+            db.execute("UPDATE organization_profiles SET enabled=false WHERE principal_id=%s",
+                       (principal_id,))
     try:
         with TestClient(app) as client:
             response = _issue(client, project, token)
             assert response.status_code == 201, response.text
             impl = response.json()["roles"][0]["principal_id"]
-            with connect_postgres() as db:
-                inherited = db.execute(
-                    "SELECT details->>'profile_inherited_from' FROM events "
-                    "WHERE kind='principal.selfdev_cycle_role.issued' "
-                    "AND details->>'principal_id'=%s", (impl,),
-                ).fetchone()[0]
-                assert inherited not in {foreign, disabled, expired_credential, expired_grant}
-                competencies = db.execute(
-                    "SELECT competencies FROM organization_profiles WHERE principal_id=%s",
-                    (impl,),
-                ).fetchone()
-                assert competencies is None or not (
-                    {
-                        "foreign-only", "disabled-only", "expired-credential-only",
-                        "expired-grant-only",
-                    } & set(competencies[0])
-                )
-    finally:
-        # Do not leave future-dated decoys that would shadow later tests' sources.
         with connect_postgres() as db:
-            db.execute("UPDATE organization_profiles SET enabled=false "
-                       "WHERE principal_id=ANY(%s)",
-                       ([foreign, disabled, expired_credential, expired_grant],))
+            inherited = db.execute(
+                "SELECT details->>'profile_inherited_from' FROM events "
+                "WHERE kind='principal.selfdev_cycle_role.issued' "
+                "AND details->>'principal_id'=%s", (impl,),
+            ).fetchone()[0]
+            competencies = db.execute(
+                "SELECT competencies FROM organization_profiles WHERE principal_id=%s", (impl,),
+            ).fetchone()
+        if is_source:
+            assert inherited == principal_id
+            assert competencies == ([f"marker-{decoy}"],)
+        else:
+            assert inherited != principal_id
+            assert competencies is None or f"marker-{decoy}" not in competencies[0]
+    finally:
+        # Do not leave a future-dated decoy that would shadow later tests' sources.
+        with connect_postgres() as db:
+            db.execute("UPDATE organization_profiles SET enabled=false WHERE principal_id=%s",
+                       (principal_id,))
+            db.execute("UPDATE principal_credentials SET created_at=clock_timestamp(),"
+                       "enabled=false WHERE principal_id=%s", (principal_id,))
+
+
+def _disable_all_cycle_profiles():
+    from aao.postgresql_connection import connect_postgres
+
+    with connect_postgres() as db:
+        db.execute("UPDATE organization_profiles SET enabled=false "
+                   "WHERE principal_id ~ 'selfdev-impl-' AND enabled")
+
+
+def test_live_issue_never_copies_the_pm_coordinator_profile(monkeypatch):
+    """A4: with no implementer source, the PM's own profile is never inherited."""
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    project, pm, token = _seed(monkeypatch)
+    _disable_all_cycle_profiles()
+    with connect_postgres() as db:
+        # The PM passes every other predicate: AGENT, enabled, project.read, newest.
+        db.execute(
+            "INSERT INTO project_grants(principal_id,project_id,capability,expires_at) "
+            "VALUES (%s,%s,'project.read',clock_timestamp()+interval '1 hour')", (pm, project),
+        )
+        db.execute("UPDATE principal_credentials SET created_at=clock_timestamp()+interval "
+                   "'1 day' WHERE principal_id=%s", (pm,))
+    _seed_profile(pm, ("pm-only-competency",))
+    try:
+        with TestClient(app) as client:
+            response = _issue(client, project, token)
+            assert response.status_code == 201, response.text
+            impl = response.json()["roles"][0]["principal_id"]
+        with connect_postgres() as db:
+            assert db.execute(
+                "SELECT 1 FROM organization_profiles WHERE principal_id=%s", (impl,),
+            ).fetchone() is None
+            assert db.execute(
+                "SELECT details->>'profile_inherited_from' FROM events "
+                "WHERE kind='principal.selfdev_cycle_role.issued' "
+                "AND details->>'principal_id'=%s", (impl,),
+            ).fetchone()[0] is None
+    finally:
+        with connect_postgres() as db:
+            db.execute("UPDATE organization_profiles SET enabled=false WHERE principal_id=%s",
+                       (pm,))
             db.execute("UPDATE principal_credentials SET created_at=clock_timestamp() "
-                       "WHERE principal_id=ANY(%s)",
-                       ([foreign, disabled, expired_credential, expired_grant],))
+                       "WHERE principal_id=%s", (pm,))
+
+
+def test_live_concurrency_cap_allows_renewal_and_frees_on_revoke_and_expiry(monkeypatch):
+    """H1b: N+1 while N is valid succeeds; a third live cycle is refused."""
+    from aao.work_management_api import SELFDEV_CYCLE_CONCURRENT_CAP, app
+
+    assert SELFDEV_CYCLE_CONCURRENT_CAP == 2
+    project, _pm, token = _seed(monkeypatch)
+    with TestClient(app) as client:
+        first = _issue(client, project, token)
+        assert first.status_code == 201, first.text
+        renewal = _issue(client, project, token)
+        assert renewal.status_code == 201, renewal.text
+        refused = _issue(client, project, token)
+        assert refused.status_code == 409, refused.text
+        assert refused.json()["detail"]["code"] == "SELFDEV_CYCLE_CONCURRENCY_CAP"
+
+        # Revoking N frees its slot.
+        assert _revoke(client, project, token, first.json()["cycle_id"]).status_code == 200
+        short = _issue(client, project, token, lifetime=1)
+        assert short.status_code == 201, short.text
+        assert _issue(client, project, token).json()["detail"]["code"] == (
+            "SELFDEV_CYCLE_CONCURRENCY_CAP"
+        )
+        # Expiry frees it as well.
+        time.sleep(1.1)
+        after_expiry = _issue(client, project, token)
+        assert after_expiry.status_code == 201, after_expiry.text
+
+
+def _seed_issued_events(pm, count, *, kind="AGENT", age="0 hours"):
+    from aao.postgresql_connection import connect_postgres
+
+    with connect_postgres() as db:
+        for _ in range(count):
+            db.execute(
+                "INSERT INTO events(id,subject_id,kind,details,created_at) "
+                "VALUES (%s,%s,'principal.selfdev_cycle_role.issued',%s::jsonb,"
+                "now()-%s::interval)",
+                (str(uuid4()), str(uuid4()), json.dumps({
+                    "cycle_id": uuid4().hex, "kind": kind, "issuer_principal_id": pm,
+                }), age),
+            )
+
+
+def test_live_issuance_daily_cap_is_per_pm_principal_and_rolling(monkeypatch):
+    from aao.work_management_api import SELFDEV_CYCLE_ISSUANCE_DAILY_CAP, app
+
+    assert SELFDEV_CYCLE_ISSUANCE_DAILY_CAP == 24
+    project, pm, token = _seed(monkeypatch)
+    _project, _other, other_token = _seed(monkeypatch)
+    _seed_issued_events(pm, SELFDEV_CYCLE_ISSUANCE_DAILY_CAP - 2, age="23 hours")
+    _seed_issued_events(pm, SELFDEV_CYCLE_ISSUANCE_DAILY_CAP, kind="AUDITOR")  # one per cycle
+    _seed_issued_events(pm, 5, age="25 hours")  # outside the rolling window
+    with TestClient(app) as client:
+        for _ in range(2):  # the 23rd and 24th issuance in 24 h
+            response = _issue(client, project, token)
+            assert response.status_code == 201, response.text
+            assert _revoke(client, project, token, response.json()["cycle_id"]).status_code == 200
+        refused = _issue(client, project, token)
+        assert refused.status_code == 429, refused.text
+        assert refused.json()["detail"]["code"] == "SELFDEV_CYCLE_ISSUANCE_DAILY_CAP"
+        assert _issue(client, project, other_token).status_code == 201
+
+
+def test_live_issue_retires_expired_unrevoked_cycle_after_copying_profile(monkeypatch):
+    """M3: an expired, never-revoked cycle keeps lineage and loses its host binding."""
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    project, _pm, token = _seed(monkeypatch)
+    _disable_all_cycle_profiles()
+    with TestClient(app) as client:
+        old = _issue(client, project, token, lifetime=1)
+        assert old.status_code == 201, old.text
+        old_impl, old_reviewer = (role["principal_id"] for role in old.json()["roles"])
+        _seed_profile(old_impl, ("python", "lineage-after-gap"))
+        time.sleep(1.1)  # gap: N expired with no successor and no revoke
+        new = _issue(client, project, token)
+        assert new.status_code == 201, new.text
+        new_impl = new.json()["roles"][0]["principal_id"]
+    with connect_postgres() as db:
+        assert db.execute(
+            "SELECT competencies,enabled FROM organization_profiles WHERE principal_id=%s",
+            (new_impl,),
+        ).fetchone() == (["python", "lineage-after-gap"], True)
+        assert db.execute(
+            "SELECT status FROM host_worker_bindings WHERE worker_id=%s", (old_impl,),
+        ).fetchone()[0] == "FENCED"
+        assert db.execute(
+            "SELECT status FROM host_worker_bindings WHERE worker_id=%s", (new_impl,),
+        ).fetchone()[0] == "ACTIVE"
+        assert db.execute(
+            "SELECT bool_or(enabled) FROM principal_credentials WHERE principal_id=ANY(%s)",
+            ([old_impl, old_reviewer],),
+        ).fetchone()[0] is False
+        details = db.execute(
+            "SELECT details FROM events WHERE kind='principal.selfdev_cycle_role.expired_retired' "
+            "AND details->>'principal_id'=%s", (old_impl,),
+        ).fetchone()[0]
+        assert details["host_bindings_retired"] == 1 and details["profile_disabled"] is True
+
+
+def test_live_revoke_fails_closed_when_binding_stays_active(monkeypatch):
+    """A2: if 041 refuses to retire the binding, revoke is 503 and rolls back."""
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    project, _pm, token = _seed(monkeypatch)
+    with TestClient(app) as client:
+        response = _issue(client, project, token)
+        assert response.status_code == 201, response.text
+        cycle = response.json()["cycle_id"]
+        impl = response.json()["roles"][0]["principal_id"]
+        with connect_postgres() as db:
+            # Same capability set (revoke's own check passes), but 041's exact
+            # grant/credential expiry match now fails, so it retires nothing.
+            db.execute(
+                "UPDATE project_grants SET expires_at=expires_at-interval '1 second' "
+                "WHERE principal_id=%s AND capability='work.create'", (impl,),
+            )
+        denied = _revoke(client, project, token, cycle)
+        assert denied.status_code == 503, denied.text
+    with connect_postgres() as db:
+        assert db.execute(
+            "SELECT status FROM host_worker_bindings WHERE worker_id=%s", (impl,),
+        ).fetchone()[0] == "ACTIVE"
+        assert db.execute(
+            "SELECT bool_and(enabled) FROM principal_credentials WHERE principal_id=ANY(%s)",
+            ([impl, f"aao-selfdev-review-{cycle}"],),
+        ).fetchone()[0] is True
+        assert db.execute(
+            "SELECT count(*) FROM events WHERE kind='principal.selfdev_cycle_role.revoked' "
+            "AND details->>'cycle_id'=%s", (cycle,),
+        ).fetchone()[0] == 0
+        db.execute("UPDATE principal_credentials SET enabled=false WHERE principal_id=ANY(%s)",
+                   ([impl, f"aao-selfdev-review-{cycle}"],))
 
 
 @pytest.mark.parametrize("failure", ["fenced-host", "stray-binding"])

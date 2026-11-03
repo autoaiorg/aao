@@ -890,6 +890,11 @@ SELFDEV_IMPLEMENTER_GRANTS = (
     "execution.claim", "code.propose", "evidence.submit",
 )
 SELFDEV_REVIEWER_GRANTS = ("work.review",)
+# H1b: server-side issuance bounds. Two concurrent cycles allow exactly one
+# overlapping renewal (issue N+1 while N is valid); 24 per 24 h per PM principal.
+SELFDEV_CYCLE_CONCURRENT_CAP = 2
+SELFDEV_CYCLE_ISSUANCE_DAILY_CAP = 24
+SELFDEV_IMPL_PRINCIPAL_RE = "^aao-selfdev-impl-[0-9a-f]{32}$"
 
 
 class SelfDevCycleIssueRequest(BaseModel):
@@ -1060,8 +1065,9 @@ def _bind_selfdev_cycle_implementer(db, project_id: str, principal_id: str) -> d
 
     Runs in the issuing transaction. The host id is never taken from the client.
     The profile is copied only from the most recent enabled profile of an earlier
-    cycle implementer of this same project, so issuance never declares new
-    competencies; with no such profile, none is created (the CEO seeds one).
+    cycle implementer of this same project (expired or revoked credentials
+    included), so issuance never declares new competencies; with no such
+    profile, none is created (the CEO seeds one).
     """
     from psycopg.errors import UniqueViolation
 
@@ -1074,20 +1080,20 @@ def _bind_selfdev_cycle_implementer(db, project_id: str, principal_id: str) -> d
         raise HTTPException(409, "API host has no active, unfenced worker binding") from exc
     except UniqueViolation as exc:
         raise HTTPException(409, "Self Development cycle implementer is already bound") from exc
+    # M3: lineage survives gaps, so the source's credential/grant liveness is
+    # ignored; only an enabled profile of an earlier cycle implementer that was
+    # issued for this project qualifies (never the PM's or anyone else's).
     source = db.execute(
         "SELECT p.principal_id,p.display_name,p.role_title,p.unit_id,"
         "p.manager_principal_id,p.competencies FROM organization_profiles p "
         "JOIN principal_credentials c ON c.principal_id=p.principal_id "
-        "WHERE p.enabled AND c.kind='AGENT' AND c.enabled "
-        "AND c.kind='AGENT' AND c.enabled "
-        "AND (c.expires_at IS NULL OR c.expires_at>clock_timestamp()) "
+        "WHERE p.enabled AND c.kind='AGENT' "
         "AND p.principal_id<>%s "
-        "AND p.principal_id ~ '^aao-selfdev-impl-[0-9a-f]{32}$' "
+        "AND p.principal_id ~ %s "
         "AND EXISTS (SELECT 1 FROM project_grants g WHERE g.principal_id=p.principal_id "
-        "AND g.project_id=%s AND (g.expires_at IS NULL OR g.expires_at>clock_timestamp()) "
-        "AND g.capability='project.read') "
+        "AND g.project_id=%s AND g.capability='project.read') "
         "ORDER BY c.created_at DESC,p.principal_id DESC LIMIT 1 FOR SHARE OF p",
-        (principal_id, project_id),
+        (principal_id, SELFDEV_IMPL_PRINCIPAL_RE, project_id),
     ).fetchone()
     if source:
         db.execute(
@@ -1134,6 +1140,46 @@ def _retire_selfdev_cycle_implementer(
     return {"host_bindings_retired": retired, "profile_disabled": bool(profiles)}
 
 
+def _retire_expired_selfdev_cycles(db, project_id: str, actor: str) -> None:
+    """Disable and retire expired, never-revoked cycle implementers of this project.
+
+    Migration 041 retires only disabled credentials, so the expired pair is
+    disabled first (harmless: it no longer authenticates). A binding 041 refuses
+    to retire is audited, not raised: an unrelated stale row must not block
+    every future issuance. Work escalation stays with the explicit revoke.
+    """
+    expired = [row[0] for row in db.execute(
+        "SELECT c.principal_id FROM principal_credentials c WHERE c.kind='AGENT' AND c.enabled "
+        "AND c.principal_id ~ %s AND c.expires_at<=clock_timestamp() "
+        "AND EXISTS (SELECT 1 FROM project_grants g WHERE g.principal_id=c.principal_id "
+        "AND g.project_id=%s) "
+        "AND EXISTS (SELECT 1 FROM host_worker_bindings b WHERE b.worker_id=c.principal_id "
+        "AND b.status='ACTIVE') ORDER BY c.principal_id FOR UPDATE OF c",
+        (SELFDEV_IMPL_PRINCIPAL_RE, project_id),
+    ).fetchall()]
+    if not expired:
+        return
+    _require_selfdev_cycle_retirement_migration(db)
+    for impl_id in expired:
+        cycle_id = impl_id.removeprefix("aao-selfdev-impl-")
+        db.execute(
+            "UPDATE principal_credentials SET enabled=false,pending_token_digest=NULL,"
+            "pending_expires_at=NULL WHERE principal_id=ANY(%s)",
+            ([impl_id, f"aao-selfdev-review-{cycle_id}"],),
+        )
+        retired = db.execute(
+            "SELECT public.retire_selfdev_cycle_host_binding(%s,%s)", (impl_id, project_id),
+        ).fetchone()[0]
+        profiles = db.execute(
+            "UPDATE organization_profiles SET enabled=false,updated_at=clock_timestamp() "
+            "WHERE principal_id=%s AND enabled", (impl_id,),
+        ).rowcount
+        audit(db, project_id, "principal.selfdev_cycle_role.expired_retired", {
+            "cycle_id": cycle_id, "principal_id": impl_id, "issuer_principal_id": actor,
+            "host_bindings_retired": retired, "profile_disabled": bool(profiles),
+        })
+
+
 @app.post("/v1/projects/{project_id}/selfdev-cycle-roles", status_code=201)
 def issue_selfdev_cycle_roles(
     project_id: str,
@@ -1167,6 +1213,33 @@ def issue_selfdev_cycle_roles(
         ).fetchall()
         if existing_roles:
             raise HTTPException(409, "Self Development cycle roles already exist")
+        # H1b caps; the project row lock above serializes issuance (only the
+        # uniquely active Self Development project can issue at all).
+        live_cycles = db.execute(
+            "SELECT count(*) FROM principal_credentials c WHERE c.kind='AGENT' AND c.enabled "
+            "AND c.principal_id ~ %s AND c.expires_at>clock_timestamp() "
+            "AND EXISTS (SELECT 1 FROM project_grants g WHERE g.principal_id=c.principal_id "
+            "AND g.project_id=%s)",
+            (SELFDEV_IMPL_PRINCIPAL_RE, project_id),
+        ).fetchone()[0]
+        if live_cycles >= SELFDEV_CYCLE_CONCURRENT_CAP:
+            raise HTTPException(409, {
+                "code": "SELFDEV_CYCLE_CONCURRENCY_CAP",
+                "message": f"At most {SELFDEV_CYCLE_CONCURRENT_CAP} Self Development cycles "
+                           "may be enabled and unexpired at once; revoke one first",
+            })
+        issued_recently = db.execute(
+            "SELECT count(*) FROM events WHERE kind='principal.selfdev_cycle_role.issued' "
+            "AND details->>'kind'='AGENT' AND details->>'issuer_principal_id'=%s "
+            "AND created_at > now() - interval '24 hours'",
+            (str(principal),),
+        ).fetchone()[0]
+        if issued_recently >= SELFDEV_CYCLE_ISSUANCE_DAILY_CAP:
+            raise HTTPException(429, {
+                "code": "SELFDEV_CYCLE_ISSUANCE_DAILY_CAP",
+                "message": f"At most {SELFDEV_CYCLE_ISSUANCE_DAILY_CAP} Self Development cycles "
+                           "may be issued per PM principal in 24 hours",
+            })
         expires_at = db.execute(
             "SELECT clock_timestamp()+%s", (timedelta(seconds=payload.lifetime_seconds),),
         ).fetchone()[0]
@@ -1194,6 +1267,9 @@ def issue_selfdev_cycle_roles(
             audit(db, project_id, "principal.selfdev_cycle_role.issued", details)
             issued.append({"principal_id": principal_id, "kind": kind,
                            "grants": list(grants), "token": token})
+        # After the new implementer copied its profile: retire cycles that
+        # expired without an explicit revoke, so no binding outlives its cycle.
+        _retire_expired_selfdev_cycles(db, project_id, str(principal))
     return {"cycle_id": cycle_id, "project_id": project_id,
             "expires_at": expires_at.isoformat(), "roles": issued}
 

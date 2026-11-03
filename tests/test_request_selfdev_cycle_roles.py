@@ -210,6 +210,8 @@ class _FakeDb:
             return SimpleNamespace(fetchone=lambda: (datetime.now(UTC) + params[0],))
         if "SELECT count(*) FROM principal_credentials" in sql:
             return SimpleNamespace(fetchone=lambda: (len(self.role_rows),))
+        if "SELECT count(*) FROM events" in sql:
+            return SimpleNamespace(fetchone=lambda: (0,))
         if "SELECT c.kind,c.enabled,g.project_id,g.capability" in sql:
             return SimpleNamespace(fetchall=lambda: self.role_rows[params[0]])
         if sql.startswith("INSERT INTO principal_credentials"):

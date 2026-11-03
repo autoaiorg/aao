@@ -672,6 +672,19 @@ def test_production_cycle_issue_creates_only_pending_mtls_intents_and_revoke_is_
         )
     assert cap_error.value.status_code == 409
     with connect_postgres() as db:
+        db.execute(
+            "UPDATE selfdev_cycle_mtls_intents "
+            "SET not_before=clock_timestamp()-interval '2 seconds', "
+            "not_after=clock_timestamp()-interval '1 second' "
+            "WHERE project_id=%s AND cycle_id=%s",
+            (project, cycle),
+        )
+    with pytest.raises(HTTPException) as expired_replay:
+        issue_selfdev_cycle_roles(
+            project, SelfDevCycleIssueRequest(cycle_id=cycle, lifetime_seconds=600), principal,
+        )
+    assert expired_replay.value.status_code == 409
+    with connect_postgres() as db:
         rows = db.execute(
             "SELECT i.kind,i.state,c.enabled,i.principal_id "
             "FROM selfdev_cycle_mtls_intents i JOIN principal_credentials c USING(principal_id) "

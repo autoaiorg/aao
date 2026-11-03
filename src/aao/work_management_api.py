@@ -1306,6 +1306,7 @@ def issue_selfdev_cycle_roles(
                 existing_intents = db.execute(
                     "SELECT principal_id,kind,intent_id,state,not_after "
                     "FROM selfdev_cycle_mtls_intents WHERE project_id=%s AND cycle_id=%s "
+                    "AND not_after>clock_timestamp() "
                     "ORDER BY kind",
                     (project_id, cycle_id),
                 ).fetchall()

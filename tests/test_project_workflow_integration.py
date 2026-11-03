@@ -2373,17 +2373,25 @@ def test_organization_profiles_are_persisted_and_do_not_create_grants(monkeypatc
             "unit_id": unit["id"], "manager_principal_id": None, "enabled": True,
         }
         assert client.put("/v1/organization/profiles", headers=ceo, json=profile).status_code == 200
-        projection = client.get("/v1/organization", headers=ceo).json()
+        projection_response = client.get("/v1/organization", headers=ceo)
+        assert projection_response.headers["cache-control"] == "no-store"
+        projection = projection_response.json()
         agent = next(row for row in projection["agents"] if row["id"] == principal)
         assert agent["name"] == "Research Agent"
         assert agent["roleTitle"] == "Analyst"
         assert agent["unitId"] == unit["id"]
         assert agent["status"] == "UNKNOWN"
+        assert agent["credentialStatus"] == "ENABLED"
         assert any(row["id"] == unit["id"] for row in projection["units"])
         assert client.get(f"/v1/projects/{project}/grants", headers=ceo).json() == []
         scoped = client.get("/v1/organization", headers=agent_headers).json()
         assert [item["id"] for item in scoped["agents"]] == [principal]
+        assert "credentialStatus" not in scoped["agents"][0]
         assert {item["id"] for item in scoped["units"]} == {unit["id"], "unit-unassigned"}
+        assert client.post(f"/v1/principals/{principal}/revoke", headers=ceo).status_code == 200
+        retired = client.get("/v1/organization", headers=ceo).json()
+        retired_agent = next(row for row in retired["agents"] if row["id"] == principal)
+        assert retired_agent["credentialStatus"] == "DISABLED"
 
 
 @pytest.mark.skipif(
@@ -3572,6 +3580,21 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         refused = client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json={
             "capability_id": "aao.agent-runner.codex", "version": "1.0.0", "base_sha": base_sha})
         assert refused.status_code == 409 and "not activated" in refused.text
+        # An activated model backend is still refused without a positive daily budget (fail closed).
+        codex_run = {"capability_id": "aao.agent-runner.codex", "version": "1.0.0", "base_sha": base_sha}
+        monkeypatch.setenv("AAO_AGENT_PROVIDER", "codex")
+        for budget in (None, "0", "nan"):
+            if budget is None:
+                monkeypatch.delenv("AAO_AGENT_DAILY_BUDGET_USD", raising=False)
+            else:
+                monkeypatch.setenv("AAO_AGENT_DAILY_BUDGET_USD", budget)
+            unbudgeted = client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=codex_run)
+            assert unbudgeted.status_code == 409 and "daily budget required" in unbudgeted.text
+        monkeypatch.setenv("AAO_AGENT_DAILY_BUDGET_USD", "100")
+        budgeted = client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=codex_run)
+        assert budgeted.status_code == 409 and "must be selected" in budgeted.text  # past the budget gate
+        monkeypatch.delenv("AAO_AGENT_PROVIDER")
+        monkeypatch.delenv("AAO_AGENT_DAILY_BUDGET_USD")
         staged = client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run)
         assert staged.status_code == 202, staged.text
         assert client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run).json()["execution_id"] == staged.json()["execution_id"]

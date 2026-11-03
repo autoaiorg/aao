@@ -211,6 +211,7 @@ export const AgentIdentitySchema = z.object({
   heartbeatStatus: AgentHeartbeatStatusSchema,
   lastHeartbeatAt: z.string().nullable().default(null),
   status: AgentOperationalStatusSchema,
+  credentialStatus: z.enum(['ENABLED', 'DISABLED']).optional(),
   operationalState: AgentOperationalStateSchema.optional(),
   currentAssignments: z.array(AgentAssignmentSchema).default([]),
   executionHistory: z.array(AgentExecutionRecordSchema).optional(),

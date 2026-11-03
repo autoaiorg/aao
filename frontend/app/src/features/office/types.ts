@@ -1,4 +1,10 @@
-import type { DataState, OrganizationStructure, ProjectSummary } from '../../domain/models';
+import type {
+  AlertSummary,
+  DataState,
+  DecisionSummary,
+  OrganizationStructure,
+  ProjectSummary,
+} from '../../domain/models';
 import type { CEOWorkRequest, CreatedWorkRequest } from '../../data/ports/AaoWorkCommandPort';
 import type { AaoConversationPort } from '../../data/ports/AaoConversationPort';
 import type { AaoReadPort } from '../../data/ports/AaoReadPort';
@@ -7,6 +13,35 @@ import type { AaoCapabilityFeedbackPort } from '../../data/ports/AaoCapabilityFe
 import type { AaoRoutinePort } from '../../data/ports/AaoRoutinePort';
 
 export type OfficeViewMode = '3d' | '2d';
+export type OfficeLayoutMode = 'hud' | 'classic';
+export type OfficeCameraPreset = 'overview' | 'isometric' | 'top-down' | 'agent-focus';
+export type OfficeBottomDeckState = 'minimized' | 'docked' | 'maximized';
+export type OfficeHudTabId =
+  | 'work-request'
+  | 'comms'
+  | 'activity'
+  | 'work-groups'
+  | 'capabilities'
+  | 'routines'
+  | 'calendar'
+  | 'knowledge';
+
+export interface CameraViewState {
+  angle: number;
+  elevation: number;
+  distance: number;
+  targetX: number;
+  targetZ: number;
+}
+
+export type OperationalStateCategory =
+  | 'ACTIVO'
+  | 'INACTIVO'
+  | 'BLOQUEADO'
+  | 'PENDIENTE'
+  | 'DESCONOCIDO'
+  | 'DESCONECTADO'
+  | 'HISTORICO';
 
 export interface OfficeRoomConfig {
   id: string;
@@ -92,6 +127,8 @@ export const OFFICE_ROOMS: OfficeRoomConfig[] = [
 export interface VirtualOfficeViewProps {
   organization: DataState<OrganizationStructure>;
   projects?: DataState<ProjectSummary[]>;
+  alertsState?: DataState<AlertSummary[]>;
+  decisionsState?: DataState<DecisionSummary[]>;
   canCreateWorkRequest?: boolean;
   conversationPort?: AaoConversationPort;
   workGroupPort?: AaoConversationPort;
@@ -104,7 +141,11 @@ export interface VirtualOfficeViewProps {
   calendarReadPort?: Pick<AaoReadPort, 'getProjectBoard'>;
   conversationSessionId?: string;
   onCreateWorkRequest?: (projectId: string, input: CEOWorkRequest) => Promise<DataState<CreatedWorkRequest>>;
-  onNavigate?: (target: 'organization' | 'kanban' | 'projects', projectId?: string, workId?: string) => void;
+  onNavigate?: (
+    target: 'organization' | 'kanban' | 'projects' | 'decisions' | 'alerts' | 'audit',
+    projectId?: string,
+    workId?: string
+  ) => void;
   onRefresh?: () => void;
 }
 

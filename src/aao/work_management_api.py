@@ -5229,6 +5229,17 @@ def submit_next_agent_result(project_id: str, worker_id: str, credential) -> dic
     if not isinstance(principal, AuthenticatedPrincipal) or str(principal) != worker_id:
         raise HTTPException(403, "Worker identity does not match credential")
     with tx() as db:
+        # Request-entry mTLS verification is not enough: serialize this mutation
+        # against certificate/principal revocation for the full transaction.
+        from aao.principal_credentials import PrincipalDenied, authenticate_identity_in_transaction
+        try:
+            authenticated_id = authenticate_identity_in_transaction(
+                db, principal, kind="AGENT",
+            )
+        except PrincipalDenied as exc:
+            raise HTTPException(403, "Active worker identity required") from exc
+        if authenticated_id != worker_id:
+            raise HTTPException(403, "Worker identity does not match credential")
         row = db.execute(
             "SELECT w.id,w.author_id,w.parent_work_id FROM work_items w "
             "WHERE w.project_id=%s AND w.status='IN_PROGRESS' AND EXISTS "

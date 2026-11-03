@@ -81,6 +81,69 @@ def test_submit_next_result_endpoint_uses_authenticated_api_principal(monkeypatc
     assert identity is principal
 
 
+def test_submit_next_result_revalidates_mtls_inside_mutation_transaction(monkeypatch):
+    from contextlib import contextmanager
+
+    from aao.work_management_api import AuthenticatedPrincipal, submit_next_agent_result
+
+    monkeypatch.setenv("AAO_ENV", "production")
+    identity = AuthenticatedPrincipal(
+        "worker-1", "digest", "AGENT", workload_fingerprint="a" * 64,
+    )
+    order = []
+
+    class Db:
+        def execute(self, query, params):
+            order.append(("query", query, params))
+            return self
+
+        def fetchone(self):
+            return None
+
+    @contextmanager
+    def fake_tx():
+        order.append(("tx",))
+        yield Db()
+
+    def revalidate(db, principal, *, kind):
+        assert principal is identity and kind == "AGENT"
+        order.append(("revalidate",))
+        return "worker-1"
+
+    monkeypatch.setattr("aao.work_management_api.tx", fake_tx)
+    monkeypatch.setattr(
+        "aao.principal_credentials.authenticate_identity_in_transaction", revalidate,
+    )
+    assert submit_next_agent_result("project-1", "worker-1", identity) is None
+    assert order[:2] == [("tx",), ("revalidate",)]
+    assert order[2][0] == "query"
+
+
+def test_submit_next_result_denies_bearer_context_in_production_before_query(monkeypatch):
+    from contextlib import contextmanager
+
+    from aao.work_management_api import AuthenticatedPrincipal, submit_next_agent_result
+
+    monkeypatch.setenv("AAO_ENV", "production")
+    bearer_context = AuthenticatedPrincipal("worker-1", "digest", "AGENT")
+    queries = []
+
+    class Db:
+        def execute(self, query, params):
+            queries.append(query)
+            return self
+
+    @contextmanager
+    def fake_tx():
+        yield Db()
+
+    monkeypatch.setattr("aao.work_management_api.tx", fake_tx)
+    with pytest.raises(HTTPException) as error:
+        submit_next_agent_result("project-1", "worker-1", bearer_context)
+    assert error.value.status_code == 403
+    assert not queries
+
+
 @pytest.mark.skipif(
     not os.getenv("AAO_TEST_POSTGRES_URL") or
     os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",

@@ -26,6 +26,32 @@ class BindingError(ValueError):
     """A workload identity binding request was invalid or unsafe."""
 
 
+def read_admin_dsn(path: Path) -> str:
+    """Read an explicitly supplied root-only admin DSN file, never runtime env.
+
+    This utility must be invoked by an administrator with access to a dedicated
+    provisioning connection. Runtime service credentials are not a fallback.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise BindingError("admin connection file cannot be opened safely") from exc
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > 4096):
+            raise BindingError("admin connection file must be root-owned mode 0600 regular file")
+        with os.fdopen(fd, "r", encoding="utf-8", closefd=False) as stream:
+            value = stream.read(4097)
+    finally:
+        os.close(fd)
+    dsn = value.strip()
+    if "\n" in dsn or "\r" in dsn or not dsn.startswith(("postgresql://", "postgres://")):
+        raise BindingError("admin connection file must contain one PostgreSQL DSN line")
+    return dsn
+
+
 def certificate_fingerprint(path: Path) -> str:
     """Read one public PEM certificate without following symlinks; return SHA-256."""
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -74,13 +100,15 @@ def parse_expiry(value: str) -> datetime:
     return expires_at
 
 
-def bind(principal_id: str, fingerprint: str, expires_at: datetime) -> bool:
+def bind(principal_id: str, fingerprint: str, expires_at: datetime, *, admin_dsn: str) -> bool:
     """Insert one immutable binding; return False for an exact existing binding."""
     if os.getenv("AAO_ENV", "").strip().lower() != "production":
         raise BindingError("binding management is available only in production mode")
     if not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
         raise BindingError("certificate fingerprint is malformed")
-    with connect_postgres() as db:
+    if not admin_dsn.startswith(("postgresql://", "postgres://")):
+        raise BindingError("explicit administrator connection required")
+    with connect_postgres(admin_dsn) as db:
         row = db.execute(
             "SELECT kind,enabled,expires_at FROM principal_credentials "
             "WHERE principal_id=%s FOR UPDATE",
@@ -118,13 +146,15 @@ def bind(principal_id: str, fingerprint: str, expires_at: datetime) -> bool:
     return True
 
 
-def revoke(fingerprint: str) -> str:
+def revoke(fingerprint: str, *, admin_dsn: str) -> str:
     """Disable one certificate binding and audit the revocation."""
     if os.getenv("AAO_ENV", "").strip().lower() != "production":
         raise BindingError("binding management is available only in production mode")
     if not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
         raise BindingError("certificate fingerprint is malformed")
-    with connect_postgres() as db:
+    if not admin_dsn.startswith(("postgresql://", "postgres://")):
+        raise BindingError("explicit administrator connection required")
+    with connect_postgres(admin_dsn) as db:
         row = db.execute(
             "UPDATE workload_identity_bindings SET enabled=false,revoked_at=clock_timestamp() "
             "WHERE certificate_sha256=%s AND enabled=true AND revoked_at IS NULL "
@@ -150,22 +180,28 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="operation", required=True)
     bind_parser = subparsers.add_parser("bind")
+    bind_parser.add_argument("--admin-connection-file", required=True, type=Path)
     bind_parser.add_argument("--principal-id", required=True)
     bind_parser.add_argument("--certificate", required=True, type=Path)
     bind_parser.add_argument("--expires-at", required=True)
     revoke_parser = subparsers.add_parser("revoke")
+    revoke_parser.add_argument("--admin-connection-file", required=True, type=Path)
     revoke_parser.add_argument("--fingerprint-sha256", required=True)
     args = parser.parse_args(argv)
     try:
+        admin_dsn = read_admin_dsn(args.admin_connection_file)
         if args.operation == "bind":
             fingerprint = certificate_fingerprint(args.certificate)
-            created = bind(args.principal_id, fingerprint, parse_expiry(args.expires_at))
+            created = bind(
+                args.principal_id, fingerprint, parse_expiry(args.expires_at),
+                admin_dsn=admin_dsn,
+            )
             result = "created" if created else "already bound identically"
             print(
                 f"Workload identity binding {result}; principal={args.principal_id}; SHA-256={fingerprint}"
             )
         else:
-            principal_id = revoke(args.fingerprint_sha256)
+            principal_id = revoke(args.fingerprint_sha256, admin_dsn=admin_dsn)
             print(f"Workload identity binding revoked; principal={principal_id}")
     except (BindingError, OSError, RuntimeError) as exc:
         print(f"Workload identity operation failed: {exc}", file=sys.stderr)

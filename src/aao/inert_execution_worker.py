@@ -70,7 +70,9 @@ def _api_request(path: str, agent_credential: str, *, body: dict,
         headers={"Accept": "application/json", "Content-Type": "application/json",
                  "X-Agent-Token": agent_credential}, method=method,
     )
-    opener = urllib.request.build_opener(_RejectRedirects)
+    # This client sends bearer credentials; never let inherited proxy settings
+    # route even loopback API traffic through an intermediary.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _RejectRedirects)
     try:
         with opener.open(request, timeout=15) as response:
             payload = json.loads(response.read(1_048_577))

@@ -59,7 +59,7 @@ This is a one-time administrative enablement, not a routine cycle step:
    which can replace even root-owned children. The installed wrapper has the
    fixed `#!/usr/bin/python3` interpreter, validates that interpreter and every
    path ancestor, and never runs code from the frozen tree as root. It accepts
-   only the fixed account, token-kind and `check|install|verify|remove`
+   only the fixed account, token-kind and `check|install|verify|remove|replace`
    allowlist, then calls `/usr/sbin/runuser` and the root-installed fixed
    installer with a minimal environment. Configure sudoers for only the
    installed wrapper executable, for example:
@@ -121,6 +121,105 @@ project authorization. Neither expiry physically deletes rows or files.
 Reboot also removes `/run/user` files, but still requires API revocation to
 disable the credentials. Audit event evidence and disabled credential state
 must be checked before considering cleanup complete.
+
+## Atomic token replacement (`replace`)
+
+`install` still refuses to overwrite an existing token file, and `remove`
+still requires the old token on stdin. For unattended renewal of a cycle token
+file, the wrapper also accepts `--operation replace`, with exactly the same
+account/token-kind allowlist as `install`: `aao-impl-codex` with
+`selfdev-implementer` and `aao-auditor` with `selfdev-reviewer`. The installer
+itself rejects `--replace` for the `publisher` and `pm` token kinds. Running as
+the role account, `install_publisher_token_for_role.py --replace`:
+
+1. Reads the new token from stdin only; it is never written to argv, the
+   environment, stdout or stderr.
+2. Opens the runtime directory with `O_NOFOLLOW` and refuses unless it is owned
+   by the role and mode `0700`. All following steps are relative to that
+   directory descriptor.
+3. Takes an exclusive advisory `flock` on the stable
+   `.<token-name>.lock` file (role-owned, regular, single-link, mode `0600`).
+   The lock is held through stale-temp cleanup, rename, directory fsync and
+   post-write verification. It is intentionally persistent; do not delete it
+   during normal cleanup. This serializes replacement calls for one token path
+   and prevents stale-temp cleanup from unlinking another call's active temp.
+   The lifecycle caller must also serialize the broader issue/install/revoke
+   sequence with its own cycle lock; the installer lock covers replacement,
+   not API issuance or cycle state transitions.
+4. Removes leftover `.<token-name>.*.tmp` files that a crashed earlier run
+   left for the same token name, while holding that lock.
+5. If the target exists, refuses unless it is a regular, single-link file
+   owned by the role with mode `0600`. Symlinks, FIFOs and directories are
+   refused. It also refuses if the new token equals the installed one; this
+   comparison happens in memory only.
+6. Creates `.<token-name>.<random>.tmp` with
+   `O_CREAT|O_EXCL|O_NOFOLLOW` and mode `0600`, writes the token, then fsyncs
+   it. It renames the file over the target with `os.replace` and fsyncs the
+   directory.
+7. Checks the result: a regular, single-link, role-owned `0600` file whose
+   SHA-256 matches the new token.
+
+If the target is absent, `replace` creates it the same way, so it acts like
+`install`. If the process crashes before the rename, the previous file stays
+intact. If it crashes after the rename, the new file is complete. A partial
+target file is never left behind. Any leftover temp file is removed on the
+next `replace`. Exit code `3` means rename completed but directory fsync or
+post-write verification failed; the target may already contain the new token.
+The caller must not revoke the new principal or assume the old file remains in
+place. It must inspect/verify the target through the role helper and reconcile
+the lifecycle state without printing or logging token material. Other
+non-zero results from before rename leave the prior target unchanged.
+
+**One-time host reinstall required.** The root-owned copies in
+`/usr/local/libexec/aao` do not update themselves. Until a host administrator
+reinstalls them from the reviewed commit, `--operation replace` returns exit
+code 2. Using the ownership and mode rules from step 3 of *One-time
+authorization and host setup*, the administrator must replace exactly these
+two files:
+
+- `scripts/selfdev_role_token_helper.py` →
+  `/usr/local/libexec/aao/selfdev_role_token_helper.py` (root:root, `0755`)
+- `scripts/install_publisher_token_for_role.py` →
+  `/usr/local/libexec/aao/install_publisher_token_for_role.py`
+  (root:root, `0644`)
+
+The sudoers rule does not change. Do not reinstall until the change has passed
+independent review (GOV-REV-001).
+
+## Bounded PM intake request
+
+The CEO's scoped authorization is recorded in issue #367 (`ceo-proposal`)
+under GOV-REV-002 §10.1 / D7-bis. It authorizes the PM coordinator to submit
+narrowly-scoped Self Development work requests
+through `POST /v1/projects/{project_id}/selfdev-cycle-work`. This endpoint
+requires the PM coordinator identity and the project's existing
+`work.coordinate` grant; it does not require or grant general `work.create`.
+This is a purpose-specific exception for attributable requests in `INBOX`, not
+general PM work-creation authority. Admission, assignment, execution, review and
+publication remain separate lifecycle actions and authorities. The route is
+limited to 20 requests per PM principal in a rolling 24-hour period; requests
+over that limit fail with HTTP 429. It accepts only
+an idempotency UUID, title (1–200 characters), description (0–5000), and 1–20
+non-empty acceptance criteria (at most 500 characters each); unknown fields
+are rejected. The combined text content is bounded to at most 15,200 characters;
+this is not a bound on the encoded HTTP request size in bytes, and the endpoint
+does not set a separate request-body byte limit. These limits bound an
+individual item. The project ID must identify the
+uniquely active `AAO — Self Development` project, and non-PM principals are
+rejected even if they have `work.coordinate`.
+
+The API attributes `author_id` and the audit event to the authenticated PM
+principal and creates only an `INBOX` item with `admitted: false`. Repeating the
+same key and normalized request returns the same item; reusing the key for a
+different project or content returns HTTP 409. This route does not admit,
+assign, execute, review, publish, or merge work. The ordinary lifecycle and
+review gates still apply, and an API lifecycle reviewer is not a GOV-REV-001
+auditor.
+
+The per-principal limit is counted from `work.selfdev_cycle_requested` audit
+events. It is deliberately not a global or per-project quota. The event history
+must be retained and protected from alteration for the limit to remain
+effective; any inability to read that history fails the request closed.
 
 ## Lifecycle boundary
 

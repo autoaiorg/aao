@@ -368,6 +368,8 @@ export interface AgentIdentity {
   heartbeatStatus: AgentHeartbeatStatus;
   lastHeartbeatAt: string | null;
   status: AgentOperationalStatus;
+  /** CEO-only credential metadata; absent from scoped agent projections. */
+  credentialStatus?: 'ENABLED' | 'DISABLED';
   operationalState?: AgentOperationalState;
   currentAssignments: AgentAssignment[];
   executionHistory?: AgentExecutionRecord[];
@@ -404,6 +406,7 @@ export interface OrganizationStructure {
   totalStandingAgents: number;
   totalEphemeralAgents: number;
   totalUnknownAgents?: number;
+  historicalAgentCount?: number;
   activeAssignmentsCount: number;
   coverage?: OrganizationCoverage;
 }

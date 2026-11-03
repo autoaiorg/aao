@@ -20,6 +20,7 @@ export interface AppShellProps {
   isFetching?: boolean;
   onRefresh: () => void;
   isOffline?: boolean;
+  isFullBleed?: boolean;
   children: React.ReactNode;
 }
 
@@ -39,6 +40,7 @@ export const AppShell: React.FC<AppShellProps> = ({
   isFetching,
   onRefresh,
   isOffline,
+  isFullBleed = false,
   children,
 }) => {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -48,7 +50,9 @@ export const AppShell: React.FC<AppShellProps> = ({
       style={{
         display: 'flex',
         flexDirection: 'column',
-        minHeight: '100vh',
+        height: '100vh',
+        width: '100vw',
+        overflow: 'hidden',
         backgroundColor: 'var(--bg-app)',
       }}
     >
@@ -70,7 +74,7 @@ export const AppShell: React.FC<AppShellProps> = ({
         onToggleSidebar={() => setMobileSidebarOpen((prev) => !prev)}
       />
 
-      <div style={{ display: 'flex', flex: 1, position: 'relative' }}>
+      <div style={{ display: 'flex', flex: 1, minHeight: 0, position: 'relative', overflow: 'hidden' }}>
         <SideNavigation
           activeKey={activeNav}
           onSelect={onNavSelect}
@@ -83,11 +87,13 @@ export const AppShell: React.FC<AppShellProps> = ({
           role="main"
           style={{
             flex: 1,
-            padding: '24px 32px',
-            maxWidth: '1600px',
+            padding: isFullBleed ? '0' : '20px 28px',
+            maxWidth: 'none',
             width: '100%',
-            margin: '0 auto',
-            overflowY: 'auto',
+            height: '100%',
+            margin: '0',
+            overflowY: isFullBleed ? 'hidden' : 'auto',
+            position: 'relative',
           }}
         >
           {children}

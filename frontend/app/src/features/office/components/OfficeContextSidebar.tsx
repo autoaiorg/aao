@@ -1,6 +1,7 @@
 import React from 'react';
 import type { AgentIdentity, OrgUnit } from '../../../domain/models';
 import { OFFICE_ROOMS } from '../types';
+import { projectAgentOperationalActivity } from '../engine/officeLifeEngine';
 
 export interface OfficeContextSidebarProps {
   selectedRoomId: string;
@@ -58,6 +59,9 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
       : undefined);
   const roomAgents = agents.filter((a) => a.unitId === selectedRoomId);
   const activeAgent = roomAgents.find((a) => a.id === selectedAgentId) || agents.find((a) => a.id === selectedAgentId);
+  const activeAgentVisualActivity = activeAgent
+    ? projectAgentOperationalActivity(activeAgent, agents, { isDemo })
+    : null;
 
   // Derived metrics for room
   const executingAgentsCount = roomAgents.filter(
@@ -459,6 +463,61 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
                 : 'En LIVE, la presencia se restringe a telemetría verificada sin inferir actividad.'}
             </div>
           </div>
+
+          {/* Office Life Activity & Provenance (Textual Accessible Equivalent) */}
+          {activeAgentVisualActivity && (
+            <div
+              style={{
+                padding: '9px 12px',
+                backgroundColor: 'var(--bg-surface)',
+                border: '1px solid var(--border-subtle)',
+                borderRadius: 'var(--radius-md, 8px)',
+                fontSize: '11px',
+                color: 'var(--text-secondary)',
+                lineHeight: 1.45,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '4px',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                <strong style={{ color: 'var(--text-primary)' }}>
+                  Representación en Oficina: {activeAgentVisualActivity.label}
+                </strong>
+                <span
+                  style={{
+                    padding: '1px 6px',
+                    borderRadius: '4px',
+                    fontSize: '9px',
+                    fontWeight: 700,
+                    backgroundColor:
+                      activeAgentVisualActivity.provenance === 'LIVE_VERIFIED_EVIDENCE'
+                        ? 'var(--status-success-bg)'
+                        : activeAgentVisualActivity.provenance === 'DEMO_SIMULATION'
+                        ? 'var(--status-demo-bg)'
+                        : 'var(--bg-subtle)',
+                    color:
+                      activeAgentVisualActivity.provenance === 'LIVE_VERIFIED_EVIDENCE'
+                        ? 'var(--status-success-text)'
+                        : activeAgentVisualActivity.provenance === 'DEMO_SIMULATION'
+                        ? 'var(--status-demo-text)'
+                        : 'var(--text-muted)',
+                  }}
+                >
+                  {activeAgentVisualActivity.provenance === 'LIVE_VERIFIED_EVIDENCE'
+                    ? 'EVIDENCIA LIVE'
+                    : activeAgentVisualActivity.provenance === 'AMBIENT_ANIMATION'
+                    ? 'ANIMACIÓN AMBIENTAL'
+                    : activeAgentVisualActivity.provenance === 'DEMO_SIMULATION'
+                    ? 'SIMULACIÓN DEMO'
+                    : 'NEUTRAL / SIN EVIDENCIA'}
+                </span>
+              </div>
+              <div style={{ color: 'var(--text-muted)', fontSize: '10px' }}>
+                {activeAgentVisualActivity.detail}
+              </div>
+            </div>
+          )}
 
           {/* Authority Boundary */}
           <div>

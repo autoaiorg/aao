@@ -362,6 +362,28 @@ export const OfficeContextSidebar: React.FC<OfficeContextSidebarProps> = ({
                     : '○ Telemetría Desconocida'}
                 </span>
 
+                {activeAgent.coordinatorState && (
+                  <span
+                    data-testid="coordinator-presence"
+                    style={{
+                      padding: '2px 7px',
+                      borderRadius: 'var(--radius-sm, 4px)',
+                      backgroundColor: activeAgent.coordinatorState === 'COORDINATING'
+                        ? 'var(--status-info-bg)' : 'var(--bg-subtle)',
+                      color: 'var(--text-secondary)',
+                      border: '1px solid var(--border-subtle)',
+                      fontSize: '10px',
+                      fontWeight: 700,
+                    }}
+                  >
+                    {activeAgent.coordinatorState === 'COORDINATING'
+                      ? '⚙ Coordinando (sin ejecución de tarea)'
+                      : activeAgent.coordinatorState === 'WAITING'
+                      ? '◷ En espera'
+                      : '▲ Estado desactualizado'}
+                  </span>
+                )}
+
                 {/* Operational Execution Badge */}
                 {activeAgent.operationalState === 'EJECUTANDO' ? (
                   <span

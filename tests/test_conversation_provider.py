@@ -107,6 +107,14 @@ def _configure(monkeypatch, endpoint, secret="never-log-this-token"):
     "provider.example/v1/chat",
     "https:///v1/chat",
     "https://provider.example:bad/v1/chat",
+    "ftp://127.0.0.1/chat",
+    "ftp://localhost/chat",
+    "https://provider.example/v1/chat?key=sk-in-query",
+    "https://provider.example/v1/chat?",
+    "https://provider.example/v1/ch at",
+    "https://provider.example/v1/chat\r\nX-Injected: 1",
+    "https://provider.example/v1/\tchat",
+    "https://provider.example/v1/\x7fchat",
 ])
 def test_rejected_endpoints_never_reach_the_network(monkeypatch, caplog, endpoint):
     secret = _configure(monkeypatch, endpoint)
@@ -241,3 +249,57 @@ def test_loopback_http_ignores_environment_proxy(monkeypatch):
             server.server_close()
     assert target_hits == [f"Bearer {secret}"]
     assert proxy_hits == []
+
+
+@pytest.mark.parametrize("secret", [
+    "sk-live\r\nX-Injected: 1", "sk-live\n", "sk-live\r", "sk live", "sk-live\t", "sk-\x01live",
+    "sk-\x7flive", "sk-\x1blive", "sk-liv\u00e9", " sk-live",
+])
+def test_invalid_api_key_is_refused_before_any_request(monkeypatch, caplog, secret):
+    _configure(monkeypatch, "https://provider.example/v1/chat", secret)
+    monkeypatch.setattr(conversation_provider, "urlopen", lambda *_a, **_k: pytest.fail("network reached"))
+    with caplog.at_level("DEBUG"), pytest.raises(conversation_provider.ProviderUnavailable) as error:
+        list(conversation_provider.stream_reply([{"role": "user", "content": "hi"}]))
+    assert error.value.code == "PROVIDER_NOT_CONFIGURED"
+    assert "sk-" not in str(error.value) and "sk-" not in caplog.text
+
+
+def _formatted(exc):
+    import traceback
+    return "".join(traceback.format_exception(exc))
+
+
+@pytest.mark.parametrize("raised", ["header", "url", "unicode"])
+def test_request_value_errors_never_echo_key_or_url(monkeypatch, caplog, raised):
+    from http.client import InvalidURL
+
+    endpoint = "https://provider.example/v1/chat"
+    secret = _configure(monkeypatch, endpoint)
+
+    def explode(request, **_kwargs):
+        if raised == "header":
+            raise ValueError(f"Invalid header value {request.get_header('Authorization').encode()!r}")
+        if raised == "url":
+            raise InvalidURL(f"URL can't contain control characters. {request.full_url!r} {secret}")
+        raise UnicodeEncodeError("latin-1", f"Bearer {secret}", 0, 1, "ordinal not in range(256)")
+
+    monkeypatch.setattr(conversation_provider, "urlopen", explode)
+    with caplog.at_level("DEBUG"), pytest.raises(conversation_provider.ProviderUnavailable) as error:
+        list(conversation_provider.stream_reply([{"role": "user", "content": "hi"}]))
+    assert error.value.code == "PROVIDER_UNAVAILABLE"
+    assert error.value.__cause__ is None and error.value.__suppress_context__
+    text = _formatted(error.value)
+    assert secret not in text and endpoint not in text and secret not in caplog.text
+
+
+def test_real_http_client_header_error_is_contained(monkeypatch, caplog):
+    """Defence in depth: even if a CR/LF key slipped past validation, http.client's ValueError (which embeds the
+    whole header value) is converted before it can reach a 500 traceback. Fails before any connection."""
+    secret = "sk-live\r\nX-Injected: 1"
+    _configure(monkeypatch, "http://127.0.0.1:9/v1/chat", secret)
+    monkeypatch.setattr(conversation_provider, "_visible_ascii", lambda _value: True)
+    with caplog.at_level("DEBUG"), pytest.raises(conversation_provider.ProviderUnavailable) as error:
+        list(conversation_provider.stream_reply([{"role": "user", "content": "hi"}]))
+    assert error.value.code == "PROVIDER_UNAVAILABLE"
+    text = _formatted(error.value)
+    assert "sk-live" not in text and "sk-live" not in caplog.text

@@ -8,6 +8,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -112,6 +113,43 @@ def test_create_intent_replay_and_concurrent_completion_are_idempotent(seeded_in
             ).fetchone()[0]
             is True
         )
+
+
+def test_migration_upgrades_legacy_runtime_column_grants_and_principal_uniqueness(monkeypatch):
+    """Table-level REVOKE alone does not remove an older column ACL."""
+    from aao.postgresql_connection import connect_postgres
+
+    monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
+    with connect_postgres() as db:
+        role_exists = db.execute(
+            "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='aao_runtime')"
+        ).fetchone()[0]
+        if not role_exists:
+            pytest.skip("aao_runtime is not provisioned in this disposable database")
+        # Recreate the legacy ACL, then run the idempotent migration as an
+        # upgrade would. This proves the migration removes existing column ACLs.
+        db.execute(
+            "GRANT UPDATE(enabled,revoked_at) ON workload_identity_bindings TO aao_runtime"
+        )
+        db.execute(
+            "ALTER TABLE selfdev_cycle_mtls_intents "
+            "DROP CONSTRAINT selfdev_cycle_mtls_intents_principal_id_key"
+        )
+        migration = Path(__file__).parents[1] / "db/postgres/046_selfdev_cycle_mtls_intents.sql"
+        db.execute(migration.read_text())
+        db.commit()
+        assert db.execute(
+            "SELECT has_column_privilege('aao_runtime',"
+            "'workload_identity_bindings','enabled','UPDATE'), "
+            "has_column_privilege('aao_runtime',"
+            "'workload_identity_bindings','revoked_at','UPDATE')"
+        ).fetchone() == (False, False)
+        assert db.execute(
+            "SELECT EXISTS (SELECT 1 FROM pg_constraint "
+            "WHERE conrelid='selfdev_cycle_mtls_intents'::regclass "
+            "AND conname='selfdev_cycle_mtls_intents_principal_id_key' "
+            "AND contype='u')"
+        ).fetchone()[0]
 
 
 def test_concurrent_identical_intent_creation_is_idempotent(seeded_intent):

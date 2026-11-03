@@ -102,7 +102,7 @@ contra PostgreSQL.
 
 1. **CEO/host administrator:** elegir custodia real (servicio dedicado root o
    mecanismo hardware) y custodio/rotación de la clave CA. No se toma aquí.
-2. **API/DB owner:** la migración 045 y `PostgresCycleIntentRepository`
+2. **API/DB owner:** la migración 046 y `PostgresCycleIntentRepository`
    implementan persistencia de intenciones, binding, expiración y revocación
    atómicos con permisos de runtime acotados. La integración con #394 sigue
    bloqueada y debe resolver ambos contratos antes de activarse:

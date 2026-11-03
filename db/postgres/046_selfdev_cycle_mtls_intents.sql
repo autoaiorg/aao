@@ -20,6 +20,18 @@ CREATE TABLE IF NOT EXISTS selfdev_cycle_mtls_intents (
     CHECK (completed_at IS NULL OR state IN ('COMPLETED','REVOKED')),
     CHECK ((state = 'REVOKED') = (revoked_at IS NOT NULL))
 );
+-- Upgrade deployments that created this table from the earlier 045 draft,
+-- which did not enforce principal_id uniqueness.
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_constraint
+     WHERE conrelid='public.selfdev_cycle_mtls_intents'::regclass
+       AND conname='selfdev_cycle_mtls_intents_principal_id_key'
+  ) THEN
+    ALTER TABLE public.selfdev_cycle_mtls_intents
+      ADD CONSTRAINT selfdev_cycle_mtls_intents_principal_id_key UNIQUE (principal_id);
+  END IF;
+END $$;
 CREATE INDEX IF NOT EXISTS ix_selfdev_cycle_mtls_intents_pending
     ON selfdev_cycle_mtls_intents(not_after) WHERE state='PENDING';
 ALTER TABLE workload_identity_bindings
@@ -178,12 +190,16 @@ DO $$ BEGIN
   IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname='aao_runtime') THEN
     REVOKE ALL ON TABLE selfdev_cycle_mtls_intents FROM aao_runtime;
     REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE workload_identity_bindings FROM aao_runtime;
+    -- REVOKE table-level UPDATE does not clear older column-level grants.
+    REVOKE UPDATE (enabled, revoked_at) ON TABLE workload_identity_bindings FROM aao_runtime;
     GRANT SELECT ON TABLE selfdev_cycle_mtls_intents TO aao_runtime;
     GRANT EXECUTE ON FUNCTION create_selfdev_cycle_mtls_intent(uuid,uuid,text,text,text,timestamptz,timestamptz) TO aao_runtime;
     -- Completion is reserved for a future isolated certificate verifier.
     GRANT EXECUTE ON FUNCTION expire_selfdev_cycle_mtls_intent(uuid) TO aao_runtime;
     GRANT EXECUTE ON FUNCTION revoke_selfdev_cycle_mtls_intent(uuid) TO aao_runtime;
   END IF;
+  -- Clear legacy grants even when the service role is absent in test/bootstrap DBs.
+  REVOKE UPDATE (enabled, revoked_at) ON TABLE workload_identity_bindings FROM PUBLIC;
 END $$;
 INSERT INTO schema_migrations(version)
 VALUES ('046_selfdev_cycle_mtls_intents') ON CONFLICT DO NOTHING;

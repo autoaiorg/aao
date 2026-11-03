@@ -35,16 +35,16 @@
   -webkit-backdrop-filter: blur(14px);
 }
 
-/* Top HUD Ribbon */
+/* Top HUD Ribbon (Compact Iteration 2) */
 .aao-hud-top-ribbon {
   position: relative;
   z-index: 20;
-  margin: 10px 14px 0 14px;
-  padding: 8px 14px;
-  border-radius: var(--radius-lg, 12px);
+  margin: 6px 10px 0 10px;
+  padding: 5px 10px;
+  border-radius: var(--radius-lg, 10px);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 5px;
   transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.22s ease;
 }
 
@@ -53,18 +53,18 @@
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 6px;
 }
 
 .aao-hud-pill {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
+  gap: 5px;
+  padding: 2px 8px;
   border-radius: var(--radius-full, 9999px);
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 700;
-  letter-spacing: 0.3px;
+  letter-spacing: 0.2px;
   border: 1px solid rgba(148, 163, 184, 0.35);
   background: rgba(30, 41, 59, 0.85);
   color: #f1f5f9;

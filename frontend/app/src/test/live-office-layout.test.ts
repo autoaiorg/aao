@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { OrgUnit } from '../domain/models';
-import { buildLiveOfficeRooms } from '../features/office/liveOfficeLayout';
+import type { AgentIdentity, OrgUnit } from '../domain/models';
+import {
+  buildCampusNavGraph,
+  buildCorporateCampusLayout,
+  buildLiveOfficeRooms,
+  resolveLiveOrganizationAttribution,
+} from '../features/office/liveOfficeLayout';
 
 const unit = (id: string, code: string, name = code, parentId: string | null = null): OrgUnit => ({
   id,
@@ -51,5 +56,137 @@ describe('buildLiveOfficeRooms', () => {
     expect(grandchild.id).toBe('grandchild');
     expect(root.z).toBeLessThan(child.z);
     expect(child.z).toBeLessThan(grandchild.z);
+  });
+});
+
+const makeAgent = (overrides: Partial<AgentIdentity> & { id: string }): AgentIdentity => ({
+  id: overrides.id,
+  name: overrides.name ?? overrides.id,
+  type: overrides.type ?? 'UNKNOWN',
+  roleTitle: overrides.roleTitle ?? 'Principal observado en ejecución',
+  unitId: overrides.unitId ?? 'unit-unassigned',
+  unitName: overrides.unitName,
+  capabilities: overrides.capabilities ?? [],
+  heartbeatStatus: overrides.heartbeatStatus ?? 'UNKNOWN',
+  lastHeartbeatAt: overrides.lastHeartbeatAt ?? null,
+  status: overrides.status ?? 'UNKNOWN',
+  operationalState: overrides.operationalState ?? 'DESCONOCIDO',
+  credentialStatus: overrides.credentialStatus ?? 'DISABLED',
+  currentAssignments: overrides.currentAssignments ?? [],
+  authorityBoundary: overrides.authorityBoundary ?? 'Sin concesiones de proyecto persistidas.',
+  evidenceDescription:
+    overrides.evidenceDescription ??
+    'Identidad derivada de ejecuciones persistidas; sin perfil organizativo declarativo.',
+});
+
+describe('Phase 1 & 2 (Iteración 2): resolveLiveOrganizationAttribution & buildCorporateCampusLayout', () => {
+  it('diagnoses the 7 live PostgreSQL principals truthfully without inventing departments from names or LLM models', () => {
+    const liveUnits = [unit('unit-unassigned', 'UNKNOWN', 'Adscripción desconocida')];
+    const liveAgents: AgentIdentity[] = [
+      makeAgent({ id: 'aao-selfdev-d60cd366b26d', name: 'aao-selfdev-d60cd366b26d' }),
+      makeAgent({ id: 'aao-implementer-202610251730', name: 'aao-implementer-202610251730' }),
+      makeAgent({ id: 'aao-implementer-202610251032', name: 'aao-implementer-202610251032' }),
+      makeAgent({ id: 'codex-self-development', name: 'codex-self-development' }),
+      makeAgent({ id: 'aao-selfdev-impl-c394ed6f08b241399e8aa79776f7b18b' }),
+      makeAgent({
+        id: 'aao-auditor-202610251032',
+        roleTitle: 'Principal observado como revisor',
+        evidenceDescription: 'Identidad derivada de una revisión persistida.',
+      }),
+      makeAgent({
+        id: 'aao-auditor-202610251730',
+        roleTitle: 'Principal observado como revisor',
+        evidenceDescription: 'Identidad derivada de una revisión persistida.',
+      }),
+    ];
+
+    const result = resolveLiveOrganizationAttribution(liveUnits, liveAgents);
+
+    expect(result.canonicalUnits).toEqual([]);
+    expect(result.diagnostics.canonicalUnitsCount).toBe(0);
+    expect(result.diagnostics.hasOnlyUnassignedUnit).toBe(true);
+    expect(result.diagnostics.unassignedAgentsCount).toBe(7);
+    expect(result.diagnostics.disabledCredentialsCount).toBe(7);
+    expect(result.diagnostics.breakdown.executionNoProfile).toBe(5);
+    expect(result.diagnostics.breakdown.reviewNoProfile).toBe(2);
+    // Must NEVER invent engineering or audit units from 'implementer' or 'auditor' in the agent ID
+    for (const agent of result.normalizedAgents) {
+      expect(agent.unitId).toBe('unit-unassigned');
+    }
+  });
+
+  it('resolves canonical units by id, code, or unitName and flags orphan unit references accurately', () => {
+    const units = [
+      unit('unit-unassigned', 'UNKNOWN', 'Adscripción desconocida'),
+      unit('unit-eng', 'ENG', 'Ingeniería de Software'),
+      unit('unit-audit', 'AUDIT', 'Auditoría Independiente'),
+    ];
+    const agents: AgentIdentity[] = [
+      makeAgent({ id: 'ag-by-id', unitId: 'unit-eng', credentialStatus: 'ENABLED' }),
+      makeAgent({ id: 'ag-by-code', unitId: 'AUDIT', credentialStatus: 'ENABLED' }),
+      makeAgent({
+        id: 'ag-by-name',
+        unitId: 'unit-unassigned',
+        unitName: 'Ingeniería de Software',
+        credentialStatus: 'ENABLED',
+      }),
+      makeAgent({ id: 'ag-orphan', unitId: 'unit-deleted-99', credentialStatus: 'ENABLED' }),
+    ];
+
+    const { normalizedAgents, diagnostics } = resolveLiveOrganizationAttribution(units, agents);
+    const byId = new Map(normalizedAgents.map((a) => [a.id, a]));
+
+    expect(byId.get('ag-by-id')?.unitId).toBe('unit-eng');
+    expect(byId.get('ag-by-code')?.unitId).toBe('unit-audit');
+    expect(byId.get('ag-by-name')?.unitId).toBe('unit-eng');
+    expect(byId.get('ag-orphan')?.unitId).toBe('unit-unassigned');
+    expect(diagnostics.resolvedAgentsCount).toBe(3);
+    expect(diagnostics.unassignedAgentsCount).toBe(1);
+    expect(diagnostics.breakdown.orphanUnitRef).toBe(1);
+    expect(diagnostics.byAgentId.get('ag-orphan')?.reason).toBe('ORPHAN_UNIT_REFERENCE');
+  });
+
+  it('produces arrival-order-invariant corporate campus layouts, avoids Central Atrium (0,0) collisions, and scales capacity for 7+ agents', () => {
+    const unitsOrderA = [
+      unit('unit-unassigned', 'UNKNOWN', 'Adscripción desconocida'),
+      unit('unit-ops', 'OPS', 'Operaciones'),
+      unit('unit-eng', 'ENG', 'Ingeniería'),
+      unit('unit-audit', 'AUDIT', 'Auditoría'),
+    ];
+    const unitsOrderB = [...unitsOrderA].reverse();
+
+    const agentsOrderA = Array.from({ length: 7 }, (_, i) =>
+      makeAgent({ id: `unassigned-worker-${i}`, unitId: 'unit-unassigned' })
+    ).concat([
+      makeAgent({ id: 'eng-worker-1', unitId: 'unit-eng', credentialStatus: 'ENABLED' }),
+    ]);
+    const agentsOrderB = [...agentsOrderA].reverse();
+
+    const layoutA = buildCorporateCampusLayout(unitsOrderA, agentsOrderA, { isDemo: false });
+    const layoutB = buildCorporateCampusLayout(unitsOrderB, agentsOrderB, { isDemo: false });
+
+    expect(layoutA.rooms).toEqual(layoutB.rooms);
+    expect(layoutA.normalizedAgents).toEqual(layoutB.normalizedAgents);
+
+    // Verify no room overlaps the Central Coordination Atrium at (0, 0)
+    for (const room of layoutA.rooms) {
+      const distFromAtrium = Math.hypot(room.x, room.z);
+      expect(distFromAtrium).toBeGreaterThanOrEqual(4.5);
+    }
+
+    // Verify the unassigned holding wing has distinct kind and capacity >= 8 for 7 agents
+    const holdingRoom = layoutA.rooms.find((r) => r.id === 'unit-unassigned');
+    expect(holdingRoom).toBeDefined();
+    expect(holdingRoom?.kind).toBe('unassigned-holding');
+    expect(holdingRoom?.workstationCapacity).toBeGreaterThanOrEqual(8);
+
+    // Verify navigable graph connects Atrium to every room doorway and aisle
+    const navGraph = buildCampusNavGraph(layoutA.rooms);
+    expect(navGraph.nodes.has('atrium-center')).toBe(true);
+    for (const room of layoutA.rooms) {
+      expect(navGraph.nodes.has(`doorway-${room.id}`)).toBe(true);
+      expect(navGraph.nodes.has(`aisle-${room.id}`)).toBe(true);
+      expect(navGraph.corridors.some((c) => c.fromRoomId === room.id)).toBe(true);
+    }
   });
 });

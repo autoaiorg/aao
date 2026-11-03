@@ -5,10 +5,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { VirtualOfficeView } from '../features/office/VirtualOfficeView';
 import { ThreeOfficeScene } from '../features/office/engine/ThreeOfficeScene';
 import {
+  computeAdaptiveLabelStates,
+  deriveLabelLodTier,
   planOfficeLifePlacements,
   projectAgentOperationalActivity,
   sampleWaypointRoute,
 } from '../features/office/engine/officeLifeEngine';
+import { buildCorporateCampusLayout } from '../features/office/liveOfficeLayout';
 import { OFFICE_ROOMS } from '../features/office/types';
 import {
   deriveAgentOperationalCategory,
@@ -718,5 +721,309 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
     expect(scene.isContextLost()).toBe(false);
 
     scene.dispose();
+  });
+
+  it('Phase 3 (Iteración 2): adapts 3D label LOD by camera distance and resolves screen-space overlaps for 7+ clustered agents', () => {
+    expect(deriveLabelLodTier(24)).toBe('overview');
+    expect(deriveLabelLodTier(14.5)).toBe('department');
+    expect(deriveLabelLodTier(9.5)).toBe('agent');
+
+    // Create 7 unassigned agents in the Holding Wing (`unit-unassigned`)
+    const sevenUnassigned: AgentIdentity[] = Array.from({ length: 7 }, (_, i) => ({
+      id: `aao-selfdev-worker-${i}`,
+      name: `aao-selfdev-worker-${i}`,
+      type: 'UNKNOWN',
+      roleTitle: 'Principal observado en ejecución',
+      unitId: 'unit-unassigned',
+      capabilities: [],
+      heartbeatStatus: 'UNKNOWN',
+      lastHeartbeatAt: null,
+      status: 'UNKNOWN',
+      operationalState: 'DESCONOCIDO',
+      credentialStatus: 'DISABLED',
+      currentAssignments: [],
+      authorityBoundary: 'Sin concesión activa.',
+    }));
+
+    const campus = buildCorporateCampusLayout(
+      [
+        {
+          id: 'unit-unassigned',
+          code: 'UNKNOWN',
+          name: 'Adscripción desconocida',
+          parentId: null,
+          leadRole: 'Sin asignar / Desconocido',
+          leadAgentId: null,
+          description: '',
+          standingCount: 0,
+          ephemeralCount: 0,
+          activeProjectsCount: 0,
+        },
+      ],
+      sevenUnassigned,
+      { isDemo: false }
+    );
+
+    const placements = planOfficeLifePlacements(sevenUnassigned, campus.rooms, {
+      isDemo: false,
+      nowMs: Date.parse('2026-11-03T12:00:00Z'),
+    });
+
+    // Verify all 7 agents in unit-unassigned get distinct workstation slots (zero chair collisions)
+    const slotIndices = new Set(Array.from(placements.values()).map((p) => p.workstationSlot.slotIndex));
+    expect(slotIndices.size).toBe(7);
+
+    const placementMap = new Map(
+      sevenUnassigned.map((agent) => {
+        const p = placements.get(agent.id)!;
+        return [
+          agent.id,
+          {
+            // Simulate all 7 agents projecting to the same world/screen spot for worst-case overlap
+            x: 0,
+            z: 5.6,
+            activity: p.activity,
+          },
+        ] as const;
+      })
+    );
+
+    // 1. In OVERVIEW mode (distance 24) with agent 0 selected: only selected agent label is visible
+    const overviewLabels = computeAdaptiveLabelStates({
+      rooms: campus.rooms,
+      agents: sevenUnassigned,
+      placements: placementMap,
+      cameraDistance: 24,
+      cameraAngleDeg: 35,
+      cameraTargetX: 0,
+      cameraTargetZ: 0,
+      selectedRoomId: 'unit-unassigned',
+      selectedAgentId: 'aao-selfdev-worker-0',
+    });
+    expect(overviewLabels.lodTier).toBe('overview');
+    expect(overviewLabels.departments.get('unit-unassigned')?.visible).toBe(true);
+    expect(overviewLabels.agents.get('aao-selfdev-worker-0')?.visible).toBe(true);
+    expect(overviewLabels.agents.get('aao-selfdev-worker-1')?.visible).toBe(false);
+
+    // 2. In AGENT mode (distance 9.5) with identical world coords: de-overlapping nudges yOffset and suppresses excess
+    const closeLabels = computeAdaptiveLabelStates({
+      rooms: campus.rooms,
+      agents: sevenUnassigned,
+      placements: placementMap,
+      cameraDistance: 9.5,
+      cameraAngleDeg: 35,
+      cameraTargetX: 0,
+      cameraTargetZ: 5.6,
+      selectedRoomId: 'unit-unassigned',
+      selectedAgentId: 'aao-selfdev-worker-0',
+    });
+    expect(closeLabels.lodTier).toBe('agent');
+    const states = Array.from(closeLabels.agents.values());
+    const visibleStates = states.filter((s) => s.visible);
+    const suppressedStates = states.filter((s) => s.suppressedByOverlap);
+    // At exact screen-space collision, 3 vertical offset tiers fit (1.24, 1.62, 1.98) and the rest are suppressed
+    expect(visibleStates.length).toBe(3);
+    expect(suppressedStates.length).toBe(4);
+    const uniqueYOffsets = new Set(visibleStates.map((s) => s.yOffset));
+    expect(uniqueYOffsets.size).toBe(3);
+  });
+
+  it('Phase 1 & 4 (Iteración 2): displays LIVE organizational attribution diagnostics, opens Organization shortcut, and compacts HUD toolbar', () => {
+    const liveUnassignedState: DataState<OrganizationStructure> = {
+      kind: 'ready',
+      origin: 'live',
+      fetchedAt: '2026-11-03T12:00:00Z',
+      data: {
+        units: [
+          {
+            id: 'unit-unassigned',
+            code: 'UNKNOWN',
+            name: 'Adscripción desconocida',
+            parentId: null,
+            leadRole: 'Sin asignar / Desconocido',
+            leadAgentId: null,
+            description: 'Agentes observados sin unidad organizativa.',
+            standingCount: 0,
+            ephemeralCount: 0,
+            activeProjectsCount: 0,
+          },
+        ],
+        agents: [
+          {
+            id: 'aao-selfdev-d60cd366b26d',
+            name: 'aao-selfdev-d60cd366b26d',
+            type: 'UNKNOWN',
+            roleTitle: 'Principal observado en ejecución',
+            unitId: 'unit-unassigned',
+            capabilities: [],
+            heartbeatStatus: 'UNKNOWN',
+            lastHeartbeatAt: null,
+            status: 'UNKNOWN',
+            operationalState: 'DESCONOCIDO',
+            credentialStatus: 'ENABLED',
+            currentAssignments: [],
+            authorityBoundary: 'Sin concesión activa.',
+            evidenceDescription: 'Identidad derivada de ejecuciones persistidas.',
+          },
+        ],
+        totalStandingAgents: 0,
+        totalEphemeralAgents: 0,
+        totalUnknownAgents: 1,
+        activeAssignmentsCount: 0,
+      },
+    };
+
+    const onNavigate = vi.fn();
+    renderWithQueryClient(
+      <VirtualOfficeView organization={liveUnassignedState} projects={liveProjects} onNavigate={onNavigate} />
+    );
+
+    // Diagnostic pill is visible in the compact top ribbon
+    const diagPillBtn = screen.getByRole('button', { name: /0 unidades declaradas · 1 sin adscripción/i });
+    expect(diagPillBtn).toBeInTheDocument();
+
+    // Open diagnostic popover and click "Declarar unidades en Organización"
+    fireEvent.click(diagPillBtn);
+    const diagRegion = screen.getByRole('region', { name: /Diagnóstico de adscripción organizativa en LIVE/i });
+    expect(diagRegion).toBeInTheDocument();
+
+    const declareBtn = within(diagRegion).getByRole('button', { name: /Declarar unidades en Organización/i });
+    fireEvent.click(declareBtn);
+    expect(onNavigate).toHaveBeenCalledWith('organization');
+
+    // Toggle secondary toolbar collapse and verify persistence
+    const controlsToggleBtn = screen.getByRole('button', { name: /Controles/i });
+    fireEvent.click(controlsToggleBtn);
+    expect(loadPersistedHudPreferences().isToolbarCollapsed).toBe(true);
+    fireEvent.click(controlsToggleBtn);
+    expect(loadPersistedHudPreferences().isToolbarCollapsed).toBe(false);
+  });
+
+  it('Phase 5 & 6 (Iteración 2): supports dynamic campus framing, agent follow mode, camera panning, quality profiles, and records performance benchmarks across empty, small, and dense scenarios', () => {
+    const container = document.createElement('div');
+    const mockRenderer = {
+      setSize: vi.fn(),
+      setPixelRatio: vi.fn(),
+      render: vi.fn(),
+      domElement: document.createElement('canvas'),
+      shadowMap: { enabled: false, type: 0 },
+      dispose: vi.fn(),
+    } as unknown as THREE.WebGLRenderer;
+
+    // 1. Empty scenario (0 agents, 6 rooms)
+    const scene = new ThreeOfficeScene(container, {
+      renderer: mockRenderer,
+      reducedMotion: false,
+      qualityProfile: 'balanced',
+      callbacks: {
+        onSelectRoom: vi.fn(),
+        onSelectAgent: vi.fn(),
+        onHoverObject: vi.fn(),
+      },
+    });
+    scene.updateAgents([]);
+    scene.stepAnimation(100);
+    const emptyPerf = scene.getPerformanceMetrics();
+    expect(emptyPerf.agentsCount).toBe(0);
+    expect(emptyPerf.roomsCount).toBe(6);
+    expect(emptyPerf.qualityProfile).toBe('balanced');
+    expect(emptyPerf.lastFrameTimeMs).toBeLessThan(50);
+
+    // 2. Small scenario (8 DEMO agents, 6 rooms) + Agent Follow & Panning
+    scene.updateAgents(DEMO_AGENTS);
+    scene.stepAnimation(200);
+    const smallPerf = scene.getPerformanceMetrics();
+    expect(smallPerf.agentsCount).toBe(DEMO_AGENTS.length);
+    expect(smallPerf.interactiveMeshesCount).toBeGreaterThan(6);
+    expect(smallPerf.lastFrameTimeMs).toBeLessThan(50);
+
+    // Select an agent and enable follow mode
+    const targetAgent = DEMO_AGENTS[0];
+    scene.selectAgent(targetAgent.id);
+    scene.setFollowAgent(true);
+    expect(scene.isFollowingAgent()).toBe(true);
+    scene.stepAnimation(400);
+
+    // Manual camera pan cancels follow mode and shifts target coordinates
+    const prevTarget = scene.getDesiredTarget();
+    scene.panCamera(2.0, -1.5);
+    expect(scene.isFollowingAgent()).toBe(false);
+    expect(scene.getDesiredTarget().x).not.toBeCloseTo(prevTarget.x, 3);
+
+    // Switch quality profiles (low -> high -> balanced)
+    scene.setQualityProfile('low');
+    expect(scene.getQualityProfile()).toBe('low');
+    expect(mockRenderer.shadowMap.enabled).toBe(false);
+
+    scene.setQualityProfile('high');
+    expect(scene.getQualityProfile()).toBe('high');
+    expect(mockRenderer.shadowMap.enabled).toBe(true);
+
+    scene.dispose();
+
+    // 3. High-density scenario (36 synthetic agents across 12 canonical departments)
+    const twelveUnits = Array.from({ length: 12 }, (_, i) => ({
+      id: `unit-dense-${i}`,
+      code: `D${i + 1}`,
+      name: `Departamento Escalado ${i + 1}`,
+      parentId: i >= 6 ? `unit-dense-${i - 6}` : null,
+      leadRole: 'Lead',
+      leadAgentId: null,
+      description: '',
+      standingCount: 2,
+      ephemeralCount: 1,
+      activeProjectsCount: 1,
+    }));
+    const thirtySixAgents: AgentIdentity[] = Array.from({ length: 36 }, (_, i) => ({
+      id: `dense-agent-${i}`,
+      name: `Agente Escalado ${i}`,
+      type: i % 3 === 0 ? 'EPHEMERAL' : 'STANDING',
+      roleTitle: i % 2 === 0 ? 'Ingeniero Backend' : 'Auditor SAST',
+      unitId: twelveUnits[i % twelveUnits.length].id,
+      capabilities: [],
+      heartbeatStatus: 'HEALTHY',
+      lastHeartbeatAt: '2026-11-03T12:00:00Z',
+      status: i % 2 === 0 ? 'BUSY' : 'IDLE',
+      operationalState: i % 2 === 0 ? 'EJECUTANDO' : 'REGISTRADO',
+      currentAssignments:
+        i % 2 === 0
+          ? [
+              {
+                id: `asg-dense-${i}`,
+                projectId: 'proj-alpha',
+                projectName: 'Proyecto Alpha',
+                taskId: `task-${i}`,
+                taskTitle: 'Desarrollo de módulo crítico',
+                assignedAt: '2026-11-03T11:30:00Z',
+                status: 'ACTIVE',
+              },
+            ]
+          : [],
+      authorityBoundary: 'Estándar',
+    }));
+
+    const denseCampus = buildCorporateCampusLayout(twelveUnits, thirtySixAgents, { isDemo: false });
+    expect(denseCampus.rooms.length).toBe(12);
+    expect(denseCampus.bounds.recommendedOverviewDistance).toBeGreaterThan(24);
+
+    const denseScene = new ThreeOfficeScene(container, {
+      renderer: mockRenderer,
+      reducedMotion: false,
+      rooms: denseCampus.rooms,
+      qualityProfile: 'balanced',
+      callbacks: {
+        onSelectRoom: vi.fn(),
+        onSelectAgent: vi.fn(),
+        onHoverObject: vi.fn(),
+      },
+    });
+    denseScene.updateAgents(denseCampus.normalizedAgents);
+    denseScene.stepAnimation(500);
+    const densePerf = denseScene.getPerformanceMetrics();
+    expect(densePerf.roomsCount).toBe(12);
+    expect(densePerf.agentsCount).toBe(36);
+    expect(densePerf.lastFrameTimeMs).toBeLessThan(50);
+
+    denseScene.dispose();
   });
 });

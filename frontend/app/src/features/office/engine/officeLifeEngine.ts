@@ -1,5 +1,5 @@
 import type { AgentIdentity } from '../../../domain/models';
-import type { OfficeRoomConfig } from '../types';
+import type { OfficeLabelLodTier, OfficeRoomConfig } from '../types';
 
 /**
  * High-level visual activity state for an agent in the 3D Office.
@@ -423,7 +423,7 @@ export function projectAgentOperationalActivity(
  * Ensures every department visually has real desks, chairs, and a meeting area.
  */
 export function buildDepartmentInteriorLayout(room: OfficeRoomConfig): DepartmentInteriorLayout {
-  // 4 ergonomic workstation slots arranged in two rows with a clear central walking aisle (x = 0)
+  const capacity = Math.max(4, room.workstationCapacity ?? 4);
   const localConfigs: Array<{ deskX: number; deskZ: number; chairX: number; chairZ: number; facing: number }> = [
     // Front-left workstation (agent sits facing -Z toward monitor)
     { deskX: -1.25, deskZ: -0.95, chairX: -1.25, chairZ: -0.42, facing: Math.PI },
@@ -434,6 +434,21 @@ export function buildDepartmentInteriorLayout(room: OfficeRoomConfig): Departmen
     // Rear-right workstation (agent sits facing -Z toward monitor)
     { deskX: 1.25, deskZ: 0.35, chairX: 1.25, chairZ: 0.88, facing: Math.PI },
   ];
+
+  // If the department or holding wing has > 4 agents, add lateral workstation pairs so every agent gets a dedicated station
+  if (capacity > 4) {
+    const extraPairs = Math.ceil((capacity - 4) / 2);
+    for (let p = 0; p < extraPairs; p += 1) {
+      const colOffset = 2.35 + Math.floor(p / 2) * 1.1;
+      const isRearRow = p % 2 === 1;
+      const deskZ = isRearRow ? 0.35 : -0.95;
+      const chairZ = isRearRow ? 0.88 : -0.42;
+      localConfigs.push(
+        { deskX: -colOffset, deskZ, chairX: -colOffset, chairZ, facing: Math.PI },
+        { deskX: colOffset, deskZ, chairX: colOffset, chairZ, facing: Math.PI }
+      );
+    }
+  }
 
   const workstations: WorkstationSlot[] = localConfigs.map((cfg, idx) => ({
     slotIndex: idx,
@@ -767,5 +782,312 @@ export function sampleWaypointRoute(
     z: from.z + dz * smoothProgress,
     facingAngle,
     isMoving: true,
+  };
+}
+
+// ============================================================================
+// 3. ADAPTIVE LABEL LOD & SCREEN-SPACE DE-OVERLAPPING ENGINE (Phase 3 - P0)
+// ============================================================================
+
+export interface AdaptiveDepartmentLabelState {
+  roomId: string;
+  visible: boolean;
+  lodTier: OfficeLabelLodTier;
+  abbreviated: boolean;
+  scale: number;
+  yOffset: number;
+}
+
+export interface AdaptiveAgentLabelState {
+  agentId: string;
+  visible: boolean;
+  lodTier: OfficeLabelLodTier;
+  priority: number;
+  scale: number;
+  yOffset: number;
+  suppressedByOverlap: boolean;
+  provenanceCode: 'LIVE' | 'DEMO' | 'AMBIENT' | 'UNKNOWN';
+}
+
+export interface AdaptiveLabelsResult {
+  lodTier: OfficeLabelLodTier;
+  departments: Map<string, AdaptiveDepartmentLabelState>;
+  agents: Map<string, AdaptiveAgentLabelState>;
+  visibleDepartmentCount: number;
+  visibleAgentCount: number;
+  suppressedOverlapCount: number;
+}
+
+/**
+ * Determines the current semantic Level of Detail (LOD) tier from camera distance:
+ * - 'overview'   (distance >= 18): Department abbreviated headers + critical/selected agent only.
+ * - 'department' (11.5 <= distance < 18): Department full header + primary agents in focused sector.
+ * - 'agent'      (distance < 11.5): Full agent badge with operational status and provenance.
+ */
+export function deriveLabelLodTier(cameraDistance: number): OfficeLabelLodTier {
+  if (cameraDistance >= 18) return 'overview';
+  if (cameraDistance >= 11.5) return 'department';
+  return 'agent';
+}
+
+/**
+ * Computes contextual label visibility, scale, vertical de-overlapping offsets, and density limits
+ * so labels never collide into an unreadable pile.
+ */
+export function computeAdaptiveLabelStates(params: {
+  rooms: readonly OfficeRoomConfig[];
+  agents: readonly AgentIdentity[];
+  placements: ReadonlyMap<string, { x: number; z: number; activity: ProjectedAgentActivity }>;
+  cameraDistance: number;
+  cameraAngleDeg: number;
+  cameraTargetX: number;
+  cameraTargetZ: number;
+  selectedRoomId: string | null;
+  selectedAgentId: string | null;
+}): AdaptiveLabelsResult {
+  const {
+    rooms,
+    agents,
+    placements,
+    cameraDistance,
+    cameraAngleDeg,
+    cameraTargetX,
+    cameraTargetZ,
+    selectedRoomId,
+    selectedAgentId,
+  } = params;
+
+  const lodTier = deriveLabelLodTier(cameraDistance);
+  const departments = new Map<string, AdaptiveDepartmentLabelState>();
+  const agentStates = new Map<string, AdaptiveAgentLabelState>();
+
+  let visibleDepartmentCount = 0;
+  for (const room of rooms) {
+    const isSelected = room.id === selectedRoomId;
+    const scale =
+      lodTier === 'overview'
+        ? isSelected
+          ? 1.08
+          : 0.94
+        : lodTier === 'department'
+        ? isSelected
+          ? 1.05
+          : 0.88
+        : 0.82;
+    departments.set(room.id, {
+      roomId: room.id,
+      visible: true,
+      lodTier,
+      abbreviated: lodTier === 'overview' && !isSelected,
+      scale,
+      yOffset: isSelected ? 2.45 : 2.32,
+    });
+    visibleDepartmentCount += 1;
+  }
+
+  // Project 3D world (x, z) onto camera horizontal axis for 2D overlap detection
+  const rad = (cameraAngleDeg * Math.PI) / 180;
+  const cosA = Math.cos(rad);
+  const sinA = Math.sin(rad);
+  const projectToScreenPlane = (wx: number, wz: number, wy: number) => {
+    const dx = wx - cameraTargetX;
+    const dz = wz - cameraTargetZ;
+    const screenX = dx * cosA - dz * sinA;
+    const depthZ = dx * sinA + dz * cosA;
+    const screenY = wy - depthZ * 0.42;
+    return { screenX, screenY };
+  };
+
+  interface CandidateAgent {
+    agent: AgentIdentity;
+    pos: { x: number; z: number };
+    activity: ProjectedAgentActivity;
+    priority: number;
+    provenanceCode: 'LIVE' | 'DEMO' | 'AMBIENT' | 'UNKNOWN';
+    eligibleByLod: boolean;
+  }
+
+  const candidates: CandidateAgent[] = [];
+
+  for (const agent of agents) {
+    const placement = placements.get(agent.id);
+    if (!placement) continue;
+
+    const isSelected = agent.id === selectedAgentId;
+    const hasCriticalAlert = Boolean(
+      agent.executionHistory?.some(
+        (ex) => ex.isBudgetExceeded || ex.isNoProgressRetry || Boolean(ex.alert)
+      )
+    );
+    const isInSelectedRoom = Boolean(selectedRoomId && agent.unitId === selectedRoomId);
+    const distToCameraTarget = Math.hypot(
+      placement.x - cameraTargetX,
+      placement.z - cameraTargetZ
+    );
+    const isExecuting =
+      placement.activity.kind === 'TYPING_DEV' ||
+      placement.activity.kind === 'TYPING_AUDIT' ||
+      placement.activity.kind === 'TYPING_DOCS' ||
+      placement.activity.kind === 'CONVERSING';
+
+    let priority = 50;
+    if (isSelected) priority = 1000;
+    else if (hasCriticalAlert) priority = 850;
+    else if (isInSelectedRoom && isExecuting) priority = 500;
+    else if (isInSelectedRoom) priority = 350;
+    else if (isExecuting) priority = 220;
+    else if (agent.status === 'IDLE') priority = 110;
+
+    const prov = placement.activity.provenance;
+    const provenanceCode: CandidateAgent['provenanceCode'] =
+      prov === 'LIVE_VERIFIED_EVIDENCE'
+        ? 'LIVE'
+        : prov === 'DEMO_SIMULATION'
+        ? 'DEMO'
+        : prov === 'AMBIENT_ANIMATION'
+        ? 'AMBIENT'
+        : 'UNKNOWN';
+
+    // Determine base LOD eligibility:
+    // - Overview: ONLY selected agent or critical alert agents show individual name labels!
+    // - Department: Agents in selected room or within 6.2u of camera target.
+    // - Agent closeup: Agents within 8.5u of camera target or in selected room.
+    let eligibleByLod = false;
+    if (lodTier === 'overview') {
+      eligibleByLod = isSelected || hasCriticalAlert;
+    } else if (lodTier === 'department') {
+      eligibleByLod = isSelected || hasCriticalAlert || isInSelectedRoom || distToCameraTarget <= 6.2;
+    } else {
+      eligibleByLod = isSelected || hasCriticalAlert || isInSelectedRoom || distToCameraTarget <= 8.5;
+    }
+
+    candidates.push({
+      agent,
+      pos: { x: placement.x, z: placement.z },
+      activity: placement.activity,
+      priority,
+      provenanceCode,
+      eligibleByLod,
+    });
+  }
+
+  // Sort by priority descending, then deterministic agent.id tie-breaker
+  candidates.sort((a, b) => {
+    if (b.priority !== a.priority) return b.priority - a.priority;
+    return a.agent.id.localeCompare(b.agent.id);
+  });
+
+  const acceptedBoxes: Array<{ screenX: number; screenY: number }> = [];
+  const minSepX = lodTier === 'agent' ? 1.05 : 1.25;
+  const minSepY = 0.34;
+  const maxVisibleAgentLabels = lodTier === 'overview' ? 3 : lodTier === 'department' ? 8 : 12;
+
+  let visibleAgentCount = 0;
+  let suppressedOverlapCount = 0;
+
+  for (const cand of candidates) {
+    const isMustShow = cand.priority >= 800; // selected or critical alert
+    if (!cand.eligibleByLod) {
+      agentStates.set(cand.agent.id, {
+        agentId: cand.agent.id,
+        visible: false,
+        lodTier,
+        priority: cand.priority,
+        scale: 0.85,
+        yOffset: 1.24,
+        suppressedByOverlap: false,
+        provenanceCode: cand.provenanceCode,
+      });
+      continue;
+    }
+
+    if (!isMustShow && visibleAgentCount >= maxVisibleAgentLabels) {
+      suppressedOverlapCount += 1;
+      agentStates.set(cand.agent.id, {
+        agentId: cand.agent.id,
+        visible: false,
+        lodTier,
+        priority: cand.priority,
+        scale: 0.85,
+        yOffset: 1.24,
+        suppressedByOverlap: true,
+        provenanceCode: cand.provenanceCode,
+      });
+      continue;
+    }
+
+    let baseWy = 1.24;
+    let proj = projectToScreenPlane(cand.pos.x, cand.pos.z, baseWy);
+    const collides = (sx: number, sy: number) =>
+      acceptedBoxes.some(
+        (box) => Math.abs(box.screenX - sx) < minSepX && Math.abs(box.screenY - sy) < minSepY
+      );
+
+    let hasOverlap = collides(proj.screenX, proj.screenY);
+    if (hasOverlap) {
+      // Try vertical nudge Tier 1 (+0.38)
+      const nudgedWy1 = 1.62;
+      const proj1 = projectToScreenPlane(cand.pos.x, cand.pos.z, nudgedWy1);
+      if (!collides(proj1.screenX, proj1.screenY)) {
+        baseWy = nudgedWy1;
+        proj = proj1;
+        hasOverlap = false;
+      } else {
+        // Try vertical nudge Tier 2 (+0.74)
+        const nudgedWy2 = 1.98;
+        const proj2 = projectToScreenPlane(cand.pos.x, cand.pos.z, nudgedWy2);
+        if (!collides(proj2.screenX, proj2.screenY)) {
+          baseWy = nudgedWy2;
+          proj = proj2;
+          hasOverlap = false;
+        }
+      }
+    }
+
+    if (hasOverlap && !isMustShow) {
+      suppressedOverlapCount += 1;
+      agentStates.set(cand.agent.id, {
+        agentId: cand.agent.id,
+        visible: false,
+        lodTier,
+        priority: cand.priority,
+        scale: 0.85,
+        yOffset: 1.24,
+        suppressedByOverlap: true,
+        provenanceCode: cand.provenanceCode,
+      });
+      continue;
+    }
+
+    acceptedBoxes.push(proj);
+    visibleAgentCount += 1;
+    const scale =
+      cand.priority >= 1000
+        ? 1.12
+        : lodTier === 'agent'
+        ? 1.02
+        : lodTier === 'department'
+        ? 0.92
+        : 0.88;
+
+    agentStates.set(cand.agent.id, {
+      agentId: cand.agent.id,
+      visible: true,
+      lodTier,
+      priority: cand.priority,
+      scale,
+      yOffset: baseWy,
+      suppressedByOverlap: false,
+      provenanceCode: cand.provenanceCode,
+    });
+  }
+
+  return {
+    lodTier,
+    departments,
+    agents: agentStates,
+    visibleDepartmentCount,
+    visibleAgentCount,
+    suppressedOverlapCount,
   };
 }

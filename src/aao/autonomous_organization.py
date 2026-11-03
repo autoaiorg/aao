@@ -316,12 +316,12 @@ def evaluate_organizational_demand(
     squad_cost = (
         known_slot_hourly_rate_usd * 40.0
         if known_slot_hourly_rate_usd is not None
-        else 60.0
+        else None
     )
     squad_basis = (
         f"Estimación basada en tasa horaria de {known_slot_hourly_rate_usd} USD/h x 40h de coordinación."
         if known_slot_hourly_rate_usd is not None
-        else "Estimación base de 60.0 USD overhead en ausencia de tarifa horaria."
+        else "Coste desconocido: falta tarifa horaria verificada."
     )
     alt_squad = EvaluatedAlternative(
         kind=OrganizationAlternativeKind.CREATE_TEMPORARY_SQUAD,
@@ -345,12 +345,12 @@ def evaluate_organizational_demand(
     expansion_cost = (
         known_slot_hourly_rate_usd * 160.0
         if known_slot_hourly_rate_usd is not None
-        else 120.0
+        else None
     )
     expansion_basis = (
         f"Estimación basada en tasa horaria de {known_slot_hourly_rate_usd} USD/h x 160h dedicadas."
         if known_slot_hourly_rate_usd is not None
-        else "Estimación base de 120.0 USD overhead en ausencia de tarifa horaria."
+        else "Coste desconocido: falta tarifa horaria verificada."
     )
     alt_expand = EvaluatedAlternative(
         kind=OrganizationAlternativeKind.EXPAND_EXISTING_UNIT,
@@ -376,12 +376,12 @@ def evaluate_organizational_demand(
     perm_cost = (
         known_slot_hourly_rate_usd * 480.0
         if known_slot_hourly_rate_usd is not None
-        else 400.0
+        else None
     )
     perm_basis = (
         f"Estimación de departamento permanente basada en {known_slot_hourly_rate_usd} USD/h x 480h."
         if known_slot_hourly_rate_usd is not None
-        else "Estimación base de 400.0 USD en ausencia de plan financiero formal."
+        else "Coste desconocido: falta plan financiero verificado."
     )
     alt_permanent = EvaluatedAlternative(
         kind=OrganizationAlternativeKind.CREATE_PERMANENT_UNIT,
@@ -403,8 +403,8 @@ def evaluate_organizational_demand(
         for alt in raw_list
         if alt.is_viable
         and (
-            alt.estimated_cost_overhead_usd is None
-            or alt.estimated_cost_overhead_usd <= max_marginal_cost_usd
+            alt.estimated_cost_overhead_usd is not None
+            and alt.estimated_cost_overhead_usd <= max_marginal_cost_usd
         )
     ]
 

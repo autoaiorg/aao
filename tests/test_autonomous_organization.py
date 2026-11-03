@@ -125,11 +125,27 @@ def test_paid_alternative_requires_explicit_ceiling_and_ceiling_is_not_authority
         budget_utilization_ratio=0.75,
         observation_period_days=65,
     )
-    alternatives = evaluate_organizational_demand(criteria, max_marginal_cost_usd=400)
-    permanent = next(
-        a for a in alternatives if a.kind == OrganizationAlternativeKind.CREATE_PERMANENT_UNIT
+
+    # An offered ceiling does not turn an unknown cost into a verified estimate.
+    unpriced = evaluate_organizational_demand(criteria, max_marginal_cost_usd=400)
+    permanent_unpriced = next(
+        a for a in unpriced if a.kind == OrganizationAlternativeKind.CREATE_PERMANENT_UNIT
     )
-    assert permanent.recommended is True
+    assert permanent_unpriced.is_viable is True
+    assert permanent_unpriced.estimated_cost_overhead_usd is None
+    assert permanent_unpriced.recommended is False
+
+    # A verifiable input rate permits an explicit cost estimate, not spend authority.
+    priced = evaluate_organizational_demand(
+        criteria,
+        max_marginal_cost_usd=400,
+        known_slot_hourly_rate_usd=0.5,
+    )
+    permanent_priced = next(
+        a for a in priced if a.kind == OrganizationAlternativeKind.CREATE_PERMANENT_UNIT
+    )
+    assert permanent_priced.estimated_cost_overhead_usd == 240.0
+    assert permanent_priced.recommended is True
     assert "not spend authority" in evaluate_organizational_demand.__doc__
 
 

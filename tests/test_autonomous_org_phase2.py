@@ -78,7 +78,7 @@ def test_evaluate_demand_grounded_cost_with_known_hourly_rate():
     assert squad_alt.is_primary_recommendation is True
 
 
-def test_evaluate_demand_default_cost_when_hourly_rate_unconfigured():
+def test_evaluate_demand_cost_unknown_without_verified_rate():
     criteria = DemandAnalysisCriteria(
         active_projects_count=3,
         future_commitments_count=2,
@@ -90,8 +90,8 @@ def test_evaluate_demand_default_cost_when_hourly_rate_unconfigured():
     # When unconfigured, base estimate is provided
     alternatives = evaluate_organizational_demand(criteria)
     squad_alt = next(a for a in alternatives if a.kind == OrganizationAlternativeKind.CREATE_TEMPORARY_SQUAD)
-    assert squad_alt.estimated_cost_overhead_usd == 60.0
-    assert "Estimación base de 60.0 USD" in squad_alt.cost_estimation_basis
+    assert squad_alt.estimated_cost_overhead_usd is None
+    assert "Coste desconocido" in squad_alt.cost_estimation_basis
 
 
 def test_proposal_lifecycle_transitions():

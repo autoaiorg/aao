@@ -22,6 +22,7 @@ def test_proposals_api_flow(client, monkeypatch):
 
     # 1. Create Proposal with valid criteria
     payload = {
+        "operation": "organization.unit.create_permanent",
         "title": "Propuesta de Unidad Especializada en Frontend y Experiencia",
         "scope_description": "Constitución de departamento tras 65 días de saturación en desarrollo de interfaces.",
         "target_unit_id": "unit-fe-special",
@@ -75,6 +76,16 @@ def test_proposals_api_flow(client, monkeypatch):
     assert conflict_res.status_code == 409
     assert "Concurrency conflict" in conflict_res.json()["detail"]
 
+    # Create a temporary squad proposal to verify non-CEO approval also fails.
+    squad_payload = {**payload,
+                     "operation": "organization.squad.create_temporary",
+                     "target_unit_id": None,
+                     "target_unit_code": None,
+                     "target_unit_name": None}
+    squad_res = client.post("/v1/organization/proposals", json=squad_payload)
+    assert squad_res.status_code == 200, squad_res.text
+    squad_id = squad_res.json()["id"]
+
     # 5. Non-CEO principal cannot approve CRITICAL change
     client.headers.pop("X-CEO-Token", None)
     # Mock read_principal for non-CEO
@@ -86,7 +97,12 @@ def test_proposals_api_flow(client, monkeypatch):
             json={"target_state": "AUTONOMOUS_APPROVED", "expected_version": 1},
         )
         assert forbidden_res.status_code == 403
-        assert "strictly requires CEO authority" in forbidden_res.json()["detail"]
+        assert "requires verified CEO authority" in forbidden_res.json()["detail"]
+        ordinary_forbidden = client.post(
+            f"/v1/organization/proposals/{squad_id}/transitions",
+            json={"target_state": "AUTONOMOUS_APPROVED", "expected_version": 1},
+        )
+        assert ordinary_forbidden.status_code == 403
     finally:
         app.dependency_overrides.pop(read_principal, None)
 

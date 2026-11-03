@@ -50,6 +50,34 @@ def test_agent_dispatch_rejects_a_declared_identity_that_disagrees_with_credenti
     assert error.value.status_code == 403
 
 
+def test_submit_next_result_endpoint_uses_authenticated_api_principal(monkeypatch):
+    from aao.work_management_api import (
+        AuthenticatedPrincipal,
+        app,
+        require_worker,
+    )
+
+    principal = AuthenticatedPrincipal("worker-1", "digest-fixture", "AGENT")
+    calls = []
+    app.dependency_overrides[require_worker] = lambda: principal
+    monkeypatch.setattr(
+        "aao.work_management_api.submit_next_agent_result",
+        lambda project, worker, token: calls.append((project, worker, token))
+        or {"work_id": "work-1", "execution_id": "exec-1", "status": "IN_REVIEW"},
+    )
+    try:
+        response = TestClient(app).post(
+            "/v1/agent/projects/project-1/submit-next-result",
+            headers={"X-Agent-Token": "agent-token-fixture"},
+        )
+    finally:
+        app.dependency_overrides.pop(require_worker, None)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "IN_REVIEW"
+    assert calls == [("project-1", "worker-1", "agent-token-fixture")]
+
+
 @pytest.mark.skipif(
     not os.getenv("AAO_TEST_POSTGRES_URL") or
     os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
@@ -1193,28 +1221,24 @@ def test_group_assignment_routes_execution_without_creating_grants(monkeypatch):
             "principal_id": worker_ids[0], "capability": "work.progress",
         }).status_code == 201
         # Submission recovers from the durable result, without rerunning the model.
-        from aao.work_management_api import submit_next_agent_result
-        with pytest.raises(HTTPException) as no_evidence_grant:
-            submit_next_agent_result(project, worker_ids[0], worker_tokens[0])
-        assert no_evidence_grant.value.status_code == 403
+        submit_path = f"/v1/agent/projects/{project}/submit-next-result"
+        denied_response = client.post(submit_path, headers={"X-Agent-Token": worker_tokens[0]})
+        assert denied_response.status_code == 403
         assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
             "principal_id": worker_ids[0], "capability": "evidence.submit",
         }).status_code == 201
-        assert submit_next_agent_result(project, worker_ids[1], worker_tokens[1]) is None
-        with pytest.raises(HTTPException) as wrong_identity:
-            submit_next_agent_result(project, worker_ids[0], worker_tokens[1])
-        assert wrong_identity.value.status_code == 403
-        with pytest.raises(HTTPException) as invalid_token:
-            submit_next_agent_result(project, worker_ids[0], "invalid-token")
-        assert invalid_token.value.status_code == 403
+        assert client.post(submit_path, headers={"X-Agent-Token": worker_tokens[1]}).json() == {"status": "IDLE"}
+        # Another agent sees IDLE rather than submitting this worker's result.
+        assert client.post(submit_path, headers={"X-Agent-Token": worker_tokens[1]}).json() == {"status": "IDLE"}
+        invalid_token = client.post(submit_path, headers={"X-Agent-Token": "invalid-token"})
+        assert invalid_token.status_code == 403
         with connect_postgres() as db:
             db.execute(
                 "UPDATE execution_queue SET result_json=jsonb_set(result_json, "
                 "'{check,conclusion}', '\"failure\"') WHERE id=%s", (execution_id,),
             )
-        with pytest.raises(HTTPException) as failed_check:
-            submit_next_agent_result(project, worker_ids[0], worker_tokens[0])
-        assert failed_check.value.status_code == 409
+        failed_check = client.post(submit_path, headers={"X-Agent-Token": worker_tokens[0]})
+        assert failed_check.status_code == 409
         with connect_postgres() as db:
             db.execute(
                 "UPDATE execution_queue SET result_json=jsonb_set(result_json, "
@@ -1225,9 +1249,8 @@ def test_group_assignment_routes_execution_without_creating_grants(monkeypatch):
                 "DELETE FROM project_grants WHERE project_id=%s AND principal_id=%s "
                 "AND capability='work.progress'", (project, worker_ids[0]),
             )
-        with pytest.raises(HTTPException) as no_progress_grant:
-            submit_next_agent_result(project, worker_ids[0], worker_tokens[0])
-        assert no_progress_grant.value.status_code == 403
+        no_progress_grant = client.post(submit_path, headers={"X-Agent-Token": worker_tokens[0]})
+        assert no_progress_grant.status_code == 403
         assert client.post(f"/v1/projects/{project}/grants", headers=ceo, json={
             "principal_id": worker_ids[0], "capability": "work.progress",
         }).status_code == 201
@@ -1240,16 +1263,18 @@ def test_group_assignment_routes_execution_without_creating_grants(monkeypatch):
 
         monkeypatch.setattr(workflow_api, "start_work_protocol", interrupted_protocol)
         with pytest.raises(RuntimeError, match="simulated interruption"):
-            submit_next_agent_result(project, worker_ids[0], worker_tokens[0])
+            client.post(submit_path, headers={"X-Agent-Token": worker_tokens[0]})
         with connect_postgres() as db:
             assert db.execute("SELECT status FROM work_items WHERE id=%s", (work_id,)).fetchone()[0] == "IN_PROGRESS"
             assert db.execute("SELECT count(*) FROM evidence_artifacts WHERE project_id=%s", (project,)).fetchone()[0] == 0
         monkeypatch.setattr(workflow_api, "start_work_protocol", original_protocol)
-        submitted = submit_next_agent_result(project, worker_ids[0], worker_tokens[0])
+        submitted_response = client.post(submit_path, headers={"X-Agent-Token": worker_tokens[0]})
+        assert submitted_response.status_code == 200, submitted_response.text
+        submitted = submitted_response.json()
         assert submitted["execution_id"] == execution_id
         assert submitted["status"] == "IN_REVIEW"
         assert submitted["evidence"].startswith("sha256:")
-        assert submit_next_agent_result(project, worker_ids[0], worker_tokens[0]) is None
+        assert client.post(submit_path, headers={"X-Agent-Token": worker_tokens[0]}).json() == {"status": "IDLE"}
         assert len(calls) == 1
         with connect_postgres() as db:
             event = db.execute(

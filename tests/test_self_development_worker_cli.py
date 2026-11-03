@@ -45,8 +45,9 @@ def test_worker_runs_one_authorized_queue_item_without_logging_token(tmp_path, m
     monkeypatch.setattr(worker.os, "getuid", lambda: os.stat(runtime).st_uid)
     submissions = []
     monkeypatch.setattr(
-        "aao.work_management_api.submit_next_agent_result",
-        lambda *args: submissions.append(args) or {"work_id": "work-recovered"},
+        "aao.inert_execution_worker._api_request",
+        lambda path, token, *, body: submissions.append((path, token, body))
+        or {"work_id": "work-recovered", "status": "IN_REVIEW"},
     )
     monkeypatch.setattr(
         "aao.inert_execution_worker.run_one",
@@ -64,8 +65,71 @@ def test_worker_runs_one_authorized_queue_item_without_logging_token(tmp_path, m
     output = capsys.readouterr().out
     assert "Execution exec-1: SUCCEEDED" in output
     assert "Submitted work work-recovered: IN_REVIEW" in output
-    assert submissions == [("project-1", "agent-1", "agent-token-fixture")]
+    assert submissions == [(
+        "/v1/agent/projects/project-1/submit-next-result", "agent-token-fixture", {},
+    )]
     assert "agent-token-fixture" not in output
+
+
+def test_worker_result_recovery_uses_api_when_local_database_access_is_denied(
+    tmp_path, monkeypatch,
+):
+    runtime, _ = make_runtime(tmp_path)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setattr(worker.os, "getuid", lambda: os.stat(runtime).st_uid)
+    calls = []
+
+    def denied_local_db(*_args, **_kwargs):
+        raise PermissionError("local PostgreSQL access is forbidden")
+
+    monkeypatch.setattr("aao.postgresql_connection.connect_postgres", denied_local_db)
+    monkeypatch.setattr(
+        "aao.inert_execution_worker._api_request",
+        lambda path, token, *, body: calls.append((path, token, body)) or {"status": "IDLE"},
+    )
+    monkeypatch.setattr(
+        "aao.inert_execution_worker.run_one", lambda *_args, **_kwargs: {"status": "IDLE"},
+    )
+
+    assert worker.run("project-1", "agent-1") == {"status": "IDLE"}
+    assert calls == [(
+        "/v1/agent/projects/project-1/submit-next-result", "agent-token-fixture", {},
+    )]
+
+
+@pytest.mark.parametrize(
+    "response", [{}, {"status": "UNKNOWN"}, {"status": []}, {"status": {}}, None, []],
+)
+def test_worker_rejects_malformed_or_unknown_recovery_response(
+    tmp_path, monkeypatch, response,
+):
+    runtime, _ = make_runtime(tmp_path)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setattr(worker.os, "getuid", lambda: os.stat(runtime).st_uid)
+    monkeypatch.setattr(
+        "aao.inert_execution_worker._api_request",
+        lambda *_args, **_kwargs: response,
+    )
+    monkeypatch.setattr(
+        "aao.inert_execution_worker.run_one",
+        lambda *_args, **_kwargs: pytest.fail("unknown response must fail closed"),
+    )
+
+    with pytest.raises(worker.WorkerError, match="invalid recovery response"):
+        worker.run("project-1", "agent-1")
+
+
+def test_worker_rejects_in_review_response_without_work_id(tmp_path, monkeypatch):
+    runtime, _ = make_runtime(tmp_path)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setattr(worker.os, "getuid", lambda: os.stat(runtime).st_uid)
+    monkeypatch.setattr(
+        "aao.inert_execution_worker._api_request",
+        lambda *_args, **_kwargs: {"status": "IN_REVIEW"},
+    )
+
+    with pytest.raises(worker.WorkerError, match="invalid recovery response"):
+        worker.run("project-1", "agent-1")
 
 
 def test_worker_cli_does_not_require_postgresql_driver(tmp_path, monkeypatch, capsys):
@@ -121,7 +185,7 @@ def test_worker_does_not_downgrade_production_environment(tmp_path, monkeypatch)
 
     monkeypatch.setattr("aao.inert_execution_worker.run_one", fake_run_one)
     # The worker first submits any recovered result; keep this test offline.
-    monkeypatch.setattr("aao.work_management_api.submit_next_agent_result", lambda *args: None)
+    monkeypatch.setattr("aao.inert_execution_worker._api_request", lambda *_a, **_kw: {"status": "IDLE"})
     result = worker.run("project-1", "agent-1")
 
     assert result["status"] == "SUCCEEDED"
@@ -144,7 +208,7 @@ def test_worker_error_output_does_not_include_exception_details(tmp_path, monkey
     runtime, _ = make_runtime(tmp_path)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
     monkeypatch.setattr(worker.os, "getuid", lambda: os.stat(runtime).st_uid)
-    monkeypatch.setattr("aao.work_management_api.submit_next_agent_result", lambda *_: None)
+    monkeypatch.setattr("aao.inert_execution_worker._api_request", lambda *_a, **_kw: {"status": "IDLE"})
     monkeypatch.setattr(
         "aao.inert_execution_worker.run_one",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("sensitive detail")),

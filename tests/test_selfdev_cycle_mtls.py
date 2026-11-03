@@ -257,3 +257,157 @@ def test_certificate_chain_recovery_returns_not_found_when_not_active(monkeypatc
     with pytest.raises(HTTPException) as missing:
         _cycle_mtls_certificate_for(principal)
     assert missing.value.status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("path", "kind", "principal_id", "bearer_header"),
+    [
+        (
+            "/v1/selfdev-cycle-mtls/certificate-chain/me",
+            "AGENT",
+            "aao-selfdev-impl-" + "a" * 32,
+            "X-Agent-Token",
+        ),
+        (
+            "/v1/auditors/selfdev-cycle-mtls/certificate-chain/me",
+            "AUDITOR",
+            "aao-selfdev-review-" + "a" * 32,
+            "X-Auditor-Token",
+        ),
+    ],
+)
+def test_production_http_certificate_recovery_uses_server_tls_identity_and_role_auth(
+    monkeypatch, path, kind, principal_id, bearer_header
+):
+    """Exercise the real FastAPI dependency chain with server-only TLS metadata."""
+    from datetime import datetime
+
+    from fastapi.testclient import TestClient
+
+    from aao.principal_credentials import PrincipalDenied
+    from aao.uvicorn_mtls import MTLS_CLIENT_CERT_EXTENSION
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_ENV", "production")
+    tls_fingerprint = "b" * 64 if kind == "AGENT" else "c" * 64
+    calls = []
+
+    def authenticate_mtls(fingerprint, *, kind):
+        calls.append((fingerprint, kind))
+        expected_fingerprint = "b" * 64 if kind == "AGENT" else "c" * 64
+        if fingerprint != expected_fingerprint:
+            raise PrincipalDenied("test identity rejected")
+        return principal_id, f"digest-{kind.lower()}"
+
+    monkeypatch.setattr("aao.principal_credentials.authenticate_mtls", authenticate_mtls)
+
+    class FakeRepository:
+        def get_active_certificate(self, actual_principal, digest, actual_kind, fingerprint):
+            assert actual_principal == principal_id
+            assert digest == f"digest-{kind.lower()}"
+            assert actual_kind == kind
+            assert fingerprint == tls_fingerprint
+            return (
+                b"-----BEGIN CERTIFICATE-----\npublic-fixture-only\n-----END CERTIFICATE-----\n",
+                tls_fingerprint,
+                datetime.now(UTC) + timedelta(minutes=5),
+            )
+
+    monkeypatch.setattr(
+        "aao.selfdev_cycle_mtls_repository.PostgresCycleIntentRepository",
+        FakeRepository,
+    )
+
+    class ServerTlsExtension:
+        """Stand in for Uvicorn's connection-scoped, verified TLS extension."""
+
+        def __init__(self, asgi_app):
+            self.asgi_app = asgi_app
+
+        async def __call__(self, scope, receive, send):
+            scoped = dict(scope)
+            extensions = dict(scope.get("extensions", {}))
+            extensions[MTLS_CLIENT_CERT_EXTENSION] = {"sha256": tls_fingerprint}
+            scoped["extensions"] = extensions
+            await self.asgi_app(scoped, receive, send)
+
+    # The fake X-Agent/X-Auditor header must not supply the authenticated identity.
+    with TestClient(ServerTlsExtension(app)) as client:
+        response = client.get(path, headers={bearer_header: "untrusted-fixture-token"})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["certificate_sha256"] == tls_fingerprint
+    assert "public-fixture-only" in body["certificate_chain_pem"]
+    assert calls == [(tls_fingerprint, kind)]
+
+
+@pytest.mark.parametrize(
+    ("path", "kind", "header"),
+    [
+        ("/v1/selfdev-cycle-mtls/certificate-chain/me", "AGENT", "X-Agent-Token"),
+        (
+            "/v1/auditors/selfdev-cycle-mtls/certificate-chain/me",
+            "AUDITOR",
+            "X-Auditor-Token",
+        ),
+    ],
+)
+def test_production_http_certificate_recovery_rejects_identity_without_tls_extension(
+    monkeypatch, path, kind, header
+):
+    from fastapi.testclient import TestClient
+
+    from aao.principal_credentials import PrincipalDenied
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_ENV", "production")
+    calls = []
+
+    def authenticate_mtls(fingerprint, *, kind):
+        calls.append((fingerprint, kind))
+        if fingerprint is None:
+            raise PrincipalDenied("TLS identity missing")
+        return "unused", "unused"
+
+    monkeypatch.setattr("aao.principal_credentials.authenticate_mtls", authenticate_mtls)
+    # In particular, the bearer header alone cannot satisfy production auth.
+    with TestClient(app) as client:
+        response = client.get(path, headers={header: "untrusted-fixture-token"})
+
+    assert response.status_code == 403
+    assert calls == [(None, kind)]
+
+
+def test_production_http_reviewer_route_rejects_agent_certificate(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from aao.principal_credentials import PrincipalDenied
+    from aao.uvicorn_mtls import MTLS_CLIENT_CERT_EXTENSION
+    from aao.work_management_api import app
+
+    monkeypatch.setenv("AAO_ENV", "production")
+    calls = []
+
+    def authenticate_mtls(fingerprint, *, kind):
+        calls.append((fingerprint, kind))
+        if fingerprint != "b" * 64 or kind != "AGENT":
+            raise PrincipalDenied("certificate kind mismatch")
+        return "agent-only", "agent-digest"
+
+    monkeypatch.setattr("aao.principal_credentials.authenticate_mtls", authenticate_mtls)
+
+    class AgentTlsExtension:
+        async def __call__(self, scope, receive, send):
+            scoped = dict(scope)
+            scoped["extensions"] = {
+                **scope.get("extensions", {}),
+                MTLS_CLIENT_CERT_EXTENSION: {"sha256": "b" * 64},
+            }
+            await app(scoped, receive, send)
+
+    with TestClient(AgentTlsExtension()) as client:
+        response = client.get("/v1/auditors/selfdev-cycle-mtls/certificate-chain/me")
+
+    assert response.status_code == 403
+    assert calls == [("b" * 64, "AUDITOR")]

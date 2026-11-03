@@ -540,6 +540,23 @@ def test_main_without_state_fails_closed_and_never_prints_token(tmp_path, monkey
     assert "bootstrap" in out.out and "SECRET" not in out.out + out.err
 
 
+def test_production_renewal_fails_closed_before_reading_credentials_or_sudo(
+    monkeypatch, capsys,
+):
+    monkeypatch.setenv("AAO_ENV", "production")
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("production renewal must stop before credentials or sudo")
+
+    monkeypatch.setattr(renew, "read_pm_token", forbidden)
+    monkeypatch.setattr(renew.WrapperInstaller, "run", forbidden)
+    assert renew.main(["--project-id", PROJECT]) == 1
+    output = capsys.readouterr()
+    assert '"event": "selfdev_cycle.blocked"' in output.out
+    assert "production workload identity contract unavailable" in output.out
+    assert "SECRET" not in output.out + output.err
+
+
 def test_wrapper_installer_uses_atomic_replace_with_token_only_on_stdin(monkeypatch):
     seen = {}
 
@@ -632,6 +649,7 @@ def test_user_units_are_oneshot_without_no_new_privileges():
     directives = [line for line in service.splitlines() if not line.startswith("#")]
     assert "Type=oneshot" in directives and "SuccessExitStatus=75" in directives
     assert "from scripts.renew_selfdev_cycle_credentials import main" in service
+    assert "Environment=AAO_ENV=production" in directives
     # sudo (setuid) must work: no NNP and no directive that implies it in user mode.
     for forbidden in ("NoNewPrivileges", "PrivateDevices", "PrivateTmp", "ProtectSystem",
                       "ProtectHome", "RestrictSUIDSGID", "LockPersonality",

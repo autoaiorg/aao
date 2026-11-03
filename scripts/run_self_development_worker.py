@@ -76,7 +76,7 @@ def _read_agent_token(name: str = AGENT_TOKEN_NAME) -> str:
     return token
 
 
-def _resolve_principal_id(token: str, expected: str | None = None) -> str:
+def _resolve_principal_id(token: str | None, expected: str | None = None) -> str:
     """Resolve the cycle-scoped worker identity from the credential itself."""
     from aao.inert_execution_worker import _api_request
 
@@ -99,9 +99,10 @@ def _resolve_principal_id(token: str, expected: str | None = None) -> str:
 def run(project_id: str, principal_id: str | None = None) -> dict:
     if not project_id:
         raise WorkerError("project identifier is required")
-    token = _read_agent_token()
     os.environ.setdefault("AAO_ENV", "development")
-    if os.environ["AAO_ENV"].lower() == "production":
+    production = os.environ["AAO_ENV"].strip().lower() == "production"
+    token = None if production else _read_agent_token()
+    if production:
         # Keep production controls intact: local dotenv and test-only host
         # identity overrides must not become available by downgrading mode.
         os.environ.pop("AAO_ENV_FILE", None)
@@ -129,7 +130,7 @@ def run(project_id: str, principal_id: str | None = None) -> dict:
             principal_id, token, project_id=project_id, seconds=MAX_LEASE_SECONDS,
         )
     finally:
-        del token
+        token = None
 
 
 def dispatch_next(project_id: str, principal_id: str | None, base_sha: str) -> dict:
@@ -139,31 +140,38 @@ def dispatch_next(project_id: str, principal_id: str | None, base_sha: str) -> d
     if len(base_sha) != 40 or any(char not in "0123456789abcdef" for char in base_sha):
         raise WorkerError("base SHA must be a lowercase 40-character commit hash")
     api_base = os.environ.get("AAO_API_BASE_URL", "http://127.0.0.1:8001").rstrip("/")
-    parsed = urllib.parse.urlparse(api_base)
-    local_hosts = {"localhost", "127.0.0.1", "::1"}
-    if parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in local_hosts):
-        raise WorkerError("AAO_API_BASE_URL must use HTTPS unless it targets localhost")
-    if parsed.username or parsed.password or not parsed.hostname:
-        raise WorkerError("AAO_API_BASE_URL must not contain credentials")
-    token = _read_agent_token()
+    from aao.workload_client import WorkloadTransportError, validate_workload_origin
+
+    try:
+        validate_workload_origin(api_base)
+    except WorkloadTransportError as exc:
+        raise WorkerError(str(exc)) from None
+    production = os.environ.get("AAO_ENV", "").strip().lower() == "production"
+    token = None if production else _read_agent_token()
     try:
         principal_id = _resolve_principal_id(token, principal_id)
+        from aao.workload_client import build_workload_opener, workload_headers
+
+        try:
+            headers = workload_headers(token)
+            opener = build_workload_opener()
+        except RuntimeError as exc:
+            raise WorkerError(str(exc)) from None
         request = urllib.request.Request(
             f"{api_base}/v1/agent/dispatch-next",
             data=json.dumps({"project_id": project_id, "principal_id": principal_id,
                              "base_sha": base_sha}).encode("utf-8"),
-            headers={"Content-Type": "application/json", "X-Agent-Token": token},
+            headers={**headers, "Content-Type": "application/json"},
             method="POST",
         )
         # Worker credentials are scoped to the configured AAO API origin. Never
         # let inherited proxy settings redirect that bearer header elsewhere.
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _RejectRedirects)
         with opener.open(request, timeout=10) as response:
             payload = json.loads(response.read(65536))
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
         raise WorkerError(f"AAO dispatch request failed ({type(exc).__name__})") from None
     finally:
-        del token
+        token = None
     if not isinstance(payload, dict) or payload.get("status") not in {"IDLE", "BLOCKED", "QUEUED"}:
         raise WorkerError("AAO dispatch response did not match the expected contract")
     return payload

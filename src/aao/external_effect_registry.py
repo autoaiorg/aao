@@ -27,9 +27,9 @@ def propose(*, execution_id: str, worker_id: str, lease_token: str,
         raise EffectConflict("Idempotency key too long")
     digest = canonical_digest(request)
     with connect_postgres() as db:
-        from aao.principal_credentials import PrincipalDenied, authenticate_in_transaction
+        from aao.principal_credentials import PrincipalDenied, authenticate_identity_in_transaction
         try:
-            principal_id = authenticate_in_transaction(
+            principal_id = authenticate_identity_in_transaction(
                 db, agent_credential, kind="AGENT",
             )
         except PrincipalDenied as exc:

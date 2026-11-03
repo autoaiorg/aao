@@ -225,6 +225,9 @@ def verify(project_id: str, work_id: str) -> int:
 
 
 def main() -> int:
+    if os.getenv("AAO_ENV", "").strip().lower() == "production":
+        print("Self-development bearer CLI is development-only; production uses workload identities", file=sys.stderr)
+        return 1
     os.environ.setdefault("AAO_ENV", "development")
     os.environ.setdefault("AAO_ENV_FILE", ".env.local")
     os.chdir(ROOT)

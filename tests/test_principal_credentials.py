@@ -20,6 +20,240 @@ def test_development_principal_credentials_fail_closed_in_production(monkeypatch
         authenticate("not-a-real-token", kind="AGENT")
 
 
+@pytest.mark.parametrize(
+    "fingerprint,kind",
+    [
+        (None, "AGENT"),
+        ("A" * 64, "AGENT"),
+        ("g" * 64, "AGENT"),
+        ("a" * 64, "CEO"),
+    ],
+)
+def test_mtls_identity_rejects_missing_or_malformed_identity_before_database(
+    monkeypatch, fingerprint, kind,
+):
+    from aao import principal_credentials
+
+    monkeypatch.setenv("AAO_ENV", "production")
+
+    def database_access_is_forbidden():
+        raise AssertionError("invalid mTLS identity must fail before database access")
+
+    monkeypatch.setattr(principal_credentials, "connect_postgres", database_access_is_forbidden)
+    with pytest.raises(PrincipalDenied):
+        principal_credentials.authenticate_mtls(fingerprint, kind=kind)
+
+
+def test_mtls_identity_resolves_enabled_unexpired_principal_and_digest(monkeypatch):
+    from contextlib import contextmanager
+
+    from aao import principal_credentials
+
+    class Cursor:
+        def execute(self, sql, params):
+            assert "workload_identity_bindings" in sql
+            assert "b.enabled=true" in sql
+            assert "b.expires_at>clock_timestamp()" in sql
+            assert "c.enabled=true" in sql
+            assert "c.expires_at>clock_timestamp()" in sql
+            assert params == ("a" * 64, "AGENT")
+            return self
+
+        def fetchone(self):
+            return ("agent-1", "current-credential-digest")
+
+    @contextmanager
+    def connect():
+        yield Cursor()
+
+    monkeypatch.setenv("AAO_ENV", "production")
+    monkeypatch.setattr(principal_credentials, "connect_postgres", connect)
+    assert principal_credentials.authenticate_mtls("a" * 64, kind="AGENT") == (
+        "agent-1",
+        "current-credential-digest",
+    )
+
+
+def test_mtls_identity_rejects_unbound_or_disabled_principal(monkeypatch):
+    from contextlib import contextmanager
+
+    from aao import principal_credentials
+
+    class Cursor:
+        def execute(self, _sql, _params):
+            return self
+
+        def fetchone(self):
+            return None
+
+    @contextmanager
+    def connect():
+        yield Cursor()
+
+    monkeypatch.setenv("AAO_ENV", "production")
+    monkeypatch.setattr(principal_credentials, "connect_postgres", connect)
+    with pytest.raises(PrincipalDenied, match="invalid or revoked"):
+        principal_credentials.authenticate_mtls("a" * 64, kind="AGENT")
+
+
+def test_production_worker_auth_uses_only_server_verified_mtls_scope(monkeypatch):
+    from fastapi import Request
+
+    from aao import principal_credentials
+    from aao.uvicorn_mtls import MTLS_CLIENT_CERT_EXTENSION
+    from aao.work_management_api import AuthenticatedPrincipal, require_worker
+
+    fingerprint = "a" * 64
+    monkeypatch.setenv("AAO_ENV", "production")
+    monkeypatch.setattr(
+        principal_credentials,
+        "authenticate_mtls",
+        lambda observed, *, kind: (
+            ("agent-1", "db-digest")
+            if observed == fingerprint and kind == "AGENT"
+            else (_ for _ in ()).throw(AssertionError("untrusted identity was used"))
+        ),
+    )
+    request = Request(
+        {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "https",
+            "path": "/",
+            "raw_path": b"/",
+            "query_string": b"",
+            "headers": [(b"x-agent-token", b"forged")],
+            "client": ("127.0.0.1", 1),
+            "server": ("127.0.0.1", 8002),
+            "extensions": {MTLS_CLIENT_CERT_EXTENSION: {"sha256": fingerprint}},
+        }
+    )
+
+    principal = require_worker(request=request, x_agent_token="forged")
+
+    assert principal == "agent-1"
+    assert isinstance(principal, AuthenticatedPrincipal)
+    assert principal.token_digest == "db-digest"
+
+
+def test_production_reader_preserves_fingerprint_for_transaction_recheck(monkeypatch):
+    from fastapi import Request
+
+    from aao import principal_credentials
+    from aao.uvicorn_mtls import MTLS_CLIENT_CERT_EXTENSION
+    from aao.work_management_api import read_principal, require_grant
+
+    fingerprint = "b" * 64
+    monkeypatch.setenv("AAO_ENV", "production")
+    monkeypatch.setattr(
+        principal_credentials,
+        "authenticate_mtls",
+        lambda observed, *, kind: ("agent-1", "db-digest")
+        if observed == fingerprint and kind == "AGENT"
+        else pytest.fail("reader used an untrusted identity"),
+    )
+    rechecks = []
+    monkeypatch.setattr(
+        principal_credentials,
+        "authenticate_mtls_in_transaction",
+        lambda db, observed, **kwargs: rechecks.append((observed, kwargs)) or True,
+    )
+
+    request = Request({
+        "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+        "method": "GET", "scheme": "https", "path": "/", "raw_path": b"/",
+        "query_string": b"", "headers": [], "client": ("127.0.0.1", 1),
+        "server": ("127.0.0.1", 8002),
+        "extensions": {MTLS_CLIENT_CERT_EXTENSION: {"sha256": fingerprint}},
+    })
+    principal = read_principal(request=request)
+
+    class Db:
+        def __init__(self):
+            self.sql = ""
+
+        def execute(self, sql, _args):
+            self.sql = sql
+            return self
+
+        def fetchone(self):
+            if "FROM principal_credentials" in self.sql:
+                return ("AGENT", True)
+            return (1,)
+
+    require_grant(Db(), principal, "project-1", "work.create")
+
+    assert rechecks == [(
+        fingerprint,
+        {"principal_id": "agent-1", "token_digest": "db-digest", "kind": "AGENT"},
+    )]
+
+
+def test_production_bearer_without_verified_mtls_is_rejected(monkeypatch):
+    from fastapi import HTTPException, Request
+
+    from aao import principal_credentials
+    from aao.work_management_api import require_worker
+
+    monkeypatch.setenv("AAO_ENV", "production")
+    monkeypatch.setattr(
+        principal_credentials, "authenticate_mtls",
+        lambda fingerprint, *, kind: (_ for _ in ()).throw(
+            PrincipalDenied("Workload identity required")
+        ) if fingerprint is None and kind == "AGENT" else pytest.fail("bad identity"),
+    )
+    request = Request({
+        "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+        "method": "POST", "scheme": "https", "path": "/", "raw_path": b"/",
+        "query_string": b"", "headers": [(b"x-agent-token", b"otherwise-valid-bearer")],
+        "client": ("127.0.0.1", 1), "server": ("127.0.0.1", 8002),
+        "extensions": {},
+    })
+    with pytest.raises(HTTPException) as denied:
+        require_worker(request=request, x_agent_token="otherwise-valid-bearer")
+    assert denied.value.status_code == 403
+
+
+def test_mtls_identity_is_revalidated_and_locked_in_mutation_transaction(monkeypatch):
+    from aao.principal_credentials import authenticate_mtls_in_transaction
+
+    monkeypatch.setenv("AAO_ENV", "production")
+
+    class Db:
+        def __init__(self, row):
+            self.row = row
+            self.query = None
+            self.params = None
+
+        def execute(self, query, params):
+            self.query, self.params = query, params
+            return self
+
+        def fetchone(self):
+            return self.row
+
+    active = Db(("agent-1", "current-digest"))
+    assert authenticate_mtls_in_transaction(
+        active, "a" * 64, principal_id="agent-1",
+        token_digest="current-digest", kind="AGENT",
+    )
+    assert "FOR SHARE OF b,c" in active.query
+    assert "b.revoked_at IS NULL" in active.query
+    assert "b.enabled=true" in active.query and "c.enabled=true" in active.query
+    assert active.params == ("a" * 64, "agent-1", "AGENT")
+
+    # If revocation committed before the operation acquires its row locks,
+    # the binding no longer matches and the protected mutation must abort.
+    revoked = Db(None)
+    with pytest.raises(PrincipalDenied, match="invalid or revoked"):
+        authenticate_mtls_in_transaction(
+            revoked, "a" * 64, principal_id="agent-1",
+            token_digest="current-digest", kind="AGENT",
+        )
+
+
 def test_transactional_development_credentials_fail_closed_in_production(monkeypatch):
     from aao.principal_credentials import authenticate_in_transaction
 
@@ -223,6 +457,7 @@ def test_project_listing_rechecks_active_reader_in_transaction(monkeypatch):
     from fastapi import HTTPException
 
     from aao import work_management_api
+    from aao.principal_credentials import PrincipalDenied
 
     class ReaderDb:
         def __init__(self, row):
@@ -245,6 +480,17 @@ def test_project_listing_rechecks_active_reader_in_transaction(monkeypatch):
             yield selected_db
 
         return fake_tx
+
+    def authenticate(db, principal, *, kind):
+        db.execute("SELECT principal credential FOR SHARE", (str(principal),))
+        row = db.fetchone()
+        if not row or row != (kind, True):
+            raise PrincipalDenied("invalid or revoked")
+        return str(principal)
+
+    monkeypatch.setattr(
+        "aao.principal_credentials.authenticate_identity_in_transaction", authenticate,
+    )
 
     for record in (None, ("AGENT", False), ("AUDITOR", True)):
         db = ReaderDb(record)
@@ -269,7 +515,7 @@ def test_project_listing_rechecks_active_reader_in_transaction(monkeypatch):
     )
     assert work_management_api.projects(principal=principal) == []
     assert len(active.queries) == 2
-    assert active.queries[0][1] == ("agent-1", "agent-digest")
+    assert active.queries[0][1] == ("agent-1",)
     assert active.queries[1][1] == ("agent-1",)
 
 

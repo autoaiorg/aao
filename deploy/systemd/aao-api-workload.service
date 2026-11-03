@@ -1,0 +1,33 @@
+[Unit]
+Description=AAO production workload API (mutual TLS)
+After=network-online.target postgresql.service
+Wants=network-online.target postgresql.service
+
+[Service]
+Type=simple
+User=aao-api
+Group=aao-api
+UMask=0027
+WorkingDirectory=/opt/aao/current
+Environment=AAO_ENV=production
+EnvironmentFile=-/etc/aao/aao-api.env
+LoadCredential=server-cert:/etc/aao/workload-tls/server-cert.pem
+LoadCredential=server-key:/etc/aao/workload-tls/server-key.pem
+LoadCredential=client-ca:/etc/aao/workload-tls/client-ca.pem
+ExecStart=/opt/aao/venv/bin/python -m aao.workload_api_server
+Restart=on-failure
+RestartSec=5s
+KillMode=mixed
+TimeoutStopSec=15s
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=/var/log/aao /var/lib/aao-api
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

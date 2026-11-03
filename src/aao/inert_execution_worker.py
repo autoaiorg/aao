@@ -72,28 +72,33 @@ class _RejectRedirects(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _api_request(path: str, agent_credential: str, *, body: dict,
+def _api_request(path: str, agent_credential: str | None, *, body: dict,
                  method: str = "POST") -> dict:
     base_url = os.environ.get("AAO_API_BASE_URL", "http://127.0.0.1:8001").rstrip("/")
-    parsed = urllib.parse.urlparse(base_url)
-    local_hosts = {"localhost", "127.0.0.1", "::1"}
-    if parsed.scheme != "https" and not (
-        parsed.scheme == "http" and parsed.hostname in local_hosts
-    ):
-        raise WorkerAPIError(None, "AAO_API_BASE_URL must use HTTPS unless it targets localhost")
-    if (parsed.username or parsed.password or not parsed.hostname or parsed.path
-            or parsed.query or parsed.fragment):
-        raise WorkerAPIError(None, "AAO_API_BASE_URL must be an origin without credentials or path")
+    from aao.workload_client import (
+        WorkloadTransportError,
+        build_workload_opener,
+        validate_workload_origin,
+        workload_headers,
+    )
+
+    try:
+        validate_workload_origin(base_url)
+    except WorkloadTransportError as exc:
+        raise WorkerAPIError(None, str(exc)) from None
     if not path.startswith("/") or path.startswith("//"):
         raise WorkerAPIError(None, "AAO worker API path must be origin-relative")
+    try:
+        headers = workload_headers(agent_credential)
+        opener = build_workload_opener()
+    except RuntimeError as exc:
+        raise WorkerAPIError(None, str(exc)) from None
     request = urllib.request.Request(
         f"{base_url}{path}", data=json.dumps(body).encode("utf-8"),
-        headers={"Accept": "application/json", "Content-Type": "application/json",
-                 "X-Agent-Token": agent_credential}, method=method,
+        headers=headers, method=method,
     )
-    # Worker credentials are scoped to the configured AAO API origin. Never
-    # let inherited proxy settings redirect that bearer header elsewhere.
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _RejectRedirects)
+    # Never let inherited proxy settings or redirects change the authenticated
+    # workload API origin. Production identity is TLS-bound, not a header.
     try:
         with opener.open(request, timeout=15) as response:
             payload = json.loads(response.read(1_048_577))

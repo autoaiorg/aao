@@ -50,10 +50,10 @@ def register_evidence_in_transaction(
     """Same credential/grant checks and immutable storage in a caller-owned transaction."""
     _validate_evidence(content, media_type)
     digest = hashlib.sha256(content).hexdigest()
-    from aao.principal_credentials import PrincipalDenied, authenticate_in_transaction
+    from aao.principal_credentials import PrincipalDenied, authenticate_identity_in_transaction
 
     try:
-        principal_id = authenticate_in_transaction(
+        principal_id = authenticate_identity_in_transaction(
             db, agent_credential, kind="AGENT",
         )
     except PrincipalDenied as exc:
@@ -136,10 +136,10 @@ def read_evidence(
         raise EvidenceDenied("Evidence review capability required")
     validate_evidence_references(references)
     with connect_postgres() as db:
-        from aao.principal_credentials import PrincipalDenied, authenticate_in_transaction
+        from aao.principal_credentials import PrincipalDenied, authenticate_identity_in_transaction
 
         try:
-            reviewer_id = authenticate_in_transaction(
+            reviewer_id = authenticate_identity_in_transaction(
                 db, auditor_credential, kind="AUDITOR",
             )
         except PrincipalDenied as exc:

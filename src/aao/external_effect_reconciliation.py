@@ -17,9 +17,9 @@ def reject_unexecuted_proposal(effect_id: str, *, auditor_credential: str, evide
     if not auditor_credential or not evidence:
         raise EffectReviewDenied("Active auditor credential and meaningful evidence required")
     with connect_postgres() as db:
-        from aao.principal_credentials import PrincipalDenied, authenticate_in_transaction
+        from aao.principal_credentials import PrincipalDenied, authenticate_identity_in_transaction
         try:
-            reviewer_id = authenticate_in_transaction(
+            reviewer_id = authenticate_identity_in_transaction(
                 db, auditor_credential, kind="AUDITOR"
             )
         except PrincipalDenied as exc:

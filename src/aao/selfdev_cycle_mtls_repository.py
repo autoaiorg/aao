@@ -54,7 +54,7 @@ class PostgresCycleIntentRepository:
             ).fetchone()
             if not principal or principal[0] != intent.kind or principal[1]:
                 raise CycleMtlError("cycle principal is not pending")
-            if principal[2] is not None and principal[2] < intent.not_after:
+            if principal[2] is not None and principal[2] <= intent.not_after:
                 raise CycleMtlError("cycle principal expires before its intent")
             db.execute(
                 "INSERT INTO selfdev_cycle_mtls_intents "

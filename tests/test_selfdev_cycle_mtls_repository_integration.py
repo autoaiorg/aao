@@ -189,6 +189,21 @@ def test_expired_intent_cannot_be_loaded_or_completed(seeded_intent):
         )
 
 
+def test_principal_expiring_at_intent_deadline_cannot_create_intent(seeded_intent):
+    from aao.postgresql_connection import connect_postgres
+    from aao.selfdev_cycle_mtls import CycleMtlError
+    from aao.selfdev_cycle_mtls_repository import PostgresCycleIntentRepository
+
+    with connect_postgres() as db:
+        db.execute(
+            "UPDATE principal_credentials SET expires_at=%s WHERE principal_id=%s",
+            (seeded_intent.not_after, seeded_intent.principal_id),
+        )
+
+    with pytest.raises(CycleMtlError, match="expires before its intent"):
+        PostgresCycleIntentRepository().create_intent(seeded_intent)
+
+
 def test_revoke_disables_binding_and_principal_atomically(seeded_intent):
     from aao.postgresql_connection import connect_postgres
     from aao.selfdev_cycle_mtls_repository import PostgresCycleIntentRepository

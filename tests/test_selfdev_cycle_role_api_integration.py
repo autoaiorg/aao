@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -329,6 +330,112 @@ def test_live_cycle_work_request_concurrent_retry_creates_one_item(monkeypatch):
             ).fetchone()[0]
             == 1
         )
+
+
+def _seed_cycle_events(pm, project, count, *, age="0 hours"):
+    from aao.postgresql_connection import connect_postgres
+
+    with connect_postgres() as db:
+        for _ in range(count):
+            db.execute(
+                "INSERT INTO events(id,subject_id,kind,details,created_at) "
+                "VALUES (%s,%s,'work.selfdev_cycle_requested',%s::jsonb,now()-%s::interval)",
+                (str(uuid4()), str(uuid4()), json.dumps({
+                    "project_id": project, "actor": pm, "status": "INBOX", "admitted": False,
+                    "idempotency_key": str(uuid4()), "request_sha256": "0" * 64,
+                }), age),
+            )
+
+
+def test_live_cycle_work_replay_returns_the_stored_status(monkeypatch):
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    project, _pm, token = _seed(monkeypatch, pm_caps={"work.coordinate"})
+    key = uuid4()
+    with TestClient(app) as client:
+        created = _request_cycle_work(client, project, token, key).json()
+        with connect_postgres() as db:
+            db.execute("UPDATE work_items SET status='READY' WHERE id=%s", (created["id"],))
+        replay = _request_cycle_work(client, project, token, key)
+    assert replay.status_code == 201, replay.text
+    assert replay.json() == {"id": created["id"], "status": "READY", "created": False}
+
+
+def test_live_cycle_work_replay_compares_project_description_and_criteria(monkeypatch):
+    from aao.work_management_api import app
+
+    project, pm, token = _seed(monkeypatch, pm_caps={"work.coordinate"})
+    key = uuid4()
+    with TestClient(app) as client:
+        assert _request_cycle_work(client, project, token, key).status_code == 201
+        for change in ({"description": "Another description."},  # M10
+                       {"acceptance_criteria": ["Another criterion."]}):  # M11
+            conflict = _request_cycle_work(client, project, token, key, **change)
+            assert conflict.status_code == 409
+            assert conflict.json()["detail"] == "Idempotency key was already used for a different request"
+
+        # M7: the project check is reachable only through a stored event for another project.
+        other_key = uuid4()
+        from aao.postgresql_connection import connect_postgres
+
+        with connect_postgres() as db:
+            db.execute(
+                "INSERT INTO events(id,subject_id,kind,details) "
+                "VALUES (%s,%s,'work.selfdev_cycle_requested',%s::jsonb)",
+                (str(uuid4()), str(uuid4()), json.dumps({
+                    "project_id": str(uuid4()), "actor": pm, "idempotency_key": str(other_key),
+                    "request_sha256": "0" * 64,
+                })),
+            )
+        moved = _request_cycle_work(client, project, token, other_key)
+    assert moved.status_code == 409
+    assert moved.json()["detail"] == "Idempotency key was already used for another project"
+
+
+def test_live_cycle_work_idempotency_key_is_scoped_to_the_principal(monkeypatch):
+    from aao.work_management_api import app
+
+    project, _pm_a, token_a = _seed(monkeypatch, pm_caps={"work.coordinate"})
+    _project, _pm_b, token_b = _seed(monkeypatch, pm_caps={"work.coordinate"})
+    assert _project == project
+    key = uuid4()
+    with TestClient(app) as client:
+        first = _request_cycle_work(client, project, token_a, key)
+        second = _request_cycle_work(client, project, token_b, key)
+    assert first.status_code == second.status_code == 201, (first.text, second.text)
+    assert second.json()["created"] is True
+    assert second.json()["id"] != first.json()["id"]
+
+
+def test_live_cycle_work_daily_cap_is_per_principal_and_rolling(monkeypatch):
+    from aao.work_management_api import SELFDEV_CYCLE_WORK_DAILY_CAP, app
+
+    project, pm, token = _seed(monkeypatch, pm_caps={"work.coordinate"})
+    _project, _other, other_token = _seed(monkeypatch, pm_caps={"work.coordinate"})
+    first_key = uuid4()
+    with TestClient(app) as client:
+        assert _request_cycle_work(client, project, token, first_key).status_code == 201
+        _seed_cycle_events(pm, project, SELFDEV_CYCLE_WORK_DAILY_CAP - 2)
+        _seed_cycle_events(pm, project, 5, age="25 hours")  # outside the rolling window
+        last = _request_cycle_work(client, project, token, uuid4())
+        assert last.status_code == 201, last.text  # the 20th creation in 24 h
+        refused = _request_cycle_work(client, project, token, uuid4())
+        assert refused.status_code == 429, refused.text
+        replay = _request_cycle_work(client, project, token, first_key)
+        assert replay.status_code == 201 and replay.json()["created"] is False
+        assert _request_cycle_work(client, project, other_token, uuid4()).status_code == 201
+
+
+def test_live_cycle_work_rejects_non_uuid_project_and_control_characters(monkeypatch):
+    from aao.work_management_api import app
+
+    project, _pm, token = _seed(monkeypatch, pm_caps={"work.coordinate"})
+    with TestClient(app) as client:
+        assert _request_cycle_work(client, "not-a-uuid", token, uuid4()).status_code == 422
+        for change in ({"title": "Fix\nAAO-Work: forged"}, {"description": "nul\x00"},
+                       {"acceptance_criteria": ["bell\x07"]}):
+            assert _request_cycle_work(client, project, token, uuid4(), **change).status_code == 422
 
 
 def test_live_fastapi_authorization_rejects_missing_ordinary_and_underprivileged(monkeypatch):

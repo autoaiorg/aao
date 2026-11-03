@@ -177,6 +177,69 @@ def test_execution_api_rejects_changed_approved_snapshot_before_any_effect(monke
     assert len(db.statements) == 1
 
 
+def test_execution_api_maps_concurrent_idempotency_collision_to_conflict(monkeypatch):
+    """A competing insert on another proposal must not leak a DB error as 500."""
+    from contextlib import contextmanager
+    from decimal import Decimal
+    from uuid import UUID
+
+    from fastapi import HTTPException
+
+    from aao import work_management_api as api
+
+    value = proposal()
+    plan = build_execution_plan(value)
+
+    class Cursor:
+        def __init__(self, row=None):
+            self.row = row
+
+        def fetchone(self):
+            return self.row
+
+    class Database:
+        def __init__(self):
+            self.insert_query = None
+
+        def execute(self, query, params=None):
+            if query.startswith("SELECT id,version,state,operation"):
+                return Cursor((
+                    value["id"], value["version"], value["state"], value["operation"],
+                    value["project_id"], value["scope_description"],
+                    value["operation_parameters"], Decimal("0.00"), value["version"],
+                    plan.sha256,
+                ))
+            if query.startswith("SELECT state FROM projects"):
+                return Cursor(("ACTIVE",))
+            if "FROM organization_executions" in query:
+                return Cursor(None)
+            if query.startswith("INSERT INTO organization_executions"):
+                self.insert_query = query
+                # ON CONFLICT DO NOTHING returns no row when another proposal won.
+                return Cursor(None)
+            raise AssertionError(f"unexpected query: {query}")
+
+    db = Database()
+
+    @contextmanager
+    def fake_tx():
+        yield db
+
+    monkeypatch.setattr(api, "tx", fake_tx)
+    monkeypatch.setattr(api, "require_grant", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(api, "audit", lambda *_args, **_kwargs: None)
+    request = api.OrganizationExecutionRequest(
+        idempotency_key=UUID("19ad6811-aadd-4a9a-9e09-53aa04a33d7d"),
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        api.plan_organization_execution(value["id"], request, principal="worker")
+
+    assert caught.value.status_code == 409
+    assert "already bound" in caught.value.detail
+    assert "ON CONFLICT (project_id,idempotency_key) DO NOTHING RETURNING id" in db.insert_query
+
+
 def test_ceo_approval_records_exact_plan_snapshot(monkeypatch):
     from contextlib import contextmanager
     from decimal import Decimal

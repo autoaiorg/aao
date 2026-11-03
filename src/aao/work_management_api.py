@@ -2798,14 +2798,20 @@ def plan_organization_execution(
             raise HTTPException(409, "Execution idempotency record is inconsistent")
 
         execution_id = str(uuid4())
-        db.execute(
+        inserted = db.execute(
             "INSERT INTO organization_executions(id,proposal_id,proposal_version,project_id,"
             "plan_sha256,plan_json,idempotency_key,state,actor_principal_id,authority_capability) "
-            "VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s,'PLANNED',%s,%s)",
+            "VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s,'PLANNED',%s,%s) "
+            "ON CONFLICT (project_id,idempotency_key) DO NOTHING RETURNING id",
             (execution_id, proposal_id, version, project_id, plan.sha256,
              json.dumps(plan.as_dict()), str(payload.idempotency_key), actor,
              plan.authority_required),
         )
+        if not inserted.fetchone():
+            # Another proposal may have claimed this project-scoped key after our
+            # earlier lookup. The unique constraint is authoritative; fail as a
+            # stable conflict rather than leaking a database error as HTTP 500.
+            raise HTTPException(409, "Idempotency key is already bound to another execution")
         db.execute(
             "INSERT INTO organization_execution_events(execution_id,from_state,to_state,"
             "actor_principal_id,event_type,details_json) "

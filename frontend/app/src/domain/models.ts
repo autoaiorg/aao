@@ -406,6 +406,7 @@ export interface OrganizationStructure {
   totalStandingAgents: number;
   totalEphemeralAgents: number;
   totalUnknownAgents?: number;
+  historicalAgentCount?: number;
   activeAssignmentsCount: number;
   coverage?: OrganizationCoverage;
 }

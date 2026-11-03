@@ -248,6 +248,7 @@ export const OrganizationStructureSchema = z.object({
   totalStandingAgents: z.number().default(0),
   totalEphemeralAgents: z.number().default(0),
   totalUnknownAgents: z.number().default(0).optional(),
+  historicalAgentCount: z.number().default(0).optional(),
   activeAssignmentsCount: z.number().default(0),
   coverage: OrganizationCoverageSchema.optional(),
 });

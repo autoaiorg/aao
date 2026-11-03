@@ -1133,6 +1133,11 @@ def _require_selfdev_cycle_issuer(db, principal: AuthenticatedPrincipal, project
     require_grant(db, principal, project_id, SELFDEV_CYCLE_ISSUER_CAPABILITY)
 
 
+def _production_selfdev_cycle_mtls_ready() -> bool:
+    """Production signer/verifier wiring stays disabled until separately reviewed."""
+    return False
+
+
 def _bind_selfdev_cycle_implementer(db, project_id: str, principal_id: str) -> dict:
     """G1+G3: bind a new cycle implementer to this API host and inherit its profile.
 
@@ -1261,6 +1266,13 @@ def issue_selfdev_cycle_roles(
 ):
     """Issue only the fixed, short-lived implementer/reviewer pair for Self Development."""
     production = os.getenv("AAO_ENV", "").strip().lower() == "production"
+    if production and not _production_selfdev_cycle_mtls_ready():
+        raise HTTPException(503, "Self Development mTLS signer is not configured")
+    if production and not principal.workload_fingerprint:
+        # FastAPI normally guarantees this through require_worker. Keep direct
+        # internal invocations fail-closed too; they must not synthesize a
+        # production issuance by passing a bearer-authenticated principal.
+        raise HTTPException(503, "Production cycle issuance requires verified mTLS")
     from aao.principal_credentials import digest_token
 
     cycle_id = payload.cycle_id
@@ -1282,20 +1294,81 @@ def issue_selfdev_cycle_roles(
                 or len(active_projects) != 1 or str(active_projects[0][0]) != project_id):
             raise HTTPException(409, "Self Development project is not uniquely active")
         existing_roles = db.execute(
-            "SELECT principal_id FROM principal_credentials WHERE principal_id=ANY(%s) FOR UPDATE",
+            "SELECT principal_id FROM principal_credentials WHERE principal_id=ANY(%s)"
+            + ("" if production else " FOR UPDATE"),
             ([principal_id for principal_id, _kind, _grants in roles],),
         ).fetchall()
         if existing_roles:
+            if production and len(existing_roles) == len(roles):
+                # The response only contains public identity/intent references,
+                # never a token. Returning the existing pending/completed
+                # intents makes a lost HTTP response recoverable by cycle_id.
+                existing_intents = db.execute(
+                    "SELECT principal_id,kind,intent_id,state,not_after "
+                    "FROM selfdev_cycle_mtls_intents WHERE project_id=%s AND cycle_id=%s "
+                    "ORDER BY kind",
+                    (project_id, cycle_id),
+                ).fetchall()
+                expected_intents = {
+                    (principal_id, kind) for principal_id, kind, _grants in roles
+                }
+                if (
+                    len(existing_intents) == len(roles)
+                    and {(row[0], row[1]) for row in existing_intents} == expected_intents
+                    and all(row[3] in {"PENDING", "COMPLETED"} for row in existing_intents)
+                ):
+                    return {
+                        "cycle_id": cycle_id,
+                        "project_id": project_id,
+                        "expires_at": min(row[4] for row in existing_intents).isoformat(),
+                        "roles": [
+                            {
+                                "principal_id": row[0],
+                                "kind": row[1],
+                                "grants": list(
+                                    SELFDEV_IMPLEMENTER_GRANTS
+                                    if row[1] == "AGENT"
+                                    else SELFDEV_REVIEWER_GRANTS
+                                ),
+                                "intent_id": str(row[2]),
+                                "certificate_status": (
+                                    "pending_verifier" if row[3] == "PENDING" else "verified"
+                                ),
+                            }
+                            for row in existing_intents
+                        ],
+                        "replayed": True,
+                    }
             raise HTTPException(409, "Self Development cycle roles already exist")
         # H1b caps; the project row lock above serializes issuance (only the
         # uniquely active Self Development project can issue at all).
-        live_cycles = db.execute(
-            "SELECT count(*) FROM principal_credentials c WHERE c.kind='AGENT' AND c.enabled "
-            "AND c.principal_id ~ %s AND c.expires_at>clock_timestamp() "
-            "AND EXISTS (SELECT 1 FROM project_grants g WHERE g.principal_id=c.principal_id "
-            "AND g.project_id=%s)",
-            (SELFDEV_IMPL_PRINCIPAL_RE, project_id),
-        ).fetchone()[0]
+        if production:
+            # Production cycle credentials are intentionally disabled until
+            # certificate verification, so counting enabled credentials would
+            # let every issuance bypass the overlap cap. Count reservations as
+            # well as completed, still-live identities. The project row lock
+            # serializes issuers around this count and the subsequent inserts.
+            live_cycles = db.execute(
+                "SELECT count(*) FROM ("
+                " SELECT cycle_id FROM selfdev_cycle_mtls_intents "
+                " WHERE project_id=%s AND state IN ('PENDING','COMPLETED') "
+                " AND not_after>clock_timestamp() "
+                " UNION "
+                " SELECT substring(c.principal_id from 18) AS cycle_id "
+                " FROM principal_credentials c JOIN project_grants g USING(principal_id) "
+                " WHERE c.kind='AGENT' AND c.enabled AND c.principal_id ~ %s "
+                " AND c.expires_at>clock_timestamp() AND g.project_id=%s"
+                ") live",
+                (project_id, SELFDEV_IMPL_PRINCIPAL_RE, project_id),
+            ).fetchone()[0]
+        else:
+            live_cycles = db.execute(
+                "SELECT count(*) FROM principal_credentials c WHERE c.kind='AGENT' AND c.enabled "
+                "AND c.principal_id ~ %s AND c.expires_at>clock_timestamp() "
+                "AND EXISTS (SELECT 1 FROM project_grants g WHERE g.principal_id=c.principal_id "
+                "AND g.project_id=%s)",
+                (SELFDEV_IMPL_PRINCIPAL_RE, project_id),
+            ).fetchone()[0]
         if live_cycles >= SELFDEV_CYCLE_CONCURRENT_CAP:
             raise HTTPException(409, {
                 "code": "SELFDEV_CYCLE_CONCURRENCY_CAP",
@@ -1388,6 +1461,10 @@ def revoke_selfdev_cycle_roles(
 ):
     """Disable exactly the two principals from a cycle issued by this scoped API."""
     production = os.getenv("AAO_ENV", "").strip().lower() == "production"
+    if production and not _production_selfdev_cycle_mtls_ready():
+        raise HTTPException(503, "Self Development mTLS signer is not configured")
+    if production and not principal.workload_fingerprint:
+        raise HTTPException(503, "Production cycle revocation requires verified mTLS")
     if not re.fullmatch(r"[0-9a-f]{32}", cycle_id):
         raise HTTPException(404, "Self Development cycle not found")
     expected = (
@@ -1413,7 +1490,8 @@ def revoke_selfdev_cycle_roles(
             rows = db.execute(
                 "SELECT c.kind,c.enabled,g.project_id,g.capability FROM principal_credentials c "
                 "JOIN project_grants g ON g.principal_id=c.principal_id "
-                "WHERE c.principal_id=%s ORDER BY g.project_id,g.capability FOR UPDATE OF c,g",
+                "WHERE c.principal_id=%s ORDER BY g.project_id,g.capability"
+                + ("" if production else " FOR UPDATE OF c,g"),
                 (principal_id,),
             ).fetchall()
             if ({row[3] for row in rows} != set(grants)
@@ -1454,7 +1532,7 @@ def revoke_selfdev_cycle_roles(
 
             intent_rows = db.execute(
                 "SELECT intent_id FROM selfdev_cycle_mtls_intents "
-                "WHERE project_id=%s AND cycle_id=%s ORDER BY kind FOR UPDATE",
+                "WHERE project_id=%s AND cycle_id=%s ORDER BY kind",
                 (project_id, cycle_id),
             ).fetchall()
             if len(intent_rows) != len(expected):

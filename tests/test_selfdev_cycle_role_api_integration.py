@@ -584,6 +584,9 @@ def test_production_cycle_issue_creates_only_pending_mtls_intents_and_revoke_is_
     """Production route integration stays inert pending an independently reviewed verifier."""
     from fastapi import HTTPException
 
+    # This integration test exercises repository wiring only; the production
+    # signer/verifier availability gate remains false by default.
+    import aao.work_management_api as api_module
     from aao.postgresql_connection import connect_postgres
     from aao.principal_credentials import digest_token
     from aao.selfdev_cycle_mtls import CycleMtlError
@@ -594,11 +597,23 @@ def test_production_cycle_issue_creates_only_pending_mtls_intents_and_revoke_is_
         issue_selfdev_cycle_roles,
         revoke_selfdev_cycle_roles,
     )
-
+    monkeypatch.setattr(api_module, "_production_selfdev_cycle_mtls_ready", lambda: True)
     project, pm, token = _seed(monkeypatch)
     monkeypatch.setenv("AAO_ENV", "production")
     cycle = uuid4().hex
-    principal = AuthenticatedPrincipal(pm, digest_token(token), "AGENT")
+    # Models only the principal object produced after require_worker completed
+    # server-verified mTLS. Bearer-only production rejection is tested separately.
+    fingerprint = uuid4().hex + uuid4().hex
+    principal = AuthenticatedPrincipal(
+        pm, digest_token(token), "AGENT", workload_fingerprint=fingerprint
+    )
+    with connect_postgres() as db:
+        db.execute(
+            "INSERT INTO workload_identity_bindings"
+            "(certificate_sha256,principal_id,enabled,expires_at) "
+            "VALUES (%s,%s,true,clock_timestamp()+interval '1 hour')",
+            (fingerprint, pm),
+        )
 
     failed_cycle = uuid4().hex
     create_intent = PostgresCycleIntentRepository.create_intent_in_transaction
@@ -634,6 +649,28 @@ def test_production_cycle_issue_creates_only_pending_mtls_intents_and_revoke_is_
     assert all(role["certificate_status"] == "pending_verifier" for role in result["roles"])
     assert all("token" not in role for role in result["roles"])
     assert {role["kind"] for role in result["roles"]} == {"AGENT", "AUDITOR"}
+    replay = issue_selfdev_cycle_roles(
+        project, SelfDevCycleIssueRequest(cycle_id=cycle, lifetime_seconds=600), principal,
+    )
+    assert replay["replayed"] is True
+    assert {role["intent_id"] for role in replay["roles"]} == {
+        role["intent_id"] for role in result["roles"]
+    }
+
+    # Pending intents reserve the H1b overlap slot despite disabled credentials.
+    second_cycle = uuid4().hex
+    issue_selfdev_cycle_roles(
+        project,
+        SelfDevCycleIssueRequest(cycle_id=second_cycle, lifetime_seconds=600),
+        principal,
+    )
+    with pytest.raises(HTTPException) as cap_error:
+        issue_selfdev_cycle_roles(
+            project,
+            SelfDevCycleIssueRequest(cycle_id=uuid4().hex, lifetime_seconds=600),
+            principal,
+        )
+    assert cap_error.value.status_code == 409
     with connect_postgres() as db:
         rows = db.execute(
             "SELECT i.kind,i.state,c.enabled,i.principal_id "

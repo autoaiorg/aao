@@ -217,59 +217,66 @@ def test_live_cycle_work_request_rejects_inactive_or_duplicate_active_project(mo
     from aao.postgresql_connection import connect_postgres
     from aao.work_management_api import SELFDEV_PROJECT_NAME, app
 
-    duplicate_mandate_title = "Duplicate Self Development test"
+    duplicate_title_prefix = "Duplicate Self Development test "
     monkeypatch.setenv("AAO_ENV", "test")
     monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
-    with connect_postgres() as db:
-        stale = db.execute(
-            "SELECT p.id,m.id FROM projects p JOIN mandates m ON m.id=p.mandate_id "
-            "WHERE m.title=%s",
-            (duplicate_mandate_title,),
-        ).fetchall()
-        for stale_project, stale_mandate in stale:
-            db.execute("DELETE FROM project_grants WHERE project_id=%s", (stale_project,))
-            db.execute("DELETE FROM projects WHERE id=%s", (stale_project,))
-            db.execute("DELETE FROM mandates WHERE id=%s", (stale_mandate,))
-    project, pm, token = _seed(monkeypatch, pm_caps={"work.coordinate"})
-    duplicate = str(uuid4())
-    mandate = str(uuid4())
-    try:
-        with connect_postgres() as db:
-            db.execute("UPDATE projects SET state='PAUSED' WHERE id=%s", (project,))
-        with TestClient(app) as client:
-            inactive = _request_cycle_work(client, project, token, uuid4())
-        assert inactive.status_code == 409
+    lock_name = "test.selfdev.duplicate_active_project"
+    with connect_postgres() as lock_db:
+        lock_db.execute("SELECT pg_advisory_lock(hashtext(%s))", (lock_name,))
+        try:
+            with connect_postgres() as db:
+                stale = db.execute(
+                    "SELECT p.id,m.id FROM projects p JOIN mandates m ON m.id=p.mandate_id "
+                    "WHERE m.title LIKE %s",
+                    (duplicate_title_prefix + "%",),
+                ).fetchall()
+                for stale_project, stale_mandate in stale:
+                    db.execute("DELETE FROM project_grants WHERE project_id=%s", (stale_project,))
+                    db.execute("DELETE FROM projects WHERE id=%s", (stale_project,))
+                    db.execute("DELETE FROM mandates WHERE id=%s", (stale_mandate,))
 
-        with connect_postgres() as db:
-            db.execute("UPDATE projects SET state='ACTIVE' WHERE id=%s", (project,))
-            db.execute(
-                "INSERT INTO mandates(id,title,objective,status,confirmed_by) "
-                "VALUES (%s,%s,'Test duplicate active project','CONFIRMED','integration-test')",
-                (mandate, duplicate_mandate_title),
-            )
-            db.execute(
-                "INSERT INTO projects(id,name,mandate_id,state) VALUES (%s,%s,%s,'ACTIVE')",
-                (duplicate, SELFDEV_PROJECT_NAME, mandate),
-            )
-            db.execute(
-                "INSERT INTO project_grants(principal_id,project_id,capability,expires_at) "
-                "VALUES (%s,%s,'work.coordinate',clock_timestamp()+interval '1 hour')",
-                (pm, duplicate),
-            )
-        with TestClient(app) as client:
-            ambiguous = _request_cycle_work(client, duplicate, token, uuid4())
-        assert ambiguous.status_code == 409
-    finally:
-        with connect_postgres() as db:
-            # The test fixture may be reused after assertion failures. Restore the
-            # original project and remove only the unique duplicate this test made.
-            db.execute("UPDATE projects SET state='ACTIVE' WHERE id=%s", (project,))
-            db.execute("DELETE FROM project_grants WHERE project_id=%s", (duplicate,))
-            db.execute("DELETE FROM projects WHERE id=%s", (duplicate,))
-            db.execute(
-                "DELETE FROM mandates WHERE id=%s AND title=%s",
-                (mandate, duplicate_mandate_title),
-            )
+            project, pm, token = _seed(monkeypatch, pm_caps={"work.coordinate"})
+            duplicate_title = duplicate_title_prefix + uuid4().hex
+            duplicate = str(uuid4())
+            mandate = str(uuid4())
+            try:
+                with connect_postgres() as db:
+                    db.execute("UPDATE projects SET state='PAUSED' WHERE id=%s", (project,))
+                with TestClient(app) as client:
+                    inactive = _request_cycle_work(client, project, token, uuid4())
+                assert inactive.status_code == 409
+
+                with connect_postgres() as db:
+                    db.execute("UPDATE projects SET state='ACTIVE' WHERE id=%s", (project,))
+                    db.execute(
+                        "INSERT INTO mandates(id,title,objective,status,confirmed_by) "
+                        "VALUES (%s,%s,'Test duplicate active project','CONFIRMED','integration-test')",
+                        (mandate, duplicate_title),
+                    )
+                    db.execute(
+                        "INSERT INTO projects(id,name,mandate_id,state) VALUES (%s,%s,%s,'ACTIVE')",
+                        (duplicate, SELFDEV_PROJECT_NAME, mandate),
+                    )
+                    db.execute(
+                        "INSERT INTO project_grants(principal_id,project_id,capability,expires_at) "
+                        "VALUES (%s,%s,'work.coordinate',clock_timestamp()+interval '1 hour')",
+                        (pm, duplicate),
+                    )
+                with TestClient(app) as client:
+                    ambiguous = _request_cycle_work(client, duplicate, token, uuid4())
+                assert ambiguous.status_code == 409
+            finally:
+                with connect_postgres() as db:
+                    # Restore only this test's fixture, even when an assertion fails.
+                    db.execute("UPDATE projects SET state='ACTIVE' WHERE id=%s", (project,))
+                    db.execute("DELETE FROM project_grants WHERE project_id=%s", (duplicate,))
+                    db.execute("DELETE FROM projects WHERE id=%s", (duplicate,))
+                    db.execute(
+                        "DELETE FROM mandates WHERE id=%s AND title=%s",
+                        (mandate, duplicate_title),
+                    )
+        finally:
+            lock_db.execute("SELECT pg_advisory_unlock(hashtext(%s))", (lock_name,))
 
 
 def test_live_cycle_work_request_concurrent_retry_creates_one_item(monkeypatch):

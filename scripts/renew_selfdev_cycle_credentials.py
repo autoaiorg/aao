@@ -605,6 +605,25 @@ class Runner:
                     self._event("backoff_wait", until=state["next_attempt_at"],
                                 failures=state["consecutive_failures"])
                     return 1  # renewal is due and failing: keep the unit visibly failed
+                # A daily-cap retry is scheduled against the expected timer
+                # cadence, but the process may be suspended or the timer may
+                # run late. Re-check the live N margin immediately before the
+                # POST; never rely solely on the scheduled timestamp.
+                if (
+                    state["next_attempt_at"]
+                    and state["consecutive_failures"] == 0
+                    and current_exp is not None
+                    and now < current_exp
+                    and current_exp - now < DAILY_CAP_SAFETY_MARGIN
+                ):
+                    reason = "daily cap retry refused: delayed tick exhausted cycle drain margin"
+                    self._event("failed", phase=phase, cycle=state["current_cycle_id"],
+                                reason=reason)
+                    self._event("breaker_open", reason=reason)
+                    self._save(state, "BREAKER_OPEN",
+                               consecutive_failures=BREAKER_THRESHOLD,
+                               next_attempt_at=None)
+                    return 1
                 if current_exp is not None and now >= current_exp and phase != "FAILED_EXPIRED":
                     self._event("expired_without_successor", old=state["current_cycle_id"])
                     state = self._save(state, "FAILED_EXPIRED")

@@ -971,6 +971,30 @@ def test_runner_schedules_exact_boundary_daily_cap_retry_without_breaker(env):
     assert not any(call[0] == "revoke" for call in server.calls)
 
 
+def test_delayed_daily_cap_retry_does_not_issue_after_margin_is_lost(env):
+    clock, server, installer, store, logs, make = env
+    c1 = _bootstrap(env)
+    _to_renewal(env)
+    server.fail["issue"] = lambda _c: DAILY_CAP_429
+    server.calls.clear()
+    assert make().tick() == 1
+    assert store.load()["phase"] == "ACTIVE"
+    assert len([call for call in server.calls if call[0] == "issue"]) == 1
+
+    # A suspended/late runner resumes after N has less than its 36m drain
+    # margin. If the guard were absent, this fake returns HTTP 201.
+    clock.advance(minutes=30)
+    del server.fail["issue"]
+    assert make().tick() == 1
+    state = store.load()
+    assert state["phase"] == "BREAKER_OPEN"
+    assert state["current_cycle_id"] == c1
+    assert installer.files["aao-impl-codex"] == f"SECRET-impl-{c1}"
+    assert [call[0] for call in server.calls].count("issue") == 1
+    assert not any(call[0] == "revoke" for call in server.calls)
+    assert any("delayed tick exhausted" in e.get("reason", "") for e in logs)
+
+
 @pytest.mark.parametrize("expires", [None, T0, T0 - timedelta(seconds=1)])
 def test_daily_cap_retry_at_without_live_n_retries_every_tick(expires):
     assert renew.daily_cap_retry_at(T0, expires) is None

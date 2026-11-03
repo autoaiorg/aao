@@ -128,6 +128,29 @@ def test_concurrent_identical_intent_creation_is_idempotent(seeded_intent):
         assert all(result == seeded_intent for result in pool.map(create, range(8)))
 
 
+def test_principal_cannot_be_reused_by_another_cycle(seeded_intent):
+    from aao.postgresql_connection import connect_postgres
+    from aao.selfdev_cycle_mtls_repository import PostgresCycleIntentRepository
+
+    repo = PostgresCycleIntentRepository()
+    repo.create_intent(seeded_intent)
+    with connect_postgres() as db:
+        with pytest.raises(Exception) as denied:
+            db.execute(
+                "SELECT create_selfdev_cycle_mtls_intent(%s,%s,%s,%s,%s,%s,%s)",
+                (
+                    uuid.uuid4(),
+                    seeded_intent.project_id,
+                    uuid.uuid4().hex,
+                    seeded_intent.principal_id,
+                    seeded_intent.kind,
+                    seeded_intent.not_before,
+                    seeded_intent.not_after,
+                ),
+            )
+        assert getattr(denied.value, "sqlstate", None) == "23505"
+
+
 def test_completion_waits_for_intent_row_lock_before_commit(seeded_intent):
     from aao.postgresql_connection import connect_postgres
     from aao.selfdev_cycle_mtls_repository import PostgresCycleIntentRepository
@@ -177,9 +200,9 @@ def test_expired_intent_cannot_be_loaded_or_completed(seeded_intent):
         not_after=datetime.now(UTC) - timedelta(seconds=1),
     )
     repo.create_intent(old)
-    assert repo.get_pending_intent(old.intent_id) is None
-    with pytest.raises(CycleMtlError, match="no longer pending"):
+    with pytest.raises(CycleMtlError, match="expired"):
         repo.complete_binding(old, "c" * 64, "d" * 64)
+    assert repo.get_pending_intent(old.intent_id) is None
     with connect_postgres() as db:
         assert (
             db.execute(
@@ -200,8 +223,34 @@ def test_principal_expiring_at_intent_deadline_cannot_create_intent(seeded_inten
             (seeded_intent.not_after, seeded_intent.principal_id),
         )
 
-    with pytest.raises(CycleMtlError, match="expires before its intent"):
+    with pytest.raises(CycleMtlError, match="not eligible"):
         PostgresCycleIntentRepository().create_intent(seeded_intent)
+
+
+def test_future_not_before_is_not_misclassified_as_expired(seeded_intent):
+    from dataclasses import replace
+
+    from aao.postgresql_connection import connect_postgres
+    from aao.selfdev_cycle_mtls_repository import PostgresCycleIntentRepository
+
+    future = replace(
+        seeded_intent,
+        not_before=datetime.now(UTC) + timedelta(minutes=5),
+        not_after=datetime.now(UTC) + timedelta(minutes=30),
+    )
+    repo = PostgresCycleIntentRepository()
+    repo.create_intent(future)
+    with connect_postgres() as db:
+        status = db.execute(
+            "SELECT complete_selfdev_cycle_mtls_binding(%s,%s,%s)",
+            (future.intent_id, "c" * 64, "d" * 64),
+        ).fetchone()[0]
+        state = db.execute(
+            "SELECT state FROM selfdev_cycle_mtls_intents WHERE intent_id=%s",
+            (future.intent_id,),
+        ).fetchone()[0]
+    assert status == "NOT_YET_VALID"
+    assert state == "PENDING"
 
 
 def test_revoke_disables_binding_and_principal_atomically(seeded_intent):
@@ -226,3 +275,65 @@ def test_revoke_disables_binding_and_principal_atomically(seeded_intent):
             ).fetchone()[0]
             is False
         )
+
+
+def test_runtime_cannot_write_binding_or_complete_intent(seeded_intent):
+    """Exercise actual PostgreSQL role privileges, not SQL-text expectations."""
+    from aao.postgresql_connection import connect_postgres
+
+    with connect_postgres() as db:
+        privileges = db.execute(
+            "SELECT has_table_privilege('aao_runtime','workload_identity_bindings','INSERT'),"
+            "has_table_privilege('aao_runtime','workload_identity_bindings','UPDATE'),"
+            "has_table_privilege('aao_runtime','selfdev_cycle_mtls_intents','INSERT'),"
+            "has_function_privilege('aao_runtime',"
+            "'complete_selfdev_cycle_mtls_binding(uuid,text,text)','EXECUTE')"
+        ).fetchone()
+    assert privileges == (False, False, False, False)
+
+    with connect_postgres() as db:
+        db.execute("SET LOCAL ROLE aao_runtime")
+        db.execute(
+            "SELECT create_selfdev_cycle_mtls_intent(%s,%s,%s,%s,%s,%s,%s)",
+            (
+                seeded_intent.intent_id,
+                seeded_intent.project_id,
+                seeded_intent.cycle_id,
+                seeded_intent.principal_id,
+                seeded_intent.kind,
+                seeded_intent.not_before,
+                seeded_intent.not_after,
+            ),
+        )
+        db.execute(
+            "SELECT revoke_selfdev_cycle_mtls_intent(%s)",
+            (seeded_intent.intent_id,),
+        )
+    with connect_postgres() as db:
+        assert (
+            db.execute(
+                "SELECT state FROM selfdev_cycle_mtls_intents WHERE intent_id=%s",
+                (seeded_intent.intent_id,),
+            ).fetchone()[0]
+            == "REVOKED"
+        )
+
+    with connect_postgres() as db:
+        db.execute("SET LOCAL ROLE aao_runtime")
+        with pytest.raises(Exception) as denied:
+            db.execute(
+                "INSERT INTO workload_identity_bindings"
+                "(certificate_sha256,principal_id,enabled,issued_at,expires_at)"
+                " VALUES (%s,%s,true,clock_timestamp(),clock_timestamp()+interval '1 hour')",
+                ("1" * 64, seeded_intent.principal_id),
+            )
+        assert getattr(denied.value, "sqlstate", None) == "42501"
+
+    with connect_postgres() as db:
+        db.execute("SET LOCAL ROLE aao_runtime")
+        with pytest.raises(Exception) as denied:
+            db.execute(
+                "SELECT complete_selfdev_cycle_mtls_binding(%s,%s,%s)",
+                (seeded_intent.intent_id, "1" * 64, "2" * 64),
+            )
+        assert getattr(denied.value, "sqlstate", None) == "42501"

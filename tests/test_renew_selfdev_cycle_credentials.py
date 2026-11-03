@@ -924,19 +924,51 @@ DAILY_CAP_429 = (429, {"detail": {"code": "SELFDEV_CYCLE_ISSUANCE_DAILY_CAP",
 
 
 @pytest.mark.parametrize(("remaining", "wait"), [
-    (timedelta(hours=2), timedelta(hours=1)),        # capped at 1 h
-    (timedelta(minutes=97), timedelta(hours=1)),     # 61 min -> 1 h
-    (timedelta(minutes=96), timedelta(minutes=60)),  # exactly at the cap
-    (timedelta(minutes=95), timedelta(minutes=59)),
-    (timedelta(minutes=60), timedelta(minutes=24)),  # renewal threshold: 60 - 36
-    (timedelta(minutes=42), timedelta(minutes=6)),
-    (timedelta(minutes=41), timedelta(minutes=5)),   # exactly the floor
-    (timedelta(minutes=40), timedelta(minutes=5)),   # floor
-    (timedelta(seconds=1), timedelta(minutes=5)),
+    (timedelta(hours=2), timedelta(hours=1)),         # capped at 1 h
+    (timedelta(minutes=97), timedelta(minutes=55, seconds=30)),
+    (timedelta(minutes=96), timedelta(minutes=54, seconds=30)),
+    (timedelta(minutes=95), timedelta(minutes=53, seconds=30)),
+    (timedelta(minutes=60), timedelta(minutes=18, seconds=30)),
 ])
 def test_daily_cap_retry_at_targets_n_remaining_minus_margin(remaining, wait):
     assert renew.DAILY_CAP_SAFETY_MARGIN == timedelta(minutes=36)
+    assert renew.DAILY_CAP_TIMER_LATENCY == timedelta(minutes=5, seconds=30)
     assert renew.daily_cap_retry_at(T0, T0 + remaining) == T0 + wait
+
+
+@pytest.mark.parametrize("remaining", [
+    timedelta(minutes=46, seconds=29), timedelta(minutes=42),
+])
+def test_daily_cap_retry_refuses_when_minimum_wait_cannot_preserve_margin(remaining):
+    with pytest.raises(renew.DailyCapMarginLost):
+        renew.daily_cap_retry_at(T0, T0 + remaining)
+
+
+def test_daily_cap_retry_at_exact_safe_boundary_preserves_margin():
+    # 36m protected drain + 5m30s maximum timer delay + 5m minimum wait.
+    remaining = renew.DAILY_CAP_SAFETY_MARGIN + renew.DAILY_CAP_TIMER_LATENCY + renew.DAILY_CAP_MIN_WAIT
+    assert renew.daily_cap_retry_at(T0, T0 + remaining) == T0 + renew.DAILY_CAP_MIN_WAIT
+
+
+def test_runner_schedules_exact_boundary_daily_cap_retry_without_breaker(env):
+    clock, server, _installer, store, _logs, make = env
+    c1 = _bootstrap(env)
+    state = store.load()
+    remaining = (
+        renew.DAILY_CAP_SAFETY_MARGIN
+        + renew.DAILY_CAP_TIMER_LATENCY
+        + renew.DAILY_CAP_MIN_WAIT
+    )
+    state["current_expires_at"] = (clock.now + remaining).isoformat()
+    store.save(state)
+    server.fail["issue"] = lambda _c: DAILY_CAP_429
+
+    assert make().tick() == 1
+    state = store.load()
+    assert state["phase"] == "ACTIVE"
+    assert state["current_cycle_id"] == c1
+    assert _parse(state["next_attempt_at"]) == clock.now + renew.DAILY_CAP_MIN_WAIT
+    assert not any(call[0] == "revoke" for call in server.calls)
 
 
 @pytest.mark.parametrize("expires", [None, T0, T0 - timedelta(seconds=1)])
@@ -944,7 +976,7 @@ def test_daily_cap_retry_at_without_live_n_retries_every_tick(expires):
     assert renew.daily_cap_retry_at(T0, expires) is None
 
 
-def test_daily_cap_429_retries_before_n_expires_and_never_revokes(env):
+def test_repeated_daily_cap_429_fails_closed_before_drain_margin_is_lost(env):
     clock, server, installer, store, logs, make = env
     c1 = _bootstrap(env)
     _to_renewal(env)  # N has 60 min left
@@ -954,23 +986,25 @@ def test_daily_cap_429_retries_before_n_expires_and_never_revokes(env):
     state = store.load()
     assert state["phase"] == "ACTIVE" and state["consecutive_failures"] == 0
     assert state["next_cycle_id"] is None and state["current_cycle_id"] == c1
-    assert _parse(state["next_attempt_at"]) == clock.now + timedelta(minutes=24)
+    assert _parse(state["next_attempt_at"]) == clock.now + timedelta(minutes=18, seconds=30)
     assert [c[0] for c in server.calls] == ["issue"]
-    for _ in range(4):  # 20 min: still waiting, alert, no POST
+    for _ in range(3):  # 15 min: still waiting, alert, no POST
         clock.advance(minutes=5)
         assert make().tick() == 1
     assert [c[0] for c in server.calls] == ["issue"]
-    clock.advance(minutes=5)  # 25 min: retry while N still has 35 min left
+    clock.advance(minutes=5)  # 20 min: retry while N still has 40 min left
     assert make().tick() == 1
     assert [c[0] for c in server.calls] == ["issue", "issue"]
-    assert _parse(store.load()["next_attempt_at"]) == clock.now + renew.DAILY_CAP_MIN_WAIT
+    state = store.load()
+    assert state["phase"] == "BREAKER_OPEN"
+    assert state["next_attempt_at"] is None
     assert not any(c[0] == "revoke" for c in server.calls)
     assert installer.files["aao-impl-codex"] == f"SECRET-impl-{c1}"
-    assert any("daily cap" in e.get("reason", "") for e in logs)
-    del server.fail["issue"]
+    assert any("drain margin cannot be preserved" in e.get("reason", "") for e in logs)
     clock.advance(minutes=5)
-    assert make().tick() == 0
-    assert store.load()["current_cycle_id"] != c1
+    assert make().tick() == 1
+    assert [c[0] for c in server.calls] == ["issue", "issue"]
+    del server.fail["issue"]
 
 
 def test_daily_cap_429_after_n_expired_keeps_alerting_every_tick_without_breaker(env):

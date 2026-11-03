@@ -60,6 +60,9 @@ DAILY_CAP_BACKOFF = timedelta(hours=1)
 # installed, verified and N drained before N expires.
 DAILY_CAP_SAFETY_MARGIN = DRAIN_CAP + CLOCK_SKEW
 DAILY_CAP_MIN_WAIT = BACKOFF[0]
+# The systemd timer may not observe next_attempt_at until its next activation.
+# Bound that delay using the configured cadence and AccuracySec.
+DAILY_CAP_TIMER_LATENCY = timedelta(minutes=5, seconds=30)
 PHASES = {
     "ACTIVE", "ISSUING", "INSTALLED_PENDING", "VERIFIED", "REVOKING_OLD",
     "FAILED_ISSUE", "FAILED_INSTALL", "FAILED_EXPIRED", "BREAKER_OPEN",
@@ -78,6 +81,10 @@ REPLACE_COMMITTED = 3
 
 class RenewError(RuntimeError):
     """Fail-closed condition; message never contains credential material."""
+
+
+class DailyCapMarginLost(RenewError):
+    """A further daily-cap retry cannot preserve the old cycle's drain margin."""
 
 
 class ApiUnavailable(RenewError):
@@ -296,15 +303,20 @@ def exclusive_lock(path: Path):
 
 
 def daily_cap_retry_at(now: datetime, current_expires: datetime | None) -> datetime | None:
-    """next_attempt_at after a daily-cap 429; None retries on every timer tick.
+    """Return a safe retry time, None if no live N needs a drain margin.
 
-    With N live: min(1 h, max(5 min, remaining_N - safety margin)). With N gone
-    there is nothing to protect by waiting; each rejected POST issues nothing.
+    The next timer activation can be delayed by DAILY_CAP_TIMER_LATENCY. If even
+    the minimum backoff plus that delay would cross the drain deadline, fail
+    closed rather than scheduling an unsafe retry.
     """
     if current_expires is None or now >= current_expires:
         return None
-    wait = current_expires - now - DAILY_CAP_SAFETY_MARGIN
-    return now + min(DAILY_CAP_BACKOFF, max(DAILY_CAP_MIN_WAIT, wait))
+    latest_safe_wait = (
+        current_expires - now - DAILY_CAP_SAFETY_MARGIN - DAILY_CAP_TIMER_LATENCY
+    )
+    if latest_safe_wait < DAILY_CAP_MIN_WAIT:
+        raise DailyCapMarginLost("daily cap retry would cross cycle drain margin")
+    return now + min(DAILY_CAP_BACKOFF, latest_safe_wait)
 
 
 def _detail_code(body) -> str | None:
@@ -468,7 +480,15 @@ class Runner:
             # The tick then exits 1, which is the alert.
             current = state["current_expires_at"]
             current = _parse_time(current) if current else None
-            retry = daily_cap_retry_at(now, current)
+            try:
+                retry = daily_cap_retry_at(now, current)
+            except DailyCapMarginLost:
+                reason = "daily cap retry refused: cycle drain margin cannot be preserved"
+                self._event("failed", phase="ISSUING", cycle=cycle_id, reason=reason)
+                self._event("breaker_open", reason=reason)
+                return self._save(state, "BREAKER_OPEN",
+                                  consecutive_failures=BREAKER_THRESHOLD,
+                                  next_attempt_at=None, **cleared)
             until = _iso(retry) if retry else None
             self._event("failed", phase="ISSUING", cycle=cycle_id,
                         reason=f"issue daily cap reached; retry after {until or 'next tick'}")

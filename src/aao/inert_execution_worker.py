@@ -91,7 +91,9 @@ def _api_request(path: str, agent_credential: str, *, body: dict,
         headers={"Accept": "application/json", "Content-Type": "application/json",
                  "X-Agent-Token": agent_credential}, method=method,
     )
-    opener = urllib.request.build_opener(_RejectRedirects)
+    # Worker credentials are scoped to the configured AAO API origin. Never
+    # let inherited proxy settings redirect that bearer header elsewhere.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _RejectRedirects)
     try:
         with opener.open(request, timeout=15) as response:
             payload = json.loads(response.read(1_048_577))

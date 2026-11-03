@@ -1,7 +1,7 @@
 """Integration tests for Autonomous Organization Proposals API & Database Persistence."""
-import os
 import pytest
 from fastapi.testclient import TestClient
+
 from aao.work_management_api import app
 
 

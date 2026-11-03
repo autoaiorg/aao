@@ -2158,7 +2158,6 @@ def create_organization_proposal(
     """
     from aao.autonomous_organization import (
         DemandAnalysisCriteria,
-        OrganizationChangeImpact,
         ProposalDecisionState,
         classify_organizational_authority,
         evaluate_organizational_demand,
@@ -2454,13 +2453,15 @@ def transition_organization_proposal(
             )
 
         # Authority checks on approval
-        if target_state == ProposalDecisionState.AUTONOMOUS_APPROVED:
-            # If requires CEO approval, only CEO can transition
-            if impact_str in {"CONSTITUTIONAL", "CRITICAL", "UNKNOWN"} and principal is not _CEO_PRINCIPAL:
-                raise HTTPException(
-                    403,
-                    f"Approval of {impact_str} organizational change proposal strictly requires CEO authority.",
-                )
+        if (
+            target_state == ProposalDecisionState.AUTONOMOUS_APPROVED
+            and impact_str in {"CONSTITUTIONAL", "CRITICAL", "UNKNOWN"}
+            and principal is not _CEO_PRINCIPAL
+        ):
+            raise HTTPException(
+                403,
+                f"Approval of {impact_str} organizational change proposal strictly requires CEO authority.",
+            )
 
         now = datetime.now(UTC)
         next_version = current_version + 1

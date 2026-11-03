@@ -1,11 +1,10 @@
 """Tests for Autonomous Organization Manager Phase 2: Persistence & Governance API."""
 import pytest
+
 from aao.autonomous_organization import (
     DemandAnalysisCriteria,
     OrganizationAlternativeKind,
-    OrganizationChangeImpact,
     ProposalDecisionState,
-    classify_organizational_authority,
     evaluate_organizational_demand,
     validate_proposal_transition,
 )

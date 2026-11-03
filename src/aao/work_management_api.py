@@ -1235,6 +1235,14 @@ def issue_selfdev_cycle_roles(
     principal: Annotated[AuthenticatedPrincipal, Depends(require_worker)],
 ):
     """Issue only the fixed, short-lived implementer/reviewer pair for Self Development."""
+    # The existing response contains development bearer credentials. Production
+    # must remain closed until the typed mTLS intent/signer flow is wired end to
+    # end; never create or return cycle bearer credentials there.
+    if os.getenv("AAO_ENV", "").strip().lower() == "production":
+        raise HTTPException(
+            503,
+            "Self Development cycle issuance requires the production mTLS signer flow",
+        )
     from aao.principal_credentials import digest_token
 
     cycle_id = payload.cycle_id

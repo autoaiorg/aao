@@ -8,7 +8,13 @@ El unit `deploy/systemd/user/aao-project-coordinator@.service` ejecuta el runner
 
 1. Despliegue fijo del runtime en `/srv/aao/frozen/aao-pm/{tree,venv}`.
 2. Usuario Linux `aao-pm` con sesión de usuario systemd y directorio runtime privado `/run/user/<uid>`.
-3. Token AAO para el principal PM en `/run/user/<uid>/aao-pm.token`, fichero regular del usuario con modo `0600`; el script vuelve a comprobar identidad en `/v1/principals/me` en cada inicio.
+3. Certificado cliente y clave privada propios del principal PM, más el CA del
+   servidor, en `%h/.config/aao/workload-tls/{client-cert.pem,client-key.pem,server-ca.pem}`.
+   La unidad los carga con `LoadCredential=` y fija producción a
+   `https://127.0.0.1:8443`; el backend valida el binding vigente del fingerprint.
+   No se usa bearer-token fallback en producción. La emisión, custodia, binding,
+   expiración y rotación de estos certificados aún requieren un procedimiento
+   aprobado; esta plantilla no instala ni emite material.
 4. Grants `work.coordinate` y `work.assign` explícitamente concedidos por el CEO en el proyecto. El archivo de configuración no es autorización.
 5. Archivo `%h/.config/aao/project-coordinator/<project-id>.env`, propiedad de `aao-pm`, modo `0600`, con solo:
 
@@ -17,13 +23,13 @@ El unit `deploy/systemd/user/aao-project-coordinator@.service` ejecuta el runner
    AAO_PM_PRINCIPAL_ID=<principal autenticado del PM>
    ```
 
-   No guardar tokens, claves de proveedor ni credenciales GitHub en este archivo. `AAO_API_BASE_URL` queda por defecto en `http://127.0.0.1:8001`; si el API está en otro origen, configurarlo en el entorno del manager de usuario y usar HTTPS fuera de loopback.
+   No guardar tokens, certificados, claves de proveedor ni credenciales GitHub en este archivo. El modo de producción y el origen API HTTPS se fijan como argumentos de `/usr/bin/env` en `ExecStart`, después de cargar `EnvironmentFile`; así el archivo de configuración no puede sustituirlos.
 
 ## Habilitación por el CEO (requiere actuar como aao-pm y un paso sudo)
 
 Este procedimiento es una instrucción operativa, no autorización para Codex de actuar como otra cuenta, crear grants o cambiar el host. Ejecutar solo después de confirmar el proyecto y el principal:
 
-1. Como `aao-pm`, crear el archivo `.env` descrito arriba, verificar modo `0600` y provisionar el token privado usando el mecanismo de host aprobado.
+1. Como `aao-pm`, crear el archivo `.env` descrito arriba y verificar modo `0600`. Provisionar el certificado/key/CA únicamente mediante un mecanismo aprobado de emisión y distribución; el unit requiere esos tres archivos y falla cerrado si faltan.
 2. Como administrador, habilitar el user manager persistente para que el servicio sobreviva al cierre de sesión:
 
    ```sh

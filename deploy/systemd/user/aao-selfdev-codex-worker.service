@@ -1,7 +1,10 @@
 [Unit]
 Description=AAO Self-Development Codex worker for project %i
 ConditionPathExists=/etc/aao/selfdev-codex-worker.env
-ConditionPathExists=%t/aao-self-development-agent.token
+ConditionPathIsDirectory=%h/.config/aao/workload-tls
+ConditionPathExists=%h/.config/aao/workload-tls/client-cert.pem
+ConditionPathExists=%h/.config/aao/workload-tls/client-key.pem
+ConditionPathExists=%h/.config/aao/workload-tls/server-ca.pem
 After=default.target
 StartLimitIntervalSec=300
 StartLimitBurst=5
@@ -13,10 +16,13 @@ EnvironmentFile=/etc/aao/selfdev-codex-worker.env
 # USD amount; the Codex backend fails closed when it is absent or invalid.
 Environment=XDG_RUNTIME_DIR=%t
 Environment=XDG_DATA_HOME=%h/.local/share
-Environment=AAO_ENV=production
-Environment=AAO_API_BASE_URL=http://127.0.0.1:8001
+# Never use the cycle bearer-token file in production. The verified client
+# certificate is the workload identity; systemd supplies it privately.
+LoadCredential=client-cert:%h/.config/aao/workload-tls/client-cert.pem
+LoadCredential=client-key:%h/.config/aao/workload-tls/client-key.pem
+LoadCredential=server-ca:%h/.config/aao/workload-tls/server-ca.pem
 WorkingDirectory=/srv/aao/frozen/aao-pm/tree
-ExecStart=/srv/aao/frozen/aao-pm/venv/bin/python -I -c "import sys; sys.path.insert(0, '/srv/aao/frozen/aao-pm/tree'); from scripts.run_self_development_worker import main; raise SystemExit(main())" --project-id %i --watch
+ExecStart=/usr/bin/env AAO_ENV=production AAO_API_BASE_URL=https://127.0.0.1:8443 /srv/aao/frozen/aao-pm/venv/bin/python -I -c "import sys; sys.path.insert(0, '/srv/aao/frozen/aao-pm/tree'); from scripts.run_self_development_worker import main; raise SystemExit(main())" --project-id %i --watch
 Restart=on-failure
 RestartSec=30s
 TimeoutStopSec=35m

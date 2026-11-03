@@ -5,13 +5,19 @@
 `deploy/systemd/user/aao-selfdev-codex-worker.service` es una plantilla opcional
 para un worker de cola bajo la cuenta Linux `aao-impl-codex`. No se instala,
 habilita ni inicia con este cambio. La unidad falla cerrada si no existen su
-archivo de activación y el token runtime del rol.
+archivo de activación y los tres ficheros mTLS bajo
+`~/.config/aao/workload-tls/` (`client-cert.pem`, `client-key.pem`,
+`server-ca.pem`). `LoadCredential=` copia esos ficheros a un directorio privado
+de systemd con los nombres que espera `workload_client`; la aplicación no usa
+un bearer token en `AAO_ENV=production`.
 
-El worker obtiene el `principal_id` llamando a `GET /v1/principals/me` con el
-token privado del ciclo y acepta únicamente un principal AGENT habilitado cuyo
-ID empieza por `aao-selfdev-impl-`. Así no se fija en la unidad un ID de ciclo
-que cambia en cada emisión. Si se configura además `AAO_WORKER_PRINCIPAL_ID`, se
-exige que coincida exactamente con el principal autenticado.
+El worker obtiene el `principal_id` llamando a `GET /v1/principals/me`; en
+producción, el backend deriva la identidad del certificado mTLS vinculado, no
+de un token enviado por el cliente. El worker acepta únicamente un principal
+AGENT habilitado cuyo ID empieza por `aao-selfdev-impl-`. Así no se fija en la
+unidad un ID de ciclo que cambia en cada emisión. Si se configura además
+`AAO_WORKER_PRINCIPAL_ID`, se exige que coincida exactamente con el principal
+autenticado.
 
 ## Contrato y límites
 
@@ -19,8 +25,10 @@ exige que coincida exactamente con el principal autenticado.
   par que actualmente reconoce `pm_deployment_preflight.py` como código runtime
   congelado. Antes de habilitarlo, verificar que ambos están en la revisión
   aprobada y que incluyen esta versión del worker.
-- El token se lee desde `${XDG_RUNTIME_DIR}/aao-self-development-agent.token`
-  con controles de propietario y modo 0600. La unidad no lo copia ni imprime.
+- En producción la identidad HTTP es el certificado cliente mTLS, no el token
+  del ciclo. El servidor debe tener un binding vigente para el fingerprint del
+  certificado y el principal correspondiente. Esta plantilla no emite,
+  instala, enlaza ni renueva certificados.
 - `CODEX_HOME` es la identidad autenticada dedicada de `aao-impl-codex`:
   `/home/aao-impl-codex/.local/share/aao/codex-agent`. No debe apuntar al home
   de otra cuenta. El modelo solo ve ese home dentro del jail previsto por
@@ -37,7 +45,9 @@ exige que coincida exactamente con el principal autenticado.
   es numérico, es cero/negativo, `NaN` o infinito, el backend Codex falla
   cerrado. Aplicar el límite tanto al proceso API (para staging) como al worker
   (para ejecución).
-- La API configurada por `AAO_API_BASE_URL` debe ser loopback en este despliegue.
+- La unidad fija `AAO_ENV=production` y `AAO_API_BASE_URL=https://127.0.0.1:8443` mediante `/usr/bin/env` en `ExecStart`, después de cargar `EnvironmentFile`, por lo que el archivo no puede reemplazarlos. El certificado de
+  servidor debe incluir `IP:127.0.0.1` en SAN y su CA debe coincidir con
+  `server-ca.pem`; no se permite el fallback a HTTP/bearer en producción.
 - La autenticación de Codex puede expirar o ser revocada; este documento no
   comprueba ni renueva credenciales de OpenAI.
 
@@ -87,8 +97,12 @@ esta unidad.
 
 La instancia del servicio es el UUID del proyecto (por ejemplo
 `aao-selfdev-codex-worker@9d17d6c1-d644-424a-a425-fe7e084c3d91.service`). La
-unidad fija la API a `http://127.0.0.1:8001` y el entorno a `production`; no
-carga `.env.local`.
+unidad fija la API a `https://127.0.0.1:8443` y el entorno a `production`; no
+carga `.env.local`. Los archivos de certificado no se crean ni se distribuyen
+con este cambio. El emisor/CA, custodia de clave, binding del fingerprint,
+caducidad, renovación y revocación de certificados siguen siendo dependencias
+de diseño y operación; no habilitar el worker hasta resolverlas y provisionar
+material por principal.
 
 No se proporciona fichero instalado ni se ejecuta `systemctl enable/start`.
 Antes de preparar el fichero, confirmar que la API tiene la activación requerida

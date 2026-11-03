@@ -1,5 +1,37 @@
 # Estado actual de AAO
 
+> **Actualización de evidencia — 2026-11-03 11:24 CET.** Esta actualización
+> prevalece sobre las afirmaciones operativas fechadas 2026-11-02 más abajo;
+> esas líneas se conservan como historial y no describen el estado actual.
+>
+> - **Repositorio:** `main` y `origin/main` están en
+>   `7126eac3c5804384387b1ce1c9a71d56b58be42d` (#352). El run post-merge de
+>   Core checks `41617090815` terminó `completed/success`. La consulta actual de
+>   PRs abiertos no devolvió ninguno.
+> - **Servicio PM:** el operador aportó `is-enabled=enabled` e `is-active=active`
+>   a las 10:48 CET. La sesión actual confirmó `Linger=yes`, el proceso PID
+>   `2795702` vivo bajo el cgroup de `aao-project-coordinator@…service`, y su
+>   comando ejecuta el árbol congelado `/srv/aao/frozen/aao-pm/tree` en
+>   `e9616efb72a58d097d4a99c3f8e5f2b2427587db` (#351), no el `main` actual.
+>   No se pudo consultar el gestor de usuario directamente desde esta sesión;
+>   por eso `enabled/active` se atribuye a la salida aportada por el operador,
+>   no a una consulta independiente de `systemctl`.
+> - **API local:** `/ready` devuelve `{"status":"ready","database":"available"}`;
+>   `/health` devuelve `{"service":"postgres-dev","autonomous_execution":false}`.
+>   Esto demuestra disponibilidad del servicio local, no autonomía de ejecución.
+> - **Límite funcional observado en el código congelado:** el coordinador
+>   asigna trabajo no asignado en grupos ya confirmados por CEO; su contrato
+>   dice que no crea ni confirma grupos, no admite trabajo y no despacha
+>   ejecuciones. Por tanto, tenerlo habilitado permanentemente no cierra el
+>   ciclo de autonomía. No se verificó en esta actualización el estado actual
+>   de la base de datos ni la expiración/validez de credenciales de ciclo.
+>
+> **Conclusión:** el coordinador del PM está corriendo de forma persistente,
+> pero AAO no está en funcionamiento plenamente autónomo. Hay una divergencia
+> de revisión entre `main` y el árbol congelado, y la API declara explícitamente
+> `autonomous_execution=false`. Esto es evidencia operativa parcial, no
+> aceptación del piloto ni certificación de autonomía.
+
 **Corte de repositorio:** 2026-11-02 23:20 CET (22:20 UTC), `origin/main` = `b539f79bb59c967658cf9fa869d0aaf8c59f2232` (merge de #341). **Corte de host/BD:** 2026-11-02 21:51 UTC (sin re-verificar en esta actualización; ver §4). Este informe es un estado de coordinación, no una certificación de autonomía, despliegue o aceptación.
 
 ## 1. Evidencia de repositorio

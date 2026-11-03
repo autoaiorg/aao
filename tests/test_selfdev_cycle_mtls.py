@@ -37,15 +37,15 @@ class Repo:
     def get_completed_binding(self, intent_id):
         return self.completed
 
-    def complete_binding(self, issued_intent, fingerprint, csr_sha256):
+    def complete_binding(self, issued_intent, fingerprint, csr_sha256, chain):
         # Model one atomic persisted binding record.
-        binding = (issued_intent, fingerprint, csr_sha256)
+        binding = (issued_intent, fingerprint, csr_sha256, chain)
         self.bindings.append(binding)
-        self.completed = (fingerprint, csr_sha256)
+        self.completed = (fingerprint, csr_sha256, chain)
 
 
 class Signer:
-    def __init__(self, chain=b"test-only-certificate-chain"):
+    def __init__(self, chain=b"-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n"):
         self.calls = []
         self.chain = chain
 
@@ -79,22 +79,19 @@ def test_issue_verifies_before_binding_and_replay_is_idempotent():
         signer=signer,
         verifier=verifier,
     )
-    assert result == "b" * 64
+    assert result == ("b" * 64, signer.chain)
     import hashlib
 
-    assert repo.bindings == [(repo.issue, "b" * 64, hashlib.sha256(CSR).hexdigest())]
+    assert repo.bindings == [(repo.issue, "b" * 64, hashlib.sha256(CSR).hexdigest(), signer.chain)]
     assert len(signer.calls) == len(verifier.calls) == 1
 
-    assert (
-        reconcile_cycle_certificate(
-            repo.issue.intent_id,
-            CSR,
-            repository=repo,
-            signer=signer,
-            verifier=verifier,
-        )
-        == "b" * 64
-    )
+    assert reconcile_cycle_certificate(
+        repo.issue.intent_id,
+        CSR,
+        repository=repo,
+        signer=signer,
+        verifier=verifier,
+    ) == ("b" * 64, signer.chain)
     assert len(signer.calls) == len(verifier.calls) == 1
 
 
@@ -113,7 +110,7 @@ def test_completed_intent_with_different_csr_conflicts_without_signing():
             signer=signer,
             verifier=verifier,
         )
-    assert repo.completed == ("b" * 64, hashlib.sha256(CSR).hexdigest())
+    assert repo.completed == ("b" * 64, hashlib.sha256(CSR).hexdigest(), signer.chain)
     assert len(repo.bindings) == 1
     assert len(signer.calls) == 1
 
@@ -125,7 +122,7 @@ def test_binding_completion_persists_fingerprint_and_csr_digest_together():
     reconcile_cycle_certificate(
         repo.issue.intent_id, CSR, repository=repo, signer=signer, verifier=verifier
     )
-    assert repo.bindings == [(repo.issue, "b" * 64, hashlib.sha256(CSR).hexdigest())]
+    assert repo.bindings == [(repo.issue, "b" * 64, hashlib.sha256(CSR).hexdigest(), signer.chain)]
 
 
 def test_verification_failure_does_not_bind_or_enable():
@@ -204,3 +201,59 @@ def test_production_cycle_issue_endpoint_fails_closed_before_db(monkeypatch):
         issue_selfdev_cycle_roles(str(uuid.uuid4()), payload, principal)
     assert exc.value.status_code == 503
     assert "mTLS signer" in exc.value.detail
+
+
+def test_authenticated_certificate_chain_recovery_returns_only_public_chain(monkeypatch):
+    from datetime import datetime
+
+    from fastapi import HTTPException
+
+    from aao.work_management_api import AuthenticatedPrincipal, _cycle_mtls_certificate_for
+
+    seen = []
+    expires = datetime.now(UTC) + timedelta(minutes=5)
+
+    class FakeRepository:
+        def get_active_certificate(self, principal_id, digest, kind, fingerprint):
+            seen.append((principal_id, digest, kind, fingerprint))
+            return (b"-----BEGIN CERTIFICATE-----\npublic\n", "a" * 64, expires)
+
+    monkeypatch.setattr(
+        "aao.selfdev_cycle_mtls_repository.PostgresCycleIntentRepository",
+        FakeRepository,
+    )
+    principal = AuthenticatedPrincipal(
+        "cycle-agent", "digest", "AGENT", workload_fingerprint="a" * 64
+    )
+    result = _cycle_mtls_certificate_for(principal)
+    assert seen == [("cycle-agent", "digest", "AGENT", "a" * 64)]
+    assert result["certificate_chain_pem"].startswith("-----BEGIN CERTIFICATE-----")
+    assert result["certificate_sha256"] == "a" * 64
+    assert "token" not in result and "private_key" not in result
+
+    principal_without_mtls = AuthenticatedPrincipal("cycle-agent", "digest", "AGENT")
+    with pytest.raises(HTTPException) as denied:
+        _cycle_mtls_certificate_for(principal_without_mtls)
+    assert denied.value.status_code == 403
+    assert len(seen) == 1
+
+
+def test_certificate_chain_recovery_returns_not_found_when_not_active(monkeypatch):
+    from fastapi import HTTPException
+
+    from aao.work_management_api import AuthenticatedPrincipal, _cycle_mtls_certificate_for
+
+    class MissingRepository:
+        def get_active_certificate(self, *_):
+            return None
+
+    monkeypatch.setattr(
+        "aao.selfdev_cycle_mtls_repository.PostgresCycleIntentRepository",
+        MissingRepository,
+    )
+    principal = AuthenticatedPrincipal(
+        "cycle-agent", "digest", "AGENT", workload_fingerprint="a" * 64
+    )
+    with pytest.raises(HTTPException) as missing:
+        _cycle_mtls_certificate_for(principal)
+    assert missing.value.status_code == 404

@@ -66,23 +66,50 @@ class PostgresCycleIntentRepository:
             ).fetchone()
         return _intent(row) if row else None
 
-    def get_completed_binding(self, intent_id: uuid.UUID) -> tuple[str, str] | None:
+    def get_completed_binding(self, intent_id: uuid.UUID) -> tuple[str, str, bytes] | None:
         with connect_postgres() as db:
             row = db.execute(
-                "SELECT b.certificate_sha256,b.csr_sha256 FROM "
+                "SELECT b.certificate_sha256,b.csr_sha256,b.certificate_chain_pem FROM "
                 "workload_identity_bindings b JOIN selfdev_cycle_mtls_intents i USING(intent_id) "
                 "WHERE i.intent_id=%s AND i.state='COMPLETED' AND b.enabled=true "
                 "AND b.revoked_at IS NULL AND b.expires_at>clock_timestamp()",
                 (intent_id,),
             ).fetchone()
-        return (row[0], row[1]) if row else None
+        return (
+            (row[0], row[1], row[2].encode("ascii") if isinstance(row[2], str) else row[2])
+            if row
+            else None
+        )
+
+    def get_active_certificate(
+        self, principal_id: str, token_digest: str, kind: str, fingerprint: str
+    ) -> tuple[bytes, str, datetime] | None:
+        """Return this authenticated workload's active public chain only."""
+        with connect_postgres() as db:
+            row = db.execute(
+                "SELECT certificate_chain_pem,certificate_sha256,expires_at "
+                "FROM get_selfdev_cycle_mtls_certificate(%s,%s,%s,%s)",
+                (principal_id, token_digest, kind, fingerprint),
+            ).fetchone()
+        if not row:
+            return None
+        chain = row[0]
+        if isinstance(chain, str):
+            chain = chain.encode("ascii", errors="strict")
+        return chain, row[1], _utc(row[2])
 
     def complete_binding(
-        self, intent: CycleSigningIntent, fingerprint: str, csr_sha256: str
+        self,
+        intent: CycleSigningIntent,
+        fingerprint: str,
+        csr_sha256: str,
+        certificate_chain_pem: bytes,
     ) -> None:
         """Atomically bind verified public identity and enable its principal."""
         with connect_postgres() as db:
-            status = self.complete_binding_in_transaction(db, intent, fingerprint, csr_sha256)
+            status = self.complete_binding_in_transaction(
+                db, intent, fingerprint, csr_sha256, certificate_chain_pem
+            )
         if status == "EXPIRED":
             raise CycleMtlError("cycle intent expired")
         if status == "NOT_YET_VALID":
@@ -94,7 +121,11 @@ class PostgresCycleIntentRepository:
 
     @staticmethod
     def complete_binding_in_transaction(
-        db, intent: CycleSigningIntent, fingerprint: str, csr_sha256: str
+        db,
+        intent: CycleSigningIntent,
+        fingerprint: str,
+        csr_sha256: str,
+        certificate_chain_pem: bytes,
     ) -> str:
         row = db.execute(
             "SELECT project_id,cycle_id,principal_id,kind,not_before,not_after "
@@ -110,9 +141,10 @@ class PostgresCycleIntentRepository:
             intent.not_after,
         ):
             raise CycleMtlError("cycle intent identity mismatch")
+        chain = certificate_chain_pem.decode("ascii")
         return db.execute(
-            "SELECT complete_selfdev_cycle_mtls_binding(%s,%s,%s)",
-            (intent.intent_id, fingerprint, csr_sha256),
+            "SELECT complete_selfdev_cycle_mtls_binding(%s,%s,%s,%s)",
+            (intent.intent_id, fingerprint, csr_sha256, chain),
         ).fetchone()[0]
 
     def revoke(self, intent_id: uuid.UUID) -> bool:

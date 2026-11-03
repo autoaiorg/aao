@@ -946,6 +946,51 @@ def current_principal(principal: Annotated[AuthenticatedPrincipal, Depends(requi
     return {"principal_id": str(principal), "kind": "AGENT", "enabled": True}
 
 
+def _cycle_mtls_certificate_for(principal: AuthenticatedPrincipal) -> dict[str, Any]:
+    """Return only the public chain bound to the exact authenticated identity.
+
+    This supports response-loss recovery while the current workload certificate
+    remains active. It intentionally cannot recover an initial certificate
+    after expiry/revocation, because that caller can no longer authenticate.
+    """
+    fingerprint = principal.workload_fingerprint
+    if not fingerprint:
+        raise HTTPException(403, "Active workload certificate required")
+    from aao.selfdev_cycle_mtls_repository import PostgresCycleIntentRepository
+
+    result = PostgresCycleIntentRepository().get_active_certificate(
+        str(principal), principal.token_digest, principal.kind, fingerprint
+    )
+    if result is None:
+        raise HTTPException(404, "Active cycle certificate not found")
+    chain, stored_fingerprint, expires_at = result
+    try:
+        chain_text = chain.decode("ascii")
+    except (AttributeError, UnicodeDecodeError):
+        raise HTTPException(503, "Stored public certificate unavailable") from None
+    return {
+        "certificate_chain_pem": chain_text,
+        "certificate_sha256": stored_fingerprint,
+        "expires_at": expires_at.isoformat(),
+    }
+
+
+@app.get("/v1/selfdev-cycle-mtls/certificate-chain/me")
+def get_my_cycle_certificate_chain(
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_worker)],
+):
+    """Recover an active AGENT cycle chain after a lost issuance response."""
+    return _cycle_mtls_certificate_for(principal)
+
+
+@app.get("/v1/auditors/selfdev-cycle-mtls/certificate-chain/me")
+def get_my_reviewer_cycle_certificate_chain(
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_reviewer)],
+):
+    """Recover an active AUDITOR cycle chain after a lost issuance response."""
+    return _cycle_mtls_certificate_for(principal)
+
+
 SELF_ROTATION_PENDING_TTL = timedelta(minutes=10)
 W2_PUBLISHER_GRANTS = ("project.read", "code.publish")
 W2_PUBLISHER_TTL = timedelta(hours=8)

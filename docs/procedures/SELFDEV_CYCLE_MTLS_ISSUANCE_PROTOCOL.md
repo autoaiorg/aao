@@ -82,6 +82,20 @@ contra PostgreSQL.
 
 ## Rotación, revocación y recuperación
 
+- La API persiste únicamente la cadena pública verificada junto con el binding.
+  Un workload que todavía se autentica con su certificado mTLS activo puede
+  recuperar esa cadena mediante
+  `GET /v1/selfdev-cycle-mtls/certificate-chain/me` (AGENT) o
+  `GET /v1/auditors/selfdev-cycle-mtls/certificate-chain/me` (AUDITOR). La
+  consulta está ligada a principal, digest de credencial, tipo y huella mTLS
+  autenticados; nunca acepta esos valores como parámetros del cliente. Devuelve
+  solo la cadena pública, su huella y vencimiento. Sin huella mTLS activa
+  responde 403; una binding inexistente, revocada o vencida responde 404.
+- La recuperación anterior no resuelve la pérdida de la respuesta inicial
+  antes de que el workload obtenga su primer certificado: sin ese certificado
+  no existe identidad mTLS para autenticar la consulta. Ese caso requiere un
+  protocolo de entrega/reintento adicional del firmante y permanece bloqueado;
+  no se habilita un fallback bearer ni se vuelve a emitir por esta ruta.
 - Crear la nueva identidad y su intent no revoca el ciclo anterior. La rotación
   usa el overlap acotado definido en
   `SELFDEV_CYCLE_CREDENTIAL_LIFECYCLE.md`; no se permite resolver la identidad
@@ -118,6 +132,9 @@ contra PostgreSQL.
      incluso con reintento.
    Este PR no cambia #394 ni declara satisfechos esos contratos. No habilita por
    sí solo el ciclo en producción.
+   La migración 047 añade persistencia de la cadena pública y una lectura
+   protegida de la identidad mTLS activa para recuperación limitada; no guarda
+   claves privadas ni habilita firma.
 3. **Host owner:** ACL socket para API y cada UID workload, store de certificados
    públicos, entrega privada de key/cert por `LoadCredential=` y recuperación
    de crash. Nada desplegado.

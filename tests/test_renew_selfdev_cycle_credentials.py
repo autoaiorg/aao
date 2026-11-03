@@ -352,7 +352,9 @@ def test_install_failure_keeps_old_credentials_valid(env, account, rc):
     c1 = _bootstrap(env)
     _to_renewal(env)
     installer.rc[(account, "replace")] = rc
+    server.calls.clear()
     assert make().tick() == 1
+    assert ("verify", account) not in server.calls  # failed replace is not "written"
     state = store.load()
     assert state["phase"] == "ACTIVE" and state["current_cycle_id"] == c1
     assert not server.cycles[c1]["revoked"]
@@ -815,3 +817,121 @@ def test_tokens_possibly_on_disk_are_failed_install_and_not_closed_on_409(env, h
     assert make().tick() == 1
     state = store.load()
     assert state["phase"] == "FAILED_INSTALL" and state["next_cycle_id"]
+
+
+def test_reviewer_is_replaced_and_verified_before_implementer_file_is_touched(env):
+    _clock, server, _installer, _store, _logs, make = env
+    c1 = _bootstrap(env)
+    _to_renewal(env)
+    server.calls.clear()
+    assert make().tick() == 0
+    steps = [c for c in server.calls if c[0] in {"replace", "verify"}]
+    assert steps == [("replace", "aao-auditor"), ("verify", "aao-auditor"),
+                     ("replace", "aao-impl-codex"), ("verify", "aao-impl-codex")]
+    assert server.cycles[c1]["revoked"]
+
+
+@pytest.mark.parametrize("reviewer_rc", [("verify", 1), ("replace", renew.REPLACE_COMMITTED)])
+def test_reviewer_verify_failure_never_touches_implementer_file(env, reviewer_rc):
+    _clock, server, installer, store, _logs, make = env
+    c1 = _bootstrap(env)
+    _to_renewal(env)
+    op, rc = reviewer_rc
+    installer.rc[("aao-auditor", op)] = rc
+    if op == "replace":  # rc 3 followed by a failing verify
+        installer.rc[("aao-auditor", "verify")] = 1
+    server.calls.clear()
+    assert make().tick() == 1
+    assert ("replace", "aao-impl-codex") not in server.calls
+    assert installer.files["aao-impl-codex"] == f"SECRET-impl-{c1}"
+    assert not server.cycles[c1]["revoked"]
+    assert all(v["revoked"] for k, v in server.cycles.items() if k != c1)
+    assert store.load()["current_cycle_id"] == c1
+
+
+def _parse(value):
+    return datetime.fromisoformat(value)
+
+
+def test_reset_breaker_zeroes_the_counter(env):
+    clock, server, _installer, store, _logs, make = env
+    _bootstrap(env)
+    _to_renewal(env)
+    server.fail["issue"] = lambda _c: (403, None)
+    assert make().tick() == 1
+    assert store.load()["consecutive_failures"] == renew.BREAKER_THRESHOLD
+    server.fail["issue"] = lambda _c: (500, None)  # still failing after the reset
+    assert make().tick(reset_breaker=True) == 1
+    state = store.load()
+    assert state["phase"] == "ACTIVE" and state["consecutive_failures"] == 1
+    assert _parse(state["next_attempt_at"]) == clock.now + renew.BACKOFF[0]
+
+
+def test_unconfirmed_next_closes_only_after_ttl_plus_clock_skew(env):
+    clock, server, _installer, store, _logs, make = env
+    _bootstrap(env)
+    _to_renewal(env)
+    server.fail["issue"] = lambda _c: (500, None)
+    server.fail["revoke"] = lambda _c: (503, None)
+    assert make().tick() == 1
+    state = store.load()
+    assert state["phase"] == "FAILED_ISSUE"
+    issued = _parse(state["next_issued_at"])
+    clock.now = issued + renew.CYCLE_TTL + renew.CLOCK_SKEW - timedelta(seconds=1)
+    assert make().tick() == 1
+    assert store.load()["phase"] == "FAILED_ISSUE"
+    clock.now = issued + renew.CYCLE_TTL + renew.CLOCK_SKEW
+    make().tick()
+    assert store.load()["next_cycle_id"] is None
+
+
+def test_concurrency_cap_409_opens_breaker_without_revoking_anything(env):
+    _clock, server, installer, store, logs, make = env
+    c1 = _bootstrap(env)
+    _to_renewal(env)
+    server.fail["issue"] = lambda _c: (409, {"detail": {
+        "code": "SELFDEV_CYCLE_CONCURRENCY_CAP", "message": "revoke one first"}})
+    server.calls.clear()
+    assert make().tick() == 1
+    state = store.load()
+    assert state["phase"] == "BREAKER_OPEN" and state["next_cycle_id"] is None
+    assert state["current_cycle_id"] == c1 and not server.cycles[c1]["revoked"]
+    assert [c[0] for c in server.calls] == ["issue"]
+    assert installer.files["aao-impl-codex"] == f"SECRET-impl-{c1}"
+    assert any("SELFDEV_CYCLE_CONCURRENCY_CAP" in e.get("reason", "") for e in logs)
+
+
+def test_daily_cap_429_waits_long_without_counting_or_revoking(env):
+    clock, server, _installer, store, _logs, make = env
+    c1 = _bootstrap(env)
+    _to_renewal(env)
+    server.fail["issue"] = lambda _c: (429, {"detail": {
+        "code": "SELFDEV_CYCLE_ISSUANCE_DAILY_CAP", "message": "24 per day"}})
+    server.calls.clear()
+    assert make().tick() == 1
+    state = store.load()
+    assert state["phase"] == "ACTIVE" and state["consecutive_failures"] == 0
+    assert state["next_cycle_id"] is None and state["current_cycle_id"] == c1
+    assert _parse(state["next_attempt_at"]) == clock.now + renew.DAILY_CAP_BACKOFF
+    assert [c[0] for c in server.calls] == ["issue"]
+    for _ in range(11):  # still inside the hour: alert, no POST
+        clock.advance(minutes=5)
+        assert make().tick() == 1
+    assert [c[0] for c in server.calls] == ["issue"]
+    del server.fail["issue"]
+    clock.advance(minutes=5)
+    assert make().tick() == 0
+    assert store.load()["current_cycle_id"] != c1
+
+
+@pytest.mark.parametrize("response", [(429, {"detail": "slow down"}), (409, {"detail": "exists"})])
+def test_uncoded_429_or_409_keeps_generic_failed_issue_path(env, response):
+    _clock, server, _installer, store, _logs, make = env
+    _bootstrap(env)
+    _to_renewal(env)
+    server.fail["issue"] = lambda _c: response
+    server.calls.clear()
+    assert make().tick() == 1
+    state = store.load()
+    assert state["phase"] == "ACTIVE" and state["consecutive_failures"] == 1
+    assert [c[0] for c in server.calls] == ["issue", "revoke"]

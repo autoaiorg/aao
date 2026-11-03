@@ -207,6 +207,31 @@ contador a 0. Con un fallo persistente, por tanto, se emiten como máximo 5
 pares de ciclo antes de exigir intervención (antes: un par cada 5 min, ~288
 al día).
 
+**Topes de emisión de la API (PR #388).** El runner reconoce los dos rechazos
+solo por `detail.code`. Sin #388 fusionado, nunca aparecen y el
+comportamiento no cambia. En ninguno de los dos casos la API emitió nada, así
+que no se revoca nada.
+
+- **409 `SELFDEV_CYCLE_CONCURRENCY_CAP`** (ya hay 2 implementadores de ciclo
+  vivos). Indica un ciclo vivo **no registrado** en el estado: manual,
+  anterior a un reinicio o a un `--bootstrap`. Los IDs que el runner abandona
+  ya están revocados o caducados, y la API no permite listar ciclos. Por eso
+  el runner no puede identificar el huérfano de forma segura. No adivina a
+  partir del board, porque podría revocar un ciclo manual en uso. Abre
+  `BREAKER_OPEN` y alerta.
+  - Operador: revocar el ciclo huérfano con
+    `DELETE /v1/projects/{id}/selfdev-cycle-roles/{cycle_id}`, usando el ID de
+    la salida de `request_selfdev_cycle_roles.py` o del evento
+    `principal.selfdev_cycle_role.issued`.
+  - Después, `--reset-breaker`.
+- **429 `SELFDEV_CYCLE_ISSUANCE_DAILY_CAP`** (24 emisiones por PM en 24 h). No
+  cuenta como emisión fallida. El runner fija `next_attempt_at = ahora + 1 h`,
+  porque la API no expone cuándo se libera un hueco en su ventana móvil.
+  Mientras espera, cada tick sale con código 1 (alerta) y no hace ningún POST.
+  Después reintenta cada hora mientras el tope siga activo.
+- Un 409 o 429 sin esos códigos sigue la ruta genérica de `FAILED_ISSUE`
+  (DELETE de N+1 y backoff).
+
 Diferencia con el diseño previo: el estado vive en el runtime dir y no en
 `~/.local/state`, igual que los tokens que describe. Tras un reinicio,
 desaparecen ambos.
@@ -228,8 +253,8 @@ los logs. Los tokens viven solo en la memoria del proceso entre el POST y el
 | Estado | Significado | Transición normal | Fallo |
 |---|---|---|---|
 | `ACTIVE` | El ciclo N está instalado y verificado, y le queda más del margen | Al cruzar el umbral de renovación (§6): genera `next_cycle_id`, **persiste** y pasa a `ISSUING` | — |
-| `ISSUING` | El ID N+1 y `next_issued_at` están persistidos antes del POST; ningún fichero se ha tocado | POST correcto → verificación de identidad por API (IDs, kind y grants exactos) → `INSTALLED_PENDING` | Error, 409, 5xx, timeout o desajuste de identidad → `FAILED_ISSUE`. 400/401/403/404/422 → `BREAKER_OPEN` |
-| `INSTALLED_PENDING` | Se persiste **antes** del primer `replace`: los ficheros **pueden** contener N+1 | `replace` del revisor y después del implementador (el fichero con consumidor vivo cambia el último) → `verify` de ambos ficheros con el token en memoria → `VERIFIED`. Si `replace` devuelve 3 (renombrado hecho, comprobación posterior fallida), decide el `verify` | Fallo del primer `replace` (antes de renombrar; nada escrito) → `FAILED_ISSUE`. Fallo posterior o de `verify` → `FAILED_INSTALL` |
+| `ISSUING` | El ID N+1 y `next_issued_at` están persistidos antes del POST; ningún fichero se ha tocado | POST correcto → verificación de identidad por API (IDs, kind y grants exactos) → `INSTALLED_PENDING` | Error, 409, 5xx, timeout o desajuste de identidad → `FAILED_ISSUE`. 400/401/403/404/422 o 409 `SELFDEV_CYCLE_CONCURRENCY_CAP` → `BREAKER_OPEN`. 429 `SELFDEV_CYCLE_ISSUANCE_DAILY_CAP` → `ACTIVE` con espera de 1 h, sin contar fallo |
+| `INSTALLED_PENDING` | Se persiste **antes** del primer `replace`: los ficheros **pueden** contener N+1 | `replace` + `verify` completos del revisor; solo después `replace` + `verify` del implementador (el fichero con consumidor vivo) → `VERIFIED`. Si `replace` devuelve 3 (renombrado hecho, comprobación posterior fallida), decide su `verify` | Fallo del `replace` del revisor (antes de renombrar; nada escrito) → `FAILED_ISSUE`. Cualquier fallo posterior → `FAILED_INSTALL` |
 | `VERIFIED` | N+1 está verificado; el worker lo recoge en la siguiente iteración | Si el board no muestra ejecuciones `RUNNING`/`UNCERTAIN`/`QUEUED` con `attempts>0` y `worker_id = impl-N`, o si N ya caducó → `REVOKING_OLD` | Plazo de drenaje superado → `REVOKING_OLD` igualmente (§6) |
 | `REVOKING_OLD` | Se revoca el ciclo N | DELETE N devuelve `revoked`, `already_revoked` o `CYCLE_NOT_FOUND` → `current := next` y `next := null` → `ACTIVE` | Error → se queda en `REVOKING_OLD` y reintenta en cada tick. Si N ya caducó, avanza con alerta para no bloquear la renovación de N+1 |
 | `FAILED_ISSUE` | N+1 puede existir o no en el servidor; ningún token suyo llegó a disco | DELETE N+1. Con `revoked`, `already_revoked` o 404 con `detail.code == "CYCLE_NOT_FOUND"` → `next := null` → `ACTIVE` con backoff (o `BREAKER_OPEN` al 5.º fallo); la siguiente emisión usa un ID **nuevo** | 409 (conjunto alterado): se alerta y se cierra igualmente, porque no hay tokens de N+1 en disco y caduca en ≤ 2 h. Otro 404, 5xx o error de red: se mantiene hasta `next_issued_at + 2 h + 1 min` y entonces se cierra con alerta. Mientras se mantiene, nunca se emite otro ciclo |
@@ -249,6 +274,11 @@ acción idempotente del estado persistido):
   solo se cierra con revocación confirmada o caducidad). Si un fichero ya tenía
   N+1, su consumidor recibirá 403 hasta la siguiente emisión correcta. Esto
   falla cerrado y no usa una credencial ambigua.
+- **Caída en `VERIFIED` o `REVOKING_OLD`:** se repite la consulta del board y
+  el DELETE N. Ambos son idempotentes.
+- **Respuesta del POST perdida:** nunca se reenvía el POST con el mismo ID (la
+  API devuelve 409 y no reemite). Siempre se usa DELETE de ese ID y después un
+  ID nuevo.
 
 **Fallo parcial de instalación (elección y límite).** Los dos ficheros viven
 en los runtime dirs de dos cuentas distintas (`aao-auditor`,
@@ -256,24 +286,27 @@ en los runtime dirs de dos cuentas distintas (`aao-auditor`,
 directorio versionado con enlace sería por cuenta y exigiría cambiar el
 wrapper root. La opción más simple y segura elegida es:
 
-- verificar ambos tokens por API **antes** de tocar ningún fichero;
-- reemplazar el del revisor primero y el del implementador el último, de modo
-  que el fichero con consumidor vivo solo cambia cuando el revisor ya está
-  escrito.
+1. verificar ambos tokens por API **antes** de tocar ningún fichero;
+2. reemplazar **y verificar** por completo el fichero del revisor;
+3. solo entonces reemplazar y verificar el del implementador.
 
-Consecuencia: **el fichero del implementador conserva N** ante cualquier fallo
-de instalación. **El fichero del revisor, no:** si el `replace` del
-implementador falla tras escribir el del revisor, el revisor queda con el
-token de N+1, que se revoca. El token del revisor de N se pierde, porque el PM
-no conserva tokens. Hoy no tiene consumidor (G5), así que el impacto es nulo.
-Cuando lo tenga, hará falta una instalación en dos fases en el wrapper
-(`stage` + `commit`), que requiere reinstalación root y auditoría. El
-cortacircuitos acota la repetición.
-- **Caída en `VERIFIED` o `REVOKING_OLD`:** se repite la consulta del board y
-  el DELETE N. Ambos son idempotentes.
-- **Respuesta del POST perdida:** nunca se reenvía el POST con el mismo ID (la
-  API devuelve 409 y no reemite). Siempre se usa DELETE de ese ID y después un
-  ID nuevo.
+Consecuencias exactas:
+
+- Cualquier fallo del lado del revisor (su `replace`, su código 3 o su
+  `verify`) deja intacto el fichero del implementador, con N.
+- El fichero del implementador **solo** queda con un token de N+1 revocado en
+  un caso: el fallo del propio paso del implementador después de su
+  renombrado. Eso incluye `replace` con código 3 y `verify` fallido, un
+  `verify` fallido tras `replace` correcto, o una caída tras su `replace` y
+  antes de persistir `VERIFIED`. El worker recibe entonces 403 (falla cerrado)
+  hasta la siguiente emisión correcta. Un fallo del `replace` del implementador
+  antes de renombrar deja N.
+- El fichero del revisor puede quedar con el token de N+1 revocado si falla el
+  paso del implementador. El token del revisor de N se pierde, porque el PM no
+  conserva tokens. Hoy no tiene consumidor (G5), así que el impacto es nulo.
+  Cuando lo tenga, hará falta una instalación en dos fases en el wrapper
+  (`stage` + `commit`), que requiere reinstalación root y auditoría.
+- El cortacircuitos acota la repetición.
 
 ## 6. Política de margen TTL y semántica de fallo
 

@@ -51,6 +51,11 @@ BACKOFF = tuple(timedelta(minutes=m) for m in (5, 10, 20, 60))
 BREAKER_THRESHOLD = 5
 # POST rejections that cannot succeed on retry; nothing was issued server-side.
 DEFINITIVE_REJECTIONS = {400, 401, 403, 404, 422}
+# Issuance caps (PR #388); recognised only by detail.code, so an API without them
+# behaves as before.
+CONCURRENCY_CAP_CODE = "SELFDEV_CYCLE_CONCURRENCY_CAP"
+DAILY_CAP_CODE = "SELFDEV_CYCLE_ISSUANCE_DAILY_CAP"
+DAILY_CAP_BACKOFF = timedelta(hours=1)
 PHASES = {
     "ACTIVE", "ISSUING", "INSTALLED_PENDING", "VERIFIED", "REVOKING_OLD",
     "FAILED_ISSUE", "FAILED_INSTALL", "FAILED_EXPIRED", "BREAKER_OPEN",
@@ -425,15 +430,29 @@ class Runner:
             status, body = self.api.issue(cycle_id)
         except ApiUnavailable:
             return self._fail(state, "FAILED_ISSUE", "issue unavailable")
-        if status in DEFINITIVE_REJECTIONS:
-            # Rejected before issuance (auth, grant, validation): retrying cannot
-            # help, and nothing exists server-side to revoke.
+        code = _detail_code(body)
+        cleared = {"next_cycle_id": None, "next_expires_at": None, "next_issued_at": None}
+        if status in DEFINITIVE_REJECTIONS or (status == 409 and code == CONCURRENCY_CAP_CODE):
+            # Rejected before issuance: nothing exists server-side to revoke.
+            # Definitive codes (auth, grant, validation) cannot succeed on retry.
+            # The concurrency cap means an untracked live cycle exists (manual, a
+            # pre-reboot state, ...). The API cannot list cycles and every ID this
+            # runner abandons is revoked or expired, so it cannot be identified
+            # safely: stop and alert instead of guessing.
+            reason = f"HTTP {status}" + (f" {code}" if code else "")
             self._event("failed", phase="ISSUING", cycle=cycle_id,
-                        reason=f"issue rejected definitively (HTTP {status})")
-            self._event("breaker_open", reason=f"HTTP {status}")
-            return self._save(state, "BREAKER_OPEN", next_cycle_id=None, next_expires_at=None,
-                              next_issued_at=None, consecutive_failures=BREAKER_THRESHOLD,
-                              next_attempt_at=None)
+                        reason=f"issue rejected without retry ({reason})")
+            self._event("breaker_open", reason=reason)
+            return self._save(state, "BREAKER_OPEN", consecutive_failures=BREAKER_THRESHOLD,
+                              next_attempt_at=None, **cleared)
+        if status == 429 and code == DAILY_CAP_CODE:
+            # Nothing issued; not an issuance failure and nothing to revoke. Re-check
+            # after a long wait: the API does not expose when its rolling 24 h
+            # window frees a slot.
+            until = _iso(now + DAILY_CAP_BACKOFF)
+            self._event("failed", phase="ISSUING", cycle=cycle_id,
+                        reason=f"issue daily cap reached; retry after {until}")
+            return self._save(state, "ACTIVE", next_attempt_at=until, **cleared)
         try:
             expires, tokens, ids = self._check_issue_response(cycle_id, status, body, now)
             # Identity is verified with the in-memory tokens BEFORE any file is
@@ -443,22 +462,26 @@ class Runner:
             return self._fail(state, "FAILED_ISSUE", str(exc))
         # From here on a role file may hold N+1 (INSTALLED_PENDING = "may hold").
         state = self._save(state, "INSTALLED_PENDING", next_expires_at=_iso(expires))
-        # Reviewer first: the implementer file (live worker consumer) changes last,
-        # so any failure leaves it holding cycle N. The two files live in two
-        # accounts' runtime dirs, so no single rename can switch both.
+        # The reviewer file is replaced AND verified before the implementer file
+        # (live worker consumer) is touched, so every reviewer-side failure leaves
+        # the implementer file holding cycle N. The only remaining case where the
+        # implementer file ends up with a revoked N+1 token is a failure of the
+        # implementer's own step after its rename: replace rc 3, a failed
+        # implementer verify, or a crash after the implementer replace. The two
+        # files live in two accounts' runtime dirs, so no single rename can
+        # switch both.
         written = False
         for (account, kind_name, _kind), token in reversed(list(zip(ROLES, tokens, strict=True))):
             rc = self.installer.run(account, kind_name, "replace", token)
-            # rc 3: rename committed but post-write check failed; the verify step
-            # below decides. Any other failure happened before rename.
+            # rc 3: rename committed but post-write check failed; verify decides.
+            # Any other failure happened before rename.
             if rc not in {0, REPLACE_COMMITTED}:
                 return self._fail(state, "FAILED_INSTALL" if written else "FAILED_ISSUE",
                                   f"replace failed for {account} (rc {rc})")
             written = True
-        self._event("installed", next=cycle_id)
-        for (account, kind_name, _kind), token in zip(ROLES, tokens, strict=True):
             if self.installer.run(account, kind_name, "verify", token) != 0:
                 return self._fail(state, "FAILED_INSTALL", f"file verify failed for {account}")
+        self._event("installed", next=cycle_id)
         self._event("verified", next=cycle_id, impl=ids[0], reviewer=ids[1])
         return self._save(state, "VERIFIED", consecutive_failures=0, next_attempt_at=None)
 

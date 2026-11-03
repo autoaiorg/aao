@@ -1,0 +1,13 @@
+# Disabled by default; see aao-selfdev-cycle-renew.service. Renewal is due at
+# 50 % of the 2 h TTL, so a 5 min tick leaves ~4 retries before expiry.
+[Unit]
+Description=AAO Self Development cycle credential renewal tick
+
+[Timer]
+OnActiveSec=1min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=aao-selfdev-cycle-renew.service
+
+[Install]
+WantedBy=timers.target

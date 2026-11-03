@@ -1,0 +1,27 @@
+# Unattended renewal of the Self Development cycle role pair (aao-pm user unit).
+# Disabled by default: install and enable only after GOV-REV-001 review and the
+# host prerequisites in docs/procedures/SELFDEV_CYCLE_CREDENTIAL_LIFECYCLE.md §3.
+#
+# Root wrapper dependency: the runner calls
+#   sudo -n /usr/local/libexec/aao/selfdev_role_token_helper.py --operation replace|verify
+# (sudoers: aao-pm NOPASSWD on that wrapper only). sudo is setuid, so this unit
+# deliberately omits NoNewPrivileges=yes and every directive that implies it in
+# user mode (PrivateDevices, ProtectKernel*, ProtectControlGroups, RestrictSUIDSGID,
+# LockPersonality, RestrictAddressFamilies, SystemCallFilter, ...) and the
+# namespace directives (PrivateTmp, ProtectSystem, ProtectHome) that would run it
+# in a user namespace where setuid cannot gain root. Compensation: the sudoers
+# allowlist is the single fixed wrapper, which validates account/token/operation.
+[Unit]
+Description=AAO Self Development cycle credential renewal (one tick)
+ConditionPathExists=%h/.config/aao/selfdev-cycle-renew.env
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/aao/selfdev-cycle-renew.env
+Environment=XDG_RUNTIME_DIR=%t
+WorkingDirectory=/srv/aao/frozen/aao-pm/tree
+ExecStart=/srv/aao/frozen/aao-pm/venv/bin/python -I -c "import sys; sys.path.insert(0, '/srv/aao/frozen/aao-pm/tree'); from scripts.renew_selfdev_cycle_credentials import main; raise SystemExit(main())" --project-id ${AAO_PROJECT_ID}
+# 75 = another tick holds the lock; not a failure.
+SuccessExitStatus=75
+TimeoutStartSec=5min
+UMask=0077

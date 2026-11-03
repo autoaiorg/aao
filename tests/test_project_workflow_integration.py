@@ -2373,7 +2373,9 @@ def test_organization_profiles_are_persisted_and_do_not_create_grants(monkeypatc
             "unit_id": unit["id"], "manager_principal_id": None, "enabled": True,
         }
         assert client.put("/v1/organization/profiles", headers=ceo, json=profile).status_code == 200
-        projection = client.get("/v1/organization", headers=ceo).json()
+        projection_response = client.get("/v1/organization", headers=ceo)
+        assert projection_response.headers["cache-control"] == "no-store"
+        projection = projection_response.json()
         agent = next(row for row in projection["agents"] if row["id"] == principal)
         assert agent["name"] == "Research Agent"
         assert agent["roleTitle"] == "Analyst"

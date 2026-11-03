@@ -1701,12 +1701,16 @@ def put_organization_profile(payload: OrganizationProfileRequest, _: str = Depen
 
 
 @app.get("/v1/organization")
-def organization(principal: str = Depends(read_principal)):
+def organization(response: Response, principal: str = Depends(read_principal)):
     """Read-only office projection from persisted principals, work, and executions.
 
     Organizational placement and heartbeat are intentionally unknown until AAO
     has canonical persisted sources for them.
     """
+    # This projection includes mutable credential state used to distinguish
+    # operational agents from revoked historical principals. Never let an
+    # intermediary or browser cache preserve a stale roster after revocation.
+    response.headers["Cache-Control"] = "no-store"
     with tx() as db:
         if principal is _CEO_PRINCIPAL:
             projects_rows = db.execute(

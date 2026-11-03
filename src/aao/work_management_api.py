@@ -1800,7 +1800,12 @@ def organization(response: Response, principal: str = Depends(read_principal)):
                 **({"credentialStatus": credential_state_by_id[principal_id]}
                    if principal_id in credential_state_by_id else {}),
             } for principal_id, profile in profile_by_id.items()]
-            return {"units": units, "agents": agents, "totalStandingAgents": 0,
+            historical_count = sum(
+                1 for agent in agents if agent.get("credentialStatus") == "DISABLED"
+            )
+            agents = [agent for agent in agents if agent.get("credentialStatus") != "DISABLED"]
+            return {"units": units, "agents": agents, "historicalAgentCount": historical_count,
+                    "totalStandingAgents": 0,
                     "totalEphemeralAgents": 0, "totalUnknownAgents": len(agents),
                     "activeAssignmentsCount": 0,
                     "coverage": {"totalProjects": 0, "inspectedProjects": 0,
@@ -1922,9 +1927,15 @@ def organization(response: Response, principal: str = Depends(read_principal)):
         for agent_id, agent in agents.items():
             if agent_id in credential_state_by_id:
                 agent["credentialStatus"] = credential_state_by_id[agent_id]
-    return {"units": units, "agents": list(agents.values()),
+    historical_agent_ids = {
+        agent_id for agent_id, agent in agents.items()
+        if principal is _CEO_PRINCIPAL and agent.get("credentialStatus") == "DISABLED"
+    }
+    live_agents = [agent for agent_id, agent in agents.items() if agent_id not in historical_agent_ids]
+    return {"units": units, "agents": live_agents,
+            "historicalAgentCount": len(historical_agent_ids),
             "totalStandingAgents": 0, "totalEphemeralAgents": 0,
-            "totalUnknownAgents": len(agents), "activeAssignmentsCount": active_count,
+            "totalUnknownAgents": len(live_agents), "activeAssignmentsCount": active_count,
             "coverage": {"totalProjects": len(project_ids),
                          "inspectedProjects": len(project_ids),
                          "failedProjects": 0, "isPartial": False}}

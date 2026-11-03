@@ -9,6 +9,20 @@ import pytest
 from scripts import run_self_development_worker as worker
 
 
+@pytest.fixture(autouse=True)
+def default_cycle_identity(monkeypatch, request):
+    """Keep older CLI tests focused on their behavior, not identity lookup."""
+    if request.node.originalname in {
+        "test_resolve_principal_from_current_cycle_token",
+        "test_worker_run_resolves_identity_from_cycle_token",
+    }:
+        return
+    monkeypatch.setattr(
+        worker, "_resolve_principal_id",
+        lambda _token, expected=None: expected or "aao-selfdev-impl-cycle-test",
+    )
+
+
 def make_runtime(tmp_path, *, mode=0o700, token_mode=0o600):
     runtime = tmp_path / "runtime"
     runtime.mkdir(mode=mode)
@@ -160,13 +174,86 @@ def test_worker_cli_accepts_explicit_systemd_identity_environment(tmp_path, monk
     assert seen == [("project-from-unit", "agent-from-unit")]
 
 
-def test_worker_cli_rejects_missing_systemd_identity(monkeypatch):
+def test_worker_cli_requires_project_identity(monkeypatch):
     monkeypatch.delenv("AAO_WORKER_PROJECT_ID", raising=False)
     monkeypatch.delenv("AAO_WORKER_PRINCIPAL_ID", raising=False)
     monkeypatch.setattr(worker.sys, "argv", ["worker", "--watch"])
     with pytest.raises(SystemExit) as exc:
         worker.main()
     assert exc.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "response, expected, message",
+    [
+        ({"principal_id": "aao-selfdev-impl-c1", "kind": "AGENT", "enabled": True}, None, None),
+        (None, None, "invalid response"),
+        ({"principal_id": "aao-selfdev-review-c1", "kind": "AUDITOR", "enabled": True}, None,
+         "not an enabled Self Development implementer"),
+        ({"principal_id": "aao-selfdev-impl-c1", "kind": "AGENT", "enabled": False}, None,
+         "not an enabled Self Development implementer"),
+        ({"principal_id": "aao-selfdev-impl-c2", "kind": "AGENT", "enabled": True},
+         "aao-selfdev-impl-c1", "does not match"),
+    ],
+)
+def test_resolve_principal_from_current_cycle_token(response, expected, message, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "aao.inert_execution_worker._api_request",
+        lambda path, token, *, body, method="POST": calls.append((path, token, body, method)) or response,
+    )
+    if message:
+        with pytest.raises(worker.WorkerError, match=message):
+            worker._resolve_principal_id("fixture-token", expected)
+    else:
+        assert worker._resolve_principal_id("fixture-token", expected) == "aao-selfdev-impl-c1"
+    assert calls == [("/v1/principals/me", "fixture-token", {}, "GET")]
+
+
+def test_worker_cli_allows_dynamic_cycle_principal_from_token(tmp_path, monkeypatch):
+    runtime, _ = make_runtime(tmp_path)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setattr(worker.os, "getuid", lambda: os.stat(runtime).st_uid)
+    monkeypatch.setenv("AAO_WORKER_PROJECT_ID", "project-from-unit")
+    monkeypatch.delenv("AAO_WORKER_PRINCIPAL_ID", raising=False)
+    seen = []
+    monkeypatch.setattr(worker, "run_watch", lambda project, principal, **_kw: (
+        seen.append((project, principal)) or 0
+    ))
+    monkeypatch.setattr(worker.sys, "argv", ["worker", "--watch"])
+
+    assert worker.main() == 0
+    assert seen == [("project-from-unit", None)]
+
+
+def test_worker_run_resolves_identity_from_cycle_token(tmp_path, monkeypatch):
+    runtime, _ = make_runtime(tmp_path)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setattr(worker.os, "getuid", lambda: os.stat(runtime).st_uid)
+    calls = []
+
+    def fake_api(path, token, *, body, method="POST"):
+        calls.append((path, token, method))
+        if path == "/v1/principals/me":
+            return {"principal_id": "aao-selfdev-impl-cycle-9", "kind": "AGENT", "enabled": True}
+        return {"status": "IDLE"}
+
+    seen = []
+    monkeypatch.setattr("aao.inert_execution_worker._api_request", fake_api)
+    monkeypatch.setattr(
+        "aao.inert_execution_worker.run_one",
+        lambda principal, token, **kwargs: seen.append((principal, token, kwargs)) or {"status": "IDLE"},
+    )
+
+    assert worker.run("project-1") == {"status": "IDLE"}
+    assert calls == [
+        ("/v1/principals/me", "agent-token-fixture", "GET"),
+        ("/v1/agent/projects/project-1/submit-next-result", "agent-token-fixture", "POST"),
+    ]
+    assert seen == [(
+        "aao-selfdev-impl-cycle-9", "agent-token-fixture",
+        {"project_id": "project-1", "seconds": worker.MAX_LEASE_SECONDS},
+    )]
 
 
 def test_worker_does_not_downgrade_production_environment(tmp_path, monkeypatch):

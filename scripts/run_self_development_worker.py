@@ -76,9 +76,29 @@ def _read_agent_token(name: str = AGENT_TOKEN_NAME) -> str:
     return token
 
 
-def run(project_id: str, principal_id: str) -> dict:
-    if not project_id or not principal_id:
-        raise WorkerError("project and principal identifiers are required")
+def _resolve_principal_id(token: str, expected: str | None = None) -> str:
+    """Resolve the cycle-scoped worker identity from the credential itself."""
+    from aao.inert_execution_worker import _api_request
+
+    identity = _api_request("/v1/principals/me", token, body={}, method="GET")
+    if not isinstance(identity, dict):
+        raise WorkerError("agent identity endpoint returned an invalid response")
+    principal_id = identity.get("principal_id")
+    if (
+        identity.get("kind") != "AGENT"
+        or identity.get("enabled") is not True
+        or not isinstance(principal_id, str)
+        or not principal_id.startswith("aao-selfdev-impl-")
+    ):
+        raise WorkerError("agent credential is not an enabled Self Development implementer")
+    if expected is not None and principal_id != expected:
+        raise WorkerError("configured principal does not match the runtime credential")
+    return principal_id
+
+
+def run(project_id: str, principal_id: str | None = None) -> dict:
+    if not project_id:
+        raise WorkerError("project identifier is required")
     token = _read_agent_token()
     os.environ.setdefault("AAO_ENV", "development")
     if os.environ["AAO_ENV"].lower() == "production":
@@ -94,6 +114,7 @@ def run(project_id: str, principal_id: str) -> dict:
     from aao.inert_execution_worker import _api_request, run_one
 
     try:
+        principal_id = _resolve_principal_id(token, principal_id)
         path = f"/v1/agent/projects/{urllib.parse.quote(project_id, safe='')}/submit-next-result"
         submitted = _api_request(path, token, body={})
         status = submitted.get("status") if isinstance(submitted, dict) else None
@@ -111,10 +132,10 @@ def run(project_id: str, principal_id: str) -> dict:
         del token
 
 
-def dispatch_next(project_id: str, principal_id: str, base_sha: str) -> dict:
+def dispatch_next(project_id: str, principal_id: str | None, base_sha: str) -> dict:
     """Ask AAO to dispatch one assigned, already-evaluated item for this identity."""
-    if not project_id or not principal_id:
-        raise WorkerError("project and principal identifiers are required")
+    if not project_id:
+        raise WorkerError("project identifier is required")
     if len(base_sha) != 40 or any(char not in "0123456789abcdef" for char in base_sha):
         raise WorkerError("base SHA must be a lowercase 40-character commit hash")
     api_base = os.environ.get("AAO_API_BASE_URL", "http://127.0.0.1:8001").rstrip("/")
@@ -125,14 +146,15 @@ def dispatch_next(project_id: str, principal_id: str, base_sha: str) -> dict:
     if parsed.username or parsed.password or not parsed.hostname:
         raise WorkerError("AAO_API_BASE_URL must not contain credentials")
     token = _read_agent_token()
-    request = urllib.request.Request(
-        f"{api_base}/v1/agent/dispatch-next",
-        data=json.dumps({"project_id": project_id, "principal_id": principal_id,
-                         "base_sha": base_sha}).encode("utf-8"),
-        headers={"Content-Type": "application/json", "X-Agent-Token": token},
-        method="POST",
-    )
     try:
+        principal_id = _resolve_principal_id(token, principal_id)
+        request = urllib.request.Request(
+            f"{api_base}/v1/agent/dispatch-next",
+            data=json.dumps({"project_id": project_id, "principal_id": principal_id,
+                             "base_sha": base_sha}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "X-Agent-Token": token},
+            method="POST",
+        )
         opener = urllib.request.build_opener(_RejectRedirects)
         with opener.open(request, timeout=10) as response:
             payload = json.loads(response.read(65536))
@@ -147,7 +169,7 @@ def dispatch_next(project_id: str, principal_id: str, base_sha: str) -> dict:
 
 def run_watch(
     project_id: str,
-    principal_id: str,
+    principal_id: str | None,
     *,
     poll_interval_seconds: float,
     stop_event: threading.Event,
@@ -163,8 +185,8 @@ def run_watch(
     mode returns to the API after the poll delay; retry limits, no-progress
     detection and budgets remain enforced there. Uncertain outcomes stop.
     """
-    if not project_id or not principal_id:
-        raise WorkerError("project and principal identifiers are required")
+    if not project_id:
+        raise WorkerError("project identifier is required")
     if not 0 < poll_interval_seconds <= MAX_POLL_INTERVAL_SECONDS:
         raise WorkerError(
             f"poll interval must be greater than zero and at most {MAX_POLL_INTERVAL_SECONDS:g} seconds"
@@ -212,10 +234,10 @@ def main() -> int:
                         default=DEFAULT_POLL_INTERVAL_SECONDS,
                         help="watch-mode idle polling interval (default: 5; maximum: 300)")
     args = parser.parse_args()
-    if not args.project_id or not args.principal_id:
+    if not args.project_id:
         parser.error(
-            "--project-id and --principal-id are required (or set "
-            "AAO_WORKER_PROJECT_ID and AAO_WORKER_PRINCIPAL_ID)"
+            "--project-id is required (or set AAO_WORKER_PROJECT_ID); "
+            "the cycle principal is resolved from the runtime credential"
         )
     if args.dispatch and not args.base_sha:
         parser.error("--dispatch requires --base-sha")

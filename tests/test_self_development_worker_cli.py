@@ -97,7 +97,9 @@ def test_worker_result_recovery_uses_api_when_local_database_access_is_denied(
     )]
 
 
-@pytest.mark.parametrize("response", [{}, {"status": "UNKNOWN"}, None, []])
+@pytest.mark.parametrize(
+    "response", [{}, {"status": "UNKNOWN"}, {"status": []}, {"status": {}}, None, []],
+)
 def test_worker_rejects_malformed_or_unknown_recovery_response(
     tmp_path, monkeypatch, response,
 ):

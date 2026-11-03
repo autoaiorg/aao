@@ -482,7 +482,9 @@ def test_dispatch_sends_agent_token_only_to_local_api(tmp_path, monkeypatch):
     assert captured["timeout"] == 10
     assert isinstance(captured["proxy_handler"], worker.urllib.request.ProxyHandler)
     assert captured["proxy_handler"].proxies == {}
-    assert captured["redirect_handler"] is worker._RejectRedirects
+    from aao.workload_client import _RejectRedirects
+
+    assert isinstance(captured["redirect_handler"], _RejectRedirects)
     assert worker._RejectRedirects().redirect_request(None, None, 302, "Found", {},
                                                       "https://elsewhere.test/") is None
 

@@ -4,6 +4,41 @@ from contextlib import contextmanager
 from fastapi.testclient import TestClient
 
 
+def test_production_project_list_revalidates_mtls_identity_transactionally(monkeypatch):
+    from aao.work_management_api import AuthenticatedPrincipal, projects
+
+    monkeypatch.setenv("AAO_ENV", "production")
+    identity = AuthenticatedPrincipal(
+        "agent-1", "credential-digest", "AGENT", workload_fingerprint="a" * 64,
+    )
+    observed = []
+
+    class Db:
+        def execute(self, query, params):
+            observed.append((query, params))
+            return self
+
+        def fetchall(self):
+            return [("project-1", "Project", "ACTIVE")]
+
+    @contextmanager
+    def fake_tx():
+        yield Db()
+
+    def revalidate(db, principal, *, kind):
+        assert db is not None
+        assert principal is identity
+        assert kind == "AGENT"
+        return "agent-1"
+
+    monkeypatch.setattr("aao.work_management_api.tx", fake_tx)
+    monkeypatch.setattr("aao.principal_credentials.authenticate_identity_in_transaction", revalidate)
+
+    assert projects(identity) == [{"id": "project-1", "name": "Project", "state": "ACTIVE"}]
+    assert observed[0][1] == ("agent-1",)
+    assert "FOR SHARE OF g" in observed[0][0]
+
+
 def test_worker_execution_api_routes_authenticate_and_fence_operations(monkeypatch):
     from aao import execution_queue
     from aao.principal_credentials import PrincipalDenied
@@ -28,10 +63,13 @@ def test_worker_execution_api_routes_authenticate_and_fence_operations(monkeypat
                             json={"project_id": "project-1", "seconds": 600})
         assert claim.status_code == 200, claim.text
         assert claim.json()["worker_id"] == "agent-1"
-        assert calls[0] == ("claim", ("agent-1",), {
-            "agent_credential": "agent-token", "project_id": "project-1", "seconds": 600,
-        })
+    assert calls[0][0] == "claim"
+    assert calls[0][1] == ("agent-1",)
+    assert str(calls[0][2]["agent_credential"]) == "agent-1"
+    assert calls[0][2]["project_id"] == "project-1"
+    assert calls[0][2]["seconds"] == 600
 
+    with TestClient(app) as client:
         too_long = client.post("/v1/agent/executions/claim", headers=headers,
                                json={"project_id": "project-1", "seconds": 1801})
         assert too_long.status_code == 422
@@ -39,10 +77,10 @@ def test_worker_execution_api_routes_authenticate_and_fence_operations(monkeypat
         completed = client.post("/v1/agent/executions/execution-1/complete", headers=headers,
                                 json={"lease_token": "lease-1", "result": {"conclusion": "success"}})
         assert completed.status_code == 200, completed.text
-        assert calls[1] == (
+        assert calls[1][0:2] == (
             "complete", ("execution-1", "lease-1", "agent-1", {"conclusion": "success"}),
-            {"agent_credential": "agent-token"},
         )
+        assert str(calls[1][2]["agent_credential"]) == "agent-1"
 
 
 def test_context_endpoint_requires_owned_unexpired_lease_and_grant(monkeypatch):

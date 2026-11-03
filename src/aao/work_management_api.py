@@ -101,26 +101,48 @@ def require_ceo(
 
 
 def require_reviewer(
+    request: Request = None,  # type: ignore[assignment]
     x_auditor_token: str | None = Header(None),
 ):
-    from aao.principal_credentials import PrincipalDenied
+    from aao.principal_credentials import PrincipalDenied, authenticate_mtls
     try:
+        if os.getenv("AAO_ENV", "").strip().lower() == "production":
+            fingerprint = _mtls_fingerprint(request)
+            principal, digest = authenticate_mtls(fingerprint, kind="AUDITOR")
+            return AuthenticatedPrincipal(
+                principal, digest, "AUDITOR", workload_fingerprint=fingerprint,
+            )
         return _authenticate_request_principal(x_auditor_token, "AUDITOR")
     except PrincipalDenied as exc:
         raise HTTPException(403, "Individual auditor credential rejected") from exc
 
 
 def require_worker(
+    request: Request = None,  # type: ignore[assignment]
     x_agent_token: str | None = Header(None),
 ):
-    from aao.principal_credentials import PrincipalDenied, digest_token
+    from aao.principal_credentials import PrincipalDenied, authenticate_mtls, digest_token
     try:
+        if os.getenv("AAO_ENV", "").strip().lower() == "production":
+            fingerprint = _mtls_fingerprint(request)
+            principal, digest = authenticate_mtls(fingerprint, kind="AGENT")
+            return AuthenticatedPrincipal(
+                principal, digest, "AGENT", workload_fingerprint=fingerprint,
+            )
         principal_id = _authenticate_request_principal(x_agent_token, "AGENT")
         # Keep the verified bearer digest attached to the principal so routes
         # can re-check this exact credential inside their authorization txn.
         return AuthenticatedPrincipal(principal_id, digest_token(x_agent_token), "AGENT")
     except PrincipalDenied as exc:
         raise HTTPException(403, "Individual agent credential rejected") from exc
+
+
+def _mtls_fingerprint(request: Request) -> str | None:
+    """Read only the server-added mTLS extension; HTTP headers are untrusted."""
+    from aao.uvicorn_mtls import MTLS_CLIENT_CERT_EXTENSION
+
+    extension = request.scope.get("extensions", {}).get(MTLS_CLIENT_CERT_EXTENSION)
+    return extension.get("sha256") if isinstance(extension, dict) else None
 
 
 @contextmanager
@@ -770,10 +792,14 @@ def revoke_ceo_browser_session(
 class AuthenticatedPrincipal(str):
     """Principal ID plus the exact bearer digest for transaction-time recheck."""
 
-    def __new__(cls, principal_id: str, token_digest: str, kind: str):
+    def __new__(
+        cls, principal_id: str, token_digest: str, kind: str,
+        *, workload_fingerprint: str | None = None,
+    ):
         value = super().__new__(cls, principal_id)
         value.token_digest = token_digest
         value.kind = kind
+        value.workload_fingerprint = workload_fingerprint
         return value
 
 
@@ -885,14 +911,13 @@ def issue_principal_credential(
 @app.get("/v1/principals/me")
 def current_principal(principal: Annotated[AuthenticatedPrincipal, Depends(require_worker)]):
     """Return the authenticated agent identity without disclosing credential material."""
+    from aao.principal_credentials import PrincipalDenied, authenticate_identity_in_transaction
+
     with tx() as db:
-        row = db.execute(
-            "SELECT kind,enabled FROM principal_credentials "
-            "WHERE principal_id=%s AND token_digest=%s FOR SHARE",
-            (principal, principal.token_digest),
-        ).fetchone()
-        if not row or row[0] != "AGENT" or not row[1]:
-            raise HTTPException(403, "Individual agent credential invalid or revoked")
+        try:
+            authenticate_identity_in_transaction(db, principal, kind="AGENT")
+        except PrincipalDenied as exc:
+            raise HTTPException(403, "Individual agent credential invalid or revoked") from exc
     return {"principal_id": str(principal), "kind": "AGENT", "enabled": True}
 
 
@@ -1392,6 +1417,9 @@ def self_rotate_principal(principal: Annotated[AuthenticatedPrincipal, Depends(r
     """
     from aao.principal_credentials import digest_token
 
+    if os.getenv("AAO_ENV", "").strip().lower() == "production":
+        raise HTTPException(403, "Production workload credential rotation is not configured")
+
     token = secrets.token_urlsafe(32)
     with tx() as db:
         row = db.execute(
@@ -1484,6 +1512,9 @@ def stage_w2_publisher_rotation(
     """Stage a self-rotation for a W2 publisher; the PM never receives the token."""
     from aao.principal_credentials import digest_token
 
+    if os.getenv("AAO_ENV", "").strip().lower() == "production":
+        raise HTTPException(403, "Production publisher credential rotation is not configured")
+
     _w2_publisher_account(str(principal))
     token = secrets.token_urlsafe(32)
     with tx() as db:
@@ -1550,14 +1581,13 @@ def current_principal_grants(
     principal: Annotated[AuthenticatedPrincipal, Depends(require_worker)],
 ):
     """List only the authenticated agent's project grants; this grants no authority."""
+    from aao.principal_credentials import PrincipalDenied, authenticate_identity_in_transaction
+
     with tx() as db:
-        credential = db.execute(
-            "SELECT kind,enabled FROM principal_credentials "
-            "WHERE principal_id=%s AND token_digest=%s FOR SHARE",
-            (principal, principal.token_digest),
-        ).fetchone()
-        if not credential or credential[0] != "AGENT" or not credential[1]:
-            raise HTTPException(403, "Individual agent credential invalid or revoked")
+        try:
+            authenticate_identity_in_transaction(db, principal, kind="AGENT")
+        except PrincipalDenied as exc:
+            raise HTTPException(403, "Individual agent credential invalid or revoked") from exc
         rows = db.execute(
             "SELECT project_id,capability,expires_at,"
             "(expires_at IS NULL OR expires_at>clock_timestamp()) AS active "
@@ -1582,14 +1612,13 @@ def current_auditor_grants(
     principal: Annotated[AuthenticatedPrincipal, Depends(require_reviewer)],
 ):
     """List only the authenticated auditor's project grants; no authority is granted."""
+    from aao.principal_credentials import PrincipalDenied, authenticate_identity_in_transaction
+
     with tx() as db:
-        credential = db.execute(
-            "SELECT kind,enabled FROM principal_credentials "
-            "WHERE principal_id=%s AND token_digest=%s FOR SHARE",
-            (principal, principal.token_digest),
-        ).fetchone()
-        if not credential or credential[0] != "AUDITOR" or not credential[1]:
-            raise HTTPException(403, "Individual auditor credential invalid or revoked")
+        try:
+            authenticate_identity_in_transaction(db, principal, kind="AUDITOR")
+        except PrincipalDenied as exc:
+            raise HTTPException(403, "Individual auditor credential invalid or revoked") from exc
         rows = db.execute(
             "SELECT project_id,capability,expires_at,"
             "(expires_at IS NULL OR expires_at>clock_timestamp()) AS active "
@@ -1833,6 +1862,16 @@ def read_principal(
     x_ceo_token: str | None = Header(None),
     x_agent_token: str | None = Header(None),
 ):
+    if os.getenv("AAO_ENV", "").strip().lower() == "production":
+        from aao.principal_credentials import PrincipalDenied, authenticate_mtls
+        try:
+            fingerprint = _mtls_fingerprint(request) if request else None
+            principal, digest = authenticate_mtls(fingerprint, kind="AGENT")
+            return AuthenticatedPrincipal(
+                principal, digest, "AGENT", workload_fingerprint=fingerprint,
+            )
+        except PrincipalDenied as exc:
+            raise HTTPException(403, "Individual reader credential rejected") from exc
     ceo = os.getenv("AAO_CEO_TOKEN")
     if (_ceo_bearer_enabled() and ceo and x_ceo_token
             and secrets.compare_digest(ceo, x_ceo_token)):
@@ -1864,19 +1903,20 @@ def projects(principal: str = Depends(read_principal)):
         else:
             if not isinstance(principal, AuthenticatedPrincipal):
                 raise HTTPException(403, "Individual reader credential required")
-            credential = db.execute(
-                "SELECT kind,enabled FROM principal_credentials "
-                "WHERE principal_id=%s AND token_digest=%s FOR SHARE",
-                (principal, principal.token_digest),
-            ).fetchone()
-            if not credential or credential[0] != "AGENT" or not credential[1]:
-                raise HTTPException(403, "Individual reader invalid or revoked")
+            from aao.principal_credentials import (
+                PrincipalDenied,
+                authenticate_identity_in_transaction,
+            )
+            try:
+                principal_id = authenticate_identity_in_transaction(db, principal, kind="AGENT")
+            except PrincipalDenied as exc:
+                raise HTTPException(403, "Individual reader invalid or revoked") from exc
             rows = db.execute(
                 "SELECT p.id,p.name,p.state FROM projects p JOIN project_grants g ON g.project_id=p.id "
                 "WHERE g.principal_id=%s AND g.capability='project.read' "
                 "AND (g.expires_at IS NULL OR g.expires_at > clock_timestamp()) ORDER BY p.name,p.id "
                 "FOR SHARE OF g",
-                (principal,),
+                (principal_id,),
             ).fetchall()
         return [{"id": r[0], "name": r[1], "state": r[2]} for r in rows]
 
@@ -1971,13 +2011,14 @@ def organization(response: Response, principal: str = Depends(read_principal)):
         else:
             if not isinstance(principal, AuthenticatedPrincipal):
                 raise HTTPException(403, "Individual reader credential required")
-            credential = db.execute(
-                "SELECT kind,enabled FROM principal_credentials "
-                "WHERE principal_id=%s AND token_digest=%s FOR SHARE",
-                (principal, principal.token_digest),
-            ).fetchone()
-            if not credential or credential[0] != "AGENT" or not credential[1]:
-                raise HTTPException(403, "Individual reader invalid or revoked")
+            from aao.principal_credentials import (
+                PrincipalDenied,
+                authenticate_identity_in_transaction,
+            )
+            try:
+                authenticate_identity_in_transaction(db, principal, kind="AGENT")
+            except PrincipalDenied as exc:
+                raise HTTPException(403, "Individual reader invalid or revoked") from exc
             projects_rows = db.execute(
                 "SELECT p.id,p.name FROM projects p JOIN project_grants g "
                 "ON g.project_id=p.id WHERE g.principal_id=%s "
@@ -2676,6 +2717,21 @@ def require_grant(db, principal: str, project_id: str, capability: str):
     """Recheck the presented credential and grant through the protected transaction."""
     if not isinstance(principal, AuthenticatedPrincipal):
         raise HTTPException(403, "Individual principal credential required")
+    if principal.workload_fingerprint is not None:
+        from aao.principal_credentials import (
+            PrincipalDenied,
+            authenticate_mtls_in_transaction,
+        )
+        try:
+            authenticate_mtls_in_transaction(
+                db,
+                principal.workload_fingerprint,
+                principal_id=str(principal),
+                token_digest=principal.token_digest,
+                kind=principal.kind,
+            )
+        except PrincipalDenied as exc:
+            raise HTTPException(403, "Workload identity invalid or revoked") from exc
     row = db.execute(
         "SELECT kind,enabled FROM principal_credentials "
         "WHERE principal_id=%s AND token_digest=%s "
@@ -5161,7 +5217,7 @@ def ensure_agent_work_in_progress(work_id: str, principal: str) -> None:
             })
 
 
-def submit_next_agent_result(project_id: str, worker_id: str, credential: str) -> dict | None:
+def submit_next_agent_result(project_id: str, worker_id: str, credential) -> dict | None:
     """Recover one durable successful result into review, never approve it.
 
     Work lock serializes submitters, staging and reassignment. Evidence, protocol,
@@ -5169,13 +5225,8 @@ def submit_next_agent_result(project_id: str, worker_id: str, credential: str) -
     The authenticated endpoint below reuses the existing grants; no new grant is introduced.
     """
     from aao.evidence_registry import register_evidence_in_transaction
-    from aao.principal_credentials import PrincipalDenied
-
-    try:
-        principal = _authenticate_request_principal(credential, "AGENT")
-    except PrincipalDenied as exc:
-        raise HTTPException(403, "Individual principal invalid or revoked") from exc
-    if principal != worker_id:
+    principal = credential
+    if not isinstance(principal, AuthenticatedPrincipal) or str(principal) != worker_id:
         raise HTTPException(403, "Worker identity does not match credential")
     with tx() as db:
         row = db.execute(
@@ -5236,7 +5287,7 @@ def submit_next_agent_result(project_id: str, worker_id: str, credential: str) -
             )}}, sort_keys=True).encode()
         evidence = register_evidence_in_transaction(
             db, project_id, record, agent_id=worker_id,
-            agent_credential=credential, media_type="application/json",
+            agent_credential=principal, media_type="application/json",
         )
         protocol = start_work_protocol(
             db, protocol_id="review-acceptance", work_id=work_id,
@@ -5259,10 +5310,9 @@ def submit_next_agent_result(project_id: str, worker_id: str, credential: str) -
 def submit_next_agent_result_endpoint(
     project_id: str,
     principal: Annotated[AuthenticatedPrincipal, Depends(require_worker)],
-    x_agent_token: str | None = Header(None),
 ):
     """Submit one durable successful result through the authenticated API boundary."""
-    submitted = submit_next_agent_result(project_id, str(principal), x_agent_token or "")
+    submitted = submit_next_agent_result(project_id, str(principal), principal)
     return submitted if submitted is not None else {"status": "IDLE"}
 
 
@@ -6010,14 +6060,13 @@ def dispatch_next_agent_work(
 def claim_agent_execution(
     payload: AgentExecutionClaimRequest,
     principal: str = Depends(require_worker),
-    x_agent_token: str | None = Header(None),
 ):
     """Claim staged work through the API's privileged database boundary."""
     from aao.execution_queue import ExecutionConflict, claim
 
     try:
         lease = claim(
-            str(principal), agent_credential=x_agent_token or "",
+            str(principal), agent_credential=principal,
             project_id=payload.project_id, seconds=payload.seconds,
         )
     except ExecutionConflict as exc:
@@ -6112,7 +6161,6 @@ def complete_agent_execution(
     execution_id: str,
     payload: AgentExecutionCompleteRequest,
     principal: str = Depends(require_worker),
-    x_agent_token: str | None = Header(None),
 ):
     """Complete an execution through the queue's fenced transition."""
     from aao.execution_queue import ExecutionConflict, complete
@@ -6120,7 +6168,7 @@ def complete_agent_execution(
     try:
         complete(
             execution_id, payload.lease_token, str(principal), payload.result,
-            agent_credential=x_agent_token or "",
+            agent_credential=principal,
         )
     except ExecutionConflict as exc:
         raise HTTPException(409, str(exc)) from exc

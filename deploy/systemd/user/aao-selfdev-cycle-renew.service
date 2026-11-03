@@ -21,6 +21,9 @@ OnFailure=aao-selfdev-cycle-renew-alert.service
 Type=oneshot
 EnvironmentFile=%h/.config/aao/selfdev-cycle-renew.env
 Environment=XDG_RUNTIME_DIR=%t
+# This is a production workload. Until the per-cycle certificate contract is
+# deployed, the renewer must stop before reading tokens or invoking sudo.
+Environment=AAO_ENV=production
 WorkingDirectory=/srv/aao/frozen/aao-pm/tree
 ExecStart=/srv/aao/frozen/aao-pm/venv/bin/python -I -c "import sys; sys.path.insert(0, '/srv/aao/frozen/aao-pm/tree'); from scripts.renew_selfdev_cycle_credentials import main; raise SystemExit(main())" --project-id ${AAO_PROJECT_ID}
 # 75 = another tick holds the lock; not a failure.

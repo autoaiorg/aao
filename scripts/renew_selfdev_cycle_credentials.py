@@ -613,6 +613,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reset-breaker", action="store_true",
                         help="operator reset of an open circuit breaker, then run one tick")
     args = parser.parse_args(argv)
+    # The current renewal API client has a development bearer contract only.
+    # Production requires a certificate bound to each cycle role; reusing the
+    # PM certificate for implementer/reviewer checks would impersonate those
+    # principals, so fail closed before reading tokens or invoking sudo.
+    if os.environ.get("AAO_ENV", "").strip().lower() == "production":
+        _log({
+            "event": "selfdev_cycle.blocked",
+            "reason": "production workload identity contract unavailable",
+        })
+        return 1
     runtime = runtime_dir()
     lock_path = runtime / "aao-selfdev-cycle.lock"
     state_path = runtime / f"aao-selfdev-cycle-{quote(args.project_id, safe='')}.json"

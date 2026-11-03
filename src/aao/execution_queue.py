@@ -3,13 +3,11 @@
 No tool adapter or language model execution is provided. A failed lease is
 UNCERTAIN and must be reconciled by a separate authorized procedure.
 """
-import hmac
 import json
 from uuid import UUID, uuid4
 
 from aao.host_identity import HostIdentityError, current_host_id
 from aao.postgresql_connection import connect_postgres
-from aao.principal_credentials import digest_token
 from aao.protocol_instances import start_work_protocol
 
 
@@ -139,14 +137,14 @@ def _is_uuid(value: str) -> bool:
 
 
 def verify_execution_principal(db, worker_id, agent_credential):
-    row = db.execute(
-        "SELECT token_digest,enabled FROM principal_credentials "
-        "WHERE principal_id=%s AND kind='AGENT' "
-        "AND (expires_at IS NULL OR expires_at>clock_timestamp()) FOR SHARE", (worker_id,)
-    ).fetchone()
-    if not row or not row[1] or not hmac.compare_digest(
-        digest_token(agent_credential), row[0]
-    ):
+    from aao.principal_credentials import PrincipalDenied, authenticate_identity_in_transaction
+    try:
+        principal_id = authenticate_identity_in_transaction(
+            db, agent_credential, kind="AGENT",
+        )
+    except PrincipalDenied as exc:
+        raise ExecutionConflict("Individual agent credential invalid or revoked") from exc
+    if principal_id != worker_id:
         raise ExecutionConflict("Individual agent credential invalid or revoked")
 
 

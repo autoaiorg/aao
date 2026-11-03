@@ -75,7 +75,10 @@ def test_submit_next_result_endpoint_uses_authenticated_api_principal(monkeypatc
 
     assert response.status_code == 200
     assert response.json()["status"] == "IN_REVIEW"
-    assert calls == [("project-1", "worker-1", "agent-token-fixture")]
+    assert len(calls) == 1
+    project, worker, identity = calls[0]
+    assert (project, worker) == ("project-1", "worker-1")
+    assert identity is principal
 
 
 @pytest.mark.skipif(

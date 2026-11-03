@@ -1,3 +1,4 @@
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.error import HTTPError
@@ -5,6 +6,22 @@ from urllib.error import HTTPError
 import pytest
 
 from scripts import bootstrap_self_dev_agent as bootstrap
+from scripts import self_development_cycle as cycle_cli
+
+
+def test_bootstrap_cli_refuses_production_before_reading_token(monkeypatch, capsys):
+    monkeypatch.setenv("AAO_ENV", "production")
+    monkeypatch.setenv("AAO_CEO_TOKEN", "must-not-be-read")
+    monkeypatch.setattr(sys, "argv", ["bootstrap_self_dev_agent.py", "--use-local-configured-ceo-token"])
+    assert bootstrap.main() == 1
+    assert "development-only" in capsys.readouterr().err
+
+
+def test_cycle_cli_refuses_production_before_loading_local_env(monkeypatch, capsys):
+    monkeypatch.setenv("AAO_ENV", "production")
+    monkeypatch.setattr(sys, "argv", ["self_development_cycle.py", "--project-id", "unused", "verify", "--work-id", "unused"])
+    assert cycle_cli.main() == 1
+    assert "development-only" in capsys.readouterr().err
 
 
 def mandate_record(*, project=None, include_project_event=False):

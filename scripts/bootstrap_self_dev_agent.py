@@ -304,6 +304,9 @@ def configured_local_ceo_token() -> str:
 
 
 def main() -> int:
+    if os.getenv("AAO_ENV", "").strip().lower() == "production":
+        print("Bootstrap is development-only; production identity uses the workload signer", file=sys.stderr)
+        return 1
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://127.0.0.1:8001")
     parser.add_argument(

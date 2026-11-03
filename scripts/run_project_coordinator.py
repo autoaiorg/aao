@@ -46,25 +46,37 @@ class CoordinatorPassResult:
 
 
 def api_call(path: str, *, method: str = "GET", body: dict | None = None) -> dict | list:
-    """Call the local/HTTPS API with the PM token read from the private runtime dir."""
+    """Call AAO with mTLS in production or a private PM token in development."""
     base = os.environ.get("AAO_API_BASE_URL", "http://127.0.0.1:8001").rstrip("/")
-    parsed = urllib.parse.urlparse(base)
-    if parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"}):
-        raise CoordinatorError("AAO_API_BASE_URL must use HTTPS unless it targets localhost")
-    if parsed.username or parsed.password or not parsed.hostname:
-        raise CoordinatorError("AAO_API_BASE_URL must not contain credentials")
+    from aao.workload_client import (
+        WorkloadTransportError,
+        build_workload_opener,
+        validate_workload_origin,
+        workload_headers,
+    )
+
     try:
-        token = _read_agent_token(PM_TOKEN_NAME)
-    except WorkerError as exc:
+        validate_workload_origin(base)
+    except WorkloadTransportError as exc:
         raise CoordinatorError(str(exc)) from None
-    headers = {"Accept": "application/json", "X-Agent-Token": token}
+    token = None
+    production = os.environ.get("AAO_ENV", "").strip().lower() == "production"
+    if not production:
+        try:
+            token = _read_agent_token(PM_TOKEN_NAME)
+        except WorkerError as exc:
+            raise CoordinatorError(str(exc)) from None
+    try:
+        headers = workload_headers(token, has_body=body is not None)
+        opener = build_workload_opener()
+    except RuntimeError as exc:
+        raise CoordinatorError(str(exc)) from None
     data = None
     if body is not None:
-        headers["Content-Type"] = "application/json"
         data = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
     request = urllib.request.Request(f"{base}{path}", data=data, headers=headers, method=method)
     try:
-        with urllib.request.build_opener(_RejectRedirects).open(request, timeout=30) as response:
+        with opener.open(request, timeout=30) as response:
             payload = json.loads(response.read(1_000_001))
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
         raise CoordinatorError(f"AAO coordinator request failed ({type(exc).__name__})") from None

@@ -31,9 +31,20 @@ def main() -> int:
                         help="apps: AAO GitHub Apps (handover path). gh: construction regime only, the "
                              "operator's gh account pushes to AAO_PUBLISH_BASE_REPO and authors the PR")
     args = parser.parse_args()
+    # This one-shot publisher still calls legacy bearer-authenticated helpers.
+    # Do not silently turn an unset environment into development mode, and do
+    # not claim it is production-ready until it has a verified workload-mTLS
+    # contract of its own.
+    environment = os.environ.get("AAO_ENV", "").strip().lower()
+    if environment not in {"development", "test"}:
+        print(
+            "Publication CLI requires explicit AAO_ENV=development or test; "
+            "production publisher mTLS is not implemented.",
+            file=sys.stderr,
+        )
+        return 1
     from run_self_development_worker import _read_agent_token
 
-    os.environ.setdefault("AAO_ENV", "development")
     os.environ.setdefault("AAO_ENV_FILE", ".env.local")
     data_home = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
     store = os.environ.get("AAO_CANDIDATE_REPOSITORY") or str(data_home / "aao" / "candidates.git")

@@ -34,6 +34,29 @@ jobs:
           # Ubuntu 24.04 runners restrict unprivileged user namespaces through AppArmor; the
           # bwrap sandbox (repository checks, agent candidates) needs them on the disposable runner.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Install pinned Codex CLI for the isolation probe
+        env:
+          CODEX_ARCHIVE_SHA256: 90dd0b03b28afcb7fa733a4f73b413db2916a47347efd43fb669cc1c774ee8e4
+          CODEX_SHA256: b93f6811d3f653f0fb83be4050d857fb9abbb111dfa2ce160563327daff7f306
+        run: |
+          set -euo pipefail
+          release="$RUNNER_TEMP/aao-codex/releases/0.164.0"
+          mkdir -p "$release/bin"
+          archive="$RUNNER_TEMP/codex-x86_64-unknown-linux-musl.tar.gz"
+          curl --fail --location --silent --show-error --retry 3 \
+            "https://github.com/openai/codex/releases/download/rust-v0.164.0/codex-x86_64-unknown-linux-musl.tar.gz" \
+            --output "$archive"
+          echo "$CODEX_ARCHIVE_SHA256  $archive" | sha256sum --check --status
+          extract="$RUNNER_TEMP/aao-codex-extract"
+          mkdir -p "$extract"
+          tar --extract --gzip --file "$archive" --directory "$extract" \
+            --no-same-owner --no-same-permissions \
+            codex-x86_64-unknown-linux-musl
+          binary="$extract/codex-x86_64-unknown-linux-musl"
+          echo "$CODEX_SHA256  $binary" | sha256sum --check --status
+          install -m 0755 "$binary" "$release/bin/codex"
+          echo "$release/bin" >> "$GITHUB_PATH"
+          "$release/bin/codex" --version
       - run: python -m pip install -e '.[dev,postgres]'
       - name: Apply PostgreSQL schema to the disposable CI database via unified migrator
         env:

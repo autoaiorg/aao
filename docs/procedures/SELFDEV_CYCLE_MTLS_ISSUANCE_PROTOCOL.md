@@ -104,9 +104,20 @@ contra PostgreSQL.
    mecanismo hardware) y custodio/rotación de la clave CA. No se toma aquí.
 2. **API/DB owner:** la migración 045 y `PostgresCycleIntentRepository`
    implementan persistencia de intenciones, binding, expiración y revocación
-   atómicos con permisos de runtime acotados. Su integración con un endpoint
-   de emisión seguro sigue pendiente; no habilita por sí sola el ciclo en
-   producción.
+   atómicos con permisos de runtime acotados. La integración con #394 sigue
+   bloqueada y debe resolver ambos contratos antes de activarse:
+   - #394 emite actualmente los principales de ciclo habilitados, mientras que
+     `create_intent` exige que AGENT y AUDITOR estén deshabilitados hasta
+     `complete_binding`. No se debe relajar esa precondición: #394 debe emitir
+     ambos tipos como `enabled=false` y habilitarlos únicamente al confirmar el
+     binding verificado. La prueba PostgreSQL cubre ahora ambos tipos.
+   - La ruta de revocación de #394 aún no llama al repositorio. Debe llamar a
+     `revoke(intent_id)` para cada intent del ciclo y hacerlo como parte del
+     límite transaccional de revocación del ciclo; añadir pruebas de ruta que
+     demuestren que intents/bindings quedan revocados y principales desactivados
+     incluso con reintento.
+   Este PR no cambia #394 ni declara satisfechos esos contratos. No habilita por
+   sí solo el ciclo en producción.
 3. **Host owner:** ACL socket para API y cada UID workload, store de certificados
    públicos, entrega privada de key/cert por `LoadCredential=` y recuperación
    de crash. Nada desplegado.

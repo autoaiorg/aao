@@ -17,22 +17,22 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.fixture
-def seeded_intent(monkeypatch):
+@pytest.fixture(params=["AGENT", "AUDITOR"])
+def seeded_intent(monkeypatch, request):
     from aao.postgresql_connection import connect_postgres
     from aao.selfdev_cycle_mtls import CycleSigningIntent
 
     monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
     suffix = uuid.uuid4().hex
     cycle = suffix[:32]
-    project_id, principal_id, owned_project = _project_and_principal(suffix)
+    project_id, principal_id, owned_project = _project_and_principal(suffix, request.param)
     now = datetime.now(UTC).replace(microsecond=0)
     intent = CycleSigningIntent(
         intent_id=uuid.uuid4(),
         project_id=project_id,
         cycle_id=cycle,
         principal_id=principal_id,
-        kind="AGENT",
+        kind=request.param,
         not_before=now - timedelta(seconds=1),
         not_after=now + timedelta(minutes=30),
     )
@@ -48,7 +48,7 @@ def seeded_intent(monkeypatch):
             db.execute("DELETE FROM mandates WHERE id=%s", (mandate_id,))
 
 
-def _project_and_principal(suffix):
+def _project_and_principal(suffix, kind):
     from aao.postgresql_connection import connect_postgres
     from aao.principal_credentials import digest_token
 
@@ -69,10 +69,11 @@ def _project_and_principal(suffix):
                 (project_id, mandate_id),
             )
             owned_project = True
-        principal_id = f"aao-selfdev-impl-{suffix[:32]}"
+        prefix = "aao-selfdev-review-" if kind == "AUDITOR" else "aao-selfdev-impl-"
+        principal_id = f"{prefix}{suffix[:32]}"
         db.execute(
-            "INSERT INTO principal_credentials(principal_id,kind,token_digest,enabled) VALUES (%s,'AGENT',%s,false)",
-            (principal_id, digest_token("not-used-test-token-" + suffix)),
+            "INSERT INTO principal_credentials(principal_id,kind,token_digest,enabled) VALUES (%s,%s,%s,false)",
+            (principal_id, kind, digest_token("not-used-test-token-" + suffix)),
         )
     return project_id, principal_id, owned_project
 
@@ -144,9 +145,10 @@ def test_completion_waits_for_intent_row_lock_before_commit(seeded_intent):
         blocked = False
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
+            blocker.execute("SELECT pg_stat_clear_snapshot()")
             pids = blocker.execute(
-                "SELECT pid FROM pg_stat_activity WHERE wait_event_type='Lock' "
-                "AND %s=ANY(pg_blocking_pids(pid))",
+                "SELECT pid,wait_event_type,wait_event,query FROM pg_stat_activity "
+                "WHERE wait_event_type='Lock' AND %s=ANY(pg_blocking_pids(pid))",
                 (blocker_pid,),
             ).fetchall()
             if pids:

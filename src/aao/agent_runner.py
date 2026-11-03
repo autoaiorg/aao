@@ -16,15 +16,35 @@ _SHA = re.compile(r"^[0-9a-f]{40}$")
 class AgentRunnerError(ValueError):
     pass
 
-def _git(repo: Path, *args: str, timeout: int = 30) -> str:
+def _git(repo: Path, *args: str, timeout: int = 30,
+         safe_directories: tuple[Path, ...] = ()) -> str:
     env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/nonexistent", "LANG": "C.UTF-8",
            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
            "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0",
            "GIT_NO_REPLACE_OBJECTS": "1"}
     try:
-        p = subprocess.run(["git", "-C", str(repo), *args], cwd="/", env=env,
-                           stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                           timeout=timeout, check=False)
+        if safe_directories:
+            # Git only honors safe.directory from protected config, not `git -c`.
+            # Use a private, caller-owned global config so the local transport's
+            # child process also sees the exact allowlist.
+            with tempfile.TemporaryDirectory(prefix="aao-git-config-") as config_dir:
+                config_path = Path(config_dir) / "config"
+                resolved_safe_directories = tuple(path.resolve() for path in safe_directories)
+                if any("\n" in str(path) or "\r" in str(path) for path in resolved_safe_directories):
+                    raise AgentRunnerError("unsafe Git safe.directory path")
+                entries = "".join(
+                    f"\tdirectory = {path}\n" for path in resolved_safe_directories
+                )
+                config_path.write_text(f"[safe]\n{entries}", encoding="utf-8")
+                config_path.chmod(0o600)
+                p = subprocess.run(["git", "-C", str(repo), *args], cwd="/",
+                                   env={**env, "GIT_CONFIG_GLOBAL": str(config_path)},
+                                   stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                   timeout=timeout, check=False)
+        else:
+            p = subprocess.run(["git", "-C", str(repo), *args], cwd="/", env=env,
+                               stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                               timeout=timeout, check=False)
     except (OSError, subprocess.SubprocessError) as exc:
         raise AgentRunnerError("isolated Git operation failed") from exc
     if p.returncode:
@@ -151,10 +171,12 @@ def run_agent_patch(repository, base_sha: str, instructions: str, *, backend: st
     source = Path(repository).resolve()
     if not source.is_dir():
         raise AgentRunnerError("source repository unavailable")
-    root = Path(_git(source, "rev-parse", "--show-toplevel").strip()).resolve()
+    root = Path(_git(source, "rev-parse", "--show-toplevel", safe_directories=(source,)).strip()).resolve()
     if root != source:
         source = root
-    _git(source, "cat-file", "-e", f"{base_sha}^{{commit}}")
+    source_git_dir = Path(_git(source, "rev-parse", "--absolute-git-dir",
+                               safe_directories=(source,)).strip()).resolve()
+    _git(source, "cat-file", "-e", f"{base_sha}^{{commit}}", safe_directories=(source,))
     if backend == "codex" and "codex" not in activated_backends():
         raise AgentRunnerError("codex backend disabled; CEO provider activation required (AAO_AGENT_PROVIDER=codex)")
     if backend not in {"fixture", "codex"}:
@@ -165,7 +187,9 @@ def run_agent_patch(repository, base_sha: str, instructions: str, *, backend: st
         clone = Path(tmp) / "repo"
         clone.mkdir(mode=0o700)
         _git(clone, "init", "--quiet")
-        _git(clone, "-c", "protocol.file.allow=always", "fetch", "--depth=1", "--no-tags", "--no-recurse-submodules", str(source), base_sha)
+        _git(clone, "-c", "protocol.file.allow=always", "fetch", "--depth=1", "--no-tags",
+             "--no-recurse-submodules", str(source), base_sha,
+             safe_directories=(source, source_git_dir))
         _git(clone, "-c", "core.hooksPath=/dev/null", "checkout", "--quiet", "--detach", "FETCH_HEAD")
         env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(Path(tmp) / "home"), "LANG": "C.UTF-8",
                "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_NO_REPLACE_OBJECTS": "1",

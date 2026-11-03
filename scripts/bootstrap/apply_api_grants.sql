@@ -8,6 +8,11 @@ GRANT CONNECT ON DATABASE aao_prod TO aao_runtime;
 GRANT USAGE ON SCHEMA public TO aao_runtime;
 
 GRANT SELECT ON TABLE schema_migrations TO aao_runtime;
+-- Organization proposal planning and its durable execution journal (043/045).
+GRANT SELECT, INSERT, UPDATE ON TABLE organization_proposals TO aao_runtime;
+GRANT SELECT, INSERT, UPDATE ON TABLE organization_executions TO aao_runtime;
+GRANT SELECT, INSERT ON TABLE organization_execution_events TO aao_runtime;
+GRANT USAGE ON SEQUENCE organization_execution_events_id_seq TO aao_runtime;
 GRANT SELECT, INSERT ON TABLE
   events, execution_journal, patch_proposals, patch_proposal_validations,
   work_item_dependencies, work_group_partial_reports, protocol_instances,

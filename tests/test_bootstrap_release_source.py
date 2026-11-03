@@ -89,3 +89,12 @@ def test_api_runtime_can_resolve_but_not_manage_workload_identity_bindings():
     )[0].split("workload_identity_bindings", 1)[-1]
     assert "REVOKE ALL ON TABLE workload_identity_bindings FROM PUBLIC" in migration
     assert "certificate_sha256 text PRIMARY KEY" in migration
+
+
+def test_api_runtime_has_minimal_organization_execution_journal_grants():
+    grants = (BOOTSTRAP / "apply_api_grants.sql").read_text()
+
+    assert "GRANT SELECT, INSERT, UPDATE ON TABLE organization_proposals TO aao_runtime" in grants
+    assert "GRANT SELECT, INSERT, UPDATE ON TABLE organization_executions TO aao_runtime" in grants
+    assert "GRANT SELECT, INSERT ON TABLE organization_execution_events TO aao_runtime" in grants
+    assert "GRANT USAGE ON SEQUENCE organization_execution_events_id_seq TO aao_runtime" in grants

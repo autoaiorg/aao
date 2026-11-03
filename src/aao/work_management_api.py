@@ -575,6 +575,7 @@ class CapabilityFeedbackReviewRequest(BaseModel):
 
 
 class OrganizationProposalCreateRequest(BaseModel):
+    operation: Literal["organization.unit.create_permanent", "organization.unit.merge", "organization.unit.split", "organization.squad.create_temporary", "organization.squad.dissolve", "organization.slot.assign"]
     title: str = Field(min_length=1, max_length=250)
     scope_description: str = Field(min_length=1, max_length=5000)
     target_unit_id: str | None = Field(default=None, max_length=128)
@@ -593,7 +594,6 @@ class OrganizationProposalCreateRequest(BaseModel):
 class OrganizationProposalTransitionRequest(BaseModel):
     target_state: str = Field(pattern=r"^(ANALYZED|EVALUATED|REQUIRES_CEO_APPROVAL|AUTONOMOUS_APPROVED|REJECTED|DISSOLVED)$")
     rejection_reason: str | None = Field(default=None, max_length=2000)
-    delegation_authority_id: str | None = Field(default=None, max_length=128)
     expected_version: int = Field(ge=1)
 
 
@@ -2295,8 +2295,8 @@ def create_organization_proposal(
     except (ValueError, TypeError) as exc:
         raise HTTPException(422, f"Invalid demand criteria parameters: {exc}")
 
-    # Determine simulated operation for classification
-    op = "organization.unit.create_permanent" if payload.target_unit_id else "organization.squad.create_temporary"
+    # The operation is an explicit, validated contract field.
+    op = payload.operation
     auth_class = classify_organizational_authority(op)
 
     # Evaluate alternatives with grounded criteria
@@ -2305,6 +2305,23 @@ def create_organization_proposal(
         max_marginal_cost_usd=payload.max_marginal_cost_usd,
         min_permanent_observation_days=payload.min_observation_days,
     )
+
+    # A chosen alternative must be part of the evaluated, viable alternatives.
+    if payload.chosen_alternative is not None:
+        selected = next((alternative for alternative in alternatives
+                         if alternative.kind.value == payload.chosen_alternative), None)
+        if selected is None or not selected.is_viable:
+            raise HTTPException(422, "Chosen organizational alternative is not viable")
+        expected_operations = {
+            "REUSE_EXISTING_CAPACITY": None,
+            "REASSIGN_AVAILABLE_AGENTS": "organization.slot.assign",
+            "CREATE_TEMPORARY_SQUAD": "organization.squad.create_temporary",
+            "EXPAND_EXISTING_UNIT": None,
+            "CREATE_PERMANENT_UNIT": "organization.unit.create_permanent",
+        }
+        expected_operation = expected_operations.get(selected.kind.value)
+        if expected_operation is not None and op != expected_operation:
+            raise HTTPException(422, "Chosen alternative does not match operation")
 
     # Determine initial state
     initial_state = ProposalDecisionState.EVALUATED
@@ -2344,6 +2361,7 @@ def create_organization_proposal(
 
     auth_dict = {
         "impact": auth_class.impact.value,
+        "operation": op,
         "requires_ceo_decision": auth_class.requires_ceo_decision,
         "competent_authority": auth_class.competent_authority,
         "rationale": auth_class.rationale,
@@ -2553,7 +2571,7 @@ def transition_organization_proposal(
         if not row:
             raise HTTPException(404, "Organization proposal not found")
 
-        current_version, current_state_str, impact_str = row
+        current_version, current_state_str, _impact_str = row
         if current_version != payload.expected_version:
             raise HTTPException(
                 409,
@@ -2569,16 +2587,13 @@ def transition_organization_proposal(
                 f"Invalid transition from {current_state.value} to {target_state.value}",
             )
 
-        # Authority checks on approval
-        if (
-            target_state == ProposalDecisionState.AUTONOMOUS_APPROVED
-            and impact_str in {"CONSTITUTIONAL", "CRITICAL", "UNKNOWN"}
-            and principal is not _CEO_PRINCIPAL
-        ):
-            raise HTTPException(
-                403,
-                f"Approval of {impact_str} organizational change proposal strictly requires CEO authority.",
-            )
+        # No effective delegated organization-grant verifier is wired yet.
+        # Fail closed for EVERY approval irrespective of claimed impact.
+        # A future delegate route must verify signed, live, scoped grants and
+        # reserved-operation restrictions at the point of each transition.
+        if (target_state == ProposalDecisionState.AUTONOMOUS_APPROVED
+                and principal is not _CEO_PRINCIPAL):
+            raise HTTPException(403, "Organizational proposal approval requires verified CEO authority")
 
         now = datetime.now(UTC)
         next_version = current_version + 1
@@ -2586,13 +2601,12 @@ def transition_organization_proposal(
 
         db.execute(
             "UPDATE organization_proposals SET "
-            "version=%s, state=%s, rejection_reason=%s, delegation_authority_id=%s, updated_at=%s "
+            "version=%s, state=%s, rejection_reason=%s, updated_at=%s "
             "WHERE id=%s",
             (
                 next_version,
                 target_state.value,
                 payload.rejection_reason,
-                payload.delegation_authority_id,
                 now,
                 proposal_id,
             ),
@@ -2608,7 +2622,7 @@ def transition_organization_proposal(
                 "to_state": target_state.value,
                 "version": next_version,
                 "actor": actor_str,
-                "delegation_authority_id": payload.delegation_authority_id,
+                "delegation_authority_id": None,
             },
         )
 

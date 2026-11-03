@@ -1,63 +1,65 @@
 /**
- * Design Tokens for AAO Control Center
- * Spec: AAO-FE-ARCH-2026-10-25 Section 8
- * WCAG 2.2 AA compliant palette & typography
+ * Design Tokens for AAO Spatial Command Center (3D Video-Game HUD Theme)
+ * WCAG 2.2 AA compliant high-contrast dark tactical palette & typography
  */
 
 :root {
-  /* Surface colors (Light Mode) */
-  --bg-app: #f8fafc;
-  --bg-surface: #ffffff;
-  --bg-surface-elevated: #ffffff;
-  --bg-muted: #f1f5f9;
-  --bg-subtle: #e2e8f0;
+  /* Surface colors (Spatial Dark HUD Default) */
+  --bg-app: #060d18;
+  --bg-surface: rgba(15, 23, 42, 0.9);
+  --bg-surface-elevated: rgba(30, 41, 59, 0.95);
+  --bg-muted: rgba(30, 41, 59, 0.78);
+  --bg-subtle: rgba(51, 65, 85, 0.72);
+  --surface: rgba(15, 23, 42, 0.92);
+  --surface-muted: rgba(30, 41, 59, 0.8);
+  --border: rgba(56, 189, 248, 0.24);
 
   /* Borders */
-  --border-subtle: #e2e8f0;
-  --border-strong: #cbd5e1;
-  --border-focus: #0284c7;
+  --border-subtle: rgba(56, 189, 248, 0.24);
+  --border-strong: rgba(56, 189, 248, 0.44);
+  --border-focus: #38bdf8;
 
   /* Typography */
-  --text-primary: #0f172a;
-  --text-secondary: #475569;
-  --text-muted: #64748b;
-  --text-inverse: #ffffff;
+  --text-primary: #f8fafc;
+  --text-secondary: #cbd5e1;
+  --text-muted: #94a3b8;
+  --text-inverse: #060d18;
 
-  /* Brand / Deep Blue */
-  --primary: #0f172a;
-  --primary-hover: #1e293b;
+  /* Brand / Tactical Cyan-Blue */
+  --primary: #38bdf8;
+  --primary-hover: #7dd3fc;
   --accent: #0284c7;
   --accent-hover: #0369a1;
-  --accent-light: #e0f2fe;
+  --accent-light: rgba(2, 132, 199, 0.28);
 
   /* Semantic Statuses */
-  --status-success-bg: #ecfdf5;
-  --status-success-text: #065f46;
-  --status-success-border: #a7f3d0;
+  --status-success-bg: rgba(6, 78, 59, 0.88);
+  --status-success-text: #a7f3d0;
+  --status-success-border: #10b981;
 
-  --status-warning-bg: #fffbeb;
-  --status-warning-text: #92400e;
-  --status-warning-border: #fde68a;
+  --status-warning-bg: rgba(120, 53, 15, 0.88);
+  --status-warning-text: #fde68a;
+  --status-warning-border: #f59e0b;
 
-  --status-error-bg: #fef2f2;
-  --status-error-text: #991b1b;
-  --status-error-border: #fecaca;
+  --status-error-bg: rgba(127, 29, 29, 0.9);
+  --status-error-text: #fecaca;
+  --status-error-border: #f87171;
 
-  --status-info-bg: #f0f9ff;
-  --status-info-text: #075985;
-  --status-info-border: #bae6fd;
+  --status-info-bg: rgba(12, 74, 110, 0.88);
+  --status-info-text: #bae6fd;
+  --status-info-border: #38bdf8;
 
-  --status-demo-bg: #fff7ed;
-  --status-demo-text: #9a3412;
-  --status-demo-border: #fed7aa;
+  --status-demo-bg: rgba(124, 45, 18, 0.9);
+  --status-demo-text: #ffedd5;
+  --status-demo-border: #f97316;
 
   /* Kanban Lifecycle Colors */
-  --stage-inbox: #64748b;
-  --stage-ready: #0284c7;
-  --stage-in-progress: #d97706;
-  --stage-in-review: #7c3aed;
-  --stage-verified: #059669;
-  --stage-done: #10b981;
+  --stage-inbox: #94a3b8;
+  --stage-ready: #38bdf8;
+  --stage-in-progress: #f59e0b;
+  --stage-in-review: #a855f7;
+  --stage-verified: #10b981;
+  --stage-done: #34d399;
 
   /* Spacing */
   --space-1: 4px;
@@ -76,56 +78,11 @@
   --radius-full: 9999px;
 
   /* Shadows */
-  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
-  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
-  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  --shadow-sm: 0 2px 8px 0 rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 8px 20px -4px rgba(0, 0, 0, 0.55);
+  --shadow-lg: 0 14px 32px -6px rgba(0, 0, 0, 0.7);
 
   /* Layout */
-  --sidebar-width: 250px;
-  --header-height: 64px;
-}
-
-/* Dark Mode Tokens */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg-app: #0b0f17;
-    --bg-surface: #111827;
-    --bg-surface-elevated: #1f2937;
-    --bg-muted: #1e293b;
-    --bg-subtle: #334155;
-
-    --border-subtle: #1e293b;
-    --border-strong: #334155;
-
-    --text-primary: #f8fafc;
-    --text-secondary: #94a3b8;
-    --text-muted: #64748b;
-    --text-inverse: #0f172a;
-
-    --primary: #38bdf8;
-    --primary-hover: #7dd3fc;
-    --accent: #38bdf8;
-    --accent-hover: #0284c7;
-    --accent-light: #082f49;
-
-    --status-success-bg: #064e3b;
-    --status-success-text: #a7f3d0;
-    --status-success-border: #047857;
-
-    --status-warning-bg: #78350f;
-    --status-warning-text: #fde68a;
-    --status-warning-border: #b45309;
-
-    --status-error-bg: #7f1d1d;
-    --status-error-text: #fecaca;
-    --status-error-border: #b91c1c;
-
-    --status-info-bg: #0c4a6e;
-    --status-info-text: #bae6fd;
-    --status-info-border: #0284c7;
-
-    --status-demo-bg: #7c2d12;
-    --status-demo-text: #ffedd5;
-    --status-demo-border: #c2410c;
-  }
+  --sidebar-width: 220px;
+  --header-height: 48px;
 }

@@ -34,12 +34,13 @@ export const App: React.FC = () => {
   const [sessionRestoreIssue, setSessionRestoreIssue] = useState<string | null>(null);
 
   const [origin, setOrigin] = useState<DataOrigin>('live');
-  const [activeNav, setActiveNav] = useState<ActiveNavKey>('dashboard');
+  const [activeNav, setActiveNav] = useState<ActiveNavKey>('office3d');
+  const [overlayWindowState, setOverlayWindowState] = useState<'minimized' | 'docked' | 'maximized'>('docked');
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [focusWorkId, setFocusWorkId] = useState<string | null>(null);
   const [detailedProjectId, setDetailedProjectId] = useState<string | null>(null);
   const [staleTimeSeconds, setStaleTimeSeconds] = useState<number>(15);
-  const refreshOfficeLiveState = origin === 'live' && isAuthenticated && activeNav === 'office3d';
+  const refreshOfficeLiveState = origin === 'live' && isAuthenticated;
 
   // Initialize Port Adapter depending on origin
   const port: AaoReadPort = useMemo(() => {
@@ -271,236 +272,397 @@ export const App: React.FC = () => {
       activeNav={activeNav}
       onNavSelect={(nav) => {
         setDetailedProjectId(null);
+        setOverlayWindowState('docked');
         setActiveNav(nav);
       }}
       fetchedAt={overviewQuery.data?.projects.kind === 'ready' ? overviewQuery.data.projects.fetchedAt : undefined}
       isFetching={overviewQuery.isFetching || boardQuery.isFetching || organizationQuery.isFetching}
       onRefresh={handleRefresh}
+      isFullBleed={true}
     >
       <ErrorBoundary>
-        {origin === 'live' && !isAuthenticated && sessionRestoreIssue && (
-          <div role="alert" style={{ marginBottom: 16, padding: '12px 16px', borderRadius: 'var(--radius-md)', backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border-focus)' }}>
-            {sessionRestoreIssue} El acceso LIVE permanece bloqueado hasta autenticar.
-          </div>
-        )}
-        {activeNav === 'dashboard' && (
-          <>
-            {origin === 'live' && !isAuthenticated && (
-              <div
-                role="status"
-                aria-label="Aviso de sesión en espera de credencial"
-                style={{
-                  marginBottom: '16px',
-                  padding: '12px 16px',
-                  borderRadius: 'var(--radius-md)',
-                  backgroundColor: 'var(--bg-surface)',
-                  border: '1px solid var(--border-focus)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '10px',
-                }}
-              >
-                <span style={{ fontSize: '18px' }} aria-hidden="true">🔒</span>
-                <div>
-                  <strong style={{ fontSize: '13px', color: 'var(--text-primary)', display: 'block' }}>
-                    Sesión LIVE en espera de credencial
-                  </strong>
-                  <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                    No se emiten consultas contra la API hasta autenticar la sesión en memoria volátil. Use el botón &quot;Credencial de Acceso&quot; superior.
-                  </span>
-                </div>
-              </div>
-            )}
-            <CeoDashboard
-              overview={overviewQuery.data || fallbackOverview}
-              projects={projectsList}
-              selectedProjectId={selectedProjectId}
-              onSelectProject={setSelectedProjectId}
-              onNavigateTo={(target) => {
-                if (target === 'kanban') setActiveNav('kanban');
-                else if (target === 'projects') setActiveNav('projects');
-                else if (target === 'decisions') setActiveNav('decisions');
-                else if (target === 'audit') setActiveNav('audit');
-                else if (target === 'operations') setActiveNav('operations');
+        {/* 1. Primary Full-Screen 3D Office Stage (Always active as the root spatial world) */}
+        <React.Suspense
+          fallback={
+            <div
+              role="status"
+              aria-label="Cargando entorno espacial 3D"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                height: 'calc(100vh - var(--header-height, 48px))',
+                backgroundColor: 'var(--bg-app)',
               }}
-            />
-          </>
-        )}
-
-        {activeNav === 'projects' && !detailedProjectId && (
-          <ProjectsView
-            projects={projectsList}
-            selectedProjectId={selectedProjectId}
-            onSelectProject={setSelectedProjectId}
-            onViewDetails={(id) => setDetailedProjectId(id)}
-          />
-        )}
-
-        {activeNav === 'projects' && detailedProjectId && detailedProject && (
-          <ProjectDetailView
-            project={detailedProject}
-            capabilitiesState={capabilitiesQuery.data || { kind: 'empty', origin, fetchedAt: '' }}
-            evaluationsState={evaluationsQuery.data || { kind: 'empty', origin, fetchedAt: '' }}
-            activityState={activityQuery.data || { kind: 'empty', origin, fetchedAt: '' }}
-            onBack={() => setDetailedProjectId(null)}
-            onOpenKanban={() => {
-              setSelectedProjectId(detailedProjectId);
-              setActiveNav('kanban');
-            }}
-            onRefresh={handleRefresh}
-          />
-        )}
-
-        {activeNav === 'kanban' && (
-          <KanbanView
-            boardState={boardQuery.data || { kind: 'empty', origin, fetchedAt: '' }}
-            selectedProjectId={selectedProjectId}
-            projectName={selectedProject?.name}
-            focusWorkId={focusWorkId}
-            onFocusWorkConsumed={() => setFocusWorkId(null)}
-            onRefresh={handleRefresh}
-            canManagePriority={origin === 'live' && isAuthenticated && role === 'CEO'}
-            onSetPriority={async (workId, priority: WorkPriority) => {
-              if (origin !== 'live' || role !== 'CEO' || !(port instanceof HttpAaoLiveAdapter)) {
-                return { kind: 'forbidden', reason: 'El cambio de prioridad solo está disponible en sesión CEO LIVE.' };
-              }
-              const result = await port.setWorkPriority(workId, priority);
-              if (result.kind === 'ready') {
-                await queryClient.invalidateQueries({ queryKey: ['board', origin, selectedProjectId, isAuthenticated, sessionId] });
-              }
-              return result;
-            }}
-          />
-        )}
-
-        {activeNav === 'decisions' && (
-          <DecisionsView
-            decisionsState={
-              overviewQuery.data?.decisions || {
-                kind: 'unavailable',
-                reason: 'Sin datos disponibles en esta vista',
-                retryable: false,
-              }
-            }
-            onRefresh={handleRefresh}
-          />
-        )}
-
-        {activeNav === 'alerts' && (
-          <AlertsView
-            alertsState={
-              overviewQuery.data?.alerts || {
-                kind: 'unavailable',
-                reason: 'Sin datos de alertas disponibles',
-                retryable: false,
-              }
-            }
-            onRefresh={handleRefresh}
-          />
-        )}
-
-        {activeNav === 'audit' && <AuditView />}
-
-        {activeNav === 'operations' && <OperationsView onRefreshAll={handleRefresh} />}
-
-        {activeNav === 'organization' && (
-          <OrganizationView
-            orgState={
+            >
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: '28px', marginBottom: '8px' }}>🌐</div>
+                <strong style={{ fontSize: '14px', color: 'var(--text-primary)', display: 'block' }}>
+                  Cargando entorno espacial 3D de la Oficina Virtual...
+                </strong>
+                <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                  Carga diferida de recursos gráficos Three.js
+                </span>
+              </div>
+            </div>
+          }
+        >
+          <VirtualOfficeView
+            organization={
               organizationQuery.data || {
                 kind: 'unavailable',
                 reason:
-                  'El núcleo canónico de AAO no expone aún endpoints públicos para la estructura organizativa ni la telemetría de agentes (F3).',
+                  'El núcleo canónico de AAO no expone aún endpoints públicos para la estructura organizativa ni la telemetría de agentes (F3/F4).',
                 retryable: false,
               }
             }
-            onRefresh={handleRefresh}
-            canManageOrganization={origin === 'live' && role === 'CEO' && port instanceof HttpAaoLiveAdapter}
-            onSaveUnit={port instanceof HttpAaoLiveAdapter ? (input) => port.putOrganizationUnit(input) : undefined}
-            onSaveProfile={port instanceof HttpAaoLiveAdapter ? (input) => port.putOrganizationProfile(input) : undefined}
-          />
-        )}
-
-        {activeNav === 'office3d' && (
-          <React.Suspense
-            fallback={
-              <div
-                role="status"
-                aria-label="Cargando entorno espacial 3D"
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  minHeight: '440px',
-                  backgroundColor: 'var(--bg-surface)',
-                  borderRadius: '16px',
-                  border: '1px solid var(--border-subtle)',
-                }}
-              >
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: '28px', marginBottom: '8px' }}>🌐</div>
-                  <strong style={{ fontSize: '14px', color: 'var(--text-primary)', display: 'block' }}>
-                    Cargando entorno espacial 3D de la Oficina Virtual...
-                  </strong>
-                  <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                    Carga diferida de recursos gráficos Three.js
-                  </span>
-                </div>
-              </div>
-            }
-          >
-            <VirtualOfficeView
-              organization={
-                organizationQuery.data || {
-                  kind: 'unavailable',
-                  reason:
-                    'El núcleo canónico de AAO no expone aún endpoints públicos para la estructura organizativa ni la telemetría de agentes (F3/F4).',
-                  retryable: false,
-                }
-              }
-              projects={projectsQuery.data || {
-                kind: 'unavailable',
-                reason: 'Lista de proyectos no disponible.',
-                retryable: true,
-              }}
-              canCreateWorkRequest={origin === 'live' && role === 'CEO' && port instanceof HttpAaoLiveAdapter}
-              workGroupPort={origin === 'live' && isAuthenticated && port instanceof HttpAaoLiveAdapter ? port : undefined}
-              isCeoSession={role === 'CEO'}
-              capabilityReadPort={origin === 'live' ? port : undefined}
-              capabilityFeedbackPort={origin === 'live' && role === 'CEO' && port instanceof HttpAaoLiveAdapter ? port : undefined}
-              activityReadPort={origin === 'live' ? port : undefined}
-              knowledgeReadPort={origin === 'live' ? port : undefined}
-              routinePort={origin === 'live' && isAuthenticated && port instanceof HttpAaoLiveAdapter ? port : undefined}
-              calendarReadPort={origin === 'live' ? port : undefined}
-              conversationPort={origin === 'live' && role === 'CEO' && port instanceof HttpAaoLiveAdapter ? port : undefined}
-              conversationSessionId={sessionId}
-              onCreateWorkRequest={port instanceof HttpAaoLiveAdapter
-                ? async (projectId, input) => {
-                    const result = await port.createCEOWorkRequest(projectId, input);
-                    if (result.kind === 'ready') handleRefresh();
-                    return result;
-                  }
-                : undefined}
-              onNavigate={(target, projectId, workId) => {
-                if (projectId) setSelectedProjectId(projectId);
-                if (target === 'kanban') setFocusWorkId(workId || null);
-                if (target === 'organization') setActiveNav('organization');
-                else if (target === 'kanban') setActiveNav('kanban');
-                else if (target === 'projects') setActiveNav('projects');
-              }}
-              onRefresh={handleRefresh}
-            />
-          </React.Suspense>
-        )}
-
-        {activeNav === 'settings' && (
-          <ViewSettingsView
-            staleTimeSeconds={staleTimeSeconds}
-            onStaleTimeChange={setStaleTimeSeconds}
-            onClearCache={() => {
-              queryClient.cancelQueries();
-              queryClient.clear();
+            projects={projectsQuery.data || {
+              kind: 'unavailable',
+              reason: 'Lista de proyectos no disponible.',
+              retryable: true,
             }}
+            alertsState={overviewQuery.data?.alerts}
+            decisionsState={overviewQuery.data?.decisions}
+            canCreateWorkRequest={origin === 'live' && role === 'CEO' && port instanceof HttpAaoLiveAdapter}
+            workGroupPort={origin === 'live' && isAuthenticated && port instanceof HttpAaoLiveAdapter ? port : undefined}
+            isCeoSession={role === 'CEO'}
+            capabilityReadPort={origin === 'live' ? port : undefined}
+            capabilityFeedbackPort={origin === 'live' && role === 'CEO' && port instanceof HttpAaoLiveAdapter ? port : undefined}
+            activityReadPort={origin === 'live' ? port : undefined}
+            knowledgeReadPort={origin === 'live' ? port : undefined}
+            routinePort={origin === 'live' && isAuthenticated && port instanceof HttpAaoLiveAdapter ? port : undefined}
+            calendarReadPort={origin === 'live' ? port : undefined}
+            conversationPort={origin === 'live' && role === 'CEO' && port instanceof HttpAaoLiveAdapter ? port : undefined}
+            conversationSessionId={sessionId}
+            onCreateWorkRequest={port instanceof HttpAaoLiveAdapter
+              ? async (projectId, input) => {
+                  const result = await port.createCEOWorkRequest(projectId, input);
+                  if (result.kind === 'ready') handleRefresh();
+                  return result;
+                }
+              : undefined}
+            onNavigate={(target, projectId, workId) => {
+              if (projectId) setSelectedProjectId(projectId);
+              if (target === 'kanban') setFocusWorkId(workId || null);
+              setOverlayWindowState('docked');
+              if (target === 'organization') setActiveNav('organization');
+              else if (target === 'kanban') setActiveNav('kanban');
+              else if (target === 'projects') setActiveNav('projects');
+              else if (target === 'decisions') setActiveNav('decisions');
+              else if (target === 'alerts') setActiveNav('alerts');
+              else if (target === 'audit') setActiveNav('audit');
+            }}
+            onRefresh={handleRefresh}
           />
+        </React.Suspense>
+
+        {/* 2. Compact Floating HUD Alert Pill for Unauthenticated Session Notice */}
+        {origin === 'live' && !isAuthenticated && sessionRestoreIssue && (
+          <div
+            role="alert"
+            style={{
+              position: 'fixed',
+              bottom: '56px',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              zIndex: 45,
+              padding: '6px 14px',
+              borderRadius: 'var(--radius-full)',
+              backgroundColor: 'rgba(15, 23, 42, 0.94)',
+              backdropFilter: 'blur(12px)',
+              border: '1px solid var(--border-focus)',
+              color: 'var(--text-primary)',
+              fontSize: '12px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '10px',
+              boxShadow: 'var(--shadow-lg)',
+              maxWidth: '92vw',
+            }}
+          >
+            <span>🔒 {sessionRestoreIssue} El acceso LIVE permanece bloqueado hasta autenticar.</span>
+            <button
+              type="button"
+              onClick={() => setSessionRestoreIssue(null)}
+              aria-label="Ocultar aviso de sesión"
+              style={{
+                padding: '2px 6px',
+                borderRadius: '4px',
+                background: 'rgba(51, 65, 85, 0.8)',
+                color: '#cbd5e1',
+                fontSize: '11px',
+              }}
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
+        {/* 3. Extensible & Collapsible HUD Window for Secondary System Modules */}
+        {activeNav !== 'office3d' && (
+          <section
+            aria-label={`Ventana táctica: ${activeNav}`}
+            style={{
+              position: 'fixed',
+              top: overlayWindowState === 'maximized' ? 'calc(var(--header-height, 48px) + 6px)' : 'calc(var(--header-height, 48px) + 64px)',
+              left: overlayWindowState === 'maximized' ? '10px' : '50%',
+              right: overlayWindowState === 'maximized' ? '10px' : 'auto',
+              transform: overlayWindowState === 'maximized' ? 'none' : 'translateX(-50%)',
+              width: overlayWindowState === 'maximized' ? 'calc(100vw - 20px)' : 'min(1260px, 92vw)',
+              height:
+                overlayWindowState === 'minimized'
+                  ? '46px'
+                  : overlayWindowState === 'maximized'
+                  ? 'calc(100vh - var(--header-height, 48px) - 16px)'
+                  : 'calc(100vh - var(--header-height, 48px) - 130px)',
+              zIndex: 48,
+              backgroundColor: 'rgba(10, 22, 40, 0.94)',
+              backdropFilter: 'blur(18px)',
+              border: '1px solid rgba(56, 189, 248, 0.45)',
+              borderRadius: 'var(--radius-lg, 12px)',
+              boxShadow: '0 20px 48px -8px rgba(0, 0, 0, 0.85)',
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+            }}
+          >
+            {/* HUD Window Header Bar */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '8px 16px',
+                backgroundColor: 'rgba(15, 23, 42, 0.98)',
+                borderBottom: '1px solid rgba(56, 189, 248, 0.28)',
+                flexShrink: 0,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span aria-hidden="true">🛰</span>
+                <strong style={{ fontSize: '13px', color: '#f8fafc', textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+                  Panel Táctico · {activeNav}
+                </strong>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <button
+                  type="button"
+                  onClick={() => setOverlayWindowState('minimized')}
+                  style={{
+                    padding: '4px 9px',
+                    borderRadius: '6px',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    background: overlayWindowState === 'minimized' ? '#0284c7' : 'rgba(30, 41, 59, 0.85)',
+                    color: '#f8fafc',
+                    border: '1px solid rgba(148, 163, 184, 0.3)',
+                  }}
+                >
+                  ─ Comprimir
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOverlayWindowState('docked')}
+                  style={{
+                    padding: '4px 9px',
+                    borderRadius: '6px',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    background: overlayWindowState === 'docked' ? '#0284c7' : 'rgba(30, 41, 59, 0.85)',
+                    color: '#f8fafc',
+                    border: '1px solid rgba(148, 163, 184, 0.3)',
+                  }}
+                >
+                  ▫ Ventana
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOverlayWindowState(overlayWindowState === 'maximized' ? 'docked' : 'maximized')}
+                  style={{
+                    padding: '4px 9px',
+                    borderRadius: '6px',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    background: overlayWindowState === 'maximized' ? '#0284c7' : 'rgba(30, 41, 59, 0.85)',
+                    color: '#f8fafc',
+                    border: '1px solid rgba(148, 163, 184, 0.3)',
+                  }}
+                >
+                  ⤢ Expandir
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveNav('office3d')}
+                  aria-label="Cerrar panel y volver a la Oficina 3D"
+                  style={{
+                    padding: '4px 10px',
+                    borderRadius: '6px',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    background: 'rgba(127, 29, 29, 0.85)',
+                    color: '#fecaca',
+                    border: '1px solid #f87171',
+                  }}
+                >
+                  ✕ Volver a Oficina 3D
+                </button>
+              </div>
+            </div>
+
+            {/* HUD Window Scrollable Content */}
+            {overlayWindowState !== 'minimized' && (
+              <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px' }}>
+                {activeNav === 'dashboard' && (
+                  <>
+                    {origin === 'live' && !isAuthenticated && (
+                      <div
+                        role="status"
+                        aria-label="Aviso de sesión en espera de credencial"
+                        style={{
+                          marginBottom: '16px',
+                          padding: '12px 16px',
+                          borderRadius: 'var(--radius-md)',
+                          backgroundColor: 'var(--bg-surface)',
+                          border: '1px solid var(--border-focus)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '10px',
+                        }}
+                      >
+                        <span style={{ fontSize: '18px' }} aria-hidden="true">🔒</span>
+                        <div>
+                          <strong style={{ fontSize: '13px', color: 'var(--text-primary)', display: 'block' }}>
+                            Sesión LIVE en espera de credencial
+                          </strong>
+                          <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                            No se emiten consultas contra la API hasta autenticar la sesión en memoria volátil. Use el botón &quot;Credencial de Acceso&quot; superior.
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                    <CeoDashboard
+                      overview={overviewQuery.data || fallbackOverview}
+                      projects={projectsList}
+                      selectedProjectId={selectedProjectId}
+                      onSelectProject={setSelectedProjectId}
+                      onNavigateTo={(target) => {
+                        if (target === 'kanban') setActiveNav('kanban');
+                        else if (target === 'projects') setActiveNav('projects');
+                        else if (target === 'decisions') setActiveNav('decisions');
+                        else if (target === 'audit') setActiveNav('audit');
+                        else if (target === 'operations') setActiveNav('operations');
+                      }}
+                    />
+                  </>
+                )}
+
+                {activeNav === 'projects' && !detailedProjectId && (
+                  <ProjectsView
+                    projects={projectsList}
+                    selectedProjectId={selectedProjectId}
+                    onSelectProject={setSelectedProjectId}
+                    onViewDetails={(id) => setDetailedProjectId(id)}
+                  />
+                )}
+
+                {activeNav === 'projects' && detailedProjectId && detailedProject && (
+                  <ProjectDetailView
+                    project={detailedProject}
+                    capabilitiesState={capabilitiesQuery.data || { kind: 'empty', origin, fetchedAt: '' }}
+                    evaluationsState={evaluationsQuery.data || { kind: 'empty', origin, fetchedAt: '' }}
+                    activityState={activityQuery.data || { kind: 'empty', origin, fetchedAt: '' }}
+                    onBack={() => setDetailedProjectId(null)}
+                    onOpenKanban={() => {
+                      setSelectedProjectId(detailedProjectId);
+                      setActiveNav('kanban');
+                    }}
+                    onRefresh={handleRefresh}
+                  />
+                )}
+
+                {activeNav === 'kanban' && (
+                  <KanbanView
+                    boardState={boardQuery.data || { kind: 'empty', origin, fetchedAt: '' }}
+                    selectedProjectId={selectedProjectId}
+                    projectName={selectedProject?.name}
+                    focusWorkId={focusWorkId}
+                    onFocusWorkConsumed={() => setFocusWorkId(null)}
+                    onRefresh={handleRefresh}
+                    canManagePriority={origin === 'live' && isAuthenticated && role === 'CEO'}
+                    onSetPriority={async (workId, priority: WorkPriority) => {
+                      if (origin !== 'live' || role !== 'CEO' || !(port instanceof HttpAaoLiveAdapter)) {
+                        return { kind: 'forbidden', reason: 'El cambio de prioridad solo está disponible en sesión CEO LIVE.' };
+                      }
+                      const result = await port.setWorkPriority(workId, priority);
+                      if (result.kind === 'ready') {
+                        await queryClient.invalidateQueries({ queryKey: ['board', origin, selectedProjectId, isAuthenticated, sessionId] });
+                      }
+                      return result;
+                    }}
+                  />
+                )}
+
+                {activeNav === 'decisions' && (
+                  <DecisionsView
+                    decisionsState={
+                      overviewQuery.data?.decisions || {
+                        kind: 'unavailable',
+                        reason: 'Sin datos disponibles en esta vista',
+                        retryable: false,
+                      }
+                    }
+                    onRefresh={handleRefresh}
+                  />
+                )}
+
+                {activeNav === 'alerts' && (
+                  <AlertsView
+                    alertsState={
+                      overviewQuery.data?.alerts || {
+                        kind: 'unavailable',
+                        reason: 'Sin datos de alertas disponibles',
+                        retryable: false,
+                      }
+                    }
+                    onRefresh={handleRefresh}
+                  />
+                )}
+
+                {activeNav === 'audit' && <AuditView />}
+
+                {activeNav === 'operations' && <OperationsView onRefreshAll={handleRefresh} />}
+
+                {activeNav === 'organization' && (
+                  <OrganizationView
+                    orgState={
+                      organizationQuery.data || {
+                        kind: 'unavailable',
+                        reason:
+                          'El núcleo canónico de AAO no expone aún endpoints públicos para la estructura organizativa ni la telemetría de agentes (F3).',
+                        retryable: false,
+                      }
+                    }
+                    onRefresh={handleRefresh}
+                    canManageOrganization={origin === 'live' && role === 'CEO' && port instanceof HttpAaoLiveAdapter}
+                    onSaveUnit={port instanceof HttpAaoLiveAdapter ? (input) => port.putOrganizationUnit(input) : undefined}
+                    onSaveProfile={port instanceof HttpAaoLiveAdapter ? (input) => port.putOrganizationProfile(input) : undefined}
+                  />
+                )}
+
+                {activeNav === 'settings' && (
+                  <ViewSettingsView
+                    staleTimeSeconds={staleTimeSeconds}
+                    onStaleTimeChange={setStaleTimeSeconds}
+                    onClearCache={() => {
+                      queryClient.cancelQueries();
+                      queryClient.clear();
+                    }}
+                  />
+                )}
+              </div>
+            )}
+          </section>
         )}
       </ErrorBoundary>
     </AppShell>

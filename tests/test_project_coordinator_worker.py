@@ -137,6 +137,7 @@ def test_watch_runs_again_until_stopped(monkeypatch):
     stop = threading.Event()
     calls = []
     waits = []
+    monkeypatch.setattr(coordinator, "api_call", lambda *_args, **_kwargs: {})
 
     def one_pass(project_id, principal_id, *, auto_consolidate=False, materialize_routines=False):
         calls.append((project_id, principal_id))
@@ -184,6 +185,12 @@ def test_watch_keeps_backend_routine_ticks_without_a_browser(monkeypatch):
     stop = threading.Event()
     calls = []
 
+    presence = []
+
+    def api(path, **kwargs):
+        presence.append((path, kwargs["body"]["state"]))
+        return {"state": kwargs["body"]["state"]}
+
     def one_pass(project_id, principal_id, *, auto_consolidate=False, materialize_routines=False):
         calls.append(materialize_routines)
         if len(calls) == 2:
@@ -191,9 +198,16 @@ def test_watch_keeps_backend_routine_ticks_without_a_browser(monkeypatch):
         return coordinator.CoordinatorPassResult(materialized=1)
 
     monkeypatch.setattr(coordinator, "coordinate_once", one_pass)
+    monkeypatch.setattr(coordinator, "api_call", api)
     assert coordinator.run_watch("p", "pm", poll_interval_seconds=1, stop_event=stop,
                                  materialize_routines=True, wait=lambda _: None) == 0
     assert calls == [True, True]
+    assert presence == [
+        ("/v1/projects/p/coordinator-presence", "COORDINATING"),
+        ("/v1/projects/p/coordinator-presence", "WAITING"),
+        ("/v1/projects/p/coordinator-presence", "COORDINATING"),
+        ("/v1/projects/p/coordinator-presence", "WAITING"),
+    ]
 
 
 def test_cli_parses_routine_opt_in(monkeypatch):

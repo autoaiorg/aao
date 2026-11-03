@@ -941,6 +941,38 @@ def _require_selfdev_cycle_coordinator(db, principal: AuthenticatedPrincipal, pr
     require_grant(db, principal, project_id, "work.coordinate")
 
 
+class CoordinatorPresenceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    state: Literal["COORDINATING", "WAITING"]
+
+
+@app.put("/v1/projects/{project_id}/coordinator-presence")
+def update_coordinator_presence(
+    project_id: UUID,
+    payload: CoordinatorPresenceRequest,
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_worker)],
+):
+    """Persist the PM loop state; this is not an execution or task heartbeat."""
+    pid, actor = str(project_id), str(principal)
+    with tx() as db:
+        if not actor.startswith("aao-pm-coordinator-"):
+            raise HTTPException(403, "PM coordinator identity required")
+        credential = db.execute(
+            "SELECT kind,enabled FROM principal_credentials WHERE principal_id=%s "
+            "AND token_digest=%s FOR SHARE", (actor, principal.token_digest),
+        ).fetchone()
+        if not credential or credential[0] != "AGENT" or not credential[1]:
+            raise HTTPException(403, "PM coordinator credential invalid or revoked")
+        require_grant(db, principal, pid, "work.coordinate")
+        db.execute(
+            "INSERT INTO pm_coordinator_presence(principal_id,project_id,state,updated_at) "
+            "VALUES (%s,%s,%s,clock_timestamp()) ON CONFLICT(principal_id) DO UPDATE "
+            "SET project_id=EXCLUDED.project_id,state=EXCLUDED.state,updated_at=clock_timestamp()",
+            (actor, pid, payload.state),
+        )
+    return {"principal_id": actor, "project_id": pid, "state": payload.state}
+
+
 @app.post("/v1/projects/{project_id}/selfdev-cycle-work", status_code=201)
 def create_selfdev_cycle_work(
     project_id: UUID,
@@ -1947,6 +1979,12 @@ def organization(response: Response, principal: str = Depends(read_principal)):
             f"WHERE w.project_id IN ({placeholders}) ORDER BY r.created_at",
             tuple(project_ids),
         ).fetchall()
+        presence_rows = db.execute(
+            "SELECT c.principal_id,c.project_id,c.state,c.updated_at,p.name "
+            "FROM pm_coordinator_presence c JOIN projects p ON p.id=c.project_id "
+            f"WHERE c.project_id IN ({placeholders})",
+            tuple(project_ids),
+        ).fetchall()
 
     agents: dict[str, dict] = {}
     active_count = 0
@@ -2009,6 +2047,30 @@ def organization(response: Response, principal: str = Depends(read_principal)):
             "isSyntheticDemo": False, "evidenceDescription": "Identidad derivada de una revisión persistida.",
             "lastEvidenceAt": created.isoformat(),
         })
+    now = datetime.now(UTC)
+    for agent_id, project_id, state, updated_at, project_name in presence_rows:
+        agent_id, project_id = str(agent_id), str(project_id)
+        fresh = updated_at is not None and (now - updated_at).total_seconds() <= 45
+        agent = agents.setdefault(agent_id, {
+            "id": agent_id, "name": agent_id, "type": "UNKNOWN",
+            "roleTitle": "Coordinador PM", "unitId": "unit-unassigned",
+            "unitName": "Adscripción desconocida", "capabilities": [],
+            "heartbeatStatus": "UNKNOWN", "lastHeartbeatAt": None,
+            "status": "UNKNOWN", "operationalState": "DESCONOCIDO",
+            "currentAssignments": [], "executionHistory": [],
+            "authorityBoundary": "La presencia del coordinador no representa ejecución de tareas.",
+            "isSyntheticDemo": False,
+            "evidenceDescription": "Estado persistido del bucle del coordinador PM; no acredita ejecución.",
+            "lastEvidenceAt": None,
+        })
+        agent["roleTitle"] = "Coordinador PM"
+        agent["heartbeatStatus"] = "HEALTHY" if fresh else "STALE"
+        agent["lastHeartbeatAt"] = updated_at.isoformat() if updated_at else None
+        agent["coordinatorState"] = state if fresh else "STALE"
+        agent["coordinatorProject"] = project_name
+        agent["status"] = "IDLE" if fresh and state == "WAITING" else "BUSY" if fresh else "UNKNOWN"
+        agent["operationalState"] = "CONECTADO" if fresh else "DESCONOCIDO"
+        agent["lastEvidenceAt"] = updated_at.isoformat() if updated_at else None
     if principal is not _CEO_PRINCIPAL:
         principal_id = str(principal)
         agents.setdefault(principal_id, {

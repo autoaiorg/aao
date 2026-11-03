@@ -184,6 +184,10 @@ def check_status(connection: Any, migrations_dir: Path | None = None) -> Migrati
 
     # Check for foreign versions in the database not recognized in disk migrations
     available_stems = {m.stem for m in available}
+    # Preserve old, explicitly recognized migration names in the status report
+    # as unverified history. They are not current migrations and never satisfy
+    # a pending migration with the same sequence number.
+    legacy_unverified_versions.extend(sorted(applied_stems & LEGACY_MIGRATION_ALIASES))
     unrecognized = applied_stems - available_stems - LEGACY_MIGRATION_ALIASES
     if unrecognized:
         raise MigrationError(
@@ -275,6 +279,15 @@ def run(
                     f"({len(status.verified_versions)} SHA-256 verified, "
                     f"{len(status.legacy_unverified_versions)} legacy unverified)"
                 )
+                legacy_aliases = sorted(
+                    version
+                    for version in status.legacy_unverified_versions
+                    if version in LEGACY_MIGRATION_ALIASES
+                )
+                if legacy_aliases:
+                    print("Legacy history (unverified; not current migrations):")
+                    for version in legacy_aliases:
+                        print(f"  [~] {version}")
                 print(f"Pending migrations:         {status.pending_count}")
                 if status.pending_versions:
                     print("\nPending:")

@@ -115,7 +115,7 @@ def test_real_migrator_accepts_legacy_045_ledger_and_applies_current_045_046(mon
     import psycopg
     from psycopg.conninfo import make_conninfo
 
-    from aao.migrator import apply_migrations
+    from aao.migrator import apply_migrations, check_status
 
     base_dsn = os.environ["AAO_TEST_POSTGRES_URL"]
     monkeypatch.setenv("AAO_POSTGRES_URL", base_dsn)
@@ -164,6 +164,11 @@ def test_real_migrator_accepts_legacy_045_ledger_and_applies_current_045_046(mon
                 "045_organization_execution",
                 "046_selfdev_cycle_mtls_intents",
             ]
+            status = check_status(db)
+            assert "045_selfdev_cycle_mtls_intents" in status.legacy_unverified_versions
+            assert "045_selfdev_cycle_mtls_intents" not in status.verified_versions
+            assert "045_organization_execution" in status.applied_versions
+            assert "045_organization_execution" not in status.pending_versions
             assert db.execute(
                 "SELECT EXISTS (SELECT 1 FROM pg_constraint "
                 "WHERE conrelid='selfdev_cycle_mtls_intents'::regclass "

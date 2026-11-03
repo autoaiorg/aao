@@ -371,6 +371,9 @@ export interface AgentIdentity {
   /** CEO-only credential metadata; absent from scoped agent projections. */
   credentialStatus?: 'ENABLED' | 'DISABLED';
   operationalState?: AgentOperationalState;
+  /** Persisted PM service-loop state; never an execution/task claim. */
+  coordinatorState?: 'COORDINATING' | 'WAITING' | 'STALE';
+  coordinatorProject?: string;
   currentAssignments: AgentAssignment[];
   executionHistory?: AgentExecutionRecord[];
   authorityBoundary: string;

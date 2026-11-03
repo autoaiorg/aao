@@ -3626,6 +3626,13 @@ def test_self_development_cycle_from_task_to_merged_pr_and_done(monkeypatch, tmp
         assert ["aao.agent-runner@1.0.0", "estimated cost 0.5 over budget left 0.4"] in routed["rejected"]
         over = client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run)
         assert over.status_code == 409 and "budget.exceed" in over.text
+        # A set but invalid budget leaves nothing: even the fixture's 0.5 estimate is refused (never nan/inf/crash).
+        for budget in ("nan", "inf", "-1", "0", "abc"):
+            monkeypatch.setenv("AAO_AGENT_DAILY_BUDGET_USD", budget)
+            routed = client.post(f"/v1/work/{work}/route-model", headers=agent, json={"seat": "patch.tests"})
+            assert routed.status_code == 200 and routed.json()["budget_left_usd"] == -0.5, (budget, routed.text)
+            invalid = client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run)
+            assert invalid.status_code == 409 and "budget.exceed" in invalid.text, (budget, invalid.text)
         monkeypatch.setenv("AAO_AGENT_DAILY_BUDGET_USD", "100")
         restaged = client.post(f"/v1/work/{work}/stage-agent-run", headers=agent, json=run)
         assert restaged.status_code == 202, restaged.text

@@ -158,7 +158,7 @@ def test_isolation_probe_finds_no_leak():
     assert proc.returncode == 0 and report["ok"], report.get("failures")
 
 
-@pytest.mark.parametrize("budget", [None, "", "abc", "0", "-1", "nan", "inf"])
+@pytest.mark.parametrize("budget", [None, "", "abc", "0", "-1", "-inf", "nan", "inf", "1e400"])
 def test_codex_refuses_without_a_positive_daily_budget(monkeypatch, tmp_path, budget):
     """Fail closed: an activated model backend never runs without a positive finite daily budget."""
     repo, sha = _empty_repo(tmp_path)
@@ -307,3 +307,21 @@ def test_ollama_backend_requires_activation_and_pinned_model(monkeypatch, tmp_pa
     monkeypatch.setattr(agent_runner, "build_opener", lambda *_args: pytest.fail("network call must not occur"))
     with pytest.raises(AgentRunnerError, match="ollama backend disabled"):
         agent_runner.run_agent_patch(repo, sha, "task", backend="ollama", timeout=3, model="qwen3.5:9b")
+@pytest.mark.parametrize("budget", ["", "abc", "0", "-1", "-inf", "nan", "inf", "1e400"])
+def test_agent_budget_left_fails_closed_on_an_invalid_budget(monkeypatch, budget):
+    """A set but invalid AAO_AGENT_DAILY_BUDGET_USD leaves nothing to spend: never nan, inf, negative or a crash."""
+    from aao.work_management_api import _agent_budget_left
+
+    class Db:
+        def execute(self, *_args):
+            return self
+
+        def fetchone(self):
+            return (0,)
+
+    monkeypatch.setenv("AAO_AGENT_DAILY_BUDGET_USD", budget)
+    assert _agent_budget_left(Db(), "project") == 0.0
+    monkeypatch.setenv("AAO_AGENT_DAILY_BUDGET_USD", "0.9")
+    assert _agent_budget_left(Db(), "project") == 0.9
+    monkeypatch.delenv("AAO_AGENT_DAILY_BUDGET_USD")
+    assert _agent_budget_left(Db(), "project") is None

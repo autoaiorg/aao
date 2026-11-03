@@ -230,8 +230,12 @@ def run_watch(
         )
     wait = wait or stop_event.wait
     while not stop_event.is_set():
+        api_call(f"/v1/projects/{project_id}/coordinator-presence", method="PUT",
+                 body={"state": "COORDINATING"})
         result = coordinate_once(project_id, principal_id, auto_consolidate=auto_consolidate,
                                  materialize_routines=materialize_routines)
+        api_call(f"/v1/projects/{project_id}/coordinator-presence", method="PUT",
+                 body={"state": "WAITING"})
         if result.assigned or result.consolidated or result.materialized:
             print(
                 f"Assigned {result.assigned} work item(s) and recorded {result.consolidated} "

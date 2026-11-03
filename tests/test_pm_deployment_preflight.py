@@ -80,7 +80,7 @@ def by_name(rows):
 def test_readonly_sql_and_no_inferred_principal_or_runtime_role():
     db = Database()
     rows = by_name(preflight.database_checks(db, preflight.PROJECT_ID, None, None))
-    assert rows["db:migrations-001-041"]["status"] == "PASS"
+    assert rows["db:migrations-001-042"]["status"] == "PASS"
     assert rows["db:project"]["status"] == "PASS"
     assert rows["db:pm-identity-grants"]["status"] == "UNVERIFIED"
     assert rows["db:pm-cycle-issuer-grant"]["status"] == "UNVERIFIED"
@@ -252,8 +252,8 @@ def test_missing_migration_reported(monkeypatch):
 
     db.execute = modified
     rows = by_name(preflight.database_checks(db, preflight.PROJECT_ID, None, None))
-    assert rows["db:migrations-001-041"]["status"] == "MISSING"
-    assert "041_selfdev_cycle_host_binding_retirement" in rows["db:migrations-001-041"]["detail"]
+    assert rows["db:migrations-001-042"]["status"] == "MISSING"
+    assert "041_selfdev_cycle_host_binding_retirement" in rows["db:migrations-001-042"]["detail"]
 
 
 def test_metadata_permissions_pass_and_fail(monkeypatch):
@@ -324,7 +324,7 @@ def test_incomplete_or_duplicate_local_migration_manifest_never_passes(
     if manifest == "duplicate-039":
         (directory / "039_duplicate.sql").touch()
     rows = by_name(preflight.database_checks(Database(), preflight.PROJECT_ID, None, None))
-    check = rows["db:migrations-001-041"]
+    check = rows["db:migrations-001-042"]
     assert check["status"] == "UNVERIFIED"
     assert "manifest" in check["detail"].lower()
     assert "All 001..040 recorded" not in check["detail"]

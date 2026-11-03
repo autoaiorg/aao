@@ -213,6 +213,8 @@ export const AgentIdentitySchema = z.object({
   status: AgentOperationalStatusSchema,
   credentialStatus: z.enum(['ENABLED', 'DISABLED']).optional(),
   operationalState: AgentOperationalStateSchema.optional(),
+  coordinatorState: z.enum(['COORDINATING', 'WAITING', 'STALE']).optional(),
+  coordinatorProject: z.string().optional(),
   currentAssignments: z.array(AgentAssignmentSchema).default([]),
   executionHistory: z.array(AgentExecutionRecordSchema).optional(),
   authorityBoundary: z.string(),

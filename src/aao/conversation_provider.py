@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Iterator
+from http.client import HTTPException
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
@@ -36,8 +37,16 @@ def urlopen(request, timeout):
     return opener.open(request, timeout=timeout)
 
 
+def _visible_ascii(value: str) -> bool:
+    """No control characters, whitespace, DEL or non-ASCII: nothing that can split or break an HTTP line."""
+    return all(0x20 < ord(char) < 0x7f for char in value)
+
+
 def endpoint_allowed(endpoint: str) -> bool:
-    """https only (http just for loopback fakes), no userinfo: the bearer token must not travel in clear."""
+    """https only (http just for loopback fakes), no userinfo, no query string, no control characters or
+    whitespace: the bearer token must not travel in clear and the URL must not carry secrets."""
+    if not _visible_ascii(endpoint) or "?" in endpoint:
+        return False
     try:
         parsed = urlsplit(endpoint)
         host, _port = parsed.hostname, parsed.port  # .port raises ValueError when malformed
@@ -80,12 +89,16 @@ def stream_reply(messages: list[dict[str, str]]) -> Iterator[str]:
         # Same code as "not configured": nothing is sent. The message never echoes the URL or the key.
         raise ProviderUnavailable("PROVIDER_NOT_CONFIGURED",
                                   "Endpoint del proveedor rechazado: se requiere https sin credenciales en la URL.")
+    if not _visible_ascii(token):
+        # Refused, never stripped: http.client would echo the whole header value (the key) in its ValueError.
+        raise ProviderUnavailable("PROVIDER_NOT_CONFIGURED",
+                                  "Clave del proveedor rechazada: contiene caracteres no válidos.")
     body = json.dumps({"model": model, "messages": messages, "stream": True}).encode()
-    request = Request(endpoint, data=body, headers={
-        "Authorization": f"Bearer {token}", "Content-Type": "application/json",
-        "Accept": "text/event-stream",
-    })
     try:
+        request = Request(endpoint, data=body, headers={
+            "Authorization": f"Bearer {token}", "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        })
         with urlopen(request, timeout=60) as response:
             for raw in response:
                 line = raw.decode("utf-8", errors="replace").strip()
@@ -105,3 +118,5 @@ def stream_reply(messages: list[dict[str, str]]) -> Iterator[str]:
         raise ProviderUnavailable("PROVIDER_HTTP_ERROR", f"Proveedor respondió HTTP {exc.code}.") from exc
     except (URLError, TimeoutError, OSError) as exc:
         raise ProviderUnavailable("PROVIDER_UNAVAILABLE", "No se pudo conectar con el proveedor.") from exc
+    except (ValueError, HTTPException):  # InvalidURL, bad header, UnicodeError: their text may hold URL or key
+        raise ProviderUnavailable("PROVIDER_UNAVAILABLE", "Solicitud al proveedor inválida.") from None

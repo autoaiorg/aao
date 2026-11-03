@@ -83,21 +83,22 @@ BEGIN
     ALTER ROLE aao_fencer WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT CONNECTION LIMIT 2;
   END IF;
 END $$;
--- A reused database may already contain role memberships. NOINHERIT prevents
--- automatic privilege inheritance, but does not prevent SET ROLE. Keep the
--- dedicated fencer isolated from every parent role before granting table access.
+-- A reused cluster may already contain role memberships. NOINHERIT prevents
+-- automatic privilege inheritance, but does not prevent SET ROLE. Keep all
+-- dedicated runtime roles isolated from every parent role before granting access.
 DO $$
 DECLARE
+  member_role name;
   parent_role name;
 BEGIN
-  FOR parent_role IN
-    SELECT parent.rolname
+  FOR member_role, parent_role IN
+    SELECT member.rolname, parent.rolname
       FROM pg_auth_members membership
       JOIN pg_roles member ON member.oid = membership.member
       JOIN pg_roles parent ON parent.oid = membership.roleid
-     WHERE member.rolname = 'aao_fencer'
+     WHERE member.rolname IN ('aao_runtime', 'aao_recovery', 'aao_fencer')
   LOOP
-    EXECUTE format('REVOKE %I FROM aao_fencer', parent_role);
+    EXECUTE format('REVOKE %I FROM %I', parent_role, member_role);
   END LOOP;
 END $$;
 EOF

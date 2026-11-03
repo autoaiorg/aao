@@ -8,6 +8,7 @@ the signer boundary.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
 from dataclasses import dataclass
@@ -67,10 +68,13 @@ class IntentRepository(Protocol):
 
     def get_pending_intent(self, intent_id: uuid.UUID) -> CycleSigningIntent | None: ...
 
-    def get_completed_fingerprint(self, intent_id: uuid.UUID) -> str | None: ...
+    def get_completed_binding(self, intent_id: uuid.UUID) -> tuple[str, str] | None:
+        """Return (leaf fingerprint, SHA-256 of the exact accepted CSR bytes)."""
 
-    def complete_binding(self, intent: CycleSigningIntent, fingerprint: str) -> None:
-        """Atomically bind cert, enable only this principal, and complete intent."""
+    def complete_binding(
+        self, intent: CycleSigningIntent, fingerprint: str, csr_sha256: str
+    ) -> None:
+        """Atomically bind cert+CSR digest, enable principal, and complete intent."""
         ...
 
 
@@ -102,8 +106,9 @@ def reconcile_cycle_certificate(
 ) -> str:
     """Issue or recover one certificate and publish its binding atomically.
 
-    Replaying a completed intent returns its existing fingerprint without
-    contacting the signer. Any missing intent, malformed CSR, oversized result,
+    Replaying a completed intent returns its existing fingerprint only when the
+    exact CSR SHA-256 matches; mismatched CSR replay conflicts without contacting
+    the signer. Any missing intent, malformed CSR, oversized result,
     verifier error, or invalid fingerprint leaves the principal non-executable.
     No credential, CSR or certificate is logged or returned by this API.
     """
@@ -112,11 +117,17 @@ def reconcile_cycle_certificate(
     if b"-----BEGIN CERTIFICATE REQUEST-----" not in csr_pem:
         raise CycleMtlError("cycle CSR is invalid")
 
-    completed = repository.get_completed_fingerprint(intent_id)
+    csr_sha256 = hashlib.sha256(csr_pem).hexdigest()
+    completed = repository.get_completed_binding(intent_id)
     if completed is not None:
-        if not re.fullmatch(r"[0-9a-f]{64}", completed):
+        fingerprint, stored_csr_sha256 = completed
+        if not re.fullmatch(r"[0-9a-f]{64}", fingerprint) or not re.fullmatch(
+            r"[0-9a-f]{64}", stored_csr_sha256
+        ):
             raise CycleMtlError("stored cycle binding is invalid")
-        return completed
+        if stored_csr_sha256 != csr_sha256:
+            raise CycleMtlError("cycle intent already completed with a different CSR")
+        return fingerprint
 
     intent = repository.get_pending_intent(intent_id)
     if intent is None:
@@ -137,5 +148,5 @@ def reconcile_cycle_certificate(
 
     # This repository operation must lock the intent and principal, re-check
     # revocation/expiry, and atomically insert the binding before enabling it.
-    repository.complete_binding(intent, fingerprint)
+    repository.complete_binding(intent, fingerprint, csr_sha256)
     return fingerprint

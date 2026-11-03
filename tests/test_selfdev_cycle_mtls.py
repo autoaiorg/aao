@@ -34,12 +34,14 @@ class Repo:
     def get_pending_intent(self, intent_id):
         return self.issue if self.issue.intent_id == intent_id else None
 
-    def get_completed_fingerprint(self, intent_id):
+    def get_completed_binding(self, intent_id):
         return self.completed
 
-    def complete_binding(self, issued_intent, fingerprint):
-        self.bindings.append((issued_intent, fingerprint))
-        self.completed = fingerprint
+    def complete_binding(self, issued_intent, fingerprint, csr_sha256):
+        # Model one atomic persisted binding record.
+        binding = (issued_intent, fingerprint, csr_sha256)
+        self.bindings.append(binding)
+        self.completed = (fingerprint, csr_sha256)
 
 
 class Signer:
@@ -78,7 +80,9 @@ def test_issue_verifies_before_binding_and_replay_is_idempotent():
         verifier=verifier,
     )
     assert result == "b" * 64
-    assert repo.bindings == [(repo.issue, "b" * 64)]
+    import hashlib
+
+    assert repo.bindings == [(repo.issue, "b" * 64, hashlib.sha256(CSR).hexdigest())]
     assert len(signer.calls) == len(verifier.calls) == 1
 
     assert (
@@ -92,6 +96,36 @@ def test_issue_verifies_before_binding_and_replay_is_idempotent():
         == "b" * 64
     )
     assert len(signer.calls) == len(verifier.calls) == 1
+
+
+def test_completed_intent_with_different_csr_conflicts_without_signing():
+    import hashlib
+
+    repo, signer, verifier = Repo(intent()), Signer(), Verifier()
+    reconcile_cycle_certificate(
+        repo.issue.intent_id, CSR, repository=repo, signer=signer, verifier=verifier
+    )
+    with pytest.raises(CycleMtlError, match="different CSR"):
+        reconcile_cycle_certificate(
+            repo.issue.intent_id,
+            CSR + b"different",
+            repository=repo,
+            signer=signer,
+            verifier=verifier,
+        )
+    assert repo.completed == ("b" * 64, hashlib.sha256(CSR).hexdigest())
+    assert len(repo.bindings) == 1
+    assert len(signer.calls) == 1
+
+
+def test_binding_completion_persists_fingerprint_and_csr_digest_together():
+    import hashlib
+
+    repo, signer, verifier = Repo(intent()), Signer(), Verifier()
+    reconcile_cycle_certificate(
+        repo.issue.intent_id, CSR, repository=repo, signer=signer, verifier=verifier
+    )
+    assert repo.bindings == [(repo.issue, "b" * 64, hashlib.sha256(CSR).hexdigest())]
 
 
 def test_verification_failure_does_not_bind_or_enable():

@@ -62,7 +62,9 @@ ni se simula como producción aquí.
 `src/aao/selfdev_cycle_mtls.py` define la lógica sin acoplarla a una custodia:
 
 1. Carga una intención pendiente autoritativa desde el repositorio.
-2. Si ya se completó, devuelve solo la huella persistida; no vuelve a firmar.
+2. Si ya se completó, compara SHA-256 del CSR recibido con el digest persistido.
+   Devuelve la huella solo si coincide exactamente; CSR distinto es conflicto y
+   no vuelve a firmar.
 3. Pasa CSR público y la intención tipada a `CycleSigner`.
 4. Pasa certificado/cadena por `CertificateVerifier`, que debe comprobar
    firma de CSR, cadena de confianza, SAN exacto, EKU de cliente, vigencia y
@@ -114,4 +116,5 @@ contra PostgreSQL.
 Los tests del reconciliador usan dobles en memoria; no crean CA ni certificados
 reales. Demuestran el orden verify-before-bind, redacción de fallos, límites de
 entrada e idempotencia de replay en el adaptador. No prueban PostgreSQL,
-concurrencia, socket, custodia CA, TLS en producción ni comportamiento del host.
+concurrencia real, socket, custodia CA, TLS en producción ni comportamiento del
+host; el test de atomicidad usa un fake que modela un único registro persistido.

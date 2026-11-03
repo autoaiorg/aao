@@ -1,0 +1,9 @@
+# Triggered only by OnFailure= of aao-selfdev-cycle-renew.service. There is no
+# external alert channel yet: this writes one priority-err journal entry that a
+# log watcher must pick up. Contains no credential material.
+[Unit]
+Description=AAO Self Development cycle renewal failure alert
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemd-cat -t aao-selfdev-cycle-renew -p err /bin/echo "selfdev cycle renewal tick failed (backoff, failed revoke or BREAKER_OPEN); see journalctl --user -u aao-selfdev-cycle-renew.service"

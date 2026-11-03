@@ -1,7 +1,10 @@
 # Ciclo de vida desatendido de credenciales de ciclo Self Development (diseño)
 
-Estado: **diseño actualizado; renovación desatendida aún no implementada**.
-Revisión base: `5531466` (origin/main, 2026-11-03), tras #377. Actualiza el diseño
+Estado: **orquestador de renovación implementado en código (rama
+`feat/selfdev-cycle-renew-runner`); no desplegado, no habilitado y no verificado
+en el host. No hay operación desatendida en producción.**
+Revisión base: `478781e` (origin/main, 2026-11-03), tras #377 y #379.
+Actualiza el diseño
 publicado en el PR #357 y la implementación de ciclo fusionada. Este documento
 no emite, concede ni amplía credenciales. Toca la
 emisión de credenciales: exige auditoría independiente (GOV-REV-001) antes de
@@ -26,9 +29,11 @@ operativa en el host**.
 
 Bloqueos restantes principales:
 
-1. **No hay orquestador de renovación instalado.** El flujo descrito en este
-   documento sigue siendo diseño; no existe todavía un script/timer operativo
-   que emita, instale, verifique y revoque ciclos de forma recuperable.
+1. **El orquestador de renovación existe en código, pero no está instalado.**
+   `scripts/renew_selfdev_cycle_credentials.py` y las unidades
+   `deploy/systemd/user/aao-selfdev-cycle-renew{.service,.timer,-alert.service}` implementan
+   §3–§6 y están probados solo con dobles (fakes). No se ha ejecutado contra la
+   API real, el helper root ni el host; nada se ha habilitado.
 2. **El worker no está desplegado.** En las comprobaciones aportadas por el
    operador el 2026-11-03, `aao-selfdev-codex-worker` era `LoadState=not-found`
    y faltaban `/etc/aao/selfdev-codex-worker.env` y
@@ -37,10 +42,10 @@ Bloqueos restantes principales:
    en el host.** El helper root instalado debe admitir `replace` antes de
    habilitar la renovación.
 
-Por tanto **no se implementa `scripts/rotate_selfdev_cycle_credentials.py`**.
-Un script así acabaría en un paso con sudo/DSN o tendría que modificar un
-componente de credenciales instalado como root. Ambas cosas quedan fuera del
-mandato de este cambio.
+El orquestador usa solo el token PM, la API acotada de #377 y el wrapper root
+de #361 mediante `sudo -n`, con el token en stdin. No usa DSN ni token CEO, y
+no modifica componentes root. Su despliegue sí exige pasos de administrador
+(§3.1).
 
 **#331 (auto-rotación AGENT) no sirve para renovar el TTL.**
 `POST /v1/principals/me/rotate` (`src/aao/work_management_api.py`) y
@@ -84,22 +89,84 @@ fichero `aao-self-development-reviewer.token` fuera del instalador.
 `scripts/self_development_cycle.py:30` usa `aao-auditor.token`. El ciclo de
 vida del revisor está, por tanto, definido solo a medias (G5).
 
-## 3. Orquestador de renovación: aún propuesto
+## 3. Orquestador de renovación: implementado en código, no desplegado
 
-- El diseño propone una unidad systemd de usuario de `aao-pm`:
-  `aao-selfdev-cycle-credentials@<project>.service` (oneshot) más un `.timer`
-  (`OnUnitActiveSec=5min`, `Persistent=true`). Usa el árbol y el venv
-  congelados de `/srv/aao/frozen/aao-pm`, igual que el coordinador.
-- **No hay evidencia de que este timer, servicio o su script estén implementados
-  o instalados.** El host informó el 2026-11-03 que el coordinador PM está
-  activo, pero eso no es el orquestador de renovación.
-- La unidad propuesta **no** puede llevar `NoNewPrivileges=yes`, porque necesita `sudo`
-  hacia el wrapper root. Es la diferencia consciente respecto de
-  `deploy/systemd/user/aao-project-coordinator@.service`. Compensación: el
-  sudoers solo permite el wrapper (`SELF_DEVELOPMENT_CYCLE_ROLES.md` §setup 3).
-- Lock exclusivo `flock` en `/run/user/<uid-pm>/aao-selfdev-cycle.lock`: nunca
-  hay dos ejecuciones simultáneas.
-- Credencial: solo el token PM. Nunca el token CEO, ni `.env.local`, ni un DSN.
+- Script: `scripts/renew_selfdev_cycle_credentials.py --project-id <uuid>`.
+  Cada ejecución es un *tick* de la máquina de estados (§5). El cliente API, el
+  instalador y el reloj son inyectables; los tests usan dobles.
+- Unidades de usuario de `aao-pm`, que sustituyen al nombre plantilla propuesto
+  antes (`aao-selfdev-cycle-credentials@<project>`):
+  `deploy/systemd/user/aao-selfdev-cycle-renew.service` (oneshot) y
+  `aao-selfdev-cycle-renew.timer` (`OnActiveSec=1min`,
+  `OnUnitActiveSec=5min`), más `aao-selfdev-cycle-renew-alert.service`, que
+  la unidad principal lanza con `OnFailure=`. No hay canal de alerta externo:
+  la unidad de alerta escribe una entrada `systemd-cat -p err` en el journal y
+  alguien debe vigilarla. Cada tick con código distinto de cero (fallo, espera
+  de backoff con renovación vencida o cortacircuitos abierto) la dispara. El
+  proyecto se lee de
+  `~/.config/aao/selfdev-cycle-renew.env` (`AAO_PROJECT_ID=<uuid>`). Usan el
+  árbol y el venv congelados de `/srv/aao/frozen/aao-pm`, igual que el
+  coordinador. **Este cambio no las instala ni las habilita.**
+- La unidad **no** lleva `NoNewPrivileges=yes`, porque necesita `sudo` hacia el
+  wrapper root. En modo usuario, systemd implica `NoNewPrivileges` con
+  `PrivateDevices`, `ProtectKernel*`, `ProtectControlGroups`,
+  `RestrictSUIDSGID`, `LockPersonality`, `RestrictAddressFamilies`,
+  `SystemCallFilter` y otras. Las directivas de espacio de nombres
+  (`PrivateTmp`, `ProtectSystem`, `ProtectHome`) ejecutan el proceso en un user
+  namespace, donde setuid no obtiene root. Por eso se omiten todas. Es la
+  diferencia consciente respecto de `aao-project-coordinator@.service`.
+  Compensación: el sudoers solo permite el wrapper
+  (`SELF_DEVELOPMENT_CYCLE_ROLES.md` §setup 3).
+- **Radio de daño sin `NoNewPrivileges`.** Cualquier código que se ejecute en
+  esta unidad como `aao-pm` puede usar todos los binarios setuid del host, no
+  solo `sudo`. Por la regla sudoers, puede ejecutar el wrapper root con
+  `check|install|verify|remove|replace` sobre los dos ficheros fijos de
+  `aao-impl-codex` y `aao-auditor`. Con `replace` puede sustituir el token del
+  worker por cualquier valor (denegación de servicio o sustitución por otro
+  principal que controle). Ese poder ya lo tiene la cuenta `aao-pm` fuera de la
+  unidad, por el sudoers; la unidad no lo amplía. Lo que la unidad sí pierde es
+  el aislamiento de sistema de ficheros y de syscalls del coordinador. El
+  código ejecutado es el árbol congelado de `/srv/aao/frozen/aao-pm`.
+- Lock exclusivo no bloqueante `flock` en
+  `/run/user/<uid-pm>/aao-selfdev-cycle.lock`. Un segundo tick concurrente sale
+  con código 75 (`SuccessExitStatus=75`) sin leer el token ni actuar.
+- Credencial: solo el token PM (`read_pm_token`, con la misma validación que
+  `request_selfdev_cycle_roles.py`). Nunca el token CEO, ni `.env.local`, ni un
+  DSN. Los tokens de rol viajan solo por el stdin del wrapper (`sudo -n`, con
+  entorno mínimo). Nunca aparecen en argv, entorno, stdout/stderr ni estado.
+- Verificación de identidad, antes de tocar ficheros:
+  - `GET /v1/principals/me` con el token implementador debe devolver
+    exactamente
+    `{"principal_id": "aao-selfdev-impl-<id>", "kind": "AGENT", "enabled": true}`.
+  - `GET /v1/auditors/me/grants` con `X-Auditor-Token` debe devolver
+    exactamente una fila `work.review` activa del proyecto para
+    `aao-selfdev-review-<id>`.
+  - Los grants del implementador se comprueban como conjunto exacto en la
+    respuesta del POST, porque no existe un endpoint de grants para AGENT.
+
+### 3.1 Pasos pendientes en el host (administrador/CEO; no realizados)
+
+1. Auditoría independiente GOV-REV-001 de este cambio, de #361 y de #377.
+2. Root: reinstalar en `/usr/local/libexec/aao` los ficheros revisados
+   `selfdev_role_token_helper.py` e `install_publisher_token_for_role.py`
+   (root:root, 0755/0644), para que exista `--operation replace`. Comprobar el
+   sudoers de `aao-pm` con `visudo -cf`.
+3. Root/operador de despliegue: aplicar la migración 041 y comprobar los grants
+   de `aao_runtime`. Congelar en `/srv/aao/frozen/aao-pm` una revisión que
+   contenga este script.
+4. CEO: confirmar que el grant `credential.issue_selfdev_cycle_roles` del PM
+   está vigente (≤ 30 días) y que existe un perfil semilla del implementador.
+5. `aao-pm`:
+   - Copiar las tres unidades a `~/.config/systemd/user/`.
+   - Crear `~/.config/aao/selfdev-cycle-renew.env`.
+   - Ejecutar una vez
+     `renew_selfdev_cycle_credentials.py --project-id <uuid> --bootstrap`
+     (§5).
+   - Tras corregir la causa de un cortacircuitos abierto, y solo entonces,
+     ejecutar `renew_selfdev_cycle_credentials.py --project-id <uuid>
+     --reset-breaker`.
+   - Solo después, y con autorización, ejecutar
+     `systemctl --user enable --now aao-selfdev-cycle-renew.timer`.
 
 ## 4. Privilegios mínimos
 
@@ -116,13 +183,68 @@ resuelve G3 por reasignación.
 ## 5. Máquina de estados
 
 Estado persistido **sin secretos** en
-`~aao-pm/.local/state/aao/selfdev-cycle-<project>.json` (0600, escritura
-atómica con temp + `fsync` + `rename`):
+`/run/user/<uid-pm>/aao-selfdev-cycle-<project>.json`: fichero regular 0600, de
+un solo enlace y propiedad de `aao-pm`. La escritura es atómica: temp
+`O_EXCL`, `fsync`, `rename` y `fsync` del directorio.
 
 ```json
-{"phase": "...", "current_cycle_id": "<hex32|null>", "current_expires_at": "...",
- "next_cycle_id": "<hex32|null>", "next_expires_at": "...", "updated_at": "..."}
+{"phase": "...", "project_id": "<uuid>", "current_cycle_id": "<hex32|null>",
+ "current_expires_at": "...", "next_cycle_id": "<hex32|null>",
+ "next_expires_at": "...", "next_issued_at": "...", "updated_at": "...",
+ "consecutive_failures": 0, "next_attempt_at": "<iso|null>"}
 ```
+
+**Backoff y cortacircuitos.** Cada emisión fallida (POST, verificación,
+instalación, `verify` de fichero o caída a mitad) incrementa
+`consecutive_failures`. Al cerrar el N+1 fallido, el runner fija
+`next_attempt_at` a 5, 10, 20 y 60 min tras los fallos 1.º a 4.º. El 5.º abre
+`BREAKER_OPEN`. Un POST rechazado de forma definitiva (400, 401, 403, 404 o
+422) abre el cortacircuitos directamente: la API no emitió nada, así que no se
+espera ni se revoca. En `BREAKER_OPEN` no se emite nada y cada tick sale con
+código 1 (alerta) hasta que un operador ejecute `--reset-breaker`, que solo se
+acepta con el cortacircuitos abierto. Una renovación verificada pone el
+contador a 0. Con un fallo persistente, por tanto, se emiten como máximo 5
+pares de ciclo antes de exigir intervención (antes: un par cada 5 min, ~288
+al día).
+
+**Topes de emisión de la API (PR #388).** El runner reconoce los dos rechazos
+solo por `detail.code`. Sin #388 fusionado, nunca aparecen y el
+comportamiento no cambia. En ninguno de los dos casos la API emitió nada, así
+que no se revoca nada.
+
+- **409 `SELFDEV_CYCLE_CONCURRENCY_CAP`** (ya hay 2 implementadores de ciclo
+  vivos). Indica un ciclo vivo **no registrado** en el estado: manual,
+  anterior a un reinicio o a un `--bootstrap`. Los IDs que el runner abandona
+  ya están revocados o caducados, y la API no permite listar ciclos. Por eso
+  el runner no puede identificar el huérfano de forma segura. No adivina a
+  partir del board, porque podría revocar un ciclo manual en uso. Abre
+  `BREAKER_OPEN` y alerta.
+  - Operador: revocar el ciclo huérfano con
+    `DELETE /v1/projects/{id}/selfdev-cycle-roles/{cycle_id}`, usando el ID de
+    la salida de `request_selfdev_cycle_roles.py` o del evento
+    `principal.selfdev_cycle_role.issued`.
+  - Después, `--reset-breaker`.
+- **429 `SELFDEV_CYCLE_ISSUANCE_DAILY_CAP`** (24 emisiones por PM en 24 h). No
+  cuenta como emisión fallida. El runner fija `next_attempt_at = ahora + 1 h`,
+  porque la API no expone cuándo se libera un hueco en su ventana móvil.
+  Mientras espera, cada tick sale con código 1 (alerta) y no hace ningún POST.
+  Después reintenta cada hora mientras el tope siga activo.
+- Un 409 o 429 sin esos códigos sigue la ruta genérica de `FAILED_ISSUE`
+  (DELETE de N+1 y backoff).
+
+Diferencia con el diseño previo: el estado vive en el runtime dir y no en
+`~/.local/state`, igual que los tokens que describe. Tras un reinicio,
+desaparecen ambos.
+
+- Un estado ausente **falla cerrado**: el script exige `--bootstrap`
+  explícito, que crea el estado y emite el primer ciclo sin predecesor.
+- `--bootstrap` con un estado existente se rechaza.
+- Un estado corrupto falla cerrado sin llamadas a la API. Cuenta como corrupto
+  si tiene forma inesperada, es de otro proyecto, no tiene modo 0600 o es un
+  enlace simbólico.
+- Limitación: si quedaba un ciclo vigente no registrado (manual o anterior al
+  reinicio), el runner no lo revoca. Caduca en ≤ 2 h y debe revocarse con el
+  endpoint de ciclo.
 
 Ningún token se escribe en el estado, en argv, en el entorno, en stdout o en
 los logs. Los tokens viven solo en la memoria del proceso entre el POST y el
@@ -131,31 +253,60 @@ los logs. Los tokens viven solo en la memoria del proceso entre el POST y el
 | Estado | Significado | Transición normal | Fallo |
 |---|---|---|---|
 | `ACTIVE` | El ciclo N está instalado y verificado, y le queda más del margen | Al cruzar el umbral de renovación (§6): genera `next_cycle_id`, **persiste** y pasa a `ISSUING` | — |
-| `ISSUING` | El ID N+1 está persistido antes del POST | POST correcto → `replace` de ambos ficheros → `INSTALLED_PENDING` | Error, 409 o respuesta perdida → `FAILED_ISSUE` |
-| `INSTALLED_PENDING` | Los ficheros contienen N+1; falta verificarlos | `verify` de fichero + `/v1/principals/me` (impl) y `/v1/auditors/me/grants` (revisor): IDs exactos, kind y grants exactos → `VERIFIED` | → `FAILED_INSTALL` |
+| `ISSUING` | El ID N+1 y `next_issued_at` están persistidos antes del POST; ningún fichero se ha tocado | POST correcto → verificación de identidad por API (IDs, kind y grants exactos) → `INSTALLED_PENDING` | Error, 409, 5xx, timeout o desajuste de identidad → `FAILED_ISSUE`. 400/401/403/404/422 o 409 `SELFDEV_CYCLE_CONCURRENCY_CAP` → `BREAKER_OPEN`. 429 `SELFDEV_CYCLE_ISSUANCE_DAILY_CAP` → `ACTIVE` con espera de 1 h, sin contar fallo |
+| `INSTALLED_PENDING` | Se persiste **antes** del primer `replace`: los ficheros **pueden** contener N+1 | `replace` + `verify` completos del revisor; solo después `replace` + `verify` del implementador (el fichero con consumidor vivo) → `VERIFIED`. Si `replace` devuelve 3 (renombrado hecho, comprobación posterior fallida), decide su `verify` | Fallo del `replace` del revisor (antes de renombrar; nada escrito) → `FAILED_ISSUE`. Cualquier fallo posterior → `FAILED_INSTALL` |
 | `VERIFIED` | N+1 está verificado; el worker lo recoge en la siguiente iteración | Si el board no muestra ejecuciones `RUNNING`/`UNCERTAIN`/`QUEUED` con `attempts>0` y `worker_id = impl-N`, o si N ya caducó → `REVOKING_OLD` | Plazo de drenaje superado → `REVOKING_OLD` igualmente (§6) |
-| `REVOKING_OLD` | Se revoca el ciclo N | DELETE N devuelve `revoked` o `already_revoked` → `current := next` y `next := null` → `ACTIVE` | Error → se queda en `REVOKING_OLD` y reintenta en cada tick |
-| `FAILED_ISSUE` | N+1 puede existir o no en el servidor | DELETE N+1. `revoked` o `already_revoked` → `next := null` → `ACTIVE`; reintenta en el próximo tick con un ID **nuevo** | 409 es ambiguo (nunca existió o conjunto alterado; G7): se registra, se alerta y se cierra igualmente, porque N+1, si existe, caduca en ≤ 2 h y sus tokens se perdieron. Error de red → se mantiene |
-| `FAILED_INSTALL` | Un fichero puede contener N+1, y su token ya se perdió de memoria | DELETE N+1. Si N sigue vigente, el fichero debe volver a N, pero el PM no tiene ese token. El worker falla cerrado (403) hasta la siguiente emisión correcta → `FAILED_ISSUE` | — |
+| `REVOKING_OLD` | Se revoca el ciclo N | DELETE N devuelve `revoked`, `already_revoked` o `CYCLE_NOT_FOUND` → `current := next` y `next := null` → `ACTIVE` | Error → se queda en `REVOKING_OLD` y reintenta en cada tick. Si N ya caducó, avanza con alerta para no bloquear la renovación de N+1 |
+| `FAILED_ISSUE` | N+1 puede existir o no en el servidor; ningún token suyo llegó a disco | DELETE N+1. Con `revoked`, `already_revoked` o 404 con `detail.code == "CYCLE_NOT_FOUND"` → `next := null` → `ACTIVE` con backoff (o `BREAKER_OPEN` al 5.º fallo); la siguiente emisión usa un ID **nuevo** | 409 (conjunto alterado): se alerta y se cierra igualmente, porque no hay tokens de N+1 en disco y caduca en ≤ 2 h. Otro 404, 5xx o error de red: se mantiene hasta `next_issued_at + 2 h + 1 min` y entonces se cierra con alerta. Mientras se mantiene, nunca se emite otro ciclo |
+| `FAILED_INSTALL` | Un fichero puede contener N+1 | DELETE N+1; solo una revocación confirmada (`revoked`, `already_revoked`, `CYCLE_NOT_FOUND`) o la caducidad de N+1 (`next_issued_at + 2 h + 1 min`) lo cierra, con backoff | 409, 5xx o error de red → **se mantiene** y alerta en cada tick: no se olvida un ciclo vivo con tokens en disco. Mientras, no se emite otro ciclo |
+| `BREAKER_OPEN` | Fallos repetidos o rechazo definitivo; no hay N+1 abierto | Ninguna: cada tick sale con código 1 (alerta). `--reset-breaker` del operador → `ACTIVE`, contador a 0 | — |
 | `FAILED_EXPIRED` | `current_expires_at` ya pasó y no hay ciclo válido instalado | Emite directamente (`ISSUING`) sin drenaje; el worker estaba fallando cerrado | Se mantiene; alerta crítica |
 
 Recuperación tras una caída (en cada tick se lee el estado y se hace la
 acción idempotente del estado persistido):
 
 - **Caída antes de persistir `next_cycle_id`:** no se ha emitido nada.
-- **Caída en `ISSUING`, tras el POST y antes del `replace`:** los tokens se
-  perdieron. Se aplica `FAILED_ISSUE` (DELETE N+1). El ciclo N sigue intacto
-  en los ficheros.
+- **Caída en `ISSUING`, tras el POST y antes de instalar:** los tokens se
+  perdieron. Se aplica `FAILED_ISSUE` (DELETE N+1). Ningún fichero se tocó en
+  `ISSUING`, así que ambos ficheros siguen con N.
 - **Caída en `INSTALLED_PENDING`:** el token no está en memoria, así que no se
-  puede usar `verify` con stdin. Se hace DELETE N+1 y se pasa a
-  `FAILED_ISSUE`. Si un fichero ya tenía N+1, el worker recibirá 403 hasta el
-  siguiente tick correcto. Esto es aceptable: falla cerrado y no usa una
-  credencial ambigua.
+  puede usar `verify` con stdin. Se pasa a `FAILED_INSTALL` (DELETE N+1, que
+  solo se cierra con revocación confirmada o caducidad). Si un fichero ya tenía
+  N+1, su consumidor recibirá 403 hasta la siguiente emisión correcta. Esto
+  falla cerrado y no usa una credencial ambigua.
 - **Caída en `VERIFIED` o `REVOKING_OLD`:** se repite la consulta del board y
   el DELETE N. Ambos son idempotentes.
 - **Respuesta del POST perdida:** nunca se reenvía el POST con el mismo ID (la
   API devuelve 409 y no reemite). Siempre se usa DELETE de ese ID y después un
   ID nuevo.
+
+**Fallo parcial de instalación (elección y límite).** Los dos ficheros viven
+en los runtime dirs de dos cuentas distintas (`aao-auditor`,
+`aao-impl-codex`), así que ningún `rename` único puede conmutar ambos. Un
+directorio versionado con enlace sería por cuenta y exigiría cambiar el
+wrapper root. La opción más simple y segura elegida es:
+
+1. verificar ambos tokens por API **antes** de tocar ningún fichero;
+2. reemplazar **y verificar** por completo el fichero del revisor;
+3. solo entonces reemplazar y verificar el del implementador.
+
+Consecuencias exactas:
+
+- Cualquier fallo del lado del revisor (su `replace`, su código 3 o su
+  `verify`) deja intacto el fichero del implementador, con N.
+- El fichero del implementador **solo** queda con un token de N+1 revocado en
+  un caso: el fallo del propio paso del implementador después de su
+  renombrado. Eso incluye `replace` con código 3 y `verify` fallido, un
+  `verify` fallido tras `replace` correcto, o una caída tras su `replace` y
+  antes de persistir `VERIFIED`. El worker recibe entonces 403 (falla cerrado)
+  hasta la siguiente emisión correcta. Un fallo del `replace` del implementador
+  antes de renombrar deja N.
+- El fichero del revisor puede quedar con el token de N+1 revocado si falla el
+  paso del implementador. El token del revisor de N se pierde, porque el PM no
+  conserva tokens. Hoy no tiene consumidor (G5), así que el impacto es nulo.
+  Cuando lo tenga, hará falta una instalación en dos fases en el wrapper
+  (`stage` + `commit`), que requiere reinstalación root y auditoría.
+- El cortacircuitos acota la repetición.
 
 ## 6. Política de margen TTL y semántica de fallo
 
@@ -241,17 +392,21 @@ Los de la API ya existen: `principal.selfdev_cycle_role.issued` y
 `principal.selfdev_cycle_role.revoked` (`:956-960`, `:1008-1011`), con
 `issuer_principal_id`.
 
-Propuestos para el orquestador (aún no implementado; journal sin secretos):
+El orquestador los emite como líneas JSON en stdout (journal de la unidad, sin
+secretos):
 
 - `selfdev_cycle.renewal_started{current,next,expires_at}`
 - `…installed{next}`, `…verified{next,impl,reviewer}`
 - `…drain_waited{old,seconds}`, `…old_revoked{old,already}`
-- `…failed{phase,cycle,reason}`
-- `…expired_without_successor{old}` (alerta)
+- `…failed{phase,cycle,reason}`, `…next_revoked{next,outcome}`
+- `…expired_without_successor{old}` (alerta), `…lock_busy`
+- `…backoff_wait{until,failures}`, `…breaker_open{reason}`,
+  `…breaker_reset{failures}`
 
 El evento API de emisión incluye `host_id` y `profile_inherited_from` cuando
-aplica. Los eventos locales de renovación aún no existen porque falta el
-orquestador.
+aplica. Todavía no hay alertas externas: un fallo deja la unidad oneshot en
+`failed`, el evento en el journal y una entrada `err` de la unidad de alerta
+(`OnFailure=`). Alguien debe vigilarlas.
 
 ## 9. Decisiones reservadas al CEO (estratégicas o de gobernanza)
 
@@ -264,7 +419,8 @@ orquestador.
 
 G2 está implementado por #361, pero su despliegue en host requiere un
 administrador. G5 (consumidor del token revisor) y G6 (recuperación del worker
-tras fallos) siguen siendo huecos técnicos.
+tras fallos) siguen siendo huecos técnicos. El runner renueva también el token
+revisor, aunque no tenga consumidor (G5).
 
 ## 10. Límites de este documento
 
@@ -279,4 +435,38 @@ tras fallos) siguen siendo huecos técnicos.
   worker o el orquestador estén desplegados en el host.
 - El estado de host citado en §1 procede de metadatos aportados por el operador
   el 2026-11-03; no se inspeccionaron ficheros de entorno ni tokens.
+- El orquestador (`renew_selfdev_cycle_credentials.py` y sus unidades) solo se
+  ha probado con dobles (`tests/test_renew_selfdev_cycle_credentials.py`) y con
+  `systemd-analyze --user verify`. No se ejecutó contra la API, el wrapper ni el
+  host; no se instaló y no se habilitó ningún timer.
+- **Bloqueos para la operación desatendida real:**
+  - Pasos de host de §3.1 sin hacer.
+  - Worker `aao-selfdev-codex-worker` no desplegado (§1).
+  - G5: no hay consumidor del token revisor.
+  - G6: el worker sale ante un 403 y puede agotar `StartLimitBurst`; el PM no
+    puede reiniciarlo.
+  - G3: la transferencia de asignaciones entre ciclos no está implementada.
+  - El grant emisor del PM caduca cada ≤ 30 días (decisión CEO, §9.1).
+  - Tras un reinicio hay que reaprovisionar el token PM y repetir
+    `--bootstrap`.
+  - La autenticación de principals solo funciona si la API corre con
+    `AAO_ENV` igual a `development` o `test` (`principal_credentials.py:16-19`).
+  - Con un fallo persistente de despliegue (por ejemplo, el wrapper sin
+    `replace`, que devuelve el código 2), se emiten y revocan como máximo 5
+    pares de ciclo (con su vínculo host) en ~95 min. Después el cortacircuitos
+    exige `--reset-breaker`. El código de salida del wrapper queda en el evento
+    `failed`.
+- **Riesgo: separación de funciones colapsada en el PM.** El proceso del PM
+  recibe en memoria **ambos** tokens del ciclo: el del implementador y el del
+  revisor de ciclo de vida. Un PM comprometido podría actuar como implementador
+  y como revisor de la API a la vez durante ≤ 2 h. Esto ya ocurría con
+  `request_selfdev_cycle_roles.py` (#347); el runner lo hace desatendido y
+  periódico. El revisor de la API no es un auditor GOV-REV-001, pero la
+  separación autor/revisor que impone la API pierde fuerza frente a un PM
+  comprometido. Mitigaciones posibles (no implementadas): que cada cuenta de
+  rol pida su propio token, o dejar de emitir el revisor mientras no tenga
+  consumidor (G5).
+- El worker (`run_self_development_worker.py`, `run()`) vuelve a leer el fichero
+  de token en cada iteración. Por eso recoge N+1 en la siguiente iteración sin
+  reiniciarse; el drenaje de §5 depende de ello.
 - Tests y CI no constituyen auditoría independiente (GOV-REV-001).

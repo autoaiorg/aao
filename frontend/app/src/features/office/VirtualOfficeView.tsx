@@ -28,6 +28,17 @@ import {
   isInteractiveOrEditableElement,
   useOfficeHudState,
 } from './useOfficeHudState';
+import {
+  buildEnterpriseProjection,
+  type EnterpriseEntitySelection,
+} from './v3/enterpriseProjection';
+import { useSpatialWindowManager } from './v3/useSpatialWindowManager';
+import { SpatialWindowManager } from './v3/SpatialWindowManager';
+import { OrganizationExplorerPanel } from './v3/OrganizationExplorerPanel';
+import { OrganizationConstitutionCenter } from './v3/OrganizationConstitutionCenter';
+import { EnterpriseEntityInspector } from './v3/EnterpriseEntityInspector';
+import { SpatialWorkflowsPanel } from './v3/SpatialWorkflowsPanel';
+import { OperationalTimelinePanel } from './v3/OperationalTimelinePanel';
 import './components/office-game-hud.css';
 
 export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
@@ -46,6 +57,9 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
   calendarReadPort,
   routinePort,
   conversationSessionId,
+  canManageOrganization = false,
+  onSaveUnit,
+  onSaveProfile,
   onCreateWorkRequest,
   onNavigate,
   onRefresh,
@@ -487,6 +501,77 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
     [allAgents, selectedAgentId]
   );
 
+  // V3 Enterprise Projection & Multi-Window Spatial Desktop State
+  const projectsList = useMemo(
+    () => (projects.kind === 'ready' ? projects.data : []),
+    [projects]
+  );
+  const alertsList = useMemo(
+    () => (alertsState?.kind === 'ready' ? alertsState.data : []),
+    [alertsState]
+  );
+  const decisionsList = useMemo(
+    () => (decisionsState?.kind === 'ready' ? decisionsState.data : []),
+    [decisionsState]
+  );
+  const historicalCount =
+    data?.historicalAgentCount ?? (filteredAgents.length - operationalAgents.length);
+
+  const enterpriseProjection = useMemo(
+    () =>
+      buildEnterpriseProjection({
+        origin: isDemo ? 'demo' : 'live',
+        persistedUnits: rawUnits,
+        effectiveUnits: units,
+        rooms: sceneRooms,
+        agents: operationalAgents,
+        historicalAgentCount: historicalCount,
+        coverage: data?.coverage,
+        diagnostics: campusLayout.diagnostics,
+        projects: projectsList,
+        alerts: alertsList,
+        decisions: decisionsList,
+      }),
+    [
+      isDemo,
+      rawUnits,
+      units,
+      sceneRooms,
+      operationalAgents,
+      historicalCount,
+      data?.coverage,
+      campusLayout.diagnostics,
+      projectsList,
+      alertsList,
+      decisionsList,
+    ]
+  );
+
+  const spatialWindows = useSpatialWindowManager();
+  const [selectedEnterpriseEntity, setSelectedEnterpriseEntity] =
+    useState<EnterpriseEntitySelection>(() => ({
+      kind: 'department',
+      id: selectedRoomId || 'unit-exec',
+    }));
+
+  const handleSelectEnterpriseEntity = (selection: EnterpriseEntitySelection) => {
+    setSelectedEnterpriseEntity(selection);
+    if (selection.kind === 'department') {
+      selectRoom(selection.id);
+    } else if (selection.kind === 'agent') {
+      selectAgent(selection.id);
+    } else if (selection.kind === 'workstation') {
+      const ws = enterpriseProjection.workstations.find((w) => w.id === selection.id);
+      if (ws) {
+        selectRoom(ws.unitId);
+        if (ws.technicalIdentityId) {
+          selectAgent(ws.technicalIdentityId);
+        }
+      }
+    }
+    spatialWindows.openWindow('entity-inspector');
+  };
+
   // =========================================================================
   // CLASSIC MODE (Preserves traditional stacked layout 100%)
   // =========================================================================
@@ -903,6 +988,86 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* 4B. V3 Multi-Application Spatial Window Manager (Hidden in Zen Mode) */}
+      {!zenMode && (
+        <SpatialWindowManager
+          windows={spatialWindows.windows}
+          onToggleWindow={spatialWindows.toggleWindow}
+          onCloseWindow={spatialWindows.closeWindow}
+          onFocusWindow={spatialWindows.focusWindow}
+          onToggleMinimizeWindow={spatialWindows.toggleMinimizeWindow}
+          onToggleMaximizeWindow={spatialWindows.toggleMaximizeWindow}
+          onSelectAtrium={() =>
+            handleSelectEnterpriseEntity({ kind: 'atrium', id: 'atrium-central' })
+          }
+          requiresConstitution={enterpriseProjection.atrium.requiresConstitution}
+          windowNodes={{
+            'organization-explorer': (
+              <OrganizationExplorerPanel
+                units={units}
+                agents={operationalAgents}
+                projects={projectsList}
+                alerts={alertsList}
+                projection={enterpriseProjection}
+                selectedEntity={selectedEnterpriseEntity}
+                onSelectEntity={handleSelectEnterpriseEntity}
+                onOpenConstitutionCenter={() =>
+                  spatialWindows.openWindow('constitution-center')
+                }
+              />
+            ),
+            'constitution-center': (
+              <OrganizationConstitutionCenter
+                persistedUnits={rawUnits}
+                agents={operationalAgents}
+                historicalAgentCount={historicalCount}
+                unassignedAgentsCount={campusLayout.diagnostics.unassignedAgentsCount}
+                registeredProfilesCount={campusLayout.diagnostics.resolvedAgentsCount}
+                isDemo={isDemo}
+                canManageOrganization={canManageOrganization}
+                onSaveUnit={onSaveUnit}
+                onSaveProfile={onSaveProfile}
+                onRefresh={onRefresh}
+              />
+            ),
+            'entity-inspector': (
+              <EnterpriseEntityInspector
+                selection={selectedEnterpriseEntity}
+                units={units}
+                agents={operationalAgents}
+                projects={projectsList}
+                alerts={alertsList}
+                decisions={decisionsList}
+                projection={enterpriseProjection}
+                isDemo={isDemo}
+                canManageOrganization={canManageOrganization}
+                onSelectEntity={handleSelectEnterpriseEntity}
+                onOpenConstitutionCenter={() =>
+                  spatialWindows.openWindow('constitution-center')
+                }
+                onOpenAgentDetail={(agent) => setDrawerAgent(agent)}
+                onNavigate={onNavigate}
+              />
+            ),
+            'spatial-workflows': (
+              <SpatialWorkflowsPanel
+                projects={projectsList}
+                projection={enterpriseProjection}
+                onSelectEntity={handleSelectEnterpriseEntity}
+                onNavigate={onNavigate}
+              />
+            ),
+            'operational-timeline': (
+              <OperationalTimelinePanel
+                projection={enterpriseProjection}
+                fetchedAt={organization.kind === 'ready' ? organization.fetchedAt : undefined}
+                onSelectEntity={handleSelectEnterpriseEntity}
+              />
+            ),
+          }}
+        />
       )}
 
       {/* 5. Bottom HUD Tactical Deck (Hidden in Zen Mode) */}

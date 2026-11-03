@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -227,3 +228,117 @@ def test_recovery_grants_cannot_mutate_execution_or_fencing_state(monkeypatch):
             )
             db.execute("DROP FUNCTION IF EXISTS reject_recovery_host_binding_mutation()")
             db.execute("DELETE FROM host_worker_bindings WHERE host_id=%s", (host_id,))
+
+
+@pytest.mark.skipif(
+    not os.getenv("AAO_TEST_POSTGRES_URL") or os.getenv("AAO_TEST_DB_DISPOSABLE") != "yes",
+    reason="Explicit disposable PostgreSQL database required",
+)
+def test_bootstrap_removes_preexisting_parent_memberships():
+    """A reused cluster cannot retain SET ROLE paths for runtime roles."""
+    import re
+
+    import psycopg
+    from psycopg import sql
+    from psycopg.conninfo import make_conninfo
+
+    base_dsn = os.environ["AAO_TEST_POSTGRES_URL"]
+    source = (Path(__file__).resolve().parents[1] / "scripts/bootstrap/init_postgres.sh").read_text(
+        encoding="utf-8"
+    )
+    match = re.search(
+        r"(?ms)^DO \$\$\nDECLARE\n  member_role name;.*?^END \$\$;",
+        source,
+    )
+    assert match, "role-membership cleanup block missing from PostgreSQL bootstrap"
+
+    suffix = uuid4().hex
+    role_pairs = {
+        canonical: (canonical + "_" + suffix, parent)
+        for canonical, parent in {
+            "aao_runtime": "runtime_parent_" + suffix,
+            "aao_recovery": "recovery_parent_" + suffix,
+            "aao_fencer": "fencer_parent_" + suffix,
+        }.items()
+    }
+    cleanup_sql = match.group(0)
+    for canonical, (member, _parent) in role_pairs.items():
+        cleanup_sql = cleanup_sql.replace(f"'{canonical}'", sql.Literal(member).as_string(None))
+
+    with psycopg.connect(base_dsn) as db:
+        passwords = {member: uuid4().hex for member, _parent in role_pairs.values()}
+        try:
+            for member, parent in role_pairs.values():
+                db.execute(
+                    sql.SQL(
+                        "CREATE ROLE {} LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD {}"
+                    ).format(sql.Identifier(member), sql.Literal(passwords[member]))
+                )
+                db.execute(
+                    sql.SQL("CREATE ROLE {} NOLOGIN CREATEDB").format(sql.Identifier(parent))
+                )
+                db.execute(
+                    sql.SQL("GRANT {} TO {}").format(sql.Identifier(parent), sql.Identifier(member))
+                )
+            db.commit()
+            # Verify the dangerous path exists before applying the exact bootstrap block.
+            for member, parent in role_pairs.values():
+                dsn = make_conninfo(
+                    base_dsn,
+                    user=member,
+                    password=passwords[member],
+                )
+                with psycopg.connect(dsn) as member_db:
+                    member_db.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(parent)))
+                    assert member_db.execute("SELECT current_user").fetchone() == (parent,)
+
+            db.execute(cleanup_sql)
+            db.commit()
+            # Re-running the block must be harmless and retain the isolation.
+            db.execute(cleanup_sql)
+            db.commit()
+            for member, parent in role_pairs.values():
+                assert db.execute(
+                    "SELECT pg_has_role(%s, %s, 'MEMBER')", (member, parent)
+                ).fetchone() == (False,)
+                dsn = make_conninfo(
+                    base_dsn,
+                    user=member,
+                    password=passwords[member],
+                )
+                with (
+                    psycopg.connect(dsn) as member_db,
+                    pytest.raises(psycopg.errors.InsufficientPrivilege),
+                ):
+                    member_db.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(parent)))
+        finally:
+            db.rollback()
+            for member, parent in role_pairs.values():
+                existing_roles = {
+                    row[0]
+                    for row in db.execute(
+                        "SELECT rolname FROM pg_roles WHERE rolname = ANY(%s)",
+                        ([member, parent],),
+                    ).fetchall()
+                }
+                if member in existing_roles and parent in existing_roles:
+                    db.execute(
+                        sql.SQL("REVOKE {} FROM {}").format(
+                            sql.Identifier(parent), sql.Identifier(member)
+                        )
+                    )
+                if member in existing_roles:
+                    db.execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(member)))
+                if member in existing_roles:
+                    db.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(member)))
+                if parent in existing_roles:
+                    db.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(parent)))
+            db.commit()
+            leftovers = [
+                row[0]
+                for row in db.execute(
+                    "SELECT rolname FROM pg_roles WHERE rolname = ANY(%s)",
+                    ([role for pair in role_pairs.values() for role in pair],),
+                ).fetchall()
+            ]
+            assert leftovers == [], f"test roles left behind: {leftovers}"

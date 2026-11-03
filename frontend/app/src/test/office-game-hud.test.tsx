@@ -134,6 +134,26 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
     expect(screen.getByTestId('office-game-stage')).toBeInTheDocument();
   });
 
+  it('keeps revoked principals out of live roster and unknown counts while retaining a historical count', () => {
+    const revoked: AgentIdentity = {
+      ...DEMO_AGENTS[0],
+      id: 'revoked-agent',
+      name: 'Revoked Agent',
+      credentialStatus: 'DISABLED',
+      status: 'UNKNOWN',
+      currentAssignments: [],
+    };
+    const organization: DataState<OrganizationStructure> = {
+      ...liveOrgWithAgents,
+      data: { ...liveOrgWithAgents.data, agents: [revoked] },
+    };
+    renderWithQueryClient(<VirtualOfficeView organization={organization} projects={liveProjects} />);
+
+    expect(screen.queryByText('Revoked Agent')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Desconocidos:/)).not.toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Resumen de estados operativos de agentes' })).toHaveTextContent('Históricos: 1');
+  });
+
   it('synchronizes department selection across the 2D Radar Minimap, Roster Dock, and Tactical Inspector', () => {
     renderWithQueryClient(<VirtualOfficeView organization={liveOrgWithAgents} projects={liveProjects} />);
 

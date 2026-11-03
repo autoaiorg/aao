@@ -20,6 +20,7 @@ export interface OfficeTopRibbonProps {
   coverage?: OrganizationCoverage;
   units: OrgUnit[];
   agents: AgentIdentity[];
+  historicalAgentCount?: number;
   selectedRoomId: string;
   onSelectRoom: (roomId: string) => void;
   viewMode: OfficeViewMode;
@@ -49,6 +50,7 @@ export const OfficeTopRibbon: React.FC<OfficeTopRibbonProps> = ({
   coverage,
   units,
   agents,
+  historicalAgentCount = 0,
   selectedRoomId,
   viewMode,
   onViewModeChange,
@@ -89,8 +91,9 @@ export const OfficeTopRibbon: React.FC<OfficeTopRibbonProps> = ({
       const { category } = deriveAgentOperationalCategory(agent);
       counts[category] += 1;
     }
+    counts.HISTORICO = historicalAgentCount;
     return counts;
-  }, [agents]);
+  }, [agents, historicalAgentCount]);
 
   return (
     <header className="aao-hud-top-ribbon aao-hud-glass" aria-label="Cabecera táctica de la Oficina Virtual">

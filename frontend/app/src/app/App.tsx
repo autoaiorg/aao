@@ -214,7 +214,11 @@ export const App: React.FC = () => {
     queryKey: ['organization', origin, isAuthenticated, sessionId],
     queryFn: () => port.getOrganizationStructure(),
     enabled: true,
-    staleTime: staleTimeSeconds * 1000,
+    // Revocations change who belongs in the live roster; don't delay that
+    // projection behind the configurable freshness window when returning to
+    // the tab. The API also marks this response no-store.
+    staleTime: 0,
+    refetchOnWindowFocus: true,
     refetchInterval: refreshOfficeLiveState ? 15_000 : false,
   });
 

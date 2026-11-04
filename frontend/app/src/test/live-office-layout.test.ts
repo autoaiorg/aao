@@ -6,6 +6,7 @@ import {
   buildLiveOfficeRooms,
   resolveLiveOrganizationAttribution,
 } from '../features/office/liveOfficeLayout';
+import { buildDepartmentInteriorLayout } from '../features/office/engine/officeLifeEngine';
 
 const unit = (id: string, code: string, name = code, parentId: string | null = null): OrgUnit => ({
   id,
@@ -56,6 +57,34 @@ describe('buildLiveOfficeRooms', () => {
     expect(grandchild.id).toBe('grandchild');
     expect(root.z).toBeLessThan(child.z);
     expect(child.z).toBeLessThan(grandchild.z);
+  });
+});
+
+describe('capacity-aware spatial layout', () => {
+  it('reserves declared staffing capacity without materializing unobserved agents', () => {
+    const planned = { ...unit('unit-planned', 'PLAN'), standingCount: 12, ephemeralCount: 3 };
+    const { rooms, normalizedAgents } = buildCorporateCampusLayout([planned], [], { isDemo: false });
+    const room = rooms.find(({ id }) => id === planned.id)!;
+
+    expect(room.workstationCapacity).toBeGreaterThanOrEqual(15);
+    expect(normalizedAgents).toEqual([]);
+    expect(room.width).toBeGreaterThan(4.8);
+  });
+
+  it('fits workstation geometry inside expanded departments for teams over ten', () => {
+    const team = unit('unit-large-team', 'LARGE', 'Large team');
+    const agents = Array.from({ length: 25 }, (_, index) =>
+      makeAgent({ id: `large-agent-${index}`, unitId: team.id })
+    );
+    const room = buildCorporateCampusLayout([team], agents).rooms.find(({ id }) => id === team.id)!;
+    const interior = buildDepartmentInteriorLayout(room);
+
+    expect(room.workstationCapacity).toBeGreaterThanOrEqual(agents.length);
+    expect(interior.workstations).toHaveLength(room.workstationCapacity!);
+    for (const slot of interior.workstations) {
+      expect(Math.abs(slot.deskLocalX) + 0.5).toBeLessThanOrEqual(room.width / 2);
+      expect(Math.abs(slot.chairLocalX) + 0.25).toBeLessThanOrEqual(room.width / 2);
+    }
   });
 });
 
@@ -183,18 +212,86 @@ describe('Phase 1 & 2 (Iteración 2): resolveLiveOrganizationAttribution & build
     // Verify navigable graph connects Atrium to every room doorway and aisle
     const navGraph = buildCampusNavGraph(layoutA.rooms);
     expect(navGraph.nodes.has('atrium-center')).toBe(true);
+    const reachable = new Set(['atrium-center']);
+    const pending = ['atrium-center'];
+    while (pending.length > 0) {
+      const current = pending.shift()!;
+      for (const neighbor of navGraph.adjacency.get(current) ?? []) {
+        if (reachable.has(neighbor)) continue;
+        reachable.add(neighbor);
+        pending.push(neighbor);
+      }
+    }
     for (const room of layoutA.rooms) {
       expect(navGraph.nodes.has(`doorway-${room.id}`)).toBe(true);
       expect(navGraph.nodes.has(`aisle-${room.id}`)).toBe(true);
       expect(navGraph.corridors.some((c) => c.fromRoomId === room.id)).toBe(true);
+      expect(reachable.has(`aisle-${room.id}`)).toBe(true);
     }
+  });
+
+  it('routes campus walkways without cutting through another department interior', () => {
+    const units = Array.from({ length: 16 }, (_, index) =>
+      unit(`unit-route-${String(index).padStart(2, '0')}`, `R${index}`, `Routing ${index}`),
+    );
+    const { rooms } = buildCorporateCampusLayout(units, [], { isDemo: false });
+    const corridors = buildCampusNavGraph(rooms).corridors;
+
+    for (const corridor of corridors) {
+      for (const room of rooms) {
+        for (let index = 1; index < corridor.points.length; index += 1) {
+          const start = corridor.points[index - 1];
+          const end = corridor.points[index];
+          for (let step = 1; step < 100; step += 1) {
+            const t = step / 100;
+            const x = start.x + (end.x - start.x) * t;
+            const z = start.z + (end.z - start.z) * t;
+            const insideX = Math.abs(x - room.x) < room.width / 2 - 0.1;
+            const insideZ = Math.abs(z - room.z) < room.depth / 2 - 0.1;
+            expect(insideX && insideZ, `${corridor.id} crosses ${room.id}`).toBe(false);
+          }
+        }
+      }
+    }
+  });
+
+  it('keeps an empty LIVE organization free of synthetic rooms', () => {
+    const layout = buildCorporateCampusLayout([], [], { isDemo: false });
+    expect(layout.rooms).toEqual([]);
+    expect(layout.effectiveUnits).toEqual([]);
+    expect(layout.normalizedAgents).toEqual([]);
+  });
+
+  it('keeps LIVE organizational zones stable when additional units are added', () => {
+    const initialUnits = Array.from({ length: 12 }, (_, index) =>
+      unit(`unit-${String(index).padStart(2, '0')}`, `D${index}`, `Departamento ${index}`)
+    );
+    const initial = buildCorporateCampusLayout(initialUnits, [], { isDemo: false });
+    const expanded = buildCorporateCampusLayout(
+      [...initialUnits, unit('unit-12', 'D12', 'Departamento 12')],
+      [],
+      { isDemo: false, previousRooms: initial.rooms },
+    );
+
+    const expandedById = new Map(expanded.rooms.map((room) => [room.id, room]));
+    for (const room of initial.rooms) {
+      expect(expandedById.get(room.id)).toMatchObject({ x: room.x, z: room.z });
+    }
+  });
+
+  it('does not infer temporary squad status from organizational parentage', () => {
+    const parent = unit('unit-eng', 'ENG', 'Ingeniería');
+    const child = unit('unit-eng-child', 'ENG-PLATFORM', 'Plataforma', parent.id);
+    const layout = buildCorporateCampusLayout([parent, child], [], { isDemo: false });
+    const childRoom = layout.rooms.find((room) => room.id === child.id);
+    expect(childRoom?.kind).toBe('canonical-department');
   });
 
   it('assigns adaptive zone types, realistic floor finishes, and computes architectural glass walls with doorway portals', () => {
     const units = [
       unit('unit-exec', 'EXEC', 'Dirección Ejecutiva'),
       unit('unit-audit', 'AUDIT', 'Auditoría Independiente'),
-      unit('unit-squad-01', 'SQ-01', 'Equipo de Modernización Frontend', 'unit-eng'),
+      unit('unit-subdivision-01', 'SUB-01', 'Subunidad de Modernización Frontend', 'unit-eng'),
       unit('unit-eng', 'ENG', 'Ingeniería de Software'),
     ];
     const agents = [
@@ -222,10 +319,10 @@ describe('Phase 1 & 2 (Iteración 2): resolveLiveOrganizationAttribution & build
     // Audit enclave must have acoustic manifestation bands on its glass walls
     expect(auditRoom.glassWalls?.some((w) => w.hasManifestationBand)).toBe(true);
 
-    const squadRoom = layout.rooms.find((r) => r.id === 'unit-squad-01')!;
-    expect(squadRoom).toBeDefined();
-    expect(squadRoom.kind).toBe('agile-squad-pod');
-    expect(squadRoom.floorFinish).toBe('acoustic-carpet');
+    const subdivisionRoom = layout.rooms.find((r) => r.id === 'unit-subdivision-01')!;
+    expect(subdivisionRoom).toBeDefined();
+    expect(subdivisionRoom.kind).toBe('canonical-department');
+    expect(subdivisionRoom.floorFinish).toBe('acoustic-carpet');
 
     const engRoom = layout.rooms.find((r) => r.id === 'unit-eng')!;
     expect(engRoom).toBeDefined();

@@ -864,25 +864,31 @@ export function computeAdaptiveLabelStates(params: {
   let visibleDepartmentCount = 0;
   for (const room of rooms) {
     const isSelected = room.id === selectedRoomId;
+    const roomDistance = Math.hypot(room.x - cameraTargetX, room.z - cameraTargetZ);
+    // Keep distant room headers out of focused views; room geometry remains selectable.
+    const visible =
+      lodTier === 'overview' ||
+      isSelected ||
+      roomDistance <= (lodTier === 'department' ? 8 : 4.2);
     const scale =
       lodTier === 'overview'
         ? isSelected
-          ? 1.08
-          : 0.94
+          ? 0.92
+          : 0.76
         : lodTier === 'department'
         ? isSelected
-          ? 1.05
-          : 0.88
-        : 0.82;
+          ? 0.92
+          : 0.76
+        : 0.78;
     departments.set(room.id, {
       roomId: room.id,
-      visible: true,
+      visible,
       lodTier,
       abbreviated: lodTier === 'overview' && !isSelected,
       scale,
       yOffset: isSelected ? 2.45 : 2.32,
     });
-    visibleDepartmentCount += 1;
+    if (visible) visibleDepartmentCount += 1;
   }
 
   // Project 3D world (x, z) onto camera horizontal axis for 2D overlap detection

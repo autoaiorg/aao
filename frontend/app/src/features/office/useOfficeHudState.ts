@@ -45,17 +45,17 @@ const DEFAULT_PREFERENCES: PersistedHudPreferences = {
   layoutMode: 'hud',
   activeBottomTab: 'work-request',
   detachedTab: null,
-  bottomDeckState: 'docked',
+  bottomDeckState: 'minimized',
   bottomDeckHeightPx: 360,
   cameraPreset: 'overview',
-  isRosterOpen: true,
+  isRosterOpen: false,
   rosterWidthPx: 270,
-  isInspectorOpen: true,
-  isMinimapOpen: true,
+  isInspectorOpen: false,
+  isMinimapOpen: false,
   autoSyncContext: true,
   panelOrder: [...DEFAULT_PANEL_ORDER],
   qualityProfile: 'balanced',
-  isToolbarCollapsed: false,
+  isToolbarCollapsed: true,
 };
 
 function isValidTabId(val: unknown): val is OfficeHudTabId {
@@ -82,7 +82,7 @@ export function loadPersistedHudPreferences(): PersistedHudPreferences {
       parsed.bottomDeckState === 'docked' ||
       parsed.bottomDeckState === 'maximized'
         ? parsed.bottomDeckState
-        : 'docked';
+        : 'minimized';
     const bottomDeckHeightPx =
       typeof parsed.bottomDeckHeightPx === 'number' && Number.isFinite(parsed.bottomDeckHeightPx)
         ? Math.max(180, Math.min(720, Math.round(parsed.bottomDeckHeightPx)))
@@ -94,13 +94,13 @@ export function loadPersistedHudPreferences(): PersistedHudPreferences {
       parsed.cameraPreset === 'agent-focus'
         ? parsed.cameraPreset
         : 'overview';
-    const isRosterOpen = typeof parsed.isRosterOpen === 'boolean' ? parsed.isRosterOpen : true;
+    const isRosterOpen = typeof parsed.isRosterOpen === 'boolean' ? parsed.isRosterOpen : false;
     const rosterWidthPx =
       typeof parsed.rosterWidthPx === 'number' && Number.isFinite(parsed.rosterWidthPx)
         ? Math.max(200, Math.min(420, Math.round(parsed.rosterWidthPx)))
         : 270;
-    const isInspectorOpen = typeof parsed.isInspectorOpen === 'boolean' ? parsed.isInspectorOpen : true;
-    const isMinimapOpen = typeof parsed.isMinimapOpen === 'boolean' ? parsed.isMinimapOpen : true;
+    const isInspectorOpen = typeof parsed.isInspectorOpen === 'boolean' ? parsed.isInspectorOpen : false;
+    const isMinimapOpen = typeof parsed.isMinimapOpen === 'boolean' ? parsed.isMinimapOpen : false;
     const autoSyncContext = typeof parsed.autoSyncContext === 'boolean' ? parsed.autoSyncContext : true;
     const qualityProfile: OfficeGraphicsQuality =
       parsed.qualityProfile === 'low' ||
@@ -109,7 +109,7 @@ export function loadPersistedHudPreferences(): PersistedHudPreferences {
         ? parsed.qualityProfile
         : 'balanced';
     const isToolbarCollapsed =
-      typeof parsed.isToolbarCollapsed === 'boolean' ? parsed.isToolbarCollapsed : false;
+      typeof parsed.isToolbarCollapsed === 'boolean' ? parsed.isToolbarCollapsed : true;
 
     let panelOrder: OfficeHudTabId[] = [...DEFAULT_PANEL_ORDER];
     if (Array.isArray(parsed.panelOrder)) {

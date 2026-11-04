@@ -192,6 +192,11 @@
   transition: width 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+.aao-hud-roster.is-collapsed {
+  min-height: 42px;
+  max-height: 42px;
+}
+
 .aao-hud-roster__header {
   display: flex;
   align-items: center;
@@ -199,6 +204,12 @@
   padding: 8px 12px;
   border-bottom: 1px solid rgba(148, 163, 184, 0.22);
   background: rgba(15, 23, 42, 0.95);
+}
+
+.aao-hud-roster.is-collapsed .aao-hud-roster__header {
+  justify-content: center;
+  padding: 4px;
+  border-bottom: 0;
 }
 
 .aao-hud-roster__body {

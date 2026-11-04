@@ -190,10 +190,12 @@ export class AvatarResourcePool {
 
   constructor() {
     // Upper torso (Chest & broad shoulders, tapered)
-    this.torsoUpperGeo = new THREE.BoxGeometry(0.32, 0.22, 0.17);
+    this.torsoUpperGeo = new THREE.CapsuleGeometry(0.1, 0.12, 4, 12);
+    this.torsoUpperGeo.scale(1.55, 0.72, 0.82);
 
     // Lower torso (Waist & jacket hem)
-    this.torsoLowerGeo = new THREE.BoxGeometry(0.26, 0.16, 0.15);
+    this.torsoLowerGeo = new THREE.CapsuleGeometry(0.075, 0.08, 4, 10);
+    this.torsoLowerGeo.scale(1.7, 0.7, 1);
 
     // Neck
     this.neckGeo = new THREE.CylinderGeometry(0.045, 0.052, 0.07, 12);
@@ -208,25 +210,29 @@ export class AvatarResourcePool {
     this.hairShortGeo.scale(0.92, 1.08, 0.98);
 
     // 2. Executive side part: slightly raised volume with swept asymmetry
-    this.hairSidePartGeo = new THREE.BoxGeometry(0.23, 0.09, 0.22);
+    this.hairSidePartGeo = new THREE.SphereGeometry(0.12, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.56);
+    this.hairSidePartGeo.scale(0.98, 0.78, 0.92);
 
     // 3. Crop textured: clean modern crop with forward crown
     this.hairCropGeo = new THREE.CylinderGeometry(0.11, 0.124, 0.07, 12);
 
     // 4. Modern mid-length: frames temples with gentle cheek drop
-    this.hairMidGeo = new THREE.BoxGeometry(0.24, 0.14, 0.23);
+    this.hairMidGeo = new THREE.SphereGeometry(0.12, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.62);
+    this.hairMidGeo.scale(1, 1.04, 0.98);
 
     // Arms: shoulder pivot, upper arm, forearm, hand
     this.shoulderGeo = new THREE.SphereGeometry(0.048, 10, 8);
-    this.upperArmGeo = new THREE.BoxGeometry(0.072, 0.19, 0.072);
-    this.forearmGeo = new THREE.BoxGeometry(0.064, 0.18, 0.064);
-    this.handGeo = new THREE.BoxGeometry(0.052, 0.068, 0.038);
+    this.upperArmGeo = new THREE.CapsuleGeometry(0.035, 0.12, 3, 8);
+    this.forearmGeo = new THREE.CapsuleGeometry(0.032, 0.11, 3, 8);
+    this.handGeo = new THREE.SphereGeometry(1, 10, 8);
+    this.handGeo.scale(0.026, 0.034, 0.019);
 
     // Legs: pelvis, thigh, shin, executive shoe
     this.hipPelvisGeo = new THREE.BoxGeometry(0.24, 0.09, 0.14);
-    this.thighGeo = new THREE.BoxGeometry(0.088, 0.22, 0.088);
-    this.shinGeo = new THREE.BoxGeometry(0.078, 0.22, 0.078);
-    this.shoeGeo = new THREE.BoxGeometry(0.082, 0.052, 0.145);
+    this.thighGeo = new THREE.CapsuleGeometry(0.044, 0.13, 3, 8);
+    this.shinGeo = new THREE.CapsuleGeometry(0.039, 0.14, 3, 8);
+    this.shoeGeo = new THREE.CapsuleGeometry(0.04, 0.065, 3, 8);
+    this.shoeGeo.rotateX(Math.PI / 2);
 
     // Lanyard & Badge
     this.lanyardGeo = new THREE.TorusGeometry(0.09, 0.007, 8, 20);
@@ -701,11 +707,25 @@ export function buildAgentAvatar(
   else if (agent.heartbeatStatus === 'STALE') haloColor = 0xeab308;
   else if (agent.heartbeatStatus === 'UNAVAILABLE') haloColor = 0xef4444;
 
+  // Keep status color on the nameplate, but render the ground ring as a quiet
+  // material cue rather than a luminous arcade-style outline.
+  const haloRingColor =
+    agent.heartbeatStatus === 'HEALTHY'
+      ? 0x668b70
+      : agent.heartbeatStatus === 'STALE'
+      ? 0x9a8458
+      : agent.heartbeatStatus === 'UNAVAILABLE'
+      ? 0x9a625c
+      : 0x727b83;
+
   // children[0]: Telemetry Halo Ring
-  const haloMat = pool.getMaterial(`halo-${haloColor}`, () =>
+  const haloMat = pool.getMaterial(`halo-${haloRingColor}`, () =>
     new THREE.MeshBasicMaterial({
-      color: haloColor,
+      color: haloRingColor,
       side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.24,
+      depthWrite: false,
     })
   );
   const halo = new THREE.Mesh(pool.haloGeo, haloMat);
@@ -752,6 +772,12 @@ export function buildAgentAvatar(
     primaryGeometry.castShadow = true;
     group.add(primaryGeometry);
   }
+
+  // The primary meshes are retained for the legacy scene-graph/kinematics
+  // contract, but the articulated humanoid is the visible agent. Rendering a
+  // pedestal or crystal under every person makes the avatar read as a robot or
+  // game token, so keep these compatibility meshes out of the scene image.
+  primaryGeometry.visible = false;
 
   // children[2]: Articulated Humanoid Character Rig
   const appearanceProfile = getAvatarAppearanceProfile(

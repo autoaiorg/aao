@@ -222,7 +222,10 @@ describe('AAO Frontend V3 — Empresa Viva (Proyección, Puestos, Constitución 
       />
     );
 
+    // El lanzador de apps está plegado inicialmente para no cubrir la vista 3D.
+    expect(screen.queryByTestId('launcher-btn-organization-explorer')).not.toBeInTheDocument();
     // Abrir simultáneamente el Centro de Constitución Organizativa y el Explorador
+    fireEvent.click(screen.getByRole('button', { name: 'Mostrar aplicaciones espaciales' }));
     fireEvent.click(screen.getByTestId('launcher-btn-constitution-center'));
     fireEvent.click(screen.getByTestId('launcher-btn-organization-explorer'));
 
@@ -287,7 +290,8 @@ describe('AAO Frontend V3 — Empresa Viva (Proyección, Puestos, Constitución 
     );
 
     // 1. Inspeccionar Atrio Central desde la barra espacial V3
-    fireEvent.click(screen.getByText('🏛️ Atrio Central'));
+    fireEvent.click(screen.getByRole('button', { name: 'Mostrar aplicaciones espaciales' }));
+    fireEvent.click(screen.getByRole('button', { name: '🏛️ Atrio' }));
     expect(screen.getByTestId('entity-inspector-atrium')).toHaveTextContent(
       'Atrio Central Corporativo · Centro de Mando AAO'
     );

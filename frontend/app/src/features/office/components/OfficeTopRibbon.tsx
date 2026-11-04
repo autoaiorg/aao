@@ -3,7 +3,6 @@ import type {
   AgentIdentity,
   AlertSummary,
   DecisionSummary,
-  OrganizationCoverage,
   OrgUnit,
 } from '../../../domain/models';
 import {
@@ -18,8 +17,8 @@ import { deriveAgentOperationalCategory } from '../useOfficeHudState';
 
 export interface OfficeTopRibbonProps {
   isDemo: boolean;
+  liveStatusMessage: string;
   hasLiveStructure: boolean;
-  coverage?: OrganizationCoverage;
   units: OrgUnit[];
   agents: AgentIdentity[];
   historicalAgentCount?: number;
@@ -57,8 +56,8 @@ export interface OfficeTopRibbonProps {
 
 export const OfficeTopRibbon: React.FC<OfficeTopRibbonProps> = ({
   isDemo,
+  liveStatusMessage,
   hasLiveStructure,
-  coverage,
   units,
   agents,
   historicalAgentCount = 0,
@@ -347,18 +346,7 @@ export const OfficeTopRibbon: React.FC<OfficeTopRibbonProps> = ({
       >
         <span aria-hidden="true">{isDemo ? '⚠' : hasLiveStructure ? 'ℹ' : '🔒'}</span>
         <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          {isDemo
-            ? 'DEMO · SIMULACIÓN 3D ACTIVA · Todos los departamentos, agentes y asignaciones son sintéticos y no representan datos de producción.'
-            : hasLiveStructure
-            ? `LIVE · ESTRUCTURA PERSISTIDA · Plano 2D y escena 3D derivados de las unidades y agentes recibidos del backend. La geometría es una representación visual; estado y actividad solo reflejan evidencia proyectada. ${
-                coverage
-                  ? coverage.notes ||
-                    (coverage.isPartial
-                      ? `Cobertura parcial (${coverage.failedProjects} errores en ${coverage.totalProjects} proyectos).`
-                      : `Cobertura completa (${coverage.inspectedProjects}/${coverage.totalProjects} proyectos).`)
-                  : 'La presencia operativa está condicionada a telemetría verificada en tiempo real.'
-              }`
-            : 'SIN CONEXIÓN AL NÚCLEO EN LIVE (F3/F4) · No hay estructura operativa disponible. DEMO, si se selecciona, se identifica por separado como simulación.'}
+          {liveStatusMessage}
         </span>
       </div>
 

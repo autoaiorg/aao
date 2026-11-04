@@ -63,28 +63,29 @@ export function createProceduralIdeTexture(): THREE.CanvasTexture {
   canvas.height = 128;
   const ctx = canvas.getContext('2d');
   if (ctx) {
-    // Dark editor background
-    ctx.fillStyle = '#0f172a';
+    // Restrained warm graphite screen; high-saturation syntax colors made the
+    // workstations read like game props at overview distance.
+    ctx.fillStyle = '#242725';
     ctx.fillRect(0, 0, 256, 128);
 
     // Sidebar panel
-    ctx.fillStyle = '#1e293b';
+    ctx.fillStyle = '#343834';
     ctx.fillRect(0, 0, 48, 128);
 
     // Sidebar file tree lines
-    ctx.fillStyle = '#64748b';
+    ctx.fillStyle = '#747a73';
     for (let y = 14; y < 110; y += 14) {
       ctx.fillRect(8, y, 28, 4);
     }
 
     // Tab bar
-    ctx.fillStyle = '#1e293b';
+    ctx.fillStyle = '#343834';
     ctx.fillRect(48, 0, 208, 18);
-    ctx.fillStyle = '#38bdf8';
+    ctx.fillStyle = '#8caaa3';
     ctx.fillRect(52, 4, 46, 10);
 
     // Code lines in editor area with syntax colors
-    const colors = ['#f43f5e', '#38bdf8', '#a855f7', '#22c55e', '#f59e0b', '#e2e8f0'];
+    const colors = ['#b58f88', '#8caaa3', '#a69dab', '#9eae91', '#c0aa83', '#d0cdc3'];
     let lineY = 28;
     for (let i = 0; i < 7; i++) {
       let lineX = 56 + (i % 3 === 0 ? 0 : (i % 2) * 12);
@@ -99,9 +100,9 @@ export function createProceduralIdeTexture(): THREE.CanvasTexture {
     }
 
     // Status bar at bottom
-    ctx.fillStyle = '#2563eb';
+    ctx.fillStyle = '#4b534d';
     ctx.fillRect(48, 116, 208, 12);
-    ctx.fillStyle = '#ffffff';
+    ctx.fillStyle = '#d0cdc3';
     ctx.fillRect(54, 120, 24, 4);
     ctx.fillRect(84, 120, 36, 4);
   }
@@ -139,34 +140,34 @@ export class SharedFurniturePool {
   });
 
   public readonly deskWoodMat = new THREE.MeshStandardMaterial({
-    color: 0x1e293b,
-    roughness: 0.45,
-    metalness: 0.35,
+    color: 0x9b8467,
+    roughness: 0.68,
+    metalness: 0.03,
   });
   public readonly holdingDeskMat = new THREE.MeshStandardMaterial({
-    color: 0x334155,
-    roughness: 0.65,
-    metalness: 0.2,
+    color: 0x716d63,
+    roughness: 0.76,
+    metalness: 0.03,
   });
   public readonly metalLegMat = new THREE.MeshStandardMaterial({
-    color: 0x0f172a,
-    roughness: 0.3,
-    metalness: 0.7,
+    color: 0x484844,
+    roughness: 0.48,
+    metalness: 0.35,
   });
   public readonly chairCushionMat = new THREE.MeshStandardMaterial({
-    color: 0x334155,
-    roughness: 0.65,
-    metalness: 0.15,
+    color: 0x6a665e,
+    roughness: 0.8,
+    metalness: 0.02,
   });
   public readonly keyboardMat = new THREE.MeshStandardMaterial({
-    color: 0xcbd5e1,
-    roughness: 0.4,
-    metalness: 0.4,
+    color: 0xb9b5aa,
+    roughness: 0.62,
+    metalness: 0.08,
   });
   public readonly meetingTableMat = new THREE.MeshStandardMaterial({
-    color: 0x273549,
-    roughness: 0.4,
-    metalness: 0.4,
+    color: 0x826c55,
+    roughness: 0.68,
+    metalness: 0.03,
   });
   public readonly plantPotMat = new THREE.MeshStandardMaterial({
     color: 0xe2e8f0,
@@ -288,7 +289,6 @@ export class ThreeOfficeScene {
   private lightsGroup = new THREE.Group();
   private walkwaysGroup = new THREE.Group();
   private interactiveMeshes: THREE.Object3D[] = [];
-  private roomPlatforms: Map<string, THREE.Mesh> = new Map();
   private roomLabels: Map<string, THREE.Sprite> = new Map();
   private agentMeshes: Map<string, THREE.Group> = new Map();
   private agentRuntimeStates: Map<string, AgentAnimatedRuntimeState> = new Map();
@@ -297,9 +297,12 @@ export class ThreeOfficeScene {
 
   // Performance & Adaptive Label Telemetry
   private lastFrameTimestampMs = 0;
-  private lastFrameDurationMs = 16.6;
+  private lastFrameIntervalMs = 16.6;
+  private lastFrameWorkDurationMs = 0;
+  private lastSimulationUpdateDurationMs = 0;
   private smoothedFps = 60;
   private lastStateUpdateDurationMs = 0;
+  private sceneBuildDurationMs = 0;
   private visibleDepartmentLabelsCount = 0;
   private visibleAgentLabelsCount = 0;
   private suppressedOverlapLabelsCount = 0;
@@ -331,8 +334,11 @@ export class ThreeOfficeScene {
     const bounds = computeCampusBounds(this.rooms);
     this.cameraTarget.set(bounds.centerX, 0, bounds.centerZ);
     this.desiredTarget.set(bounds.centerX, 0, bounds.centerZ);
-    this.cameraDistance = bounds.recommendedOverviewDistance;
-    this.desiredDistance = bounds.recommendedOverviewDistance;
+    this.cameraDistance = this.computeOverviewDistance(bounds, this.camera.aspect);
+    this.desiredDistance = this.cameraDistance;
+    this.maxDistance = Math.max(this.maxDistance, this.cameraDistance * 2.5);
+    this.camera.far = Math.max(this.camera.far, this.cameraDistance * 3 + 50);
+    this.camera.updateProjectionMatrix();
     this.updateCameraPosition();
 
     // 3. Renderer (supports injected renderer for testing)
@@ -359,9 +365,11 @@ export class ThreeOfficeScene {
     this.scene.add(this.groundGroup);
 
     // 5. Build Environment
+    const sceneBuildStartedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
     this.setupLighting();
     this.buildWorld();
     this.syncAdaptiveLabels();
+    this.sceneBuildDurationMs = Math.max(0, (typeof performance !== 'undefined' ? performance.now() : Date.now()) - sceneBuildStartedAt);
 
     // 6. Event Listeners
     this.bindEvents();
@@ -408,10 +416,47 @@ export class ThreeOfficeScene {
   }
 
   public getPerformanceMetrics(): OfficeScenePerfMetrics {
+    let geometryBytesApprox = 0;
+    let textureBytesApprox = 0;
+    const geometries = new Set<THREE.BufferGeometry>();
+    const textures = new Set<THREE.Texture>();
+    const addMaterialTextures = (material: THREE.Material) => {
+      for (const value of Object.values(material as unknown as Record<string, unknown>)) {
+        if (value instanceof THREE.Texture) textures.add(value);
+      }
+    };
+    this.scene.traverse((object) => {
+      const renderable = object as THREE.Object3D & { geometry?: THREE.BufferGeometry; material?: THREE.Material | THREE.Material[] };
+      if (renderable.geometry) geometries.add(renderable.geometry);
+      if (Array.isArray(renderable.material)) renderable.material.forEach(addMaterialTextures);
+      else if (renderable.material) addMaterialTextures(renderable.material);
+    });
+    for (const geometry of geometries) {
+      for (const attribute of Object.values(geometry.attributes)) {
+        geometryBytesApprox += attribute.array.byteLength;
+      }
+      if (geometry.index) geometryBytesApprox += geometry.index.array.byteLength;
+    }
+    for (const texture of textures) {
+      const image = texture.image as { width?: number; height?: number; naturalWidth?: number; naturalHeight?: number } | undefined;
+      const width = image?.width || image?.naturalWidth || 0;
+      const height = image?.height || image?.naturalHeight || 0;
+      textureBytesApprox += Math.ceil(width * height * 4 * (texture.generateMipmaps ? 4 / 3 : 1));
+    }
+    const renderInfo = this.renderer.info;
     return {
       qualityProfile: this.qualityProfile,
       fpsEstimate: Math.round(this.smoothedFps),
-      lastFrameTimeMs: Number(this.lastFrameDurationMs.toFixed(2)),
+      lastFrameTimeMs: Number(this.lastFrameIntervalMs.toFixed(2)),
+      frameWorkTimeMs: Number(this.lastFrameWorkDurationMs.toFixed(2)),
+      simulationUpdateTimeMs: Number(this.lastSimulationUpdateDurationMs.toFixed(2)),
+      drawCalls: renderInfo?.render.calls ?? 0,
+      triangleCount: renderInfo?.render.triangles ?? 0,
+      rendererGeometryCount: renderInfo?.memory.geometries ?? 0,
+      rendererTextureCount: renderInfo?.memory.textures ?? 0,
+      geometryBytesApprox,
+      textureBytesApprox,
+      sceneBuildDurationMs: Number(this.sceneBuildDurationMs.toFixed(2)),
       lastStateUpdateMs: Number(this.lastStateUpdateDurationMs.toFixed(2)),
       interactiveMeshesCount: this.interactiveMeshes.length,
       roomsCount: this.rooms.length,
@@ -425,10 +470,10 @@ export class ThreeOfficeScene {
   }
 
   private setupLighting(): void {
-    const ambient = new THREE.AmbientLight(0x334766, 2.0);
+    const ambient = new THREE.AmbientLight(0xe5ddcc, 1.25);
     this.lightsGroup.add(ambient);
 
-    const dirLight = new THREE.DirectionalLight(0xf8fafc, 2.5);
+    const dirLight = new THREE.DirectionalLight(0xfff2dc, 2.0);
     dirLight.position.set(18, 32, 16);
     dirLight.castShadow = this.qualityProfile !== 'low';
     const shadowSize = this.qualityProfile === 'high' ? 2048 : 1024;
@@ -445,14 +490,14 @@ export class ThreeOfficeScene {
     this.mainDirLight = dirLight;
     this.lightsGroup.add(dirLight);
 
-    const hemiLight = new THREE.HemisphereLight(0xe0f2fe, 0x0f172a, 0.75);
+    const hemiLight = new THREE.HemisphereLight(0xfff7e8, 0x5b554c, 0.9);
     this.lightsGroup.add(hemiLight);
 
-    const fillLight = new THREE.DirectionalLight(0x38bdf8, 1.15);
+    const fillLight = new THREE.DirectionalLight(0xdce9f2, 0.55);
     fillLight.position.set(-20, 15, -15);
     this.lightsGroup.add(fillLight);
 
-    this.roomSpotlight = new THREE.SpotLight(0x60a5fa, 3.8, 32, Math.PI / 4, 0.4, 1);
+    this.roomSpotlight = new THREE.SpotLight(0xffe6bd, 1.6, 32, Math.PI / 4, 0.4, 1);
     this.roomSpotlight.position.set(-5, 12, -3.1);
     this.roomSpotlight.castShadow = this.qualityProfile === 'high';
     this.lightsGroup.add(this.roomSpotlight);
@@ -485,39 +530,33 @@ export class ThreeOfficeScene {
 
   private buildWorld(): void {
     this.rebuildGround();
+    this.buildReception();
 
     // 1. Central Coordination Atrium Hub (Radius 3.4, connected to all department corridors)
-    const atriumGeo = new THREE.CylinderGeometry(3.4, 3.55, 0.14, 36);
+    const atriumGeo = new THREE.CylinderGeometry(3.4, 3.55, 0.025, 36);
     const atriumMat = new THREE.MeshStandardMaterial({
-      color: 0x17253b,
-      roughness: 0.35,
-      metalness: 0.45,
+      color: 0xb7b0a3,
+      roughness: 0.72,
+      metalness: 0.03,
     });
     const atrium = new THREE.Mesh(atriumGeo, atriumMat);
-    atrium.position.y = 0.07;
+    atrium.position.y = 0.012;
     atrium.receiveShadow = true;
     this.scene.add(atrium);
+    this.buildArchitecturalLounge();
 
     // Atrium Perimeter Ring Curb
     const outerRingGeo = new THREE.RingGeometry(3.25, 3.45, 36);
     outerRingGeo.rotateX(-Math.PI / 2);
     const outerRingMat = new THREE.MeshBasicMaterial({
-      color: 0x38bdf8,
+      color: 0x817b70,
       side: THREE.DoubleSide,
       transparent: true,
-      opacity: 0.55,
+      opacity: 0.28,
     });
     const outerRing = new THREE.Mesh(outerRingGeo, outerRingMat);
-    outerRing.position.y = 0.145;
+    outerRing.position.y = 0.026;
     this.scene.add(outerRing);
-
-    // Center Compass / Coordination Table Hub
-    const compassGeo = new THREE.RingGeometry(0.95, 1.2, 32);
-    compassGeo.rotateX(-Math.PI / 2);
-    const compassMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide });
-    const compass = new THREE.Mesh(compassGeo, compassMat);
-    compass.position.y = 0.15;
-    this.scene.add(compass);
 
     // Biophilic Office Plants around Central Atrium Perimeter
     const plantCorners: [number, number][] = [
@@ -549,8 +588,153 @@ export class ThreeOfficeScene {
     });
     this.selectionRing = new THREE.Mesh(ringGeo, ringMat);
     this.selectionRing.visible = false;
-    this.selectionRing.position.y = 0.22;
+    this.selectionRing.position.y = 0.025;
     this.scene.add(this.selectionRing);
+  }
+
+  private buildArchitecturalLounge(): void {
+    const lounge = new THREE.Group();
+    lounge.name = 'architectural-central-lounge';
+    lounge.userData = { role: 'architectural-common-space', zone: 'central-lounge', sourceNeutral: true };
+
+    const upholstery = new THREE.MeshStandardMaterial({ color: 0x77766f, roughness: 0.88 });
+    const timber = new THREE.MeshStandardMaterial({ color: 0x76533b, roughness: 0.72 });
+    for (const side of [-1, 1]) {
+      const sofa = new THREE.Group();
+      sofa.name = `central-lounge-sofa-${side < 0 ? 'west' : 'east'}`;
+      sofa.position.set(side * 1.12, 0, 0);
+      sofa.rotation.y = side < 0 ? Math.PI / 2 : -Math.PI / 2;
+
+      const base = new THREE.Mesh(new THREE.BoxGeometry(1.65, 0.22, 0.72), timber);
+      base.position.y = 0.28;
+      base.castShadow = true;
+      sofa.add(base);
+      const seat = new THREE.Mesh(new THREE.BoxGeometry(1.55, 0.19, 0.68), upholstery);
+      seat.position.y = 0.49;
+      seat.castShadow = true;
+      sofa.add(seat);
+      const back = new THREE.Mesh(new THREE.BoxGeometry(1.55, 0.62, 0.16), upholstery);
+      back.position.set(0, 0.79, -0.27);
+      back.castShadow = true;
+      sofa.add(back);
+      for (const end of [-1, 1]) {
+        const arm = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.44, 0.74), timber);
+        arm.position.set(end * 0.75, 0.5, 0);
+        sofa.add(arm);
+      }
+      lounge.add(sofa);
+    }
+
+    const coffeeTop = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.57, 0.57, 0.08, 24),
+      new THREE.MeshStandardMaterial({ color: 0xd0c7b8, roughness: 0.58 }),
+    );
+    coffeeTop.name = 'central-lounge-coffee-table';
+    coffeeTop.position.set(0, 0.45, 0);
+    coffeeTop.castShadow = true;
+    lounge.add(coffeeTop);
+    const coffeeBase = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.22, 0.42, 16), timber);
+    coffeeBase.position.set(0, 0.22, 0);
+    lounge.add(coffeeBase);
+    this.scene.add(lounge);
+  }
+
+  private buildReception(): void {
+    const reception = new THREE.Group();
+    reception.name = 'architectural-reception';
+    // Reserve a recognizable lobby position just inside the south entrance. The
+    // former hard-coded atrium position put the counter directly in the common
+    // circulation area and made it read as a decorative island.
+    const halfDepth = Math.max(11, ...this.rooms.map((room) => Math.abs(room.z) + room.depth / 2 + 2.5));
+    const entranceInteriorZ = halfDepth - 1.5 - 2.0;
+    reception.userData = { role: 'architectural-common-space', zone: 'reception', sourceNeutral: true };
+    reception.position.set(-2.1, 0, entranceInteriorZ);
+
+    // A compact architectural backdrop gives the lobby a recognizable arrival
+    // point even when LIVE has no declared units or active agents.
+    const backdrop = new THREE.Mesh(
+      new THREE.BoxGeometry(3.2, 1.9, 0.12),
+      new THREE.MeshStandardMaterial({ color: 0xd8d2c6, roughness: 0.84 }),
+    );
+    backdrop.name = 'reception-welcome-backdrop';
+    backdrop.position.set(0, 1.05, -0.72);
+    backdrop.receiveShadow = true;
+    reception.add(backdrop);
+    const backdropTrim = new THREE.Mesh(
+      new THREE.BoxGeometry(3.24, 0.055, 0.14),
+      new THREE.MeshStandardMaterial({ color: 0x88735e, roughness: 0.62 }),
+    );
+    backdropTrim.position.set(0, 2.03, -0.72);
+    reception.add(backdropTrim);
+
+    const base = new THREE.Mesh(new THREE.BoxGeometry(2.25, 0.72, 0.68), new THREE.MeshStandardMaterial({ color: 0x76533b, roughness: 0.62 }));
+    base.position.set(0, 0.38, 0);
+    base.castShadow = true;
+    reception.add(base);
+    const top = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.09, 0.78), new THREE.MeshStandardMaterial({ color: 0xd0c7b8, roughness: 0.5 }));
+    top.position.set(0, 0.78, 0);
+    top.castShadow = true;
+    reception.add(top);
+    const signCanvas = document.createElement('canvas');
+    signCanvas.width = 512;
+    signCanvas.height = 160;
+    const signContext = signCanvas.getContext('2d');
+    if (signContext) {
+      signContext.fillStyle = '#34434a';
+      signContext.fillRect(0, 0, signCanvas.width, signCanvas.height);
+      signContext.fillStyle = '#f3eee3';
+      signContext.font = '600 34px sans-serif';
+      signContext.fillText('AAO  ·  RECEPCIÓN', 24, 66);
+      signContext.font = '22px sans-serif';
+      signContext.fillStyle = '#d5d0c6';
+      signContext.fillText('OFICINA VIVA', 24, 112);
+    }
+    const sign = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.42, 0.48),
+      new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(signCanvas), toneMapped: false }),
+    );
+    sign.position.set(0, 1.15, 0.43);
+    reception.add(sign);
+
+    // Quiet visitor seating is part of the fixed building, not a fabricated
+    // operational team or agent. Keep it outside the clear entrance approach.
+    const lounge = new THREE.Group();
+    lounge.name = 'reception-visitor-lounge';
+    lounge.userData = { role: 'architectural-common-space', zone: 'visitor-lounge', sourceNeutral: true };
+    const upholstery = new THREE.MeshStandardMaterial({ color: 0x77766f, roughness: 0.88 });
+    const darkWood = new THREE.MeshStandardMaterial({ color: 0x76533b, roughness: 0.72 });
+    const buildVisitorChair = (x: number) => {
+      const chair = new THREE.Group();
+      chair.position.set(x, 0, 0.15);
+      const seat = new THREE.Mesh(new THREE.BoxGeometry(0.82, 0.16, 0.72), upholstery);
+      seat.position.y = 0.47;
+      seat.castShadow = true;
+      chair.add(seat);
+      const back = new THREE.Mesh(new THREE.BoxGeometry(0.82, 0.72, 0.14), upholstery);
+      back.position.set(0, 0.86, -0.29);
+      back.castShadow = true;
+      chair.add(back);
+      for (const side of [-1, 1]) {
+        const arm = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.22, 0.66), darkWood);
+        arm.position.set(side * 0.43, 0.62, 0.02);
+        chair.add(arm);
+      }
+      lounge.add(chair);
+    };
+    buildVisitorChair(4.35);
+    buildVisitorChair(6.05);
+    const sideTable = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.38, 0.38, 0.06, 20),
+      new THREE.MeshStandardMaterial({ color: 0xd0c7b8, roughness: 0.56 }),
+    );
+    sideTable.position.set(5.2, 0.5, 0.15);
+    sideTable.castShadow = true;
+    lounge.add(sideTable);
+    const tableBase = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.12, 0.48, 12), darkWood);
+    tableBase.position.set(5.2, 0.24, 0.15);
+    lounge.add(tableBase);
+    reception.add(lounge);
+    this.scene.add(reception);
   }
 
   private rebuildGround(): void {
@@ -563,96 +747,180 @@ export class ThreeOfficeScene {
     const width = halfWidth * 2;
     const depth = halfDepth * 2;
 
+    // Subtle, locally generated stone aggregate gives the shared floor a physical
+    // finish without a network asset or a high-resolution texture dependency.
+    const stoneCanvas = document.createElement('canvas');
+    stoneCanvas.width = 256;
+    stoneCanvas.height = 256;
+    const stoneContext = stoneCanvas.getContext('2d');
+    if (stoneContext) {
+      stoneContext.fillStyle = '#a9a69d';
+      stoneContext.fillRect(0, 0, 256, 256);
+      let seed = 0x41a0;
+      const next = () => {
+        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+        return seed / 0x1_0000_0000;
+      };
+      for (let index = 0; index < 1400; index += 1) {
+        const shade = next() > 0.5 ? '#d0ccc2' : '#8f8c84';
+        const size = 0.5 + next() * 1.4;
+        stoneContext.globalAlpha = 0.05 + next() * 0.08;
+        stoneContext.fillStyle = shade;
+        stoneContext.fillRect(next() * 256, next() * 256, size, size);
+      }
+      stoneContext.globalAlpha = 0.12;
+      stoneContext.fillStyle = '#77746d';
+      stoneContext.fillRect(0, 0, 256, 1);
+      stoneContext.fillRect(0, 0, 1, 256);
+      stoneContext.globalAlpha = 1;
+    }
+    const stoneTexture = new THREE.CanvasTexture(stoneCanvas);
+    stoneTexture.colorSpace = THREE.SRGBColorSpace;
+    stoneTexture.wrapS = THREE.RepeatWrapping;
+    stoneTexture.wrapT = THREE.RepeatWrapping;
+    // Apply a single continuous stone finish across the slab. Repeating a small
+    // texture on a 5 m grid made its tile boundaries read as room-sized floor pads.
+    stoneTexture.repeat.set(1, 1);
+
     // Continuous Corporate Campus Floor Slab
     const campusSlab = new THREE.Mesh(
       new THREE.BoxGeometry(width - 1.5, 0.12, depth - 1.5),
-      new THREE.MeshStandardMaterial({ color: 0x111c2e, roughness: 0.65, metalness: 0.25 })
+      // Keep the continuous slab visibly distinct from the lighter circulation paths.
+      new THREE.MeshStandardMaterial({ map: stoneTexture, color: 0xffffff, roughness: 0.9, metalness: 0.01 })
     );
+    campusSlab.name = 'campus-continuous-floor';
     campusSlab.position.y = -0.04;
     campusSlab.receiveShadow = true;
     this.groundGroup.add(campusSlab);
 
-    // Polished Central Circulation Spine (terrazzo plaza connecting campus corridors)
-    const centralPlaza = new THREE.Mesh(
-      new THREE.BoxGeometry(Math.min(width - 3, 7.2), 0.02, Math.min(depth - 3, 7.2)),
-      new THREE.MeshStandardMaterial({ color: 0x18283e, roughness: 0.35, metalness: 0.45 })
-    );
-    centralPlaza.position.y = 0.022;
-    centralPlaza.receiveShadow = true;
-    this.groundGroup.add(centralPlaza);
-
     const ground = new THREE.Mesh(
       new THREE.BoxGeometry(width + 6, 0.4, depth + 6),
-      new THREE.MeshStandardMaterial({ color: 0x091322, roughness: 0.9, metalness: 0.1 })
+      new THREE.MeshStandardMaterial({ color: 0x8c877d, roughness: 0.92, metalness: 0.01 })
     );
     ground.position.y = -0.26;
     ground.receiveShadow = true;
     this.groundGroup.add(ground);
 
-    const gridSize = Math.max(width, depth);
-    const grid = new THREE.GridHelper(gridSize, Math.ceil(gridSize), 0x2563eb, 0x172b47);
-    grid.position.y = 0.025;
-    this.groundGroup.add(grid);
+    // Roofless cutaway curtain wall: the building reads as one continuous structure while
+    // remaining open enough for the isometric camera and ordinary GPU budgets.
+    const facadeWidth = width - 1.5;
+    const facadeDepth = depth - 1.5;
+    const facadeY = 1.42;
+    const glassMaterial = new THREE.MeshStandardMaterial({
+      color: 0xc3d0d0,
+      transparent: true,
+      opacity: 0.12,
+      roughness: 0.32,
+      metalness: 0.04,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const frameMaterial = new THREE.MeshStandardMaterial({ color: 0x777b78, roughness: 0.62, metalness: 0.12 });
+    const facadeGroup = new THREE.Group();
+    facadeGroup.name = 'architectural-curtain-facade';
+    this.groundGroup.add(facadeGroup);
+    const addFacadeRun = (length: number, x: number, z: number, rotationY: number, mullionAxis: 'x' | 'z') => {
+      const glass = new THREE.Mesh(new THREE.BoxGeometry(length, 2.65, 0.055), glassMaterial);
+      glass.position.set(x, facadeY, z);
+      glass.rotation.y = rotationY;
+      facadeGroup.add(glass);
+      const base = new THREE.Mesh(new THREE.BoxGeometry(length, 0.1, 0.12), frameMaterial);
+      base.position.set(x, 0.1, z);
+      base.rotation.y = rotationY;
+      facadeGroup.add(base);
+      const head = new THREE.Mesh(new THREE.BoxGeometry(length, 0.1, 0.12), frameMaterial);
+      head.position.set(x, 2.75, z);
+      head.rotation.y = rotationY;
+      facadeGroup.add(head);
+      for (let offset = -length / 2 + 2; offset < length / 2; offset += 3.6) {
+        const mullion = new THREE.Mesh(new THREE.BoxGeometry(0.065, 2.7, 0.12), frameMaterial);
+        if (mullionAxis === 'x') mullion.position.set(x + offset, facadeY, z);
+        else mullion.position.set(x, facadeY, z + offset);
+        facadeGroup.add(mullion);
+      }
+    };
+    const halfFacadeWidth = facadeWidth / 2;
+    const halfFacadeDepth = facadeDepth / 2;
+    addFacadeRun(facadeWidth, 0, -halfFacadeDepth, 0, 'x');
+    // Keep a real entrance opening in the south curtain wall instead of sealing
+    // the cutaway building inside an uninterrupted ring of glass.
+    const entranceWidth = Math.min(3.4, facadeWidth * 0.22);
+    facadeGroup.userData = { entranceWidth, facadeWidth, facadeDepth };
+    const facadeWingWidth = (facadeWidth - entranceWidth) / 2;
+    const facadeWingOffset = (entranceWidth + facadeWingWidth) / 2;
+    addFacadeRun(facadeWingWidth, -facadeWingOffset, halfFacadeDepth, 0, 'x');
+    addFacadeRun(facadeWingWidth, facadeWingOffset, halfFacadeDepth, 0, 'x');
+    addFacadeRun(facadeDepth, -halfFacadeWidth, 0, Math.PI / 2, 'z');
+    addFacadeRun(facadeDepth, halfFacadeWidth, 0, Math.PI / 2, 'z');
+
+    // A quiet, accessible canopy marks the entrance without obstructing the
+    // isometric cutaway. The opening remains clear at ground level.
+    const entranceFrame = new THREE.MeshStandardMaterial({ color: 0x686d69, roughness: 0.58, metalness: 0.16 });
+    const entranceGroup = new THREE.Group();
+    entranceGroup.name = 'architectural-main-entrance';
+    entranceGroup.userData = { clearWidth: entranceWidth, accessible: true };
+    this.groundGroup.add(entranceGroup);
+    for (const side of [-1, 1]) {
+      const jamb = new THREE.Mesh(new THREE.BoxGeometry(0.11, 2.55, 0.14), entranceFrame);
+      jamb.position.set(side * entranceWidth / 2, 1.35, halfFacadeDepth);
+      entranceGroup.add(jamb);
+    }
+    const canopy = new THREE.Mesh(
+      new THREE.BoxGeometry(entranceWidth + 1.1, 0.12, 1.25),
+      new THREE.MeshStandardMaterial({ color: 0x8b8981, roughness: 0.74, metalness: 0.08 }),
+    );
+    canopy.position.set(0, 2.82, halfFacadeDepth + 0.52);
+    canopy.castShadow = true;
+    entranceGroup.add(canopy);
+    const threshold = new THREE.Mesh(
+      new THREE.BoxGeometry(entranceWidth, 0.025, 1.1),
+      new THREE.MeshStandardMaterial({ color: 0xc0b9ad, roughness: 0.78 }),
+    );
+    threshold.position.set(0, 0.035, halfFacadeDepth + 0.48);
+    threshold.receiveShadow = true;
+    entranceGroup.add(threshold);
+
+
   }
 
   private buildWalkways(): void {
     const walkwayMat = new THREE.MeshStandardMaterial({
-      color: 0x16263f,
-      roughness: 0.55,
-      metalness: 0.3,
+      color: 0xaaa79e,
+      roughness: 0.88,
+      metalness: 0.02,
     });
     const holdingWalkwayMat = new THREE.MeshStandardMaterial({
-      color: 0x1e293b,
-      roughness: 0.75,
-      metalness: 0.15,
+      color: 0xaaa79e,
+      roughness: 0.88,
+      metalness: 0.02,
     });
 
     const navGraph = buildCampusNavGraph(this.rooms);
 
     for (const seg of navGraph.corridors) {
-      const room = this.rooms.find((r) => r.id === seg.fromRoomId);
-      const dx = seg.endX - seg.startX;
-      const dz = seg.endZ - seg.startZ;
-      const distance = Math.max(0.6, Math.hypot(dx, dz));
-      const midX = (seg.startX + seg.endX) * 0.5;
-      const midZ = (seg.startZ + seg.endZ) * 0.5;
-      const angle = Math.atan2(dx, dz);
+      for (let index = 1; index < seg.points.length; index += 1) {
+        const start = seg.points[index - 1];
+        const end = seg.points[index];
+        const dx = end.x - start.x;
+        const dz = end.z - start.z;
+        const distance = Math.max(0.6, Math.hypot(dx, dz));
+        const midX = (start.x + end.x) * 0.5;
+        const midZ = (start.z + end.z) * 0.5;
+        const angle = Math.atan2(dx, dz);
 
-      const pathGeo = new THREE.BoxGeometry(seg.width, 0.08, distance + 0.5);
-      const path = new THREE.Mesh(
-        pathGeo,
-        seg.isUnassignedWing ? holdingWalkwayMat : walkwayMat
-      );
-      path.position.set(midX, 0.04, midZ);
-      path.rotation.y = angle;
-      path.receiveShadow = true;
-      this.walkwaysGroup.add(path);
-
-      // Side Guide Strips along the corridor
-      const accentHex = room?.accentColor || '#38bdf8';
-      const stripGeo = new THREE.BoxGeometry(0.06, 0.09, distance + 0.4);
-      const stripMat = new THREE.MeshBasicMaterial({
-        color: new THREE.Color(accentHex).multiplyScalar(seg.isUnassignedWing ? 0.55 : 0.75),
-      });
-
-      const offset = seg.width * 0.46;
-      const stripLeft = new THREE.Mesh(stripGeo, stripMat);
-      stripLeft.position.set(
-        midX - Math.cos(angle) * offset,
-        0.05,
-        midZ + Math.sin(angle) * offset
-      );
-      stripLeft.rotation.y = angle;
-      this.walkwaysGroup.add(stripLeft);
-
-      const stripRight = new THREE.Mesh(stripGeo, stripMat);
-      stripRight.position.set(
-        midX + Math.cos(angle) * offset,
-        0.05,
-        midZ - Math.sin(angle) * offset
-      );
-      stripRight.rotation.y = angle;
-      this.walkwaysGroup.add(stripRight);
+        // Keep circulation finish flush with the shared slab. Raised, independently
+        // shaded corridor boxes read as overlapping floor pads in an isometric view.
+        const pathGeo = new THREE.BoxGeometry(seg.width, 0.002, distance + 0.35);
+        const path = new THREE.Mesh(
+          pathGeo,
+          seg.isUnassignedWing ? holdingWalkwayMat : walkwayMat
+        );
+        path.name = `campus-circulation-segment-${seg.id}-${index}`;
+        path.position.set(midX, 0.021, midZ);
+        path.rotation.y = angle;
+        path.receiveShadow = true;
+        this.walkwaysGroup.add(path);
+      }
     }
   }
 
@@ -660,95 +928,37 @@ export class ThreeOfficeScene {
     const roomGroup = new THREE.Group();
     roomGroup.name = `room-${room.id}`;
     roomGroup.userData = { room };
-    roomGroup.position.set(room.x, 0, room.z);
+    roomGroup.position.set(room.x, -0.35, room.z);
     const isUnassignedHolding =
       room.kind === 'unassigned-holding' || room.id === 'unit-unassigned';
 
-    // Platform Slab (Interactive room target — ONLY mesh added to interactiveMeshes for rooms)
-    const platGeo = new THREE.BoxGeometry(room.width, 0.35, room.depth);
-    let platColor = new THREE.Color(room.color).multiplyScalar(isUnassignedHolding ? 0.55 : 0.72);
-    let platRoughness = isUnassignedHolding ? 0.8 : 0.58;
-    let platMetalness = isUnassignedHolding ? 0.15 : 0.3;
-
-    if (room.floorFinish === 'hardwood-walnut' || room.kind === 'executive-suite') {
-      platColor = new THREE.Color(0x2a1c14);
-      platRoughness = 0.38;
-      platMetalness = 0.18;
-    } else if (room.floorFinish === 'high-security-frosted' || room.kind === 'audit-enclave') {
-      platColor = new THREE.Color(0x0e2620);
-      platRoughness = 0.46;
-      platMetalness = 0.26;
-    } else if (room.kind === 'agile-squad-pod') {
-      platColor = new THREE.Color(0x13283a);
-      platRoughness = 0.62;
-      platMetalness = 0.22;
-    }
-
-    const platMat = new THREE.MeshStandardMaterial({
-      color: platColor,
-      roughness: platRoughness,
-      metalness: platMetalness,
+    // Keep a room-sized raycast target for selection without rendering a room-sized
+    // colored sheet. Visible zoning comes from partitions, furniture and signage;
+    // drawing one plane per unit made the continuous campus read as floating pads.
+    const floorMaterial = new THREE.MeshBasicMaterial({
+      transparent: true,
+      opacity: 0,
+      colorWrite: false,
+      depthWrite: false,
+      side: THREE.DoubleSide,
     });
-    const platform = new THREE.Mesh(platGeo, platMat);
-    platform.position.y = 0.175;
-    platform.receiveShadow = true;
-    platform.castShadow = true;
-    platform.userData = {
+    const floor = new THREE.Mesh(
+      new THREE.PlaneGeometry(Math.max(0.5, room.width - 0.24), Math.max(0.5, room.depth - 0.24)),
+      floorMaterial,
+    );
+    floor.rotation.x = -Math.PI / 2;
+    // Align the hit target exactly to the top of the shared campus floor slab.
+    floor.position.y = 0.37;
+    floor.userData = {
       type: 'room',
       id: room.id,
       name: room.name,
       code: room.code,
       kind: room.kind ?? 'canonical-department',
     };
-    roomGroup.add(platform);
+    roomGroup.add(floor);
 
-    this.roomPlatforms.set(room.id, platform);
-    this.interactiveMeshes.push(platform);
-
-    // Perimeter Accent Border (dashed/muted for unassigned holding wing vs crisp accent for canonical departments)
-    const borderGeo = new THREE.BoxGeometry(room.width + 0.08, 0.06, room.depth + 0.08);
-    const borderMat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(room.accentColor).multiplyScalar(isUnassignedHolding ? 0.7 : 1.0),
-    });
-    const border = new THREE.Mesh(borderGeo, borderMat);
-    border.position.y = 0.37;
-    roomGroup.add(border);
-
-    // Interior Flooring Pad
-    const carpetGeo = new THREE.BoxGeometry(room.width - 0.32, 0.02, room.depth - 0.32);
-    const carpetMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(room.color).multiplyScalar(isUnassignedHolding ? 0.38 : 0.48),
-      roughness: 0.88,
-      metalness: 0.06,
-    });
-    const carpet = new THREE.Mesh(carpetGeo, carpetMat);
-    carpet.position.y = 0.36;
-    carpet.receiveShadow = true;
-    roomGroup.add(carpet);
-
-    // Translucent Corner Structural Columns
-    const pillarGeo = new THREE.BoxGeometry(0.16, 1.75, 0.16);
-    const pillarMat = new THREE.MeshStandardMaterial({
-      color: isUnassignedHolding ? 0x94a3b8 : 0x93c5fd,
-      transparent: true,
-      opacity: isUnassignedHolding ? 0.3 : 0.45,
-      roughness: 0.15,
-      metalness: 0.85,
-    });
-    const hw = room.width / 2 - 0.14;
-    const hd = room.depth / 2 - 0.14;
-    const corners = [
-      [-hw, -hd],
-      [hw, -hd],
-      [hw, hd],
-      [-hw, hd],
-    ];
-    corners.forEach(([cx, cz]) => {
-      const p = new THREE.Mesh(pillarGeo, pillarMat);
-      p.position.set(cx, 1.08, cz);
-      p.castShadow = true;
-      roomGroup.add(p);
-    });
+    this.interactiveMeshes.push(floor);
 
     // Architectural Perimeter Walls & Open Doorway Entrance
     this.buildRoomArchitecture(roomGroup, room, isUnassignedHolding);
@@ -768,14 +978,15 @@ export class ThreeOfficeScene {
       roomGroup.add(this.buildBiophilicOfficePlant(plantX, plantZ));
     }
 
-    // Floating Department Label Sprite (managed by Adaptive Label System)
+    // Pin the label above the back partition instead of over the center of the
+    // workstation island, where a department header can obscure a person.
     const labelSprite = this.createDepartmentLabelSprite(
       room.code,
       room.name,
-      room.accentColor,
       isUnassignedHolding
     );
-    labelSprite.position.set(0, 2.38, 0);
+    const labelBackZ = room.z < 0 ? -room.depth / 2 + 0.42 : room.depth / 2 - 0.42;
+    labelSprite.position.set(0, 1.82, labelBackZ);
     roomGroup.add(labelSprite);
     this.roomLabels.set(room.id, labelSprite);
 
@@ -794,10 +1005,10 @@ export class ThreeOfficeScene {
   ): void {
     const layout = buildDepartmentInteriorLayout(room);
     const screenMat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(room.accentColor).multiplyScalar(isUnassignedHolding ? 0.45 : 1.15),
+      color: 0x747e82,
     });
     const chairAccentMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(room.accentColor).multiplyScalar(isUnassignedHolding ? 0.5 : 0.75),
+      color: 0x8f877a,
       roughness: 0.55,
       metalness: 0.2,
     });
@@ -929,97 +1140,97 @@ export class ThreeOfficeScene {
     room: OfficeRoomConfig,
     isUnassignedHolding: boolean
   ): void {
-    const wallMat = new THREE.MeshStandardMaterial({
-      color: isUnassignedHolding ? 0x1e293b : 0x1b283d,
-      roughness: 0.6,
-      metalness: 0.3,
-    });
+    const wallMat = new THREE.MeshStandardMaterial({ color: isUnassignedHolding ? 0x85837b : 0x77766f, roughness: 0.76, metalness: 0.01 });
     const glassMat = new THREE.MeshStandardMaterial({
-      color: isUnassignedHolding ? 0x94a3b8 : 0x60a5fa,
+      color: isUnassignedHolding ? 0xb4b1aa : 0xc5d0d2,
       transparent: true,
-      opacity: isUnassignedHolding ? 0.22 : 0.32,
-      roughness: 0.12,
-      metalness: 0.85,
+      opacity: isUnassignedHolding ? 0.13 : 0.12,
+      roughness: 0.32,
+      metalness: 0.12,
+      depthWrite: false,
     });
 
     const isTopRow = room.z < 0;
     const backZ = isTopRow ? -room.depth / 2 + 0.12 : room.depth / 2 - 0.12;
     const frontZ = isTopRow ? room.depth / 2 - 0.1 : -room.depth / 2 + 0.1;
 
-    // 1. Back Solid Architectural Wall
-    const backWallGeo = new THREE.BoxGeometry(room.width - 0.5, 0.95, 0.14);
+    // 1. A short acoustic screen anchors the department sign without outlining
+    // a room-sized bay. Long uninterrupted partitions made the open floor read
+    // as a collection of kiosks from the isometric camera.
+    const backWallWidth = Math.min(1.45, room.width * 0.46);
+    const backWallGeo = new THREE.BoxGeometry(backWallWidth, 0.48, 0.08);
     const backWall = new THREE.Mesh(backWallGeo, wallMat);
-    backWall.position.set(0, 0.82, backZ);
+    backWall.name = 'department-back-partition';
+    backWall.position.set(0, 0.66, backZ);
     backWall.castShadow = true;
     backWall.receiveShadow = true;
     group.add(backWall);
 
     // Wall Presentation Board / Status Header on Back Wall
-    const boardGeo = new THREE.BoxGeometry(1.5, 0.48, 0.04);
+    const boardGeo = new THREE.BoxGeometry(1.2, 0.2, 0.025);
     const boardMat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(room.accentColor).multiplyScalar(isUnassignedHolding ? 0.65 : 0.95),
+      color: 0x9a9285,
     });
     const board = new THREE.Mesh(boardGeo, boardMat);
-    board.position.set(0, 1.02, backZ + (isTopRow ? 0.09 : -0.09));
+    board.name = 'department-wall-sign';
+    board.position.set(0, 0.79, backZ + (isTopRow ? 0.065 : -0.065));
     group.add(board);
 
-    // 2. Side Translucent Glass Acoustic Partitions
-    const sideGlassGeo = new THREE.BoxGeometry(0.08, 0.88, room.depth * 0.68);
+    // 2. Short glass baffles provide acoustic zoning while leaving broad sight
+    // lines and circulation between neighboring work areas.
+    const sideBaffleDepth = Math.min(0.78, room.depth * 0.26);
+    const sideGlassGeo = new THREE.BoxGeometry(0.045, 0.48, sideBaffleDepth);
     const sideGlassLeft = new THREE.Mesh(sideGlassGeo, glassMat);
-    sideGlassLeft.position.set(-room.width / 2 + 0.12, 0.8, 0);
+    sideGlassLeft.name = 'department-side-glass-left';
+    sideGlassLeft.position.set(-room.width / 2 + 0.12, 0.61, backZ + (isTopRow ? 0.18 : -0.18));
     group.add(sideGlassLeft);
 
     const sideGlassRight = new THREE.Mesh(sideGlassGeo, glassMat);
-    sideGlassRight.position.set(room.width / 2 - 0.12, 0.8, 0);
+    sideGlassRight.name = 'department-side-glass-right';
+    sideGlassRight.position.set(room.width / 2 - 0.12, 0.61, backZ + (isTopRow ? 0.18 : -0.18));
     group.add(sideGlassRight);
 
-    // 3. Front Entrance Wall with Open Central Doorway (1.4u gap so agents walk through cleanly)
+    // 3. Two small entrance-side glass markers; the opening stays broad for
+    // agents and visitors instead of drawing a wall across the department bay.
     const doorwayWidth = 1.4;
-    const frontPanelWidth = Math.max(0.5, (room.width - doorwayWidth - 0.4) / 2);
-    const frontGlassGeo = new THREE.BoxGeometry(frontPanelWidth, 0.85, 0.08);
+    const frontPanelWidth = Math.min(0.48, Math.max(0.25, (room.width - doorwayWidth - 0.4) / 2));
+    const frontGlassGeo = new THREE.BoxGeometry(frontPanelWidth, 0.48, 0.045);
 
     const frontLeft = new THREE.Mesh(frontGlassGeo, glassMat);
-    frontLeft.position.set(-doorwayWidth / 2 - frontPanelWidth / 2, 0.78, frontZ);
+    frontLeft.name = 'department-front-glass-left';
+    frontLeft.position.set(-room.width / 2 + frontPanelWidth / 2 + 0.12, 0.61, frontZ);
     group.add(frontLeft);
 
     const frontRight = new THREE.Mesh(frontGlassGeo, glassMat);
-    frontRight.position.set(doorwayWidth / 2 + frontPanelWidth / 2, 0.78, frontZ);
+    frontRight.name = 'department-front-glass-right';
+    frontRight.position.set(room.width / 2 - frontPanelWidth / 2 - 0.12, 0.61, frontZ);
     group.add(frontRight);
-
-    // Doorway Header Portal Arch
-    const lintelGeo = new THREE.BoxGeometry(doorwayWidth + 0.2, 0.1, 0.14);
-    const lintelMat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(room.accentColor),
-    });
-    const lintel = new THREE.Mesh(lintelGeo, lintelMat);
-    lintel.position.set(0, 1.26, frontZ);
-    group.add(lintel);
 
     // 4. Acoustic Manifestation Band for Audit Enclave (eye level 0.85m)
     const isAuditEnclave = room.kind === 'audit-enclave' || room.id === 'unit-audit';
     if (isAuditEnclave) {
-      const manifestSideGeo = new THREE.BoxGeometry(0.088, 0.14, room.depth * 0.68 + 0.02);
+      const manifestSideGeo = new THREE.BoxGeometry(0.06, 0.1, sideBaffleDepth + 0.02);
       const manifestFrontGeo = new THREE.BoxGeometry(frontPanelWidth + 0.02, 0.14, 0.088);
       const manifestMat = new THREE.MeshBasicMaterial({
-        color: 0x34d399,
+        color: 0x9dbaa8,
         transparent: true,
-        opacity: 0.65,
+        opacity: 0.22,
       });
 
       const mLeft = new THREE.Mesh(manifestSideGeo, manifestMat);
-      mLeft.position.set(-room.width / 2 + 0.12, 0.85, 0);
+      mLeft.position.set(-room.width / 2 + 0.12, 0.85, sideGlassLeft.position.z);
       group.add(mLeft);
 
       const mRight = new THREE.Mesh(manifestSideGeo, manifestMat);
-      mRight.position.set(room.width / 2 - 0.12, 0.85, 0);
+      mRight.position.set(room.width / 2 - 0.12, 0.85, sideGlassRight.position.z);
       group.add(mRight);
 
       const mFrontL = new THREE.Mesh(manifestFrontGeo, manifestMat);
-      mFrontL.position.set(-doorwayWidth / 2 - frontPanelWidth / 2, 0.85, frontZ);
+      mFrontL.position.set(frontLeft.position.x, 0.85, frontZ);
       group.add(mFrontL);
 
       const mFrontR = new THREE.Mesh(manifestFrontGeo, manifestMat);
-      mFrontR.position.set(doorwayWidth / 2 + frontPanelWidth / 2, 0.85, frontZ);
+      mFrontR.position.set(frontRight.position.x, 0.85, frontZ);
       group.add(mFrontR);
     }
   }
@@ -1037,33 +1248,29 @@ export class ThreeOfficeScene {
   private createDepartmentLabelSprite(
     code: string,
     name: string,
-    accentColor: string,
     isUnassignedHolding = false
   ): THREE.Sprite {
     const canvas = document.createElement('canvas');
-    canvas.width = 280;
-    canvas.height = 96;
+    canvas.width = 240;
+    canvas.height = 68;
     const ctx = canvas.getContext('2d');
     if (ctx) {
-      ctx.fillStyle = isUnassignedHolding ? 'rgba(30, 41, 59, 0.92)' : 'rgba(10, 22, 40, 0.92)';
-      ctx.strokeStyle = accentColor;
-      ctx.lineWidth = isUnassignedHolding ? 3 : 4;
-      if (isUnassignedHolding && typeof ctx.setLineDash === 'function') {
-        ctx.setLineDash([8, 5]);
-      }
+      ctx.fillStyle = 'rgba(54, 61, 62, 0.9)';
+      ctx.strokeStyle = '#a59d8f';
+      ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.roundRect(6, 6, 268, 84, 14);
+      ctx.roundRect(4, 4, 232, 60, 9);
       ctx.fill();
       ctx.stroke();
 
       ctx.textAlign = 'center';
-      ctx.font = 'bold 30px sans-serif';
-      ctx.fillStyle = accentColor;
-      ctx.fillText(isUnassignedHolding ? `⚠ ${code}` : code, 140, 42);
+      ctx.font = '600 24px sans-serif';
+      ctx.fillStyle = '#e4ddd0';
+      ctx.fillText(isUnassignedHolding ? 'SIN ADSCRIPCIÓN' : code, 120, 29);
 
-      ctx.font = '600 17px sans-serif';
-      ctx.fillStyle = '#f8fafc';
-      ctx.fillText(name.slice(0, 22), 140, 72);
+      ctx.font = '15px sans-serif';
+      ctx.fillStyle = '#c5c0b6';
+      ctx.fillText(name.slice(0, 26), 120, 51);
     }
 
     const texture = new THREE.CanvasTexture(canvas);
@@ -1073,7 +1280,11 @@ export class ThreeOfficeScene {
       depthTest: false,
     });
     const sprite = new THREE.Sprite(spriteMat);
-    sprite.scale.set(2.9, 1.02, 1);
+    // At overview distance the scene is framed to include the whole building;
+    // slightly larger markers keep department IDs legible without turning into
+    // oversized floating panels. The adaptive LOD layer still suppresses them
+    // when they overlap or when users focus on a detail.
+    sprite.scale.set(2.4, 0.68, 1);
     return sprite;
   }
 
@@ -1198,7 +1409,7 @@ export class ThreeOfficeScene {
       if (!state) return;
       sprite.visible = state.visible;
       sprite.position.y = state.yOffset;
-      sprite.scale.set(2.9 * state.scale, 1.02 * state.scale, 1);
+      sprite.scale.set(2.4 * state.scale, 0.68 * state.scale, 1);
     });
 
     this.agentMeshes.forEach((group, agentId) => {
@@ -1455,20 +1666,6 @@ export class ThreeOfficeScene {
       this.scene.add(this.roomSpotlight.target);
     }
 
-    this.roomPlatforms.forEach((plat, id) => {
-      const mat = plat.material as THREE.MeshStandardMaterial;
-      const conf = this.rooms.find((r) => r.id === id);
-      if (conf) {
-        if (id === roomId) {
-          mat.color.set(conf.accentColor).multiplyScalar(0.9);
-          mat.emissive.set(conf.accentColor).multiplyScalar(0.25);
-        } else {
-          mat.color.set(conf.color).multiplyScalar(0.7);
-          mat.emissive.set(0x000000);
-        }
-      }
-    });
-
     this.desiredTarget.set(roomConfig.x, 0, roomConfig.z);
     this.desiredDistance = 14.5;
 
@@ -1532,12 +1729,12 @@ export class ThreeOfficeScene {
     this.desiredAngle = 35;
     this.cameraElevation = 42;
     this.desiredElevation = 42;
-    this.desiredDistance = bounds.recommendedOverviewDistance;
+    this.desiredDistance = this.computeOverviewDistance(bounds, this.camera.aspect);
     this.desiredTarget.set(bounds.centerX, 0, bounds.centerZ);
 
     if (this.options.reducedMotion) {
       this.cameraTarget.set(bounds.centerX, 0, bounds.centerZ);
-      this.cameraDistance = bounds.recommendedOverviewDistance;
+      this.cameraDistance = this.desiredDistance;
       this.updateCameraPosition();
     }
     this.syncAdaptiveLabels();
@@ -1616,6 +1813,28 @@ export class ThreeOfficeScene {
     this.camera.position.set(x, y, z);
     this.camera.lookAt(this.cameraTarget);
     this.options.callbacks.onCameraChange?.(this.getCameraState());
+  }
+
+  /** Fit the entire cutaway building inside the actual viewport, not only its
+   * organizational bounds. The shared slab/facade are larger than room bounds,
+   * and a 40-degree perspective camera needs substantial framing margin. */
+  private computeOverviewDistance(
+    bounds: ReturnType<typeof computeCampusBounds>,
+    aspect: number,
+  ): number {
+    const spanX = Math.max(bounds.spanX, 26.5);
+    const spanZ = Math.max(bounds.spanZ, 20.5);
+    const azimuth = THREE.MathUtils.degToRad(35);
+    const elevation = THREE.MathUtils.degToRad(42);
+    const verticalFov = THREE.MathUtils.degToRad(this.camera.fov);
+    const rightSpan = Math.abs(Math.cos(azimuth)) * spanX + Math.abs(Math.sin(azimuth)) * spanZ;
+    const upSpan = Math.sin(elevation) * (
+      Math.abs(Math.sin(azimuth)) * spanX + Math.abs(Math.cos(azimuth)) * spanZ
+    ) + Math.cos(elevation) * 3.0;
+    const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * Math.max(0.5, aspect));
+    const verticalDistance = upSpan / (2 * Math.tan(verticalFov / 2));
+    const horizontalDistance = rightSpan / (2 * Math.tan(horizontalFov / 2));
+    return Math.max(bounds.recommendedOverviewDistance, Math.ceil(Math.max(verticalDistance, horizontalDistance) * 1.4));
   }
 
   private bindEvents(): void {
@@ -1905,10 +2124,12 @@ export class ThreeOfficeScene {
 
     if (this.lastFrameTimestampMs > 0 && time > this.lastFrameTimestampMs) {
       const dt = time - this.lastFrameTimestampMs;
-      if (dt <= 50) {
-        const instFps = 1000 / Math.max(1, dt);
-        this.smoothedFps = this.smoothedFps * 0.85 + Math.min(120, instFps) * 0.15;
-      }
+      this.lastFrameIntervalMs = dt;
+      const instFps = 1000 / dt;
+      this.smoothedFps = this.smoothedFps * 0.85 + Math.min(120, instFps) * 0.15;
+    }
+    if (this.lastFrameTimestampMs === 0 && time > 0) {
+      this.lastFrameIntervalMs = 1000 / 60;
     }
     this.lastFrameTimestampMs = time;
 
@@ -2030,7 +2251,7 @@ export class ThreeOfficeScene {
       this.syncAdaptiveLabels();
     }
     const stepEndMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
-    this.lastFrameDurationMs = Number(Math.max(0.01, stepEndMs - stepStartMs).toFixed(2));
+    this.lastSimulationUpdateDurationMs = Number(Math.max(0.01, stepEndMs - stepStartMs).toFixed(2));
   }
 
   private animate(time: number): void {
@@ -2044,13 +2265,25 @@ export class ThreeOfficeScene {
       return;
     }
 
+    const frameWorkStartMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
     this.stepAnimation(time);
-
     this.renderer.render(this.scene, this.camera);
+    const frameWorkEndMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    this.lastFrameWorkDurationMs = Number(Math.max(0.01, frameWorkEndMs - frameWorkStartMs).toFixed(2));
     this.animFrameId = requestAnimationFrame(this.animate);
   }
 
   private disposeHierarchy(obj: THREE.Object3D): void {
+    const disposedTextures = new Set<THREE.Texture>();
+    const disposeMaterial = (material: THREE.Material) => {
+      for (const value of Object.values(material as unknown as Record<string, unknown>)) {
+        if (value instanceof THREE.Texture && !disposedTextures.has(value)) {
+          disposedTextures.add(value);
+          value.dispose();
+        }
+      }
+      material.dispose();
+    };
     obj.traverse((child) => {
       if (child instanceof THREE.Mesh) {
         if (
@@ -2066,7 +2299,7 @@ export class ThreeOfficeScene {
               !this.furniturePool.ownsMaterial(m) &&
               !this.avatarPool.ownsMaterial(m)
             ) {
-              m.dispose();
+              disposeMaterial(m);
             }
           });
         } else if (
@@ -2074,7 +2307,7 @@ export class ThreeOfficeScene {
           !this.furniturePool.ownsMaterial(child.material) &&
           !this.avatarPool.ownsMaterial(child.material)
         ) {
-          child.material.dispose();
+          disposeMaterial(child.material);
         }
       } else if (child instanceof THREE.Sprite) {
         if (child.material.map) child.material.map.dispose();

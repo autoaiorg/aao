@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import type { SpatialWindowId, SpatialWindowState } from './useSpatialWindowManager';
 
 export interface SpatialWindowManagerProps {
@@ -40,6 +40,8 @@ export const SpatialWindowManager: React.FC<SpatialWindowManagerProps> = ({
   requiresConstitution = false,
   windowNodes,
 }) => {
+  const [isLauncherExpanded, setIsLauncherExpanded] = useState(false);
+
   return (
     <>
       {/* V3 Enterprise Spatial Launcher Bar */}
@@ -49,77 +51,96 @@ export const SpatialWindowManager: React.FC<SpatialWindowManagerProps> = ({
         data-testid="v3-spatial-launcher-bar"
         style={{
           position: 'fixed',
-          top: 'calc(var(--header-height, 48px) + 52px)',
+          // Sit below the two-row office ribbon. The old +52px placement
+          // overlaid the source/state summary and hid operational badges.
+          top: 'calc(var(--header-height, 48px) + 158px)',
           left: '50%',
           transform: 'translateX(-50%)',
           zIndex: 28,
           display: 'inline-flex',
           alignItems: 'center',
           gap: '6px',
-          padding: '5px 10px',
-          borderRadius: '999px',
+          padding: '4px 7px',
+          borderRadius: '12px',
           background: 'rgba(10, 22, 40, 0.88)',
           backdropFilter: 'blur(14px)',
           border: '1px solid rgba(56, 189, 248, 0.35)',
           boxShadow: '0 8px 24px rgba(0, 0, 0, 0.45)',
           maxWidth: '94vw',
-          flexWrap: 'wrap',
+          flexWrap: 'nowrap',
         }}
       >
         <button
           type="button"
-          onClick={onSelectAtrium}
           className="aao-hud-btn"
-          style={{ padding: '3px 9px', fontSize: '11px', fontWeight: 700 }}
+          aria-expanded={isLauncherExpanded}
+          aria-label={isLauncherExpanded ? 'Ocultar aplicaciones espaciales' : 'Mostrar aplicaciones espaciales'}
+          onClick={() => setIsLauncherExpanded((expanded) => !expanded)}
+          style={{ padding: '4px 9px', fontSize: '11px', fontWeight: 700, flex: '0 0 auto' }}
         >
-          🏛️ Atrio Central
+          ▦ Aplicaciones {isLauncherExpanded ? '▲' : '▼'}
         </button>
 
-        {ORDERED_WINDOW_IDS.map((id) => {
-          const win = windows[id];
-          const isConstitution = id === 'constitution-center';
-          return (
+        {isLauncherExpanded && (
+          <>
             <button
-              key={id}
               type="button"
-              data-testid={`launcher-btn-${id}`}
-              aria-pressed={win.isOpen && !win.isMinimized}
-              onClick={() => onToggleWindow(id)}
+              onClick={onSelectAtrium}
               className="aao-hud-btn"
-              style={{
-                padding: '3px 9px',
-                fontSize: '11px',
-                fontWeight: 700,
-                background:
-                  win.isOpen && !win.isMinimized
-                    ? '#0284c7'
-                    : isConstitution && requiresConstitution
-                    ? 'rgba(245, 158, 11, 0.22)'
-                    : undefined,
-                color:
-                  win.isOpen && !win.isMinimized
-                    ? '#f8fafc'
-                    : isConstitution && requiresConstitution
-                    ? '#fcd34d'
-                    : undefined,
-                borderColor:
-                  isConstitution && requiresConstitution ? 'rgba(245, 158, 11, 0.55)' : undefined,
-              }}
+              style={{ padding: '3px 8px', fontSize: '11px', fontWeight: 700, flex: '0 0 auto' }}
             >
-              <span aria-hidden="true">{win.icon}</span>{' '}
-              {id === 'organization-explorer'
-                ? 'Organización y Puestos'
-                : id === 'constitution-center'
-                ? 'Constitución Organizativa'
-                : id === 'entity-inspector'
-                ? 'Entidad y Gobierno'
-                : id === 'spatial-workflows'
-                ? 'Flujos Espaciales'
-                : 'Cronología'}
-              {win.isOpen && win.isMinimized ? ' (Min)' : ''}
+              🏛️ Atrio
             </button>
-          );
-        })}
+
+            {ORDERED_WINDOW_IDS.map((id) => {
+              const win = windows[id];
+              const isConstitution = id === 'constitution-center';
+              const label = id === 'organization-explorer'
+                ? 'Organización'
+                : id === 'constitution-center'
+                ? 'Constitución'
+                : id === 'entity-inspector'
+                ? 'Gobierno'
+                : id === 'spatial-workflows'
+                ? 'Flujos'
+                : 'Cronología';
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  data-testid={`launcher-btn-${id}`}
+                  aria-pressed={win.isOpen && !win.isMinimized}
+                  onClick={() => onToggleWindow(id)}
+                  className="aao-hud-btn"
+                  title={win.title}
+                  style={{
+                    padding: '3px 8px',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    flex: '0 0 auto',
+                    background:
+                      win.isOpen && !win.isMinimized
+                        ? '#0284c7'
+                        : isConstitution && requiresConstitution
+                        ? 'rgba(245, 158, 11, 0.22)'
+                        : undefined,
+                    color:
+                      win.isOpen && !win.isMinimized
+                        ? '#f8fafc'
+                        : isConstitution && requiresConstitution
+                        ? '#fcd34d'
+                        : undefined,
+                    borderColor:
+                      isConstitution && requiresConstitution ? 'rgba(245, 158, 11, 0.55)' : undefined,
+                  }}
+                >
+                  <span aria-hidden="true">{win.icon}</span> {label}
+                  {win.isOpen && win.isMinimized ? ' (Min)' : ''}
+                </button>
+              );
+            })}
+          </>
+        )}
       </div>
 
       {/* Simultaneous Multi-Window Layer (Preserves mounted children state while open or minimized) */}

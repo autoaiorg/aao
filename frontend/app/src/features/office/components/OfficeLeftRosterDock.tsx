@@ -53,19 +53,21 @@ export const OfficeLeftRosterDock: React.FC<OfficeLeftRosterDockProps> = ({
   return (
     <section
       aria-label="Muelle táctico de departamentos y plantilla"
-      className="aao-hud-roster aao-hud-glass"
+      className={`aao-hud-roster aao-hud-glass ${isOpen ? 'is-open' : 'is-collapsed'}`}
       style={{
-        width: isOpen ? `${widthPx}px` : '220px',
+        width: isOpen ? `${widthPx}px` : '42px',
       }}
     >
       {/* Header with Collapse & Width Controls */}
       <div className="aao-hud-roster__header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <span aria-hidden="true">🛰️</span>
-          <strong style={{ fontSize: '12px', color: '#f8fafc', letterSpacing: '0.3px' }}>
-            SECTORES Y AGENTES
-          </strong>
-        </div>
+        {isOpen && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span aria-hidden="true">🛰️</span>
+            <strong style={{ fontSize: '12px', color: '#f8fafc', letterSpacing: '0.3px' }}>
+              SECTORES Y AGENTES
+            </strong>
+          </div>
+        )}
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
           {isOpen && (
@@ -100,12 +102,12 @@ export const OfficeLeftRosterDock: React.FC<OfficeLeftRosterDockProps> = ({
             aria-label={isOpen ? 'Comprimir muelle de sectores' : 'Expandir muelle de sectores'}
             onClick={onToggleOpen}
           >
-            {isOpen ? '◀ Comprimir' : '▶ Expandir'}
+            {isOpen ? '◀ Comprimir' : '☰'}
           </button>
         </div>
       </div>
 
-      <div className="aao-hud-roster__body">
+      <div className="aao-hud-roster__body" style={{ display: isOpen ? 'flex' : 'none' }}>
         {/* Department Quick Chips (Always accessible for keyboard & tests) */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
           <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase' }}>

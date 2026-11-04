@@ -56,6 +56,9 @@ describe('office CEO work requests', () => {
     rerender(<VirtualOfficeView organization={live} projects={projects} />);
     expect(screen.queryByRole('heading', { name: 'Dirigir trabajo a un proyecto' })).not.toBeInTheDocument();
     rerender(<VirtualOfficeView organization={live} projects={projects} canCreateWorkRequest onCreateWorkRequest={create} />);
+    expect(screen.getByText('Dirigir trabajo a un proyecto')).not.toBeVisible();
+    // LIVE modules remain available; the tactical deck is minimized by default.
+    fireEvent.click(screen.getByRole('button', { name: 'Acoplar consola táctica' }));
     expect(screen.getByRole('heading', { name: 'Dirigir trabajo a un proyecto' })).toBeInTheDocument();
   });
 });

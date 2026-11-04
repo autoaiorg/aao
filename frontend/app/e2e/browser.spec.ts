@@ -140,13 +140,15 @@ test.describe('Real Browser Functional & Accessibility Suite (Google Chrome)', (
 
   test('F3 Organization & Agent Structure: hierarchy, filtering, drawer Escape dismissal and focus restoration', async ({ page }) => {
     // 1. Navigate to "Organización" in LIVE mode
-    const orgNav = page.getByRole('button', { name: 'Organización' });
+    await page.getByRole('button', { name: 'Alternar menú lateral' }).click();
+    const orgNav = page.getByRole('complementary', { name: 'Navegación principal de AAO' })
+      .getByRole('button', { name: 'Organización', exact: true });
     await expect(orgNav).toBeVisible();
     await orgNav.click();
 
     // 2. In LIVE mode, verify honest technical notice is shown (no fake endpoints fabricated)
     await expect(page.getByText(/Organización y Estructura de Agentes/i)).toBeVisible();
-    await expect(page.getByText(/El núcleo canónico de AAO no expone aún endpoints/i)).toBeVisible();
+    await expect(page.getByText(/Se requiere una credencial autenticada para consultar la organización real/i)).toBeVisible();
 
     // 3. Switch to DEMO mode to load rich organizational structure
     const demoButton = page.getByRole('button', { name: /DEMO/i });
@@ -159,12 +161,14 @@ test.describe('Real Browser Functional & Accessibility Suite (Google Chrome)', (
     await expect(page.getByText('Agentes Efímeros (Temporales)')).toBeVisible();
 
     // 5. Verify Organigram shows executive and subordinate units
-    await expect(page.getByText(/Dirección Ejecutiva y Secretaría General/i)).toBeVisible();
-    await expect(page.getByText(/Arquitectura de Sistemas y Protocolos/i)).toBeVisible();
+    const orgChart = page.getByRole('tabpanel', { name: 'Organigrama y Jerarquías' });
+    await expect(orgChart.getByRole('heading', { name: /Dirección Ejecutiva y Secretaría General/i })).toBeVisible();
+    await expect(orgChart.getByText(/Arquitectura de Sistemas y Protocolos/i)).toBeVisible();
 
     // 6. Switch to "Plantilla y Agentes" tab
     const agentsTab = page.getByRole('tab', { name: /Plantilla y Agentes/i });
-    await agentsTab.click();
+    await agentsTab.focus();
+    await page.keyboard.press('Enter');
 
     // 7. Verify search filtering
     const searchInput = page.locator('#agent-search-input');

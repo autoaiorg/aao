@@ -214,9 +214,10 @@ que no se revoca nada.
 
 - **409 `SELFDEV_CYCLE_CONCURRENCY_CAP`** (ya hay 2 implementadores de ciclo
   vivos). Indica un ciclo vivo **no registrado** en el estado: manual,
-  anterior a un reinicio o a un `--bootstrap`. Los IDs que el runner abandona
-  ya están revocados o caducados, y la API no permite listar ciclos. Por eso
-  el runner no puede identificar el huérfano de forma segura. No adivina a
+  anterior a un reinicio o a un `--bootstrap`, o un `FAILED_ISSUE` que el
+  runner cerró tras un 409 en el DELETE de N+1: ese ID puede seguir vivo
+  (huérfano) hasta su caducidad (≤ 2 h). La API no permite listar ciclos. Por
+  eso el runner no puede identificar el huérfano de forma segura. No adivina a
   partir del board, porque podría revocar un ciclo manual en uso. Abre
   `BREAKER_OPEN` y alerta.
   - Operador: revocar el ciclo huérfano con
@@ -224,11 +225,16 @@ que no se revoca nada.
     la salida de `request_selfdev_cycle_roles.py` o del evento
     `principal.selfdev_cycle_role.issued`.
   - Después, `--reset-breaker`.
-- **429 `SELFDEV_CYCLE_ISSUANCE_DAILY_CAP`** (24 emisiones por PM en 24 h). No
-  cuenta como emisión fallida. El runner fija `next_attempt_at = ahora + 1 h`,
-  porque la API no expone cuándo se libera un hueco en su ventana móvil.
-  Mientras espera, cada tick sale con código 1 (alerta) y no hace ningún POST.
-  Después reintenta cada hora mientras el tope siga activo.
+- **429 `SELFDEV_CYCLE_ISSUANCE_DAILY_CAP`** (48 emisiones por PM en 24 h). No
+  cuenta como emisión fallida, nunca abre el cortacircuitos y no revoca nada.
+  La API no expone cuándo se libera un hueco en su ventana móvil, así que el
+  runner reintenta antes de que caduque N:
+  `next_attempt_at = ahora + min(1 h, max(5 min, restante_N − margen))`, con
+  `margen = DRAIN_CAP + CLOCK_SKEW` (36 min: emisión, instalación,
+  verificación y drenaje de N). Si N ya caducó (o no hay N), queda en
+  `FAILED_EXPIRED` y reintenta en cada tick de 5 min: cada 429 no emite nada y
+  el primer hueco libre se usa. Mientras espera, cada tick sale con código 1
+  (alerta) y no hace ningún POST.
 - Un 409 o 429 sin esos códigos sigue la ruta genérica de `FAILED_ISSUE`
   (DELETE de N+1 y backoff).
 
@@ -253,7 +259,7 @@ los logs. Los tokens viven solo en la memoria del proceso entre el POST y el
 | Estado | Significado | Transición normal | Fallo |
 |---|---|---|---|
 | `ACTIVE` | El ciclo N está instalado y verificado, y le queda más del margen | Al cruzar el umbral de renovación (§6): genera `next_cycle_id`, **persiste** y pasa a `ISSUING` | — |
-| `ISSUING` | El ID N+1 y `next_issued_at` están persistidos antes del POST; ningún fichero se ha tocado | POST correcto → verificación de identidad por API (IDs, kind y grants exactos) → `INSTALLED_PENDING` | Error, 409, 5xx, timeout o desajuste de identidad → `FAILED_ISSUE`. 400/401/403/404/422 o 409 `SELFDEV_CYCLE_CONCURRENCY_CAP` → `BREAKER_OPEN`. 429 `SELFDEV_CYCLE_ISSUANCE_DAILY_CAP` → `ACTIVE` con espera de 1 h, sin contar fallo |
+| `ISSUING` | El ID N+1 y `next_issued_at` están persistidos antes del POST; ningún fichero se ha tocado | POST correcto → verificación de identidad por API (IDs, kind y grants exactos) → `INSTALLED_PENDING` | Error, 409, 5xx, timeout o desajuste de identidad → `FAILED_ISSUE`. 400/401/403/404/422 o 409 `SELFDEV_CYCLE_CONCURRENCY_CAP` → `BREAKER_OPEN`. 429 `SELFDEV_CYCLE_ISSUANCE_DAILY_CAP` → `ACTIVE` con espera `min(1 h, max(5 min, restante_N − 36 min))` (o `FAILED_EXPIRED` reintentando cada tick si N caducó), sin contar fallo |
 | `INSTALLED_PENDING` | Se persiste **antes** del primer `replace`: los ficheros **pueden** contener N+1 | `replace` + `verify` completos del revisor; solo después `replace` + `verify` del implementador (el fichero con consumidor vivo) → `VERIFIED`. Si `replace` devuelve 3 (renombrado hecho, comprobación posterior fallida), decide su `verify` | Fallo del `replace` del revisor (antes de renombrar; nada escrito) → `FAILED_ISSUE`. Cualquier fallo posterior → `FAILED_INSTALL` |
 | `VERIFIED` | N+1 está verificado; el worker lo recoge en la siguiente iteración | Si el board no muestra ejecuciones `RUNNING`/`UNCERTAIN`/`QUEUED` con `attempts>0` y `worker_id = impl-N`, o si N ya caducó → `REVOKING_OLD` | Plazo de drenaje superado → `REVOKING_OLD` igualmente (§6) |
 | `REVOKING_OLD` | Se revoca el ciclo N | DELETE N devuelve `revoked`, `already_revoked` o `CYCLE_NOT_FOUND` → `current := next` y `next := null` → `ACTIVE` | Error → se queda en `REVOKING_OLD` y reintenta en cada tick. Si N ya caducó, avanza con alerta para no bloquear la renovación de N+1 |
@@ -297,7 +303,9 @@ Consecuencias exactas:
 - El fichero del implementador **solo** queda con un token de N+1 revocado en
   un caso: el fallo del propio paso del implementador después de su
   renombrado. Eso incluye `replace` con código 3 y `verify` fallido, un
-  `verify` fallido tras `replace` correcto, o una caída tras su `replace` y
+  `verify` fallido tras `replace` correcto, un timeout del wrapper en su
+  `replace` (el runner recibe código 1, pero el renombrado puede haberse
+  hecho), o una caída tras su `replace` y
   antes de persistir `VERIFIED`. El worker recibe entonces 403 (falla cerrado)
   hasta la siguiente emisión correcta. Un fallo del `replace` del implementador
   antes de renombrar deja N.
@@ -395,8 +403,12 @@ parcial inesperado continúa fallando cerrado.
 - Si un POST se aplicó pero el cliente perdió la respuesta, un reintento con un
   ID nuevo puede recibir este 409. El orquestador debe revocar el ciclo huérfano
   en lugar de reintentar sin límite.
-- Como máximo `SELFDEV_CYCLE_ISSUANCE_DAILY_CAP = 24` emisiones por principal PM
-  en 24 h móviles. Más allá: 429 `SELFDEV_CYCLE_ISSUANCE_DAILY_CAP`.
+- Como máximo `SELFDEV_CYCLE_ISSUANCE_DAILY_CAP = 48` emisiones por principal PM
+  en 24 h móviles. Más allá: 429 `SELFDEV_CYCLE_ISSUANCE_DAILY_CAP`. Es el
+  doble del ritmo estable (una renovación cada ~60–65 min, ~23 al día). Con
+  24, tres fallos de instalación al día agotaban el tope y dejaban ~65 min sin
+  ciclo vivo (auditoría post-merge P1 de #388/#387). Las emisiones revocadas
+  siguen contando: descontarlas permitiría un bucle emitir-revocar sin límite.
 - Herencia de perfil: la fuente es el perfil habilitado más reciente de
   cualquier `aao-selfdev-impl-*` anterior con grant `project.read` en el
   proyecto. Da igual que su credencial o sus grants hayan caducado o se hayan
@@ -405,7 +417,10 @@ parcial inesperado continúa fallando cerrado.
   revocación) sigue perdiendo el linaje: el CEO debe volver a sembrar el perfil.
 - Cada emisión, después de copiar el perfil, deshabilita los ciclos caducados
   sin revocar que conservan un binding ACTIVE y retira ese binding (041).
-  Registra el evento `principal.selfdev_cycle_role.expired_retired`. No
+  Registra el evento `principal.selfdev_cycle_role.expired_retired`. Si 041
+  se niega a retirar el binding (`host_bindings_retired: 0`), registra además
+  el aviso `principal.selfdev_cycle_role.binding_retire_refused`; el binding
+  queda ACTIVE para que lo revise un operador. No
   escala trabajo; eso sigue siendo cosa del DELETE explícito.
 
 ## 8. Eventos de auditoría

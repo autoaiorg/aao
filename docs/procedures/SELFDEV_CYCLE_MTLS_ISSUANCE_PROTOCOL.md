@@ -94,30 +94,28 @@ contra PostgreSQL.
 - Revoke debe deshabilitar principal y binding dentro de la misma transacción
   que invalida el ciclo; repetición es no-op seguro. Certificados vencidos o
   revocados no pueden revivir por reintento.
-- No hay fallback bearer en producción. Hasta que exista el adaptador SQL, el
-  firmante/socket revisado, y pruebas de integración/disposable host, el endpoint
-  de ciclo responde 503 en producción.
+- No hay fallback bearer en producción. La integración de API con el repositorio
+  crea únicamente identidades deshabilitadas e intents pendientes; la respuesta
+  contiene metadatos e IDs de intent, nunca tokens, CSR ni certificados. La ruta
+  no crea bindings de host ni perfiles, y esos principales no pueden ejecutar
+  trabajo. Revocación invalida intents, bindings y credenciales dentro de la
+  transacción de ciclo.
+- Esto no equivale a emisión mTLS utilizable: sin firmante/socket y verificador
+  independientes, el intent queda pendiente y la identidad no se activa. La
+  reconciliación y activación en producción siguen bloqueadas; no se despliega
+  ni se decide custodia aquí.
 
 ## Decisiones y trabajo pendiente
 
 1. **CEO/host administrator:** elegir custodia real (servicio dedicado root o
    mecanismo hardware) y custodio/rotación de la clave CA. No se toma aquí.
-2. **API/DB owner:** la migración 046 y `PostgresCycleIntentRepository`
-   implementan persistencia de intenciones, binding, expiración y revocación
-   atómicos con permisos de runtime acotados. La integración con #394 sigue
-   bloqueada y debe resolver ambos contratos antes de activarse:
-   - #394 emite actualmente los principales de ciclo habilitados, mientras que
-     `create_intent` exige que AGENT y AUDITOR estén deshabilitados hasta
-     `complete_binding`. No se debe relajar esa precondición: #394 debe emitir
-     ambos tipos como `enabled=false` y habilitarlos únicamente al confirmar el
-     binding verificado. La prueba PostgreSQL cubre ahora ambos tipos.
-   - La ruta de revocación de #394 aún no llama al repositorio. Debe llamar a
-     `revoke(intent_id)` para cada intent del ciclo y hacerlo como parte del
-     límite transaccional de revocación del ciclo; añadir pruebas de ruta que
-     demuestren que intents/bindings quedan revocados y principales desactivados
-     incluso con reintento.
-   Este PR no cambia #394 ni declara satisfechos esos contratos. No habilita por
-   sí solo el ciclo en producción.
+2. **API/DB owner:** migration 046 and `PostgresCycleIntentRepository` persist
+   intents and implement binding, expiry and revocation with bounded runtime
+   permissions. API route wiring is in a separate draft PR and needs combined
+   review against the corrected #397 head. It keeps production principals
+   disabled and revocation transactionally invalidates their intents. This
+   does not satisfy signer/verifier or host-custody gates and does not activate
+   production cycles.
 3. **Host owner:** ACL socket para API y cada UID workload, store de certificados
    públicos, entrega privada de key/cert por `LoadCredential=` y recuperación
    de crash. Nada desplegado.

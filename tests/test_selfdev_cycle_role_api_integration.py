@@ -580,6 +580,139 @@ def test_live_cycle_issue_rollback_duplicate_and_idempotent_revoke(monkeypatch):
             )
 
 
+def test_production_cycle_issue_creates_only_pending_mtls_intents_and_revoke_is_atomic(monkeypatch):
+    """Production route integration stays inert pending an independently reviewed verifier."""
+    from fastapi import HTTPException
+
+    # This integration test exercises repository wiring only; the production
+    # signer/verifier availability gate remains false by default.
+    import aao.work_management_api as api_module
+    from aao.postgresql_connection import connect_postgres
+    from aao.principal_credentials import digest_token
+    from aao.selfdev_cycle_mtls import CycleMtlError
+    from aao.selfdev_cycle_mtls_repository import PostgresCycleIntentRepository
+    from aao.work_management_api import (
+        AuthenticatedPrincipal,
+        SelfDevCycleIssueRequest,
+        issue_selfdev_cycle_roles,
+        revoke_selfdev_cycle_roles,
+    )
+    monkeypatch.setattr(api_module, "_production_selfdev_cycle_mtls_ready", lambda: True)
+    project, pm, token = _seed(monkeypatch)
+    monkeypatch.setenv("AAO_ENV", "production")
+    cycle = uuid4().hex
+    # Models only the principal object produced after require_worker completed
+    # server-verified mTLS. Bearer-only production rejection is tested separately.
+    fingerprint = uuid4().hex + uuid4().hex
+    principal = AuthenticatedPrincipal(
+        pm, digest_token(token), "AGENT", workload_fingerprint=fingerprint
+    )
+    with connect_postgres() as db:
+        db.execute(
+            "INSERT INTO workload_identity_bindings"
+            "(certificate_sha256,principal_id,enabled,expires_at) "
+            "VALUES (%s,%s,true,clock_timestamp()+interval '1 hour')",
+            (fingerprint, pm),
+        )
+
+    failed_cycle = uuid4().hex
+    create_intent = PostgresCycleIntentRepository.create_intent_in_transaction
+
+    def fail_intent(_db, _intent):
+        raise CycleMtlError("test failure")
+
+    monkeypatch.setattr(
+        PostgresCycleIntentRepository, "create_intent_in_transaction", fail_intent,
+    )
+    with pytest.raises(HTTPException) as failure:
+        issue_selfdev_cycle_roles(
+            project,
+            SelfDevCycleIssueRequest(cycle_id=failed_cycle, lifetime_seconds=600),
+            principal,
+        )
+    assert failure.value.status_code == 503
+    with connect_postgres() as db:
+        assert db.execute(
+            "SELECT count(*) FROM principal_credentials WHERE principal_id=ANY(%s)",
+            ([f"aao-selfdev-impl-{failed_cycle}", f"aao-selfdev-review-{failed_cycle}"],),
+        ).fetchone()[0] == 0
+
+    monkeypatch.setattr(
+        PostgresCycleIntentRepository, "create_intent_in_transaction", create_intent,
+    )
+    monkeypatch.setenv("AAO_ENV", "production")
+    result = issue_selfdev_cycle_roles(
+        project, SelfDevCycleIssueRequest(cycle_id=cycle, lifetime_seconds=600), principal,
+    )
+    assert result["cycle_id"] == cycle
+    assert len(result["roles"]) == 2
+    assert all(role["certificate_status"] == "pending_verifier" for role in result["roles"])
+    assert all("token" not in role for role in result["roles"])
+    assert {role["kind"] for role in result["roles"]} == {"AGENT", "AUDITOR"}
+    replay = issue_selfdev_cycle_roles(
+        project, SelfDevCycleIssueRequest(cycle_id=cycle, lifetime_seconds=600), principal,
+    )
+    assert replay["replayed"] is True
+    assert {role["intent_id"] for role in replay["roles"]} == {
+        role["intent_id"] for role in result["roles"]
+    }
+
+    # Pending intents reserve the H1b overlap slot despite disabled credentials.
+    second_cycle = uuid4().hex
+    issue_selfdev_cycle_roles(
+        project,
+        SelfDevCycleIssueRequest(cycle_id=second_cycle, lifetime_seconds=600),
+        principal,
+    )
+    with pytest.raises(HTTPException) as cap_error:
+        issue_selfdev_cycle_roles(
+            project,
+            SelfDevCycleIssueRequest(cycle_id=uuid4().hex, lifetime_seconds=600),
+            principal,
+        )
+    assert cap_error.value.status_code == 409
+    with connect_postgres() as db:
+        db.execute(
+            "UPDATE selfdev_cycle_mtls_intents "
+            "SET not_before=clock_timestamp()-interval '2 seconds', "
+            "not_after=clock_timestamp()-interval '1 second' "
+            "WHERE project_id=%s AND cycle_id=%s",
+            (project, cycle),
+        )
+    with pytest.raises(HTTPException) as expired_replay:
+        issue_selfdev_cycle_roles(
+            project, SelfDevCycleIssueRequest(cycle_id=cycle, lifetime_seconds=600), principal,
+        )
+    assert expired_replay.value.status_code == 409
+    with connect_postgres() as db:
+        rows = db.execute(
+            "SELECT i.kind,i.state,c.enabled,i.principal_id "
+            "FROM selfdev_cycle_mtls_intents i JOIN principal_credentials c USING(principal_id) "
+            "WHERE i.project_id=%s AND i.cycle_id=%s ORDER BY i.kind",
+            (project, cycle),
+        ).fetchall()
+        assert len(rows) == 2
+        assert all(state == "PENDING" and enabled is False for _kind, state, enabled, _pid in rows)
+        assert all(any(row[3] == role["principal_id"] for row in rows) for role in result["roles"])
+        assert db.execute(
+            "SELECT count(*) FROM host_worker_bindings WHERE worker_id=%s AND status='ACTIVE'",
+            (f"aao-selfdev-impl-{cycle}",),
+        ).fetchone()[0] == 0
+
+    revoked = revoke_selfdev_cycle_roles(project, cycle, principal)
+    assert revoked == {"cycle_id": cycle, "revoked": True, "already_revoked": False}
+    with connect_postgres() as db:
+        assert db.execute(
+            "SELECT count(*) FROM selfdev_cycle_mtls_intents "
+            "WHERE project_id=%s AND cycle_id=%s AND state='REVOKED'",
+            (project, cycle),
+        ).fetchone()[0] == 2
+        assert db.execute(
+            "SELECT count(*) FROM principal_credentials WHERE principal_id=ANY(%s) AND enabled",
+            ([f"aao-selfdev-impl-{cycle}", f"aao-selfdev-review-{cycle}"],),
+        ).fetchone()[0] == 0
+
+
 def test_live_cycle_credential_expiry_rejects_authentication(monkeypatch):
     from aao.postgresql_connection import connect_postgres
     from aao.work_management_api import app
@@ -881,21 +1014,36 @@ def _seed_issued_events(pm, count, *, kind="AGENT", age="0 hours"):
 def test_live_issuance_daily_cap_is_per_pm_principal_and_rolling(monkeypatch):
     from aao.work_management_api import SELFDEV_CYCLE_ISSUANCE_DAILY_CAP, app
 
-    assert SELFDEV_CYCLE_ISSUANCE_DAILY_CAP == 24
+    # P1 (post-merge audit #388/#387): 2x the ~23/day steady renewal rate.
+    assert SELFDEV_CYCLE_ISSUANCE_DAILY_CAP == 48
     project, pm, token = _seed(monkeypatch)
     _project, _other, other_token = _seed(monkeypatch)
     _seed_issued_events(pm, SELFDEV_CYCLE_ISSUANCE_DAILY_CAP - 2, age="23 hours")
     _seed_issued_events(pm, SELFDEV_CYCLE_ISSUANCE_DAILY_CAP, kind="AUDITOR")  # one per cycle
     _seed_issued_events(pm, 5, age="25 hours")  # outside the rolling window
     with TestClient(app) as client:
-        for _ in range(2):  # the 23rd and 24th issuance in 24 h
+        for _ in range(2):  # the 47th and 48th issuance in 24 h
             response = _issue(client, project, token)
             assert response.status_code == 201, response.text
             assert _revoke(client, project, token, response.json()["cycle_id"]).status_code == 200
-        refused = _issue(client, project, token)
+        refused = _issue(client, project, token)  # the 49th
         assert refused.status_code == 429, refused.text
         assert refused.json()["detail"]["code"] == "SELFDEV_CYCLE_ISSUANCE_DAILY_CAP"
         assert _issue(client, project, other_token).status_code == 201
+
+
+def test_live_concurrency_cap_still_holds_below_the_daily_cap(monkeypatch):
+    """Raising the daily cap must not loosen the concurrency cap of 2."""
+    from aao.work_management_api import SELFDEV_CYCLE_ISSUANCE_DAILY_CAP, app
+
+    project, pm, token = _seed(monkeypatch)
+    _seed_issued_events(pm, SELFDEV_CYCLE_ISSUANCE_DAILY_CAP - 10)
+    with TestClient(app) as client:
+        assert _issue(client, project, token).status_code == 201
+        assert _issue(client, project, token).status_code == 201
+        refused = _issue(client, project, token)
+        assert refused.status_code == 409, refused.text
+        assert refused.json()["detail"]["code"] == "SELFDEV_CYCLE_CONCURRENCY_CAP"
 
 
 def test_live_issue_retires_expired_unrevoked_cycle_after_copying_profile(monkeypatch):
@@ -934,6 +1082,44 @@ def test_live_issue_retires_expired_unrevoked_cycle_after_copying_profile(monkey
             "AND details->>'principal_id'=%s", (old_impl,),
         ).fetchone()[0]
         assert details["host_bindings_retired"] == 1 and details["profile_disabled"] is True
+        assert db.execute(
+            "SELECT count(*) FROM events "
+            "WHERE kind='principal.selfdev_cycle_role.binding_retire_refused' "
+            "AND details->>'principal_id'=%s", (old_impl,),
+        ).fetchone()[0] == 0
+
+
+def test_live_issue_warns_when_041_refuses_to_retire_expired_binding(monkeypatch):
+    """Nit (audit #388): a refused retirement gets its own warning event."""
+    from aao.postgresql_connection import connect_postgres
+    from aao.work_management_api import app
+
+    project, _pm, token = _seed(monkeypatch)
+    with TestClient(app) as client:
+        old = _issue(client, project, token, lifetime=1)
+        assert old.status_code == 201, old.text
+        old_impl = old.json()["roles"][0]["principal_id"]
+        with connect_postgres() as db:
+            # 041's exact grant/credential expiry match fails: it retires nothing.
+            db.execute(
+                "UPDATE project_grants SET expires_at=expires_at-interval '1 second' "
+                "WHERE principal_id=%s AND capability='work.create'", (old_impl,),
+            )
+        time.sleep(1.1)
+        new = _issue(client, project, token)
+        assert new.status_code == 201, new.text
+    with connect_postgres() as db:
+        warned = db.execute(
+            "SELECT details FROM events "
+            "WHERE kind='principal.selfdev_cycle_role.binding_retire_refused' "
+            "AND details->>'principal_id'=%s", (old_impl,),
+        ).fetchall()
+        assert len(warned) == 1 and warned[0][0]["host_bindings_retired"] == 0
+        assert db.execute(
+            "SELECT status FROM host_worker_bindings WHERE worker_id=%s", (old_impl,),
+        ).fetchone()[0] == "ACTIVE"
+        db.execute("UPDATE host_worker_bindings SET status='FENCED' WHERE worker_id=%s",
+                   (old_impl,))
 
 
 def test_live_revoke_fails_closed_when_binding_stays_active(monkeypatch):

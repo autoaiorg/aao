@@ -61,25 +61,50 @@ describe('buildLiveOfficeRooms', () => {
 });
 
 describe('capacity-aware spatial layout', () => {
-  it('reserves declared staffing capacity without materializing unobserved agents', () => {
+  it('does not materialize desks from declared headcount without assigned identities', () => {
     const planned = { ...unit('unit-planned', 'PLAN'), standingCount: 12, ephemeralCount: 3 };
     const { rooms, normalizedAgents } = buildCorporateCampusLayout([planned], [], { isDemo: false });
     const room = rooms.find(({ id }) => id === planned.id)!;
 
-    expect(room.workstationCapacity).toBeGreaterThanOrEqual(15);
+    expect(room.workstationCapacity).toBe(0);
     expect(normalizedAgents).toEqual([]);
-    expect(room.width).toBeGreaterThan(4.8);
+    expect(buildDepartmentInteriorLayout(room).workstations).toHaveLength(0);
+  });
+
+  it.each([1, 3, 8])('renders exactly one desk for each of %i assigned agents', (count) => {
+    const team = unit('assigned-team', 'TEAM');
+    const agents = Array.from({ length: count }, (_, index) => makeAgent({ id: `agent-${index}`, unitId: team.id, credentialStatus: 'ENABLED' }));
+    const room = buildCorporateCampusLayout([team], agents).rooms.find(({ id }) => id === team.id)!;
+
+    expect(room.workstationCapacity).toBe(count);
+    expect(buildDepartmentInteriorLayout(room).workstations).toHaveLength(count);
+  });
+
+  it('excludes historical and unassigned identities from departmental desk counts', () => {
+    const team = unit('assigned-team', 'TEAM');
+    const agents = [
+      makeAgent({ id: 'active', unitId: team.id, credentialStatus: 'ENABLED' }),
+      makeAgent({ id: 'active-2', unitId: team.id, credentialStatus: 'ENABLED' }),
+      makeAgent({ id: 'historical', unitId: team.id, credentialStatus: 'DISABLED' }),
+      makeAgent({ id: 'unassigned', unitId: 'unit-unassigned' }),
+    ];
+    const layout = buildCorporateCampusLayout([team], agents);
+    const room = layout.rooms.find(({ id }) => id === team.id)!;
+    const holding = layout.rooms.find(({ id }) => id === 'unit-unassigned')!;
+
+    expect(buildDepartmentInteriorLayout(room).workstations).toHaveLength(2);
+    expect(buildDepartmentInteriorLayout(holding).workstations).toHaveLength(0);
   });
 
   it('fits workstation geometry inside expanded departments for teams over ten', () => {
     const team = unit('unit-large-team', 'LARGE', 'Large team');
     const agents = Array.from({ length: 25 }, (_, index) =>
-      makeAgent({ id: `large-agent-${index}`, unitId: team.id })
+      makeAgent({ id: `large-agent-${index}`, unitId: team.id, credentialStatus: 'ENABLED' })
     );
     const room = buildCorporateCampusLayout([team], agents).rooms.find(({ id }) => id === team.id)!;
     const interior = buildDepartmentInteriorLayout(room);
 
-    expect(room.workstationCapacity).toBeGreaterThanOrEqual(agents.length);
+    expect(room.workstationCapacity).toBe(agents.length);
     expect(interior.workstations).toHaveLength(room.workstationCapacity!);
     for (const slot of interior.workstations) {
       expect(Math.abs(slot.deskLocalX) + 0.5).toBeLessThanOrEqual(room.width / 2);
@@ -109,6 +134,19 @@ const makeAgent = (overrides: Partial<AgentIdentity> & { id: string }): AgentIde
 });
 
 describe('Phase 1 & 2 (Iteración 2): resolveLiveOrganizationAttribution & buildCorporateCampusLayout', () => {
+  it('uses the same adaptive planner for DEMO units instead of the fixed OFFICE_ROOMS catalog', () => {
+    const units = [unit('sim-west', 'WEST'), unit('sim-north', 'NORTH')];
+    const agents = [makeAgent({ id: 'sim-agent', unitId: 'sim-west', credentialStatus: 'ENABLED', isSyntheticDemo: true })];
+    const layout = buildCorporateCampusLayout(units, agents, { isDemo: true });
+
+    expect(layout.rooms.map(({ id }) => id)).toEqual(['sim-north', 'sim-west']);
+    expect(layout.rooms.some(({ id }) => id.startsWith('unit-'))).toBe(false);
+    expect(layout.rooms.find(({ id }) => id === 'sim-west')?.workstationCapacity).toBe(1);
+    expect(layout.rooms.find(({ id }) => id === 'sim-north')?.workstationCapacity).toBe(0);
+    expect(layout.normalizedAgents[0].unitId).toBe('sim-west');
+    expect(layout.diagnostics.headline).toContain('DEMO');
+  });
+
   it('diagnoses the 7 live PostgreSQL principals truthfully without inventing departments from names or LLM models', () => {
     const liveUnits = [unit('unit-unassigned', 'UNKNOWN', 'Adscripción desconocida')];
     const liveAgents: AgentIdentity[] = [
@@ -175,7 +213,7 @@ describe('Phase 1 & 2 (Iteración 2): resolveLiveOrganizationAttribution & build
     expect(diagnostics.byAgentId.get('ag-orphan')?.reason).toBe('ORPHAN_UNIT_REFERENCE');
   });
 
-  it('produces arrival-order-invariant corporate campus layouts, avoids Central Atrium (0,0) collisions, and scales capacity for 7+ agents', () => {
+  it('produces arrival-order-invariant layouts, avoids Central Atrium collisions, and uses exact assigned-agent counts', () => {
     const unitsOrderA = [
       unit('unit-unassigned', 'UNKNOWN', 'Adscripción desconocida'),
       unit('unit-ops', 'OPS', 'Operaciones'),
@@ -203,11 +241,11 @@ describe('Phase 1 & 2 (Iteración 2): resolveLiveOrganizationAttribution & build
       expect(distFromAtrium).toBeGreaterThanOrEqual(4.5);
     }
 
-    // Verify the unassigned holding wing has distinct kind and capacity >= 8 for 7 agents
+    // Neutral/unassigned identities are not assigned fake department desks.
     const holdingRoom = layoutA.rooms.find((r) => r.id === 'unit-unassigned');
     expect(holdingRoom).toBeDefined();
     expect(holdingRoom?.kind).toBe('unassigned-holding');
-    expect(holdingRoom?.workstationCapacity).toBeGreaterThanOrEqual(8);
+    expect(holdingRoom?.workstationCapacity).toBe(0);
 
     // Verify navigable graph connects Atrium to every room doorway and aisle
     const navGraph = buildCampusNavGraph(layoutA.rooms);
@@ -287,7 +325,7 @@ describe('Phase 1 & 2 (Iteración 2): resolveLiveOrganizationAttribution & build
     expect(childRoom?.kind).toBe('canonical-department');
   });
 
-  it('assigns adaptive zone types, realistic floor finishes, and computes architectural glass walls with doorway portals', () => {
+  it('does not infer architectural roles from department IDs and keeps doorway compatibility geometry', () => {
     const units = [
       unit('unit-exec', 'EXEC', 'Dirección Ejecutiva'),
       unit('unit-audit', 'AUDIT', 'Auditoría Independiente'),
@@ -305,8 +343,8 @@ describe('Phase 1 & 2 (Iteración 2): resolveLiveOrganizationAttribution & build
 
     const execRoom = layout.rooms.find((r) => r.id === 'unit-exec')!;
     expect(execRoom).toBeDefined();
-    expect(execRoom.kind).toBe('executive-suite');
-    expect(execRoom.floorFinish).toBe('hardwood-walnut');
+    expect(execRoom.kind).toBe('canonical-department');
+    expect(execRoom.floorFinish).toBe('acoustic-carpet');
     expect(execRoom.doorway).toBeDefined();
     expect(execRoom.doorway?.width).toBe(1.4);
     expect(execRoom.glassWalls).toBeDefined();
@@ -314,10 +352,9 @@ describe('Phase 1 & 2 (Iteración 2): resolveLiveOrganizationAttribution & build
 
     const auditRoom = layout.rooms.find((r) => r.id === 'unit-audit')!;
     expect(auditRoom).toBeDefined();
-    expect(auditRoom.kind).toBe('audit-enclave');
-    expect(auditRoom.floorFinish).toBe('high-security-frosted');
-    // Audit enclave must have acoustic manifestation bands on its glass walls
-    expect(auditRoom.glassWalls?.some((w) => w.hasManifestationBand)).toBe(true);
+    expect(auditRoom.kind).toBe('canonical-department');
+    expect(auditRoom.floorFinish).toBe('acoustic-carpet');
+    expect(auditRoom.glassWalls?.some((w) => w.hasManifestationBand)).toBe(false);
 
     const subdivisionRoom = layout.rooms.find((r) => r.id === 'unit-subdivision-01')!;
     expect(subdivisionRoom).toBeDefined();

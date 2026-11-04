@@ -20,8 +20,11 @@ const ATRIUM_RADIUS = 3.75;
 // A 9 x 7 metre planning grid keeps regular teams connected to the atrium
 // without creating the oversized empty plazas produced by the earlier
 // 12 x 8 spacing. The overlap check still accounts for actual zone dimensions.
-const GRID_X = 9;
-const GRID_Z = 7;
+// Density is based on common department footprints plus a usable aisle. These
+// are planning hints, not a global workstation lattice: parent-adjacent and
+// persisted placements still take precedence.
+const GRID_X = 8;
+const GRID_Z = 6.5;
 
 function stableHash(value: string): number {
   let hash = 2166136261;

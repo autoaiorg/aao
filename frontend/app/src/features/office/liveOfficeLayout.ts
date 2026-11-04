@@ -1,6 +1,5 @@
 import type { AgentIdentity, OrgUnit } from '../../domain/models';
 import {
-  OFFICE_ROOMS,
   type OfficeDoorwayPortal,
   type OfficeFloorFinish,
   type OfficeGlassWallSegment,
@@ -574,15 +573,10 @@ export function resolveLiveOrganizationAttribution(
 function computeRoomDimensionsForAgents(
   agentCount: number,
   isUnassignedHolding: boolean,
-  plannedCapacity = 0,
 ): { width: number; depth: number; workstationCapacity: number } {
-  // Persisted roster counts describe declared standing/ephemeral staffing even
-  // when no corresponding identities are currently materialized. Reserve the
-  // larger of declared capacity and observed identities; never fabricate agents.
-  const needed = Math.max(4, agentCount, plannedCapacity);
-  // buildDepartmentInteriorLayout adds two desk columns per pair, with each
-  // successive pair moving out by 1.1 units. Size the room from that actual
-  // geometry instead of capping capacity while desks spill through walls.
+  // Furniture occupancy comes only from identities present in this projection.
+  // Organization headcounts are descriptive metadata, not permission to render desks.
+  const needed = Math.max(0, agentCount);
   const extraPairs = Math.ceil(Math.max(0, needed - 4) / 2);
   const outerDeskCenter = extraPairs === 0
     ? 1.25
@@ -591,7 +585,7 @@ function computeRoomDimensionsForAgents(
   return {
     width: Number(width.toFixed(2)),
     depth: needed <= 4 ? 4.2 : 5.2,
-    workstationCapacity: 4 + extraPairs * 2,
+    workstationCapacity: needed,
   };
 }
 
@@ -606,55 +600,50 @@ export function buildCorporateCampusLayout(
   agents: readonly AgentIdentity[],
   options: { isDemo?: boolean; previousRooms?: readonly OfficeRoomConfig[] } = {}
 ): CorporateCampusLayout {
-  if (options.isDemo) {
-    const demoCounts = new Map<string, number>();
-    for (const a of agents) {
-      demoCounts.set(a.unitId, (demoCounts.get(a.unitId) ?? 0) + 1);
-    }
-    const demoRooms: OfficeRoomConfig[] = OFFICE_ROOMS.map((r) => {
-      const arch = computeRoomArchitectureFeatures(r);
-      return {
-        ...r,
-        doorway: arch.doorway,
-        glassWalls: arch.glassWalls,
-        workstationCapacity: Math.max(4, demoCounts.get(r.id) ?? 4),
-      };
-    });
-    const navGraph = buildCampusNavGraph(demoRooms);
-    return {
-      rooms: demoRooms,
-      effectiveUnits: [...units],
-      normalizedAgents: [...agents].sort((a, b) => a.id.localeCompare(b.id)),
-      diagnostics: {
-        canonicalUnitsCount: demoRooms.length,
-        hasOnlyUnassignedUnit: false,
-        totalAgentsCount: agents.length,
-        resolvedAgentsCount: agents.length,
-        unassignedAgentsCount: 0,
-        enabledCredentialsCount: agents.length,
-        disabledCredentialsCount: 0,
-        breakdown: {
-          executionNoProfile: 0,
-          reviewNoProfile: 0,
-          profileWithoutUnit: 0,
-          orphanUnitRef: 0,
-          otherUnassigned: 0,
-        },
-        headline: 'Simulación corporativa DEMO',
-        explanation: 'Estructura departamental sintética de demostración.',
-        remediationHint: '',
-        byAgentId: new Map(),
-      },
-      navGraph,
-      bounds: computeCampusBounds(demoRooms),
+  const isDemo = options.isDemo === true;
+  const liveOrganization = isDemo ? null : resolveLiveOrganizationAttribution(units, agents);
+  const canonicalUnits = isDemo
+    ? units.filter((unit) => unit.id !== UNASSIGNED_UNIT_ID && unit.code.toUpperCase() !== 'UNKNOWN')
+    : liveOrganization!.canonicalUnits;
+  let normalizedAgents: AgentIdentity[];
+  let diagnostics: OrganizationAttributionDiagnostics;
+  if (isDemo) {
+    const canonicalIds = new Set(canonicalUnits.map((unit) => unit.id));
+    normalizedAgents = [...agents]
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((agent) => canonicalIds.has(agent.unitId)
+        ? { ...agent }
+        : { ...agent, unitId: UNASSIGNED_UNIT_ID, unitName: agent.unitName || 'Adscripción desconocida' });
+    const resolvedAgentsCount = normalizedAgents.filter((agent) => canonicalIds.has(agent.unitId)).length;
+    diagnostics = {
+      canonicalUnitsCount: canonicalUnits.length,
+      hasOnlyUnassignedUnit: canonicalUnits.length === 0,
+      totalAgentsCount: agents.length,
+      resolvedAgentsCount,
+      unassignedAgentsCount: agents.length - resolvedAgentsCount,
+      enabledCredentialsCount: 0,
+      disabledCredentialsCount: 0,
+      breakdown: { executionNoProfile: 0, reviewNoProfile: 0, profileWithoutUnit: 0, orphanUnitRef: 0, otherUnassigned: 0 },
+      headline: 'Simulación corporativa DEMO',
+      explanation: 'Proyección de unidades y agentes sintéticos; distribución compartida con LIVE.',
+      remediationHint: '',
+      byAgentId: new Map(),
     };
+  } else {
+    normalizedAgents = liveOrganization!.normalizedAgents;
+    diagnostics = liveOrganization!.diagnostics;
   }
-
-  const { canonicalUnits, normalizedAgents, diagnostics } =
-    resolveLiveOrganizationAttribution(units, agents);
 
   const agentCountByUnit = new Map<string, number>();
   for (const agent of normalizedAgents) {
+    // Historical principals and neutral/unassigned identities have no assigned departmental desk.
+    const hasActiveAssignment = agent.currentAssignments.some(
+      (assignment) => assignment.status === 'ACTIVE' && Boolean(assignment.taskId),
+    );
+    if (
+      (agent.credentialStatus === 'DISABLED' && !hasActiveAssignment) ||
+      agent.unitId === UNASSIGNED_UNIT_ID
+    ) continue;
     agentCountByUnit.set(agent.unitId, (agentCountByUnit.get(agent.unitId) ?? 0) + 1);
   }
 
@@ -685,11 +674,10 @@ export function buildCorporateCampusLayout(
 
   const rooms: OfficeRoomConfig[] = [];
   const shouldIncludeUnassignedWing =
-    (agentCountByUnit.get(UNASSIGNED_UNIT_ID) ?? 0) > 0 ||
+    normalizedAgents.some((agent) => agent.unitId === UNASSIGNED_UNIT_ID) ||
     (orderedCanonical.length === 0 && units.length > 0);
   const zoneRequests = orderedCanonical.map((unit) => {
-    const declaredCapacity = Math.max(0, unit.standingCount) + Math.max(0, unit.ephemeralCount);
-    const dims = computeRoomDimensionsForAgents(agentCountByUnit.get(unit.id) ?? 0, false, declaredCapacity);
+    const dims = computeRoomDimensionsForAgents(agentCountByUnit.get(unit.id) ?? 0, false);
     return { id: unit.id, parentId: unit.parentId ?? null, width: dims.width, depth: dims.depth };
   });
   if (shouldIncludeUnassignedWing) {
@@ -708,24 +696,13 @@ export function buildCorporateCampusLayout(
   // Guaranteeing |z| >= 4.2 or radial distance >= 6.8 so NO department ever overlaps the Atrium at (0,0)!
   orderedCanonical.forEach((unit) => {
     const countInUnit = agentCountByUnit.get(unit.id) ?? 0;
-    const declaredCapacity = Math.max(0, unit.standingCount) + Math.max(0, unit.ephemeralCount);
-    const dims = computeRoomDimensionsForAgents(countInUnit, false, declaredCapacity);
+    const dims = computeRoomDimensionsForAgents(countInUnit, false);
     const [x, z] = [plannedById.get(unit.id)!.x, plannedById.get(unit.id)!.z];
     const [color, accentColor] = UNIT_COLORS[stableColorIndex(unit.id)];
 
-    const isExec = unit.code === 'EXEC' || unit.id === 'unit-exec';
-    const isAudit = unit.code === 'AUDIT' || unit.id === 'unit-audit';
-    const kind: OfficeZoneKind = isExec
-      ? 'executive-suite'
-      : isAudit
-      ? 'audit-enclave'
-      : 'canonical-department';
-
-    const floorFinish: OfficeFloorFinish = isExec
-      ? 'hardwood-walnut'
-      : isAudit
-      ? 'high-security-frosted'
-      : 'acoustic-carpet';
+    // Organizational identity alone does not establish a special architectural role.
+    const kind: OfficeZoneKind = 'canonical-department';
+    const floorFinish: OfficeFloorFinish = 'acoustic-carpet';
 
     const arch = computeRoomArchitectureFeatures({
       x,
@@ -757,8 +734,7 @@ export function buildCorporateCampusLayout(
   // Determine whether the Unassigned Holding Wing (`unit-unassigned`) should be materialized:
   // Always materialize when there are unassigned agents OR when 0 canonical units exist in LIVE.
   if (shouldIncludeUnassignedWing) {
-    const unassignedCount = agentCountByUnit.get(UNASSIGNED_UNIT_ID) ?? 0;
-    const dims = computeRoomDimensionsForAgents(unassignedCount, true);
+    const dims = computeRoomDimensionsForAgents(0, true);
     const existingUnassignedUnit = units.find((u) => u.id === UNASSIGNED_UNIT_ID);
     const plannedUnassigned = plannedById.get(UNASSIGNED_UNIT_ID)!;
     const holdingX = plannedUnassigned.x;

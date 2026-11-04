@@ -309,7 +309,7 @@ export class ThreeOfficeScene {
 
   private roomSpotlight: THREE.SpotLight | null = null;
   private mainDirLight: THREE.DirectionalLight | null = null;
-  private activeRoomId: string = 'unit-exec';
+  private activeRoomId = '';
   private activeAgentId: string | null = null;
 
   // Selected agent selection ring
@@ -532,52 +532,17 @@ export class ThreeOfficeScene {
     this.rebuildGround();
     this.buildReception();
 
-    // 1. Central Coordination Atrium Hub (Radius 3.4, connected to all department corridors)
-    const atriumGeo = new THREE.CylinderGeometry(3.4, 3.55, 0.025, 36);
-    const atriumMat = new THREE.MeshStandardMaterial({
-      color: 0xb7b0a3,
-      roughness: 0.72,
-      metalness: 0.03,
-    });
-    const atrium = new THREE.Mesh(atriumGeo, atriumMat);
-    atrium.position.y = 0.012;
-    atrium.receiveShadow = true;
-    this.scene.add(atrium);
-    this.buildArchitecturalLounge();
-
-    // Atrium Perimeter Ring Curb
-    const outerRingGeo = new THREE.RingGeometry(3.25, 3.45, 36);
-    outerRingGeo.rotateX(-Math.PI / 2);
-    const outerRingMat = new THREE.MeshBasicMaterial({
-      color: 0x817b70,
-      side: THREE.DoubleSide,
-      transparent: true,
-      opacity: 0.28,
-    });
-    const outerRing = new THREE.Mesh(outerRingGeo, outerRingMat);
-    outerRing.position.y = 0.026;
-    this.scene.add(outerRing);
-
-    // Biophilic Office Plants around Central Atrium Perimeter
-    const plantCorners: [number, number][] = [
-      [-3.4, -3.4],
-      [3.4, -3.4],
-      [3.4, 3.4],
-      [-3.4, 3.4],
-    ];
-    for (const [px, pz] of plantCorners) {
-      this.groundGroup.add(this.buildBiophilicOfficePlant(px, pz));
-    }
-
-    // 2. Connected Architectural Corridors linking the Central Atrium to each Department Doorway
+    // Keep the shared circulation clear: collaboration furniture belongs in
+    // planned amenity zones, not in a mandatory central atrium.
+    // 1. Connected circulation routes
     this.buildWalkways();
 
-    // 3. Department Pavilions with complete office interior (desks, chairs, monitors, meeting zone, open doorways)
+    // 2. Department neighborhoods
     this.rooms.forEach((room) => {
       this.buildRoom(room);
     });
 
-    // 4. Selection Ring (for active agent)
+    // 3. Selection Ring (for active agent)
     const ringGeo = new THREE.RingGeometry(0.55, 0.75, 32);
     ringGeo.rotateX(-Math.PI / 2);
     const ringMat = new THREE.MeshBasicMaterial({
@@ -590,53 +555,6 @@ export class ThreeOfficeScene {
     this.selectionRing.visible = false;
     this.selectionRing.position.y = 0.025;
     this.scene.add(this.selectionRing);
-  }
-
-  private buildArchitecturalLounge(): void {
-    const lounge = new THREE.Group();
-    lounge.name = 'architectural-central-lounge';
-    lounge.userData = { role: 'architectural-common-space', zone: 'central-lounge', sourceNeutral: true };
-
-    const upholstery = new THREE.MeshStandardMaterial({ color: 0x77766f, roughness: 0.88 });
-    const timber = new THREE.MeshStandardMaterial({ color: 0x76533b, roughness: 0.72 });
-    for (const side of [-1, 1]) {
-      const sofa = new THREE.Group();
-      sofa.name = `central-lounge-sofa-${side < 0 ? 'west' : 'east'}`;
-      sofa.position.set(side * 1.12, 0, 0);
-      sofa.rotation.y = side < 0 ? Math.PI / 2 : -Math.PI / 2;
-
-      const base = new THREE.Mesh(new THREE.BoxGeometry(1.65, 0.22, 0.72), timber);
-      base.position.y = 0.28;
-      base.castShadow = true;
-      sofa.add(base);
-      const seat = new THREE.Mesh(new THREE.BoxGeometry(1.55, 0.19, 0.68), upholstery);
-      seat.position.y = 0.49;
-      seat.castShadow = true;
-      sofa.add(seat);
-      const back = new THREE.Mesh(new THREE.BoxGeometry(1.55, 0.62, 0.16), upholstery);
-      back.position.set(0, 0.79, -0.27);
-      back.castShadow = true;
-      sofa.add(back);
-      for (const end of [-1, 1]) {
-        const arm = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.44, 0.74), timber);
-        arm.position.set(end * 0.75, 0.5, 0);
-        sofa.add(arm);
-      }
-      lounge.add(sofa);
-    }
-
-    const coffeeTop = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.57, 0.57, 0.08, 24),
-      new THREE.MeshStandardMaterial({ color: 0xd0c7b8, roughness: 0.58 }),
-    );
-    coffeeTop.name = 'central-lounge-coffee-table';
-    coffeeTop.position.set(0, 0.45, 0);
-    coffeeTop.castShadow = true;
-    lounge.add(coffeeTop);
-    const coffeeBase = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.22, 0.42, 16), timber);
-    coffeeBase.position.set(0, 0.22, 0);
-    lounge.add(coffeeBase);
-    this.scene.add(lounge);
   }
 
   private buildReception(): void {
@@ -966,11 +884,6 @@ export class ThreeOfficeScene {
     // Office Workstations / Holding Stations + Meeting Zone
     this.buildOfficeWorkstationsAndMeetingZone(roomGroup, room, isUnassignedHolding);
 
-    // Department Specific Accent Equipment
-    if (!isUnassignedHolding && (this.options.demoFurniture ?? true)) {
-      this.buildDepartmentAccentEquipment(roomGroup, room);
-    }
-
     // Biophilic Plant in rear corner of canonical departments
     if (!isUnassignedHolding) {
       const plantX = room.width / 2 - 0.42;
@@ -1207,7 +1120,7 @@ export class ThreeOfficeScene {
     group.add(frontRight);
 
     // 4. Acoustic Manifestation Band for Audit Enclave (eye level 0.85m)
-    const isAuditEnclave = room.kind === 'audit-enclave' || room.id === 'unit-audit';
+    const isAuditEnclave = room.kind === 'audit-enclave';
     if (isAuditEnclave) {
       const manifestSideGeo = new THREE.BoxGeometry(0.06, 0.1, sideBaffleDepth + 0.02);
       const manifestFrontGeo = new THREE.BoxGeometry(frontPanelWidth + 0.02, 0.14, 0.088);
@@ -1232,16 +1145,6 @@ export class ThreeOfficeScene {
       const mFrontR = new THREE.Mesh(manifestFrontGeo, manifestMat);
       mFrontR.position.set(frontRight.position.x, 0.85, frontZ);
       group.add(mFrontR);
-    }
-  }
-
-  private buildDepartmentAccentEquipment(group: THREE.Group, room: OfficeRoomConfig): void {
-    const towerMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.3, metalness: 0.6 });
-    if (room.id === 'unit-ops' || room.id === 'unit-eng' || room.id === 'unit-audit') {
-      const towerGeo = new THREE.BoxGeometry(0.32, 1.05, 0.32);
-      const tower = new THREE.Mesh(towerGeo, towerMat);
-      tower.position.set(-room.width / 2 + 0.42, 0.88, -room.depth / 2 + 0.45);
-      group.add(tower);
     }
   }
 

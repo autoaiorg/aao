@@ -193,12 +193,7 @@ describe('PR C: Office Furniture, Procedural IDE Textures, Biophilia & Lighting'
       const visitorLounge = reception.getObjectByName('reception-visitor-lounge') as THREE.Group;
       expect(visitorLounge).toBeDefined();
       expect(visitorLounge.children).toHaveLength(4);
-      const centralLounge = root.getObjectByName('architectural-central-lounge') as THREE.Group;
-      expect(centralLounge).toBeDefined();
-      expect(centralLounge.userData).toMatchObject({ role: 'architectural-common-space', sourceNeutral: true });
-      expect(centralLounge.getObjectByName('central-lounge-sofa-west')).toBeDefined();
-      expect(centralLounge.getObjectByName('central-lounge-sofa-east')).toBeDefined();
-      expect(centralLounge.getObjectByName('central-lounge-coffee-table')).toBeDefined();
+      expect(root.getObjectByName('architectural-central-lounge')).toBeUndefined();
 
       const roomGroups = (scene as unknown as { roomsGroup: THREE.Group }).roomsGroup;
       const room = roomGroups.children.find((child) => child.name === 'room-unit-eng');
@@ -300,29 +295,14 @@ describe('PR C: Office Furniture, Procedural IDE Textures, Biophilia & Lighting'
       expect(foliageMesh.castShadow).toBe(true);
     });
 
-    it('places biophilic plants around central atrium perimeter and in canonical department rooms', () => {
+    it('places biophilic plants in canonical department neighborhoods without a mandatory central atrium', () => {
       const groundGroup = (scene as unknown as { groundGroup: THREE.Group }).groundGroup;
       expect(groundGroup).toBeDefined();
-
-      // Atrium plants at ±3.4, ±3.4
-      const atriumPlantCorners: [number, number][] = [
-        [-3.4, -3.4],
-        [3.4, -3.4],
-        [3.4, 3.4],
-        [-3.4, 3.4],
-      ];
-
-      for (const [px, pz] of atriumPlantCorners) {
-        const found = groundGroup.children.some((child) => {
-          if (child instanceof THREE.Group && child.children.length === 2) {
-            return (
-              Math.abs(child.position.x - px) < 0.01 &&
-              Math.abs(child.position.z - pz) < 0.01
-            );
-          }
-          return false;
-        });
-        expect(found).toBe(true);
+      const forcedAtriumCoordinates: [number, number][] = [[-3.4, -3.4], [3.4, -3.4], [3.4, 3.4], [-3.4, 3.4]];
+      for (const [x, z] of forcedAtriumCoordinates) {
+        expect(groundGroup.children.some((child) =>
+          child instanceof THREE.Group && Math.abs(child.position.x - x) < 0.01 && Math.abs(child.position.z - z) < 0.01
+        )).toBe(false);
       }
 
       // Check canonical department rooms have biophilic plants

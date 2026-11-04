@@ -423,7 +423,9 @@ export function projectAgentOperationalActivity(
  * Ensures every department visually has real desks, chairs, and a meeting area.
  */
 export function buildDepartmentInteriorLayout(room: OfficeRoomConfig): DepartmentInteriorLayout {
-  const capacity = Math.max(4, room.workstationCapacity ?? 4);
+  // A missing capacity is a legacy rendering contract (e.g. static OFFICE_ROOMS fixtures).
+  // Data-driven LIVE/DEMO layouts always set an exact observed count, including zero.
+  const capacity = Math.max(0, room.workstationCapacity ?? 4);
   const localConfigs: Array<{ deskX: number; deskZ: number; chairX: number; chairZ: number; facing: number }> = [
     // Front-left workstation (agent sits facing -Z toward monitor)
     { deskX: -1.25, deskZ: -0.95, chairX: -1.25, chairZ: -0.42, facing: Math.PI },
@@ -450,7 +452,7 @@ export function buildDepartmentInteriorLayout(room: OfficeRoomConfig): Departmen
     }
   }
 
-  const workstations: WorkstationSlot[] = localConfigs.map((cfg, idx) => ({
+  const workstations: WorkstationSlot[] = localConfigs.slice(0, capacity).map((cfg, idx) => ({
     slotIndex: idx,
     deskLocalX: cfg.deskX,
     deskLocalZ: cfg.deskZ,

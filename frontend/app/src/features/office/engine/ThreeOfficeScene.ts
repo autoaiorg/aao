@@ -38,6 +38,43 @@ export function computeArchitecturalEnvelope(rooms: readonly OfficeRoomConfig[])
   };
 }
 
+type OutlinePoint = { x: number; z: number };
+
+/** A stable convex perimeter around occupied neighborhoods, rather than an empty rectangle. */
+export function computeArchitecturalOutline(
+  rooms: readonly OfficeRoomConfig[],
+  reserve = OFFICE_ENVELOPE_EXPANSION_METERS,
+): OutlinePoint[] {
+  const candidates = rooms.length
+    ? rooms.flatMap((room) => [
+        { x: room.x - room.width / 2 - reserve, z: room.z - room.depth / 2 - reserve },
+        { x: room.x + room.width / 2 + reserve, z: room.z - room.depth / 2 - reserve },
+        { x: room.x + room.width / 2 + reserve, z: room.z + room.depth / 2 + reserve },
+        { x: room.x - room.width / 2 - reserve, z: room.z + room.depth / 2 + reserve },
+      ])
+    : (() => {
+        const { halfWidth, halfDepth } = computeArchitecturalEnvelope([]);
+        return [
+          { x: -halfWidth, z: -halfDepth }, { x: halfWidth, z: -halfDepth },
+          { x: halfWidth, z: halfDepth }, { x: -halfWidth, z: halfDepth },
+        ];
+      })();
+  const sorted = [...candidates].sort((a, b) => a.x - b.x || a.z - b.z);
+  const cross = (o: OutlinePoint, a: OutlinePoint, b: OutlinePoint) =>
+    (a.x - o.x) * (b.z - o.z) - (a.z - o.z) * (b.x - o.x);
+  const lower: OutlinePoint[] = [];
+  for (const point of sorted) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], point) <= 0) lower.pop();
+    lower.push(point);
+  }
+  const upper: OutlinePoint[] = [];
+  for (const point of [...sorted].reverse()) {
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], point) <= 0) upper.pop();
+    upper.push(point);
+  }
+  return [...lower.slice(0, -1), ...upper.slice(0, -1)];
+}
+
 export interface ThreeSceneCallbacks {
   onSelectRoom: (roomId: string) => void;
   onSelectAgent: (agentId: string) => void;
@@ -673,9 +710,18 @@ export class ThreeOfficeScene {
     // Bound the shell from occupied neighborhoods with a modest expansion
     // reserve. The former 28x22m minimum made small organizations look lost in
     // a nave; LIVE without departments still keeps a compact lobby shell.
-    const { halfWidth, halfDepth } = computeArchitecturalEnvelope(this.rooms);
-    const width = halfWidth * 2;
-    const depth = halfDepth * 2;
+    const outline = computeArchitecturalOutline(this.rooms);
+    const outlineShape = (points: readonly OutlinePoint[]) => {
+      const shape = new THREE.Shape();
+      points.forEach((point, index) => {
+        const x = point.x;
+        const y = -point.z;
+        if (index === 0) shape.moveTo(x, y);
+        else shape.lineTo(x, y);
+      });
+      shape.closePath();
+      return shape;
+    };
 
     // Subtle, locally generated stone aggregate gives the shared floor a physical
     // finish without a network asset or a high-resolution texture dependency.
@@ -714,27 +760,29 @@ export class ThreeOfficeScene {
 
     // Continuous Corporate Campus Floor Slab
     const campusSlab = new THREE.Mesh(
-      new THREE.BoxGeometry(width - 1.5, 0.12, depth - 1.5),
+      new THREE.ExtrudeGeometry(outlineShape(outline), { depth: 0.12, bevelEnabled: false }),
       // Keep the continuous slab visibly distinct from the lighter circulation paths.
       new THREE.MeshStandardMaterial({ map: stoneTexture, color: 0xffffff, roughness: 0.9, metalness: 0.01 })
     );
     campusSlab.name = 'campus-continuous-floor';
-    campusSlab.position.y = -0.04;
+    campusSlab.rotation.x = -Math.PI / 2;
+    campusSlab.position.y = -0.1;
     campusSlab.receiveShadow = true;
     this.groundGroup.add(campusSlab);
 
+    const groundOutline = computeArchitecturalOutline(this.rooms, OFFICE_ENVELOPE_EXPANSION_METERS + 3);
     const ground = new THREE.Mesh(
-      new THREE.BoxGeometry(width + 6, 0.4, depth + 6),
+      new THREE.ExtrudeGeometry(outlineShape(groundOutline), { depth: 0.4, bevelEnabled: false }),
       new THREE.MeshStandardMaterial({ color: 0x8c877d, roughness: 0.92, metalness: 0.01 })
     );
-    ground.position.y = -0.26;
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -0.46;
     ground.receiveShadow = true;
     this.groundGroup.add(ground);
 
     // Roofless cutaway curtain wall: the building reads as one continuous structure while
     // remaining open enough for the isometric camera and ordinary GPU budgets.
-    const facadeWidth = width - 1.5;
-    const facadeDepth = depth - 1.5;
+    const outlineEdges = outline.map((point, index) => ({ start: point, end: outline[(index + 1) % outline.length] }));
     const facadeY = 1.42;
     const glassMaterial = new THREE.MeshStandardMaterial({
       color: 0xc3d0d0,
@@ -749,7 +797,7 @@ export class ThreeOfficeScene {
     const facadeGroup = new THREE.Group();
     facadeGroup.name = 'architectural-curtain-facade';
     this.groundGroup.add(facadeGroup);
-    const addFacadeRun = (length: number, x: number, z: number, rotationY: number, mullionAxis: 'x' | 'z') => {
+    const addFacadeRun = (length: number, x: number, z: number, rotationY: number) => {
       const glass = new THREE.Mesh(new THREE.BoxGeometry(length, 2.65, 0.055), glassMaterial);
       glass.position.set(x, facadeY, z);
       glass.rotation.y = rotationY;
@@ -764,24 +812,37 @@ export class ThreeOfficeScene {
       facadeGroup.add(head);
       for (let offset = -length / 2 + 2; offset < length / 2; offset += 3.6) {
         const mullion = new THREE.Mesh(new THREE.BoxGeometry(0.065, 2.7, 0.12), frameMaterial);
-        if (mullionAxis === 'x') mullion.position.set(x + offset, facadeY, z);
-        else mullion.position.set(x, facadeY, z + offset);
+        mullion.position.set(x + Math.cos(rotationY) * offset, facadeY, z - Math.sin(rotationY) * offset);
         facadeGroup.add(mullion);
       }
     };
-    const halfFacadeWidth = facadeWidth / 2;
-    const halfFacadeDepth = facadeDepth / 2;
-    addFacadeRun(facadeWidth, 0, -halfFacadeDepth, 0, 'x');
-    // Keep a real entrance opening in the south curtain wall instead of sealing
-    // the cutaway building inside an uninterrupted ring of glass.
-    const entranceWidth = Math.min(3.4, facadeWidth * 0.22);
-    facadeGroup.userData = { entranceWidth, facadeWidth, facadeDepth };
-    const facadeWingWidth = (facadeWidth - entranceWidth) / 2;
-    const facadeWingOffset = (entranceWidth + facadeWingWidth) / 2;
-    addFacadeRun(facadeWingWidth, -facadeWingOffset, halfFacadeDepth, 0, 'x');
-    addFacadeRun(facadeWingWidth, facadeWingOffset, halfFacadeDepth, 0, 'x');
-    addFacadeRun(facadeDepth, -halfFacadeWidth, 0, Math.PI / 2, 'z');
-    addFacadeRun(facadeDepth, halfFacadeWidth, 0, Math.PI / 2, 'z');
+    const entryEdge = [...outlineEdges].sort((a, b) =>
+      ((b.start.z + b.end.z) / 2) - ((a.start.z + a.end.z) / 2))[0];
+    const entryDx = entryEdge.end.x - entryEdge.start.x;
+    const entryDz = entryEdge.end.z - entryEdge.start.z;
+    const entryLength = Math.hypot(entryDx, entryDz);
+    const entryYaw = Math.atan2(-entryDz, entryDx);
+    const entryCenter = { x: (entryEdge.start.x + entryEdge.end.x) / 2, z: (entryEdge.start.z + entryEdge.end.z) / 2 };
+    const entranceWidth = Math.min(3.4, entryLength * 0.3);
+    // Split the southmost edge around the main entrance; the remaining facade
+    // follows the work-neighborhood perimeter instead of a large empty box.
+    const facadeWidth = outlineEdges.reduce((sum, edge) =>
+      sum + Math.hypot(edge.end.x - edge.start.x, edge.end.z - edge.start.z), 0);
+    facadeGroup.userData = { entranceWidth, facadeWidth, facadeDepth: 0 };
+    const wingLength = (entryLength - entranceWidth) / 2;
+    const entryUx = Math.cos(entryYaw);
+    const entryUz = -Math.sin(entryYaw);
+    addFacadeRun(wingLength, entryCenter.x - entryUx * (entranceWidth + wingLength) / 2,
+      entryCenter.z - entryUz * (entranceWidth + wingLength) / 2, entryYaw);
+    addFacadeRun(wingLength, entryCenter.x + entryUx * (entranceWidth + wingLength) / 2,
+      entryCenter.z + entryUz * (entranceWidth + wingLength) / 2, entryYaw);
+    for (const edge of outlineEdges) {
+      if (edge === entryEdge) continue;
+      const dx = edge.end.x - edge.start.x;
+      const dz = edge.end.z - edge.start.z;
+      addFacadeRun(Math.hypot(dx, dz), (edge.start.x + edge.end.x) / 2,
+        (edge.start.z + edge.end.z) / 2, Math.atan2(-dz, dx));
+    }
 
     // A quiet, accessible canopy marks the entrance without obstructing the
     // isometric cutaway. The opening remains clear at ground level.
@@ -792,21 +853,25 @@ export class ThreeOfficeScene {
     this.groundGroup.add(entranceGroup);
     for (const side of [-1, 1]) {
       const jamb = new THREE.Mesh(new THREE.BoxGeometry(0.11, 2.55, 0.14), entranceFrame);
-      jamb.position.set(side * entranceWidth / 2, 1.35, halfFacadeDepth);
+      jamb.position.set(entryCenter.x + side * entryUx * entranceWidth / 2, 1.35,
+        entryCenter.z + side * entryUz * entranceWidth / 2);
+      jamb.rotation.y = entryYaw;
       entranceGroup.add(jamb);
     }
     const canopy = new THREE.Mesh(
       new THREE.BoxGeometry(entranceWidth + 1.1, 0.12, 1.25),
       new THREE.MeshStandardMaterial({ color: 0x8b8981, roughness: 0.74, metalness: 0.08 }),
     );
-    canopy.position.set(0, 2.82, halfFacadeDepth + 0.52);
+    canopy.position.set(entryCenter.x, 2.82, entryCenter.z + 0.52);
+    canopy.rotation.y = entryYaw;
     canopy.castShadow = true;
     entranceGroup.add(canopy);
     const threshold = new THREE.Mesh(
       new THREE.BoxGeometry(entranceWidth, 0.025, 1.1),
       new THREE.MeshStandardMaterial({ color: 0xc0b9ad, roughness: 0.78 }),
     );
-    threshold.position.set(0, 0.035, halfFacadeDepth + 0.48);
+    threshold.position.set(entryCenter.x, 0.035, entryCenter.z + 0.48);
+    threshold.rotation.y = entryYaw;
     threshold.receiveShadow = true;
     entranceGroup.add(threshold);
 

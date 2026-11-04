@@ -302,7 +302,59 @@ function routeAroundRooms(
   }
 
   if (!Number.isFinite(distances[1])) {
-    throw new Error(`Unable to route corridor from ${sourceRoomId} to the main entry`);
+    // Fallback to a rectilinear visibility grid. A corner-only visibility graph
+    // can be disconnected when several expanded work-neighborhood footprints
+    // overlap; boundary-coordinate intersections preserve free gaps around the
+    // union without widening the normal (shortest-path) search.
+    const xs = [...new Set([lead.x, end.x, outer.minX, outer.maxX,
+      ...obstacles.flatMap((o) => [o.minX, o.maxX])])].sort((a, b) => a - b);
+    const zs = [...new Set([lead.z, end.z, outer.minZ, outer.maxZ,
+      ...obstacles.flatMap((o) => [o.minZ, o.maxZ])])].sort((a, b) => a - b);
+    const key = (x: number, z: number) => `${x.toFixed(4)},${z.toFixed(4)}`;
+    const grid = new Map<string, { x: number; z: number }>();
+    for (const x of xs) for (const z of zs) {
+      if (obstacles.some((o) => x > o.minX && x < o.maxX && z > o.minZ && z < o.maxZ)) continue;
+      grid.set(key(x, z), { x, z });
+    }
+    const startKey = key(lead.x, lead.z);
+    const endKey = key(end.x, end.z);
+    const gridDistances = new Map<string, number>([[startKey, 0]]);
+    const gridPrevious = new Map<string, string>();
+    const pending = new Set(grid.keys());
+    while (pending.size) {
+      let currentKey: string | undefined;
+      let best = Infinity;
+      for (const candidate of pending) {
+        const distance = gridDistances.get(candidate) ?? Infinity;
+        if (distance < best) { best = distance; currentKey = candidate; }
+      }
+      if (!currentKey || !Number.isFinite(best)) break;
+      if (currentKey === endKey) break;
+      pending.delete(currentKey);
+      const current = grid.get(currentKey)!;
+      const neighbors = [
+        ...zs.map((z) => grid.get(key(current.x, z))).filter((p): p is { x: number; z: number } => !!p && p.z !== current.z),
+        ...xs.map((x) => grid.get(key(x, current.z))).filter((p): p is { x: number; z: number } => !!p && p.x !== current.x),
+      ].filter((point) => clear(current, point));
+      for (const neighbor of neighbors) {
+        const neighborKey = key(neighbor.x, neighbor.z);
+        if (!pending.has(neighborKey)) continue;
+        const candidate = best + Math.hypot(neighbor.x - current.x, neighbor.z - current.z);
+        if (candidate < (gridDistances.get(neighborKey) ?? Infinity)) {
+          gridDistances.set(neighborKey, candidate);
+          gridPrevious.set(neighborKey, currentKey);
+        }
+      }
+    }
+    if (!Number.isFinite(gridDistances.get(endKey))) {
+      throw new Error(`Unable to route corridor from ${sourceRoomId} to the main entry`);
+    }
+    const fallback: Array<{ x: number; z: number }> = [];
+    for (let cursor: string | undefined = endKey; cursor; cursor = gridPrevious.get(cursor)) {
+      fallback.push(grid.get(cursor)!);
+      if (cursor === startKey) break;
+    }
+    return [start, ...fallback.reverse()];
   }
   const route: Array<{ x: number; z: number }> = [];
   for (let current = 1; current >= 0; current = previous[current]) {

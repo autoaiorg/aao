@@ -15,6 +15,7 @@ import {
   ThreeOfficeScene,
   SharedFurniturePool,
   computeArchitecturalEnvelope,
+  computeArchitecturalOutline,
   OFFICE_ENVELOPE_EXPANSION_METERS,
   createProceduralIdeTexture,
   type ThreeSceneCallbacks,
@@ -31,6 +32,17 @@ describe('PR C: Office Furniture, Procedural IDE Textures, Biophilia & Lighting'
     expect(fitted.halfWidth).toBe(Math.abs(room.x) + room.width / 2 + OFFICE_ENVELOPE_EXPANSION_METERS);
     expect(fitted.halfDepth).toBe(Math.abs(room.z) + room.depth / 2 + OFFICE_ENVELOPE_EXPANSION_METERS);
     expect(computeArchitecturalEnvelope([{ ...room, x: 20 }]).halfWidth).toBeGreaterThan(fitted.halfWidth);
+  });
+
+  it('cuts unused perimeter corners around articulated neighborhood clusters', () => {
+    const rooms = [
+      { ...OFFICE_ROOMS[0], x: 0, z: 0, width: 4, depth: 4 },
+      { ...OFFICE_ROOMS[1], x: 8, z: 0, width: 4, depth: 4 },
+      { ...OFFICE_ROOMS[2], x: 0, z: 8, width: 4, depth: 4 },
+    ];
+    const outline = computeArchitecturalOutline(rooms);
+    expect(outline.length).toBeGreaterThan(4);
+    expect(outline).toEqual(computeArchitecturalOutline(rooms));
   });
 
   describe('SharedFurniturePool & Procedural Textures', () => {
@@ -184,7 +196,7 @@ describe('PR C: Office Furniture, Procedural IDE Textures, Biophilia & Lighting'
       const slab = groundGroup.children.find((child) => child.name === 'campus-continuous-floor') as THREE.Mesh;
 
       expect(slab).toBeDefined();
-      const slabTop = slab.position.y + (slab.geometry as THREE.BoxGeometry).parameters.height / 2;
+      const slabTop = slab.position.y + ((slab.geometry as THREE.ExtrudeGeometry).parameters.options?.depth ?? 0);
       expect(walkwaysGroup.children.length).toBeGreaterThan(0);
 
       for (const segment of walkwaysGroup.children as THREE.Mesh[]) {
@@ -258,13 +270,13 @@ describe('PR C: Office Furniture, Procedural IDE Textures, Biophilia & Lighting'
       expect(entrance.userData.accessible).toBe(true);
       expect(entrance.children).toHaveLength(4);
 
-      const frontGlassWidth = facade.children
-        .filter((child) => child instanceof THREE.Mesh && child.rotation.y === 0 && child.position.z > 0)
+      const glassWidth = facade.children
+        .filter((child) => child instanceof THREE.Mesh)
         .filter((child) => (child as THREE.Mesh).geometry instanceof THREE.BoxGeometry)
         .map((child) => (child as THREE.Mesh<THREE.BoxGeometry>).geometry.parameters)
         .filter((geometry) => geometry.height === 2.65)
         .reduce((sum, geometry) => sum + geometry.width, 0);
-      expect(facade.userData.facadeWidth - frontGlassWidth).toBeCloseTo(
+      expect(facade.userData.facadeWidth - glassWidth).toBeCloseTo(
         facade.userData.entranceWidth,
         5,
       );
@@ -273,8 +285,8 @@ describe('PR C: Office Furniture, Procedural IDE Textures, Biophilia & Lighting'
     it('uses a locally generated stone finish and disposes its texture with the scene', () => {
       const groundGroup = (scene as unknown as { groundGroup: THREE.Group }).groundGroup;
       const slab = groundGroup.children.find(
-        (child) => child instanceof THREE.Mesh && child.geometry instanceof THREE.BoxGeometry
-      ) as THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial>;
+        (child) => child instanceof THREE.Mesh && child.name === 'campus-continuous-floor'
+      ) as THREE.Mesh<THREE.ExtrudeGeometry, THREE.MeshStandardMaterial>;
       expect(slab).toBeDefined();
       expect(slab.material.map).toBeInstanceOf(THREE.CanvasTexture);
       const textureDispose = vi.spyOn(slab.material.map!, 'dispose');

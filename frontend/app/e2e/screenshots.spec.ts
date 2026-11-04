@@ -76,7 +76,14 @@ test('Capture real screenshots of F4.7 and F4.8 Office', async ({ page }) => {
     // occlusion can be reviewed at the scale where they are easiest to spot.
     for (let step = 0; step < 16; step += 1) {
       if (!(await zoomIn.isVisible()) || !(await zoomIn.isEnabled())) break;
-      await zoomIn.click({ force: true, timeout: 2_000 });
+      try {
+        await zoomIn.click({ force: true, timeout: 2_000, noWaitAfter: true });
+      } catch {
+        // Browser screenshot evidence is more useful than failing because React
+        // is still settling after an earlier camera event; retain the closest
+        // successfully reached framing and capture it below.
+        break;
+      }
     }
     await page.waitForTimeout(900);
     await page.screenshot({

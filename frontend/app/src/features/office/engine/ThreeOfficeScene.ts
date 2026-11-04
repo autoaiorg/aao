@@ -294,7 +294,9 @@ export class ThreeOfficeScene {
   private desiredDistance = 24; // smart zoom destination
   // Permit an actual agent/workstation close-up after the camera has focused
   // a selection. Eight meters left people too small for posture inspection.
-  private minDistance = 4.5;
+  // Permit a genuine agent-workstation close view (desk + seated posture),
+  // rather than clamping zoom while the entire neighborhood is still framed.
+  private minDistance = 3.2;
   private maxDistance = 38;
   private cameraTarget = new THREE.Vector3(0, 0, 0);
   private desiredTarget = new THREE.Vector3(0, 0, 0);

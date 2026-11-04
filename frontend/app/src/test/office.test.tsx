@@ -410,7 +410,7 @@ describe('ThreeOfficeScene Engine Direct Regression Tests (Defects 1 & 2)', () =
 
     // Zoom clamping boundaries: close enough to inspect agents and the dynamic fit limit
     scene.zoomCamera(0.1); // extreme zoom-in
-    expect(scene.getDesiredDistance()).toBeGreaterThanOrEqual(4.5);
+    expect(scene.getDesiredDistance()).toBeGreaterThanOrEqual(3.2);
 
     for (let index = 0; index < 4; index += 1) scene.zoomCamera(10.0);
     const maxFitDistance = scene.getDesiredDistance();

@@ -116,11 +116,11 @@ describe('Immersive Gestural Camera Controls & Navigation (PR B)', () => {
     scene.simulateGesturePinch(0.7);
     expect(scene.getDesiredDistance()).toBeLessThan(initialDistance);
 
-    // Extreme zoom in: must not breach the agent-inspection minDistance (4.5)
+    // Extreme zoom in: retain a usable close-up of an agent and workstation.
     for (let i = 0; i < 15; i++) {
       scene.simulateGesturePinch(0.5);
     }
-    expect(scene.getDesiredDistance()).toBeGreaterThanOrEqual(4.5);
+    expect(scene.getDesiredDistance()).toBeGreaterThanOrEqual(3.2);
 
     // Extreme zoom out: the overview fit may require more than 38 units for
     // this viewport; once clamped, further pinches must not change the bound.

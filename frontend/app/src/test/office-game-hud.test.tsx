@@ -909,8 +909,13 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
     expect(visibleStates.length).toBeLessThanOrEqual(1);
     expect(suppressedStates.length).toBeLessThanOrEqual(7);
     expect(visibleStates.some((state) => state.agentId === 'aao-selfdev-worker-0')).toBe(true);
-    expect(visibleStates[0].offsetX).toBe(0);
-    expect(visibleStates[0].offsetZ).toBe(0);
+    // The selected label retains priority but moves away from the overlapping
+    // heads instead of covering a face in the close view.
+    expect(
+      Math.abs(visibleStates[0].offsetX) +
+        Math.abs(visibleStates[0].offsetZ) +
+        Math.max(0, visibleStates[0].yOffset - 1.24),
+    ).toBeGreaterThan(0);
     expect(visibleStates.every((state) => Number.isFinite(state.offsetX) && Number.isFinite(state.offsetZ))).toBe(true);
   });
 

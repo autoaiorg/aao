@@ -966,6 +966,12 @@ export function computeAdaptiveLabelStates(params: {
   });
 
   const acceptedBoxes: Array<{ screenX: number; screenY: number }> = [];
+  // A label must avoid not only other labels but also other agents' heads.
+  // Otherwise a collision-free label cluster can still hide a face in the 3D view.
+  const projectedHeads = candidates.map((candidate) => ({
+    agentId: candidate.agent.id,
+    ...projectToScreenPlane(candidate.pos.x, candidate.pos.z, 1.62),
+  }));
   // A label sprite is roughly 1.6 world units wide. Give each accepted label
   // at least its own footprint, then shift colliding labels sideways in the
   // camera plane before lifting them above heads and monitors.
@@ -1018,12 +1024,16 @@ export function computeAdaptiveLabelStates(params: {
     const collides = (sx: number, sy: number) =>
       acceptedBoxes.some(
         (box) => Math.abs(box.screenX - sx) < minSepX && Math.abs(box.screenY - sy) < minSepY
+      ) || projectedHeads.some((head) =>
+        head.agentId !== cand.agent.id &&
+        Math.abs(head.screenX - sx) < minSepX / 2 &&
+        Math.abs(head.screenY - sy) < minSepY
       );
 
     let hasOverlap = collides(proj.screenX, proj.screenY);
     if (hasOverlap) {
-      const lateralOffsets = [0, -1.9, 1.9, -3.8, 3.8, -5.7, 5.7];
-      const verticalOffsets = [1.24, 1.62, 1.98];
+      const lateralOffsets = [0, -1.2, 1.2, -2, 2];
+      const verticalOffsets = [1.24, 1.62, 1.98, 2.35, 2.65, 2.95];
       for (const yOffset of verticalOffsets) {
         let placed = false;
         for (const screenOffset of lateralOffsets) {

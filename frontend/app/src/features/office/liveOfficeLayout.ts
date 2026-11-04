@@ -146,7 +146,7 @@ export interface OrganizationAttributionDiagnostics {
 
 export interface CampusNavNode {
   id: string;
-  kind: 'atrium-center' | 'atrium-ring' | 'corridor-junction' | 'room-doorway' | 'room-aisle';
+  kind: 'main-entry' | 'corridor-junction' | 'room-doorway' | 'room-aisle';
   roomId?: string;
   x: number;
   z: number;
@@ -276,7 +276,7 @@ function routeAroundRooms(
   }
 
   if (!Number.isFinite(distances[1])) {
-    throw new Error(`Unable to route corridor from ${sourceRoomId} to the atrium`);
+    throw new Error(`Unable to route corridor from ${sourceRoomId} to the main entry`);
   }
   const route: Array<{ x: number; z: number }> = [];
   for (let current = 1; current >= 0; current = previous[current]) {
@@ -575,16 +575,20 @@ function computeRoomDimensionsForAgents(
   isUnassignedHolding: boolean,
 ): { width: number; depth: number; workstationCapacity: number } {
   // Furniture occupancy comes only from identities present in this projection.
-  // Organization headcounts are descriptive metadata, not permission to render desks.
+  // Leave a small, discrete organizational marker for empty units; scale occupied
+  // neighborhoods from the actual number of desks instead of reserving a 4-seat bay.
   const needed = Math.max(0, agentCount);
-  const extraPairs = Math.ceil(Math.max(0, needed - 4) / 2);
-  const outerDeskCenter = extraPairs === 0
-    ? 1.25
-    : 2.35 + Math.floor((extraPairs - 1) / 2) * 1.1;
-  const width = Math.max(isUnassignedHolding ? 5.2 : 4.8, (outerDeskCenter + 0.95) * 2);
+  const columns = needed === 0 ? 0 : Math.min(4, Math.ceil(needed / 2));
+  const rows = needed === 0 ? 0 : Math.ceil(needed / columns);
+  const width = needed === 0
+    ? (isUnassignedHolding ? 3.8 : 3.2)
+    : Math.max(3.2, (columns - 1) * 1.35 + 2.6);
+  const depth = needed === 0
+    ? 2.8
+    : Math.max(3, (rows - 1) * 1.55 + 2.35);
   return {
     width: Number(width.toFixed(2)),
-    depth: needed <= 4 ? 4.2 : 5.2,
+    depth: Number(depth.toFixed(2)),
     workstationCapacity: needed,
   };
 }
@@ -788,10 +792,7 @@ export function buildCorporateCampusLayout(
   };
 }
 
-/**
- * Builds the navigable connectivity graph connecting the Central Coordination Atrium (0, 0)
- * to every room's doorway and internal central aisle.
- */
+/** Builds a circulation graph linking each neighborhood to the actual envelope entry. */
 export function buildCampusNavGraph(rooms: readonly OfficeRoomConfig[]): CampusNavGraph {
   const nodes = new Map<string, CampusNavNode>();
   const adjacency = new Map<string, string[]>();
@@ -809,26 +810,11 @@ export function buildCampusNavGraph(rooms: readonly OfficeRoomConfig[]): CampusN
     adjacency.get(b)?.push(a);
   };
 
-  // Central Atrium Hub & 8 Ring Waypoints around the Atrium perimeter (radius 2.9)
-  addNode({ id: 'atrium-center', kind: 'atrium-center', x: 0, z: 0 });
-  const ringCount = 8;
-  const ringRadius = 2.9;
-  for (let i = 0; i < ringCount; i += 1) {
-    const angle = (i / ringCount) * Math.PI * 2;
-    const id = `atrium-ring-${i}`;
-    addNode({
-      id,
-      kind: 'atrium-ring',
-      x: Number((Math.cos(angle) * ringRadius).toFixed(2)),
-      z: Number((Math.sin(angle) * ringRadius).toFixed(2)),
-    });
-    connect('atrium-center', id);
-  }
-  for (let i = 0; i < ringCount; i += 1) {
-    connect(`atrium-ring-${i}`, `atrium-ring-${(i + 1) % ringCount}`);
-  }
+  const bounds = computeCampusBounds(rooms);
+  const entry = { x: bounds.centerX, z: bounds.maxZ + 2.4 };
+  addNode({ id: 'main-entry', kind: 'main-entry', ...entry });
 
-  // Connect each room's doorway to the nearest Atrium Ring node via a corridor segment
+  // Connect each neighborhood to the entry with an obstacle-aware path.
   for (const room of rooms) {
     const doorwayX = room.doorway ? room.doorway.x : room.x;
     const doorwayZ = room.doorway
@@ -844,23 +830,10 @@ export function buildCampusNavGraph(rooms: readonly OfficeRoomConfig[]): CampusN
     addNode({ id: aisleId, kind: 'room-aisle', roomId: room.id, x: room.x, z: room.z });
     connect(doorwayId, aisleId);
 
-    // Find closest atrium ring node
-    let nearestRingId = 'atrium-ring-0';
-    let bestDist = Infinity;
-    for (let i = 0; i < ringCount; i += 1) {
-      const rNode = nodes.get(`atrium-ring-${i}`)!;
-      const d = Math.hypot(doorwayX - rNode.x, doorwayZ - rNode.z);
-      if (d < bestDist) {
-        bestDist = d;
-        nearestRingId = rNode.id;
-      }
-    }
-
-    const ringNode = nodes.get(nearestRingId)!;
     const width = room.kind === 'unassigned-holding' ? 1.1 : 1.35;
     const points = routeAroundRooms(
       { x: doorwayX, z: doorwayZ },
-      { x: ringNode.x, z: ringNode.z },
+      entry,
       rooms,
       room.id,
       width,
@@ -873,16 +846,16 @@ export function buildCampusNavGraph(rooms: readonly OfficeRoomConfig[]): CampusN
       connect(previousNodeId, junctionId);
       previousNodeId = junctionId;
     }
-    connect(previousNodeId, nearestRingId);
+    connect(previousNodeId, 'main-entry');
 
     corridors.push({
       id: `corridor-${room.id}`,
       fromRoomId: room.id,
-      toNodeId: nearestRingId,
+      toNodeId: 'main-entry',
       startX: doorwayX,
       startZ: doorwayZ,
-      endX: ringNode.x,
-      endZ: ringNode.z,
+      endX: entry.x,
+      endZ: entry.z,
       points,
       width,
       isUnassignedWing: room.kind === 'unassigned-holding',
@@ -893,7 +866,7 @@ export function buildCampusNavGraph(rooms: readonly OfficeRoomConfig[]): CampusN
 }
 
 /**
- * Computes the bounding box of all rooms + central atrium and the ideal camera distance
+ * Computes an adaptive envelope from occupied neighborhoods and the ideal camera distance
  * to frame the entire campus without clipping any department.
  */
 export function computeCampusBounds(rooms: readonly OfficeRoomConfig[]): CorporateCampusLayout['bounds'] {
@@ -911,10 +884,10 @@ export function computeCampusBounds(rooms: readonly OfficeRoomConfig[]): Corpora
     };
   }
 
-  let minX = -3.8; // Include central atrium
-  let maxX = 3.8;
-  let minZ = -3.8;
-  let maxZ = 3.8;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
 
   for (const r of rooms) {
     minX = Math.min(minX, r.x - r.width / 2 - 1.2);

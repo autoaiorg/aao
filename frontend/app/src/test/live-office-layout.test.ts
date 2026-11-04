@@ -7,6 +7,10 @@ import {
   resolveLiveOrganizationAttribution,
 } from '../features/office/liveOfficeLayout';
 import { buildDepartmentInteriorLayout } from '../features/office/engine/officeLifeEngine';
+import {
+  planOfficeZones,
+  WORK_NEIGHBORHOOD_CLEARANCE_METERS,
+} from '../features/office/spatialPlanningEngine';
 
 const unit = (id: string, code: string, name = code, parentId: string | null = null): OrgUnit => ({
   id,
@@ -77,7 +81,18 @@ describe('capacity-aware spatial layout', () => {
     const room = buildCorporateCampusLayout([team], agents).rooms.find(({ id }) => id === team.id)!;
 
     expect(room.workstationCapacity).toBe(count);
-    expect(buildDepartmentInteriorLayout(room).workstations).toHaveLength(count);
+    const desks = buildDepartmentInteriorLayout(room).workstations;
+    expect(desks).toHaveLength(count);
+    expect(new Set(desks.map(({ deskWorldX, deskWorldZ }) => `${deskWorldX}:${deskWorldZ}`)).size).toBe(count);
+    if (count === 1) {
+      expect(desks[0].deskLocalX).toBe(0);
+      expect(room.width).toBeLessThan(4);
+      expect(room.depth).toBeLessThan(4);
+    }
+    if (count === 8) {
+      expect(room.width).toBeLessThan(8);
+      expect(room.depth).toBeLessThan(5);
+    }
   });
 
   it('excludes historical and unassigned identities from departmental desk counts', () => {
@@ -213,7 +228,7 @@ describe('Phase 1 & 2 (Iteración 2): resolveLiveOrganizationAttribution & build
     expect(diagnostics.byAgentId.get('ag-orphan')?.reason).toBe('ORPHAN_UNIT_REFERENCE');
   });
 
-  it('produces arrival-order-invariant layouts, avoids Central Atrium collisions, and uses exact assigned-agent counts', () => {
+  it('produces arrival-order-invariant compact neighborhoods, keeps exact counts, and routes to the entry', () => {
     const unitsOrderA = [
       unit('unit-unassigned', 'UNKNOWN', 'Adscripción desconocida'),
       unit('unit-ops', 'OPS', 'Operaciones'),
@@ -235,11 +250,9 @@ describe('Phase 1 & 2 (Iteración 2): resolveLiveOrganizationAttribution & build
     expect(layoutA.rooms).toEqual(layoutB.rooms);
     expect(layoutA.normalizedAgents).toEqual(layoutB.normalizedAgents);
 
-    // Verify no room overlaps the Central Coordination Atrium at (0, 0)
-    for (const room of layoutA.rooms) {
-      const distFromAtrium = Math.hypot(room.x, room.z);
-      expect(distFromAtrium).toBeGreaterThanOrEqual(4.5);
-    }
+    // There is no reserved central plaza: the occupied work neighborhood may
+    // use the origin, and circulation is anchored to the actual main entry.
+    expect(layoutA.rooms.some((room) => room.x === 0 && room.z === 0)).toBe(true);
 
     // Neutral/unassigned identities are not assigned fake department desks.
     const holdingRoom = layoutA.rooms.find((r) => r.id === 'unit-unassigned');
@@ -247,11 +260,12 @@ describe('Phase 1 & 2 (Iteración 2): resolveLiveOrganizationAttribution & build
     expect(holdingRoom?.kind).toBe('unassigned-holding');
     expect(holdingRoom?.workstationCapacity).toBe(0);
 
-    // Verify navigable graph connects Atrium to every room doorway and aisle
+    // Verify navigable graph connects the building entry to every doorway and aisle.
     const navGraph = buildCampusNavGraph(layoutA.rooms);
-    expect(navGraph.nodes.has('atrium-center')).toBe(true);
-    const reachable = new Set(['atrium-center']);
-    const pending = ['atrium-center'];
+    expect(navGraph.nodes.has('main-entry')).toBe(true);
+    expect([...navGraph.nodes.keys()].some((id) => id.startsWith('atrium-ring-'))).toBe(false);
+    const reachable = new Set(['main-entry']);
+    const pending = ['main-entry'];
     while (pending.length > 0) {
       const current = pending.shift()!;
       for (const neighbor of navGraph.adjacency.get(current) ?? []) {
@@ -265,6 +279,28 @@ describe('Phase 1 & 2 (Iteración 2): resolveLiveOrganizationAttribution & build
       expect(navGraph.nodes.has(`aisle-${room.id}`)).toBe(true);
       expect(navGraph.corridors.some((c) => c.fromRoomId === room.id)).toBe(true);
       expect(reachable.has(`aisle-${room.id}`)).toBe(true);
+    }
+  });
+
+  it('uses deterministic free-form neighborhood candidates rather than a fixed world grid', () => {
+    const requests = Array.from({ length: 7 }, (_, index) => ({
+      id: `zone-${index}`,
+      parentId: null,
+      width: 4.8,
+      depth: 4.2,
+    }));
+    const first = planOfficeZones(requests);
+    expect(planOfficeZones(requests)).toEqual(first);
+    expect(first[0]).toMatchObject({ x: 0, z: 0 });
+    expect(first.some((zone) => Math.abs(zone.x / 8 - Math.round(zone.x / 8)) > 0.02 ||
+      Math.abs(zone.z / 6.5 - Math.round(zone.z / 6.5)) > 0.02)).toBe(true);
+    for (let left = 0; left < first.length; left += 1) {
+      for (let right = left + 1; right < first.length; right += 1) {
+        const a = first[left];
+        const b = first[right];
+        expect(Math.abs(a.x - b.x) < (a.width + b.width) / 2 + WORK_NEIGHBORHOOD_CLEARANCE_METERS &&
+          Math.abs(a.z - b.z) < (a.depth + b.depth) / 2 + WORK_NEIGHBORHOOD_CLEARANCE_METERS).toBe(false);
+      }
     }
   });
 
@@ -290,6 +326,21 @@ describe('Phase 1 & 2 (Iteración 2): resolveLiveOrganizationAttribution & build
           }
         }
       }
+    }
+  });
+
+  it('keeps circulation routable for growing LIVE neighborhoods with mixed desk counts', () => {
+    for (const departmentCount of [1, 2, 4, 8, 16, 32]) {
+      const units = Array.from({ length: departmentCount }, (_, index) =>
+        unit(`unit-growth-${String(index).padStart(2, '0')}`, `G${index}`, `Growth ${index}`),
+      );
+      const agents = units.flatMap((department, index) =>
+        Array.from({ length: index % 9 }, (_, agentIndex) =>
+          makeAgent({ id: `${department.id}-agent-${agentIndex}`, unitId: department.id, credentialStatus: 'ENABLED' }),
+        ),
+      );
+
+      expect(() => buildCorporateCampusLayout(units, agents, { isDemo: false })).not.toThrow();
     }
   });
 

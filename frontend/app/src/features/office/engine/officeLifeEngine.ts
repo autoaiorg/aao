@@ -426,33 +426,18 @@ export function buildDepartmentInteriorLayout(room: OfficeRoomConfig): Departmen
   // A missing capacity is a legacy rendering contract (e.g. static OFFICE_ROOMS fixtures).
   // Data-driven LIVE/DEMO layouts always set an exact observed count, including zero.
   const capacity = Math.max(0, room.workstationCapacity ?? 4);
-  const localConfigs: Array<{ deskX: number; deskZ: number; chairX: number; chairZ: number; facing: number }> = [
-    // Front-left workstation (agent sits facing -Z toward monitor)
-    { deskX: -1.25, deskZ: -0.95, chairX: -1.25, chairZ: -0.42, facing: Math.PI },
-    // Front-right workstation (agent sits facing -Z toward monitor)
-    { deskX: 1.25, deskZ: -0.95, chairX: 1.25, chairZ: -0.42, facing: Math.PI },
-    // Rear-left workstation (agent sits facing -Z toward monitor)
-    { deskX: -1.25, deskZ: 0.35, chairX: -1.25, chairZ: 0.88, facing: Math.PI },
-    // Rear-right workstation (agent sits facing -Z toward monitor)
-    { deskX: 1.25, deskZ: 0.35, chairX: 1.25, chairZ: 0.88, facing: Math.PI },
-  ];
+  const columns = Math.max(1, Math.min(4, Math.ceil(capacity / 2)));
+  const rows = Math.max(1, Math.ceil(capacity / columns));
+  const localConfigs = Array.from({ length: capacity }, (_, slotIndex) => {
+    const row = Math.floor(slotIndex / columns);
+    const column = slotIndex % columns;
+    const countInRow = Math.min(columns, capacity - row * columns);
+    const deskX = (column - (countInRow - 1) / 2) * 1.35;
+    const deskZ = (row - (rows - 1) / 2) * 1.55;
+    return { deskX, deskZ, chairX: deskX, chairZ: deskZ + 0.55, facing: Math.PI };
+  });
 
-  // If the department or holding wing has > 4 agents, add lateral workstation pairs so every agent gets a dedicated station
-  if (capacity > 4) {
-    const extraPairs = Math.ceil((capacity - 4) / 2);
-    for (let p = 0; p < extraPairs; p += 1) {
-      const colOffset = 2.35 + Math.floor(p / 2) * 1.1;
-      const isRearRow = p % 2 === 1;
-      const deskZ = isRearRow ? 0.35 : -0.95;
-      const chairZ = isRearRow ? 0.88 : -0.42;
-      localConfigs.push(
-        { deskX: -colOffset, deskZ, chairX: -colOffset, chairZ, facing: Math.PI },
-        { deskX: colOffset, deskZ, chairX: colOffset, chairZ, facing: Math.PI }
-      );
-    }
-  }
-
-  const workstations: WorkstationSlot[] = localConfigs.slice(0, capacity).map((cfg, idx) => ({
+  const workstations: WorkstationSlot[] = localConfigs.map((cfg, idx) => ({
     slotIndex: idx,
     deskLocalX: cfg.deskX,
     deskLocalZ: cfg.deskZ,

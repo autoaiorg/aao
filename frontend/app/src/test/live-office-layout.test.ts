@@ -372,6 +372,26 @@ describe('Phase 1 & 2 (Iteración 2): resolveLiveOrganizationAttribution & build
     }
   });
 
+  it('keeps the executive neighborhood connected across large LIVE organizations', () => {
+    for (const departmentCount of [2, 16, 32]) {
+      for (const executiveAgentCount of [0, 1, 3, 8]) {
+        const units = [unit('unit-exec', 'EXEC', 'Dirección Ejecutiva'), ...Array.from(
+          { length: departmentCount - 1 },
+          (_, index) => unit(`unit-route-${String(index).padStart(2, '0')}`, `R${index}`, `Routing ${index}`),
+        )];
+        const agents = units.flatMap((department, index) =>
+          Array.from({ length: index === 0 ? executiveAgentCount : index % 9 }, (_, agentIndex) => makeAgent({
+            id: `${department.id}-agent-${agentIndex}`,
+            unitId: department.id,
+            credentialStatus: 'ENABLED',
+          })),
+        );
+
+        expect(() => buildCorporateCampusLayout(units, agents, { isDemo: false })).not.toThrow();
+      }
+    }
+  });
+
   it('preserves positions and routes after existing departments gain or lose agents', () => {
     const units = [
       unit('unit-exec', 'EXEC', 'Dirección Ejecutiva'),

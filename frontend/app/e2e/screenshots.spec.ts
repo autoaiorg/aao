@@ -3,6 +3,9 @@ import path from 'path';
 import fs from 'fs';
 
 test('Capture real screenshots of F4.7 and F4.8 Office', async ({ page }) => {
+  // This capture exercises WebGL scene initialization and post-selection camera
+  // interaction; its real-browser cost exceeds Playwright's 30s default here.
+  test.setTimeout(60_000);
   const screenshotsDir = path.resolve(process.cwd(), 'docs/screenshots');
   const v42EvidenceDir = path.join(screenshotsDir, 'v42-comparison');
   if (!fs.existsSync(screenshotsDir)) {

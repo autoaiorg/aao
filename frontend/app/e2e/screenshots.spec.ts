@@ -54,6 +54,13 @@ test('Capture real screenshots of F4.7 and F4.8 Office', async ({ page }) => {
     await agentButton.click();
     await page.waitForTimeout(500);
     await page.screenshot({ path: path.join(screenshotsDir, '03-office-agent-inspector.png'), fullPage: false });
+    const zoomIn = toolbar.getByRole('button', { name: 'Acercar zoom' });
+    for (let step = 0; step < 3; step += 1) await zoomIn.click({ force: true });
+    await page.waitForTimeout(1200);
+    await page.screenshot({
+      path: path.join(v42EvidenceDir, 'office-operational-department-close.png'),
+      fullPage: false,
+    });
   }
 
   // Capture 4: Accessible 2D Plan

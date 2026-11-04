@@ -1279,7 +1279,11 @@ export class ThreeOfficeScene {
       depthTest: false,
     });
     const sprite = new THREE.Sprite(spriteMat);
-    sprite.scale.set(1.9, 0.54, 1);
+    // At overview distance the scene is framed to include the whole building;
+    // slightly larger markers keep department IDs legible without turning into
+    // oversized floating panels. The adaptive LOD layer still suppresses them
+    // when they overlap or when users focus on a detail.
+    sprite.scale.set(2.4, 0.68, 1);
     return sprite;
   }
 
@@ -1404,7 +1408,7 @@ export class ThreeOfficeScene {
       if (!state) return;
       sprite.visible = state.visible;
       sprite.position.y = state.yOffset;
-      sprite.scale.set(1.9 * state.scale, 0.54 * state.scale, 1);
+      sprite.scale.set(2.4 * state.scale, 0.68 * state.scale, 1);
     });
 
     this.agentMeshes.forEach((group, agentId) => {

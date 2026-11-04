@@ -226,6 +226,9 @@ describe('PR C: Office Furniture, Procedural IDE Textures, Biophilia & Lighting'
       expect(frontGlass.geometry.parameters.width).toBeLessThan(0.5);
       expect(sideGlass.material.opacity).toBeLessThan(0.15);
       expect(room!.getObjectByName('department-wall-sign')).toBeDefined();
+      const departmentLabel = room!.children.find((child) => child instanceof THREE.Sprite);
+      expect(departmentLabel).toBeDefined();
+      expect((departmentLabel as THREE.Sprite).scale.x).toBeGreaterThan(1.8);
     });
 
     it('keeps an accessible opening in the continuous curtain facade', () => {

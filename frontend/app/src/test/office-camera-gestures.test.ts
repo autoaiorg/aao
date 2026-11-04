@@ -144,6 +144,9 @@ describe('Immersive Gestural Camera Controls & Navigation (PR B)', () => {
     const event = new MouseEvent(type, { bubbles: true, ...options }) as any;
     event.pointerId = options.pointerId ?? 1;
     event.pointerType = options.pointerType ?? 'touch';
+    if (options.buttons !== undefined) {
+      Object.defineProperty(event, 'buttons', { value: options.buttons, configurable: true });
+    }
     return event;
   }
 
@@ -211,5 +214,78 @@ describe('Immersive Gestural Camera Controls & Navigation (PR B)', () => {
     // Camera target reset towards center
     const resetTarget = scene.getDesiredTarget();
     expect(resetTarget.x).toBeLessThan(pannedTarget.x);
+  });
+
+  it('navigates across the floor plate via keyboard controls (W, A, S, D, Q, E)', () => {
+    const initialTarget = scene.getDesiredTarget().clone();
+    const initialAngle = scene.getCameraAngle().angle;
+
+    // Simulate holding 'W' (move forward in camera gaze direction)
+    scene.simulateKeyboardKey('w', true);
+    scene.stepAnimation(100);
+    scene.simulateKeyboardKey('w', false);
+
+    const afterWTarget = scene.getDesiredTarget().clone();
+    expect(afterWTarget.distanceTo(initialTarget)).toBeGreaterThan(0.01);
+
+    // Simulate holding 'D' (strafe right relative to gaze direction)
+    scene.simulateKeyboardKey('d', true);
+    scene.stepAnimation(200);
+    scene.simulateKeyboardKey('d', false);
+
+    const afterDTarget = scene.getDesiredTarget().clone();
+    expect(afterDTarget.distanceTo(afterWTarget)).toBeGreaterThan(0.01);
+
+    // Simulate holding 'Q' (orbit yaw left)
+    scene.simulateKeyboardKey('q', true);
+    scene.stepAnimation(300);
+    scene.simulateKeyboardKey('q', false);
+
+    const afterQAngle = scene.getCameraAngle().angle;
+    expect(afterQAngle).not.toBe(initialAngle);
+
+    // Space key re-centers / resets overview when no agent active
+    scene.simulateKeyboardKey(' ', true);
+    scene.stepAnimation(400);
+    scene.simulateKeyboardKey(' ', false);
+  });
+
+  it('handles right-click orbital drag to adjust view perspective without triggering selection', () => {
+    const initialAngle = scene.getCameraAngle();
+
+    // Right-click pointer down (buttons: 2)
+    const downEvent = createPointerEvent('pointerdown', {
+      pointerId: 1,
+      pointerType: 'mouse',
+      clientX: 500,
+      clientY: 300,
+      buttons: 2,
+    });
+    canvas.dispatchEvent(downEvent);
+
+    // Right-click drag move
+    const moveEvent = createPointerEvent('pointermove', {
+      pointerId: 1,
+      pointerType: 'mouse',
+      clientX: 540,
+      clientY: 330,
+      buttons: 2,
+    });
+    canvas.dispatchEvent(moveEvent);
+
+    // Right-click pointer up
+    const upEvent = createPointerEvent('pointerup', {
+      pointerId: 1,
+      pointerType: 'mouse',
+      clientX: 540,
+      clientY: 330,
+      buttons: 0,
+    });
+    canvas.dispatchEvent(upEvent);
+
+    const newAngle = scene.getCameraAngle();
+    expect(newAngle.angle).not.toBe(initialAngle.angle);
+    expect(callbacks.onSelectRoom).not.toHaveBeenCalled();
+    expect(callbacks.onSelectAgent).not.toHaveBeenCalled();
   });
 });

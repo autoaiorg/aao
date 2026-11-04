@@ -19,12 +19,25 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(autouse=True)
 def _no_live_cycles_from_earlier_tests(monkeypatch):
-    """The concurrency cap is per project; earlier tests' live cycles would consume it."""
+    """Clear disposable-DB cycle reservations left by earlier production-path tests."""
     from aao.postgresql_connection import connect_postgres
 
     monkeypatch.setenv("AAO_ENV", "test")
     monkeypatch.setenv("AAO_POSTGRES_URL", os.environ["AAO_TEST_POSTGRES_URL"])
     with connect_postgres() as db:
+        # The production concurrency cap counts live PENDING/COMPLETED mTLS
+        # intents, even when their principals or bindings have since been
+        # disabled. Revoke through the bounded database function (rather than
+        # editing the protected intent table) so those test reservations do
+        # not leak across test cases.
+        intent_ids = db.execute(
+            "SELECT intent_id FROM selfdev_cycle_mtls_intents "
+            "WHERE state IN ('PENDING','COMPLETED')"
+        ).fetchall()
+        for (intent_id,) in intent_ids:
+            db.execute(
+                "SELECT revoke_selfdev_cycle_mtls_intent(%s)", (intent_id,)
+            )
         db.execute(
             "UPDATE principal_credentials SET enabled=false "
             "WHERE principal_id ~ '^aao-selfdev-(impl|review)-' AND enabled"

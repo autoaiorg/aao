@@ -66,6 +66,36 @@ export type OperationalStateCategory =
   | 'DESCONECTADO'
   | 'HISTORICO';
 
+export type OfficeZoneKind =
+  | 'canonical-department'
+  | 'unassigned-holding'
+  | 'executive-suite'
+  | 'audit-enclave'
+  | 'agile-squad-pod'
+  | 'onboarding-lobby';
+
+export type OfficeFloorFinish =
+  | 'acoustic-carpet'
+  | 'hardwood-walnut'
+  | 'polished-terrazzo'
+  | 'high-security-frosted';
+
+export interface OfficeDoorwayPortal {
+  x: number;
+  z: number;
+  width: number;
+  facingAngle: number;
+}
+
+export interface OfficeGlassWallSegment {
+  startX: number;
+  startZ: number;
+  endX: number;
+  endZ: number;
+  height: number;
+  hasManifestationBand?: boolean;
+}
+
 export interface OfficeRoomConfig {
   id: string;
   code: string;
@@ -76,7 +106,10 @@ export interface OfficeRoomConfig {
   depth: number;
   color: string;
   accentColor: string;
-  kind?: 'canonical-department' | 'unassigned-holding';
+  kind?: OfficeZoneKind;
+  floorFinish?: OfficeFloorFinish;
+  doorway?: OfficeDoorwayPortal;
+  glassWalls?: OfficeGlassWallSegment[];
   parentId?: string | null;
   workstationCapacity?: number;
 }
@@ -92,6 +125,8 @@ export const OFFICE_ROOMS: OfficeRoomConfig[] = [
     depth: 4.2,
     color: '#1e3a8a',
     accentColor: '#3b82f6',
+    kind: 'executive-suite',
+    floorFinish: 'hardwood-walnut',
   },
   {
     id: 'unit-gov',
@@ -103,6 +138,8 @@ export const OFFICE_ROOMS: OfficeRoomConfig[] = [
     depth: 4.2,
     color: '#4c1d95',
     accentColor: '#8b5cf6',
+    kind: 'canonical-department',
+    floorFinish: 'acoustic-carpet',
   },
   {
     id: 'unit-audit',
@@ -114,6 +151,8 @@ export const OFFICE_ROOMS: OfficeRoomConfig[] = [
     depth: 4.2,
     color: '#064e3b',
     accentColor: '#10b981',
+    kind: 'audit-enclave',
+    floorFinish: 'high-security-frosted',
   },
   {
     id: 'unit-arch',
@@ -125,6 +164,8 @@ export const OFFICE_ROOMS: OfficeRoomConfig[] = [
     depth: 4.2,
     color: '#78350f',
     accentColor: '#f59e0b',
+    kind: 'canonical-department',
+    floorFinish: 'acoustic-carpet',
   },
   {
     id: 'unit-eng',
@@ -136,6 +177,8 @@ export const OFFICE_ROOMS: OfficeRoomConfig[] = [
     depth: 4.2,
     color: '#164e63',
     accentColor: '#06b6d4',
+    kind: 'canonical-department',
+    floorFinish: 'acoustic-carpet',
   },
   {
     id: 'unit-ops',
@@ -147,6 +190,8 @@ export const OFFICE_ROOMS: OfficeRoomConfig[] = [
     depth: 4.2,
     color: '#713f12',
     accentColor: '#d97706',
+    kind: 'canonical-department',
+    floorFinish: 'acoustic-carpet',
   },
 ];
 

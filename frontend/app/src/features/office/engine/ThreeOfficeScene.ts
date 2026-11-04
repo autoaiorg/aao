@@ -42,6 +42,7 @@ export interface ThreeSceneOptions {
   renderer?: THREE.WebGLRenderer;
   rooms?: OfficeRoomConfig[];
   demoFurniture?: boolean;
+  dragMode?: 'pan' | 'orbit';
   activeCoordinationAgentIds?: ReadonlySet<string>;
 }
 
@@ -174,6 +175,10 @@ export class ThreeOfficeScene {
   private mouse = new THREE.Vector2();
   private pointerDownPos = new THREE.Vector2();
   private isDragging = false;
+  private readonly activePointers = new Map<number, { x: number; y: number }>();
+  private lastPinchDistance: number | null = null;
+  private lastTwoFingerAngle: number | null = null;
+  private gestureDragDistance = 0;
 
   // Camera Orbit, Smart Zoom & Follow parameters
   private cameraAngle = 35; // degrees around Y
@@ -430,11 +435,20 @@ export class ThreeOfficeScene {
     // Continuous Corporate Campus Floor Slab
     const campusSlab = new THREE.Mesh(
       new THREE.BoxGeometry(width - 1.5, 0.12, depth - 1.5),
-      new THREE.MeshStandardMaterial({ color: 0x0f1d33, roughness: 0.75, metalness: 0.2 })
+      new THREE.MeshStandardMaterial({ color: 0x111c2e, roughness: 0.65, metalness: 0.25 })
     );
     campusSlab.position.y = -0.04;
     campusSlab.receiveShadow = true;
     this.groundGroup.add(campusSlab);
+
+    // Polished Central Circulation Spine (terrazzo plaza connecting campus corridors)
+    const centralPlaza = new THREE.Mesh(
+      new THREE.BoxGeometry(Math.min(width - 3, 7.2), 0.02, Math.min(depth - 3, 7.2)),
+      new THREE.MeshStandardMaterial({ color: 0x18283e, roughness: 0.35, metalness: 0.45 })
+    );
+    centralPlaza.position.y = 0.022;
+    centralPlaza.receiveShadow = true;
+    this.groundGroup.add(centralPlaza);
 
     const ground = new THREE.Mesh(
       new THREE.BoxGeometry(width + 6, 0.4, depth + 6),
@@ -519,10 +533,28 @@ export class ThreeOfficeScene {
 
     // Platform Slab (Interactive room target — ONLY mesh added to interactiveMeshes for rooms)
     const platGeo = new THREE.BoxGeometry(room.width, 0.35, room.depth);
+    let platColor = new THREE.Color(room.color).multiplyScalar(isUnassignedHolding ? 0.55 : 0.72);
+    let platRoughness = isUnassignedHolding ? 0.8 : 0.58;
+    let platMetalness = isUnassignedHolding ? 0.15 : 0.3;
+
+    if (room.floorFinish === 'hardwood-walnut' || room.kind === 'executive-suite') {
+      platColor = new THREE.Color(0x2a1c14);
+      platRoughness = 0.38;
+      platMetalness = 0.18;
+    } else if (room.floorFinish === 'high-security-frosted' || room.kind === 'audit-enclave') {
+      platColor = new THREE.Color(0x0e2620);
+      platRoughness = 0.46;
+      platMetalness = 0.26;
+    } else if (room.kind === 'agile-squad-pod') {
+      platColor = new THREE.Color(0x13283a);
+      platRoughness = 0.62;
+      platMetalness = 0.22;
+    }
+
     const platMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(room.color).multiplyScalar(isUnassignedHolding ? 0.55 : 0.72),
-      roughness: isUnassignedHolding ? 0.8 : 0.58,
-      metalness: isUnassignedHolding ? 0.15 : 0.3,
+      color: platColor,
+      roughness: platRoughness,
+      metalness: platMetalness,
     });
     const platform = new THREE.Mesh(platGeo, platMat);
     platform.position.y = 0.175;
@@ -828,6 +860,34 @@ export class ThreeOfficeScene {
     const lintel = new THREE.Mesh(lintelGeo, lintelMat);
     lintel.position.set(0, 1.26, frontZ);
     group.add(lintel);
+
+    // 4. Acoustic Manifestation Band for Audit Enclave (eye level 0.85m)
+    const isAuditEnclave = room.kind === 'audit-enclave' || room.id === 'unit-audit';
+    if (isAuditEnclave) {
+      const manifestSideGeo = new THREE.BoxGeometry(0.088, 0.14, room.depth * 0.68 + 0.02);
+      const manifestFrontGeo = new THREE.BoxGeometry(frontPanelWidth + 0.02, 0.14, 0.088);
+      const manifestMat = new THREE.MeshBasicMaterial({
+        color: 0x34d399,
+        transparent: true,
+        opacity: 0.65,
+      });
+
+      const mLeft = new THREE.Mesh(manifestSideGeo, manifestMat);
+      mLeft.position.set(-room.width / 2 + 0.12, 0.85, 0);
+      group.add(mLeft);
+
+      const mRight = new THREE.Mesh(manifestSideGeo, manifestMat);
+      mRight.position.set(room.width / 2 - 0.12, 0.85, 0);
+      group.add(mRight);
+
+      const mFrontL = new THREE.Mesh(manifestFrontGeo, manifestMat);
+      mFrontL.position.set(-doorwayWidth / 2 - frontPanelWidth / 2, 0.85, frontZ);
+      group.add(mFrontL);
+
+      const mFrontR = new THREE.Mesh(manifestFrontGeo, manifestMat);
+      mFrontR.position.set(doorwayWidth / 2 + frontPanelWidth / 2, 0.85, frontZ);
+      group.add(mFrontR);
+    }
   }
 
   private buildDepartmentAccentEquipment(group: THREE.Group, room: OfficeRoomConfig): void {
@@ -1100,6 +1160,34 @@ export class ThreeOfficeScene {
         this.updateCameraPosition();
       }
     }
+  }
+
+  public orbitCamera(deltaAngle: number, deltaElevation = 0): void {
+    this.followSelectedAgent = false;
+    this.cameraAngle = (this.cameraAngle + deltaAngle) % 360;
+    this.cameraElevation = Math.max(15, Math.min(75, this.cameraElevation + deltaElevation));
+    this.updateCameraPosition();
+    this.syncAdaptiveLabels();
+  }
+
+  public getCameraAngle(): { angle: number; elevation: number } {
+    return { angle: this.cameraAngle, elevation: this.cameraElevation };
+  }
+
+  public simulateGesturePan(deltaScreenX: number, deltaScreenY: number): void {
+    const rad = (this.cameraAngle * Math.PI) / 180;
+    const panSensitivity = 0.024 * (this.cameraDistance / 24);
+    const worldDeltaX = (-deltaScreenX * Math.cos(rad) + deltaScreenY * Math.sin(rad)) * panSensitivity;
+    const worldDeltaZ = (-deltaScreenX * Math.sin(rad) - deltaScreenY * Math.cos(rad)) * panSensitivity;
+    this.panCamera(worldDeltaX, worldDeltaZ);
+  }
+
+  public simulateGesturePinch(scaleFactor: number): void {
+    this.zoomCamera(scaleFactor);
+  }
+
+  public simulateGestureRotate(deltaDegrees: number): void {
+    this.orbitCamera(-deltaDegrees);
   }
 
   public isFollowingAgent(): boolean {
@@ -1383,7 +1471,12 @@ export class ThreeOfficeScene {
     dom.addEventListener('pointerdown', this.handlePointerDown);
     dom.addEventListener('pointermove', this.handlePointerMove);
     dom.addEventListener('pointerup', this.handlePointerUp);
+    dom.addEventListener('pointercancel', this.handlePointerCancel);
+    dom.addEventListener('dblclick', this.handleDblClick);
+    dom.addEventListener('contextmenu', this.handleContextMenu);
     dom.addEventListener('wheel', this.handleWheel, { passive: false });
+    dom.addEventListener('touchstart', this.handleTouchStart, { passive: false });
+    dom.addEventListener('touchmove', this.handleTouchMove, { passive: false });
     dom.addEventListener('webglcontextlost', this.handleContextLost as EventListener);
     dom.addEventListener('webglcontextrestored', this.handleContextRestored as EventListener);
   }
@@ -1402,74 +1495,193 @@ export class ThreeOfficeScene {
   };
 
   private handlePointerDown = (e: PointerEvent): void => {
+    this.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     this.pointerDownPos.set(e.clientX, e.clientY);
     this.isDragging = false;
-    this.renderer.domElement.setPointerCapture(e.pointerId);
+    this.gestureDragDistance = 0;
+
+    if (this.activePointers.size === 2) {
+      const [p1, p2] = Array.from(this.activePointers.values());
+      this.lastPinchDistance = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+      this.lastTwoFingerAngle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+    }
+
+    if (typeof this.renderer.domElement.setPointerCapture === 'function') {
+      try {
+        this.renderer.domElement.setPointerCapture(e.pointerId);
+      } catch {
+        // Safe fallback in test environments
+      }
+    }
   };
 
   private handlePointerMove = (e: PointerEvent): void => {
+    if (this.activePointers.has(e.pointerId)) {
+      this.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    }
+
+    // 1. Two-finger Gestures: Pinch-to-zoom & Two-finger Orbit
+    if (this.activePointers.size === 2) {
+      const [p1, p2] = Array.from(this.activePointers.values());
+      const currentDistance = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+      const currentAngle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+
+      if (this.lastPinchDistance && this.lastPinchDistance > 10) {
+        const pinchRatio = this.lastPinchDistance / Math.max(10, currentDistance);
+        this.zoomCamera(1 + (pinchRatio - 1) * 0.75);
+      }
+      this.lastPinchDistance = currentDistance;
+
+      if (this.lastTwoFingerAngle !== null) {
+        let deltaAngleRad = currentAngle - this.lastTwoFingerAngle;
+        if (deltaAngleRad > Math.PI) deltaAngleRad -= Math.PI * 2;
+        if (deltaAngleRad < -Math.PI) deltaAngleRad += Math.PI * 2;
+        const deltaDeg = (deltaAngleRad * 180) / Math.PI;
+        this.orbitCamera(-deltaDeg * 0.9);
+      }
+      this.lastTwoFingerAngle = currentAngle;
+      this.isDragging = true;
+      return;
+    }
+
+    // 2. Single-finger / Single-pointer Drag
     const deltaX = e.clientX - this.pointerDownPos.x;
     const deltaY = e.clientY - this.pointerDownPos.y;
 
-    if (e.buttons === 1) {
-      if (Math.abs(deltaX) > 4 || Math.abs(deltaY) > 4) {
+    if (e.buttons !== 0 || e.pointerType === 'touch') {
+      this.gestureDragDistance += Math.hypot(deltaX, deltaY);
+      if (this.gestureDragDistance > 4) {
         this.isDragging = true;
       }
+
       if (this.isDragging) {
-        this.cameraAngle = (this.cameraAngle - deltaX * 0.3) % 360;
-        this.cameraElevation = Math.max(15, Math.min(80, this.cameraElevation + deltaY * 0.25));
+        // Orbit on right-click, Shift+drag, or if dragMode === 'orbit'
+        const isOrbitDrag =
+          e.buttons === 2 || e.shiftKey || e.altKey || this.options.dragMode === 'orbit';
+
+        if (isOrbitDrag) {
+          this.orbitCamera(-deltaX * 0.3, deltaY * 0.25);
+          this.pointerDownPos.set(e.clientX, e.clientY);
+          return;
+        }
+
+        // Default: Smooth architectural pan across campus floor plate
+        const rad = (this.cameraAngle * Math.PI) / 180;
+        const panSensitivity = 0.024 * (this.cameraDistance / 24);
+        const worldDeltaX = (-deltaX * Math.cos(rad) + deltaY * Math.sin(rad)) * panSensitivity;
+        const worldDeltaZ = (-deltaX * Math.sin(rad) - deltaY * Math.cos(rad)) * panSensitivity;
+
+        this.panCamera(worldDeltaX, worldDeltaZ);
         this.pointerDownPos.set(e.clientX, e.clientY);
-        this.updateCameraPosition();
-        this.syncAdaptiveLabels();
         return;
       }
     }
 
+    // 3. Hover Raycasting (when not dragging)
     if (!this.isDragging) {
       const rect = this.renderer.domElement.getBoundingClientRect();
-      this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-      this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      if (rect.width > 0 && rect.height > 0) {
+        this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 
-      this.raycaster.setFromCamera(this.mouse, this.camera);
-      const intersects = this.raycaster.intersectObjects(this.interactiveMeshes, false);
+        this.raycaster.setFromCamera(this.mouse, this.camera);
+        const intersects = this.raycaster.intersectObjects(this.interactiveMeshes, false);
 
-      if (intersects.length > 0) {
-        const hit = intersects[0].object;
-        this.renderer.domElement.style.cursor = 'pointer';
-        if (hit.userData?.type === 'agent') {
-          this.options.callbacks.onHoverObject({ type: 'agent', id: hit.userData.id });
-        } else if (hit.userData?.type === 'room') {
-          this.options.callbacks.onHoverObject({ type: 'room', id: hit.userData.id });
+        if (intersects.length > 0) {
+          const hit = intersects[0].object;
+          this.renderer.domElement.style.cursor = 'pointer';
+          if (hit.userData?.type === 'agent') {
+            this.options.callbacks.onHoverObject({ type: 'agent', id: hit.userData.id });
+          } else if (hit.userData?.type === 'room') {
+            this.options.callbacks.onHoverObject({ type: 'room', id: hit.userData.id });
+          }
+        } else {
+          this.renderer.domElement.style.cursor = 'grab';
+          this.options.callbacks.onHoverObject(null);
         }
-      } else {
-        this.renderer.domElement.style.cursor = 'grab';
-        this.options.callbacks.onHoverObject(null);
       }
     }
   };
 
   private handlePointerUp = (e: PointerEvent): void => {
-    this.renderer.domElement.releasePointerCapture(e.pointerId);
-
-    if (!this.isDragging) {
-      const rect = this.renderer.domElement.getBoundingClientRect();
-      this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-      this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-
-      this.raycaster.setFromCamera(this.mouse, this.camera);
-      const intersects = this.raycaster.intersectObjects(this.interactiveMeshes, false);
-
-      if (intersects.length > 0) {
-        const hit = intersects[0].object;
-        if (hit.userData?.type === 'agent') {
-          this.options.callbacks.onSelectAgent(hit.userData.id);
-        } else if (hit.userData?.type === 'room') {
-          this.options.callbacks.onSelectRoom(hit.userData.id);
-        }
+    this.activePointers.delete(e.pointerId);
+    if (typeof this.renderer.domElement.releasePointerCapture === 'function') {
+      try {
+        this.renderer.domElement.releasePointerCapture(e.pointerId);
+      } catch {
+        // Safe fallback in test environments
       }
     }
 
-    this.isDragging = false;
+    if (this.activePointers.size === 0) {
+      if (!this.isDragging) {
+        const rect = this.renderer.domElement.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+          this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+          this.raycaster.setFromCamera(this.mouse, this.camera);
+          const intersects = this.raycaster.intersectObjects(this.interactiveMeshes, false);
+
+          if (intersects.length > 0) {
+            const hit = intersects[0].object;
+            if (hit.userData?.type === 'agent') {
+              this.options.callbacks.onSelectAgent(hit.userData.id);
+            } else if (hit.userData?.type === 'room') {
+              this.options.callbacks.onSelectRoom(hit.userData.id);
+            }
+          }
+        }
+      }
+
+      this.isDragging = false;
+      this.lastPinchDistance = null;
+      this.lastTwoFingerAngle = null;
+    }
+  };
+
+  private handlePointerCancel = (e: PointerEvent): void => {
+    this.activePointers.delete(e.pointerId);
+    if (this.activePointers.size === 0) {
+      this.isDragging = false;
+      this.lastPinchDistance = null;
+      this.lastTwoFingerAngle = null;
+    }
+  };
+
+  private handleContextMenu = (e: MouseEvent): void => {
+    e.preventDefault();
+  };
+
+  private handleDblClick = (e: MouseEvent): void => {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const width = rect.width > 0 ? rect.width : 1024;
+    const height = rect.height > 0 ? rect.height : 768;
+
+    this.mouse.x = ((e.clientX - (rect.left || 0)) / width) * 2 - 1;
+    this.mouse.y = -((e.clientY - (rect.top || 0)) / height) * 2 + 1;
+
+    this.raycaster.setFromCamera(this.mouse, this.camera);
+    const intersects = this.raycaster.intersectObjects(this.interactiveMeshes, false);
+    if (intersects.length > 0) {
+      const hit = intersects[0].object;
+      if (hit.userData?.type === 'agent') {
+        this.selectAgent(hit.userData.id);
+        this.setFollowAgent(true);
+      } else if (hit.userData?.type === 'room') {
+        this.selectRoom(hit.userData.id);
+      }
+    } else {
+      this.resetCamera();
+    }
+  };
+
+  private handleTouchStart = (e: TouchEvent): void => {
+    if (e.cancelable) e.preventDefault();
+  };
+
+  private handleTouchMove = (e: TouchEvent): void => {
+    if (e.cancelable) e.preventDefault();
   };
 
   private handleWheel = (e: WheelEvent): void => {
@@ -1626,7 +1838,12 @@ export class ThreeOfficeScene {
       dom.removeEventListener('pointerdown', this.handlePointerDown);
       dom.removeEventListener('pointermove', this.handlePointerMove);
       dom.removeEventListener('pointerup', this.handlePointerUp);
+      dom.removeEventListener('pointercancel', this.handlePointerCancel);
+      dom.removeEventListener('dblclick', this.handleDblClick);
+      dom.removeEventListener('contextmenu', this.handleContextMenu);
       dom.removeEventListener('wheel', this.handleWheel);
+      dom.removeEventListener('touchstart', this.handleTouchStart);
+      dom.removeEventListener('touchmove', this.handleTouchMove);
       dom.removeEventListener('webglcontextlost', this.handleContextLost as EventListener);
       dom.removeEventListener('webglcontextrestored', this.handleContextRestored as EventListener);
     }

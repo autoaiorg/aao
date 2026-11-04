@@ -703,6 +703,22 @@ function computeRoomDimensionsForAgents(
 }
 
 /**
+ * Selects a visual neighborhood module from explicit organizational language,
+ * never from generated/persisted identifiers or tree position. This is only a
+ * presentation hint; it does not imply backend authority or access control.
+ */
+export function selectOfficeZoneKind(unit: Pick<OrgUnit, 'name' | 'description' | 'leadRole'>): OfficeZoneKind {
+  const nature = `${unit.name} ${unit.description} ${unit.leadRole}`.normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  if (/\b(audit|auditoria|independencia|independent review|verificacion independiente)\b/.test(nature)) {
+    return 'audit-enclave';
+  }
+  if (/\b(executive|ejecutiva|direccion general|presidencia)\b/.test(nature)) return 'executive-suite';
+  if (/\b(agile squad|escuadra agil|squad temporal|equipo temporal)\b/.test(nature)) return 'agile-squad-pod';
+  return 'canonical-department';
+}
+
+/**
  * Phase 2 (P1): Deterministic Corporate Campus Spatial Generator.
  * Connects the Central Coordination Atrium (0, 0) to all canonical departments via navigable
  * architectural corridors and doorways, and segregates `unit-unassigned` into a distinct
@@ -813,9 +829,10 @@ export function buildCorporateCampusLayout(
     const [x, z] = [plannedById.get(unit.id)!.x, plannedById.get(unit.id)!.z];
     const [color, accentColor] = UNIT_COLORS[stableColorIndex(unit.id)];
 
-    // Organizational identity alone does not establish a special architectural role.
-    const kind: OfficeZoneKind = 'canonical-department';
-    const floorFinish: OfficeFloorFinish = 'acoustic-carpet';
+    // Use declared organizational nature only; the visual role grants no business authority.
+    const kind = selectOfficeZoneKind(unit);
+    const floorFinish: OfficeFloorFinish = kind === 'audit-enclave' ? 'high-security-frosted'
+      : kind === 'executive-suite' ? 'hardwood-walnut' : 'acoustic-carpet';
 
     const arch = computeRoomArchitectureFeatures({
       x,

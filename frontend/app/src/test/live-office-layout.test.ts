@@ -6,6 +6,7 @@ import {
   buildLiveOfficeRooms,
   computeArchitecturalOutline,
   resolveLiveOrganizationAttribution,
+  selectOfficeZoneKind,
 } from '../features/office/liveOfficeLayout';
 import { buildDepartmentInteriorLayout } from '../features/office/engine/officeLifeEngine';
 import {
@@ -66,6 +67,16 @@ describe('buildLiveOfficeRooms', () => {
 });
 
 describe('capacity-aware spatial layout', () => {
+  it('selects architectural modules from declared nature rather than unit IDs or hierarchy', () => {
+    const layout = buildCorporateCampusLayout([
+      unit('unit-audit', 'AUDIT', 'Equipo de Investigación'),
+      unit('org-42', 'ORG', 'Auditoría Independiente y Verificación'),
+    ], [], { isDemo: false });
+    expect(layout.rooms.find((room) => room.id === 'unit-audit')?.kind).toBe('canonical-department');
+    expect(layout.rooms.find((room) => room.id === 'org-42')?.kind).toBe('audit-enclave');
+    expect(selectOfficeZoneKind({ name: 'Dirección Ejecutiva', description: '', leadRole: '' })).toBe('executive-suite');
+  });
+
   it('places the navigation entry at the rendered envelope facade opening', () => {
     const rooms = buildCorporateCampusLayout([
       unit('unit-a', 'A'), unit('unit-b', 'B'), unit('unit-c', 'C'),
@@ -445,8 +456,8 @@ describe('Phase 1 & 2 (Iteración 2): resolveLiveOrganizationAttribution & build
 
     const execRoom = layout.rooms.find((r) => r.id === 'unit-exec')!;
     expect(execRoom).toBeDefined();
-    expect(execRoom.kind).toBe('canonical-department');
-    expect(execRoom.floorFinish).toBe('acoustic-carpet');
+    expect(execRoom.kind).toBe('executive-suite');
+    expect(execRoom.floorFinish).toBe('hardwood-walnut');
     expect(execRoom.doorway).toBeDefined();
     expect(execRoom.doorway?.width).toBe(1.4);
     expect(execRoom.glassWalls).toBeDefined();
@@ -454,9 +465,9 @@ describe('Phase 1 & 2 (Iteración 2): resolveLiveOrganizationAttribution & build
 
     const auditRoom = layout.rooms.find((r) => r.id === 'unit-audit')!;
     expect(auditRoom).toBeDefined();
-    expect(auditRoom.kind).toBe('canonical-department');
-    expect(auditRoom.floorFinish).toBe('acoustic-carpet');
-    expect(auditRoom.glassWalls?.some((w) => w.hasManifestationBand)).toBe(false);
+    expect(auditRoom.kind).toBe('audit-enclave');
+    expect(auditRoom.floorFinish).toBe('high-security-frosted');
+    expect(auditRoom.glassWalls?.some((w) => w.hasManifestationBand)).toBe(true);
 
     const subdivisionRoom = layout.rooms.find((r) => r.id === 'unit-subdivision-01')!;
     expect(subdivisionRoom).toBeDefined();

@@ -4,9 +4,11 @@ import fs from 'fs';
 
 test('Capture real screenshots of F4.7 and F4.8 Office', async ({ page }) => {
   const screenshotsDir = path.resolve(process.cwd(), 'docs/screenshots');
+  const v42EvidenceDir = path.join(screenshotsDir, 'v42-comparison');
   if (!fs.existsSync(screenshotsDir)) {
     fs.mkdirSync(screenshotsDir, { recursive: true });
   }
+  fs.mkdirSync(v42EvidenceDir, { recursive: true });
 
   // 1. Load app in DEMO mode to showcase 3D office
   await page.goto('/');
@@ -32,6 +34,12 @@ test('Capture real screenshots of F4.7 and F4.8 Office', async ({ page }) => {
 
   // Capture 1: General 3D Overview
   await page.screenshot({ path: path.join(screenshotsDir, '01-office-3d-overview.png'), fullPage: false });
+
+  // Capture the semantically selected Audit neighborhood separately from its sign.
+  const auditChip = toolbar.getByRole('button', { name: /\[AUDIT\]/i });
+  await auditChip.click({ force: true });
+  await page.waitForTimeout(800);
+  await page.screenshot({ path: path.join(v42EvidenceDir, 'office-audit-neighborhood.png'), fullPage: false });
 
   // Capture 2: Zoomed Department (ENG)
   const engChip = toolbar.getByRole('button', { name: /\[ENG\] Ingeniería/i });

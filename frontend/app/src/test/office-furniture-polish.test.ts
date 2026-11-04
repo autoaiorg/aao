@@ -282,6 +282,19 @@ describe('PR C: Office Furniture, Procedural IDE Textures, Biophilia & Lighting'
       );
     });
 
+    it('marks the audit enclave with open low acoustic baffles rather than a closed department room', () => {
+      const roomGroups = (scene as unknown as { roomsGroup: THREE.Group }).roomsGroup;
+      const audit = roomGroups.getObjectByName('room-unit-audit') as THREE.Group;
+      expect(audit).toBeDefined();
+      expect(audit.getObjectByName('audit-manifestation-band-left')).toBeDefined();
+      expect(audit.getObjectByName('audit-manifestation-band-right')).toBeDefined();
+      const sideBaffle = audit.getObjectByName('department-side-glass-left') as THREE.Mesh<THREE.BoxGeometry>;
+      expect(sideBaffle.geometry.parameters.height).toBeCloseTo(0.92);
+      expect(sideBaffle.position.y + sideBaffle.geometry.parameters.height / 2).toBeLessThan(1.4);
+      expect(audit.getObjectByName('department-front-glass-left')).toBeUndefined();
+      expect(audit.getObjectByName('department-front-glass-right')).toBeUndefined();
+    });
+
     it('uses a locally generated stone finish and disposes its texture with the scene', () => {
       const groundGroup = (scene as unknown as { groundGroup: THREE.Group }).groundGroup;
       const slab = groundGroup.children.find(

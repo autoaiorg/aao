@@ -6,3 +6,5 @@ Both captures use the browser-driven `e2e/screenshots.spec.ts` F4.7 overview flo
 - `office-overview-after.png`: fresh real-browser capture with the envelope/facade and aligned navigation-entry changes in the current V4.2 worktree. The test passed after capture.
 
 This is one overview comparison, not evidence for every requested department, audit, conversation, close-up, LIVE-empty, or top-down scenario.
+
+`office-audit-neighborhood.png` is captured separately by the browser screenshot test so the acoustic treatment can be inspected independently from the overall view.

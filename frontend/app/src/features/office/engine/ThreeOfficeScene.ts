@@ -1076,9 +1076,14 @@ export class ThreeOfficeScene {
     room: OfficeRoomConfig,
     isUnassignedHolding: boolean
   ): void {
-    const wallMat = new THREE.MeshStandardMaterial({ color: isUnassignedHolding ? 0x85837b : 0x77766f, roughness: 0.76, metalness: 0.01 });
+    const isAuditEnclave = room.kind === 'audit-enclave';
+    const wallMat = new THREE.MeshStandardMaterial({
+      color: isUnassignedHolding ? 0x85837b : isAuditEnclave ? 0x4f665e : 0x77766f,
+      roughness: 0.76,
+      metalness: 0.01,
+    });
     const glassMat = new THREE.MeshStandardMaterial({
-      color: isUnassignedHolding ? 0xb4b1aa : 0xc5d0d2,
+      color: isUnassignedHolding ? 0xb4b1aa : isAuditEnclave ? 0x9baea2 : 0xc5d0d2,
       transparent: true,
       opacity: isUnassignedHolding ? 0.13 : 0.12,
       roughness: 0.32,
@@ -1113,17 +1118,30 @@ export class ThreeOfficeScene {
 
     // 2. Short glass baffles provide acoustic zoning while leaving broad sight
     // lines and circulation between neighboring work areas.
-    const sideBaffleDepth = Math.min(0.78, room.depth * 0.26);
-    const sideGlassGeo = new THREE.BoxGeometry(0.045, 0.48, sideBaffleDepth);
+    const sideBaffleDepth = isAuditEnclave ? Math.min(1.6, room.depth * 0.48) : Math.min(0.78, room.depth * 0.26);
+    const sideBaffleHeight = isAuditEnclave ? 0.92 : 0.48;
+    const sideGlassGeo = new THREE.BoxGeometry(0.045, sideBaffleHeight, sideBaffleDepth);
     const sideGlassLeft = new THREE.Mesh(sideGlassGeo, glassMat);
     sideGlassLeft.name = 'department-side-glass-left';
-    sideGlassLeft.position.set(-room.width / 2 + 0.12, 0.61, backZ + (isTopRow ? 0.18 : -0.18));
+    sideGlassLeft.position.set(-room.width / 2 + 0.12, 0.37 + sideBaffleHeight / 2, backZ + (isTopRow ? 0.18 : -0.18));
     group.add(sideGlassLeft);
 
     const sideGlassRight = new THREE.Mesh(sideGlassGeo, glassMat);
     sideGlassRight.name = 'department-side-glass-right';
-    sideGlassRight.position.set(room.width / 2 - 0.12, 0.61, backZ + (isTopRow ? 0.18 : -0.18));
+    sideGlassRight.position.set(room.width / 2 - 0.12, 0.37 + sideBaffleHeight / 2, backZ + (isTopRow ? 0.18 : -0.18));
     group.add(sideGlassRight);
+
+    if (isAuditEnclave) {
+      // A restrained manifestation band gives the audit work-neighborhood
+      // recognizable acoustic/privacy treatment without closing it into a room.
+      const bandMaterial = new THREE.MeshStandardMaterial({ color: 0xc9b987, roughness: 0.7 });
+      for (const [side, x] of [['left', -room.width / 2 + 0.12], ['right', room.width / 2 - 0.12]] as const) {
+        const band = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.07, sideBaffleDepth), bandMaterial);
+        band.name = `audit-manifestation-band-${side}`;
+        band.position.set(x, 0.82, backZ + (isTopRow ? 0.18 : -0.18));
+        group.add(band);
+      }
+    }
 
     // No front glass: a doorway-shaped line at every department recreated the
     // box-room reading we are removing. Shared sightlines stay open; the short

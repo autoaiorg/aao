@@ -65,6 +65,9 @@ TIMER_ACCURACY = timedelta(seconds=30)
 # acted on at the next timer tick, up to one interval + AccuracySec later.
 DAILY_CAP_SAFETY_MARGIN = DRAIN_CAP + CLOCK_SKEW + TIMER_INTERVAL + TIMER_ACCURACY
 DAILY_CAP_MIN_WAIT = BACKOFF[0]
+# The systemd timer may not observe next_attempt_at until its next activation.
+# Bound that delay using the configured cadence and AccuracySec.
+DAILY_CAP_TIMER_LATENCY = timedelta(minutes=5, seconds=30)
 PHASES = {
     "ACTIVE", "ISSUING", "INSTALLED_PENDING", "VERIFIED", "REVOKING_OLD",
     "FAILED_ISSUE", "FAILED_INSTALL", "FAILED_EXPIRED", "BREAKER_OPEN",
@@ -83,6 +86,10 @@ REPLACE_COMMITTED = 3
 
 class RenewError(RuntimeError):
     """Fail-closed condition; message never contains credential material."""
+
+
+class DailyCapMarginLost(RenewError):
+    """A further daily-cap retry cannot preserve the old cycle's drain margin."""
 
 
 class ApiUnavailable(RenewError):
@@ -301,15 +308,20 @@ def exclusive_lock(path: Path):
 
 
 def daily_cap_retry_at(now: datetime, current_expires: datetime | None) -> datetime | None:
-    """next_attempt_at after a daily-cap 429; None retries on every timer tick.
+    """Return a safe retry time, None if no live N needs a drain margin.
 
-    With N live: min(1 h, max(5 min, remaining_N - safety margin)). With N gone
-    there is nothing to protect by waiting; each rejected POST issues nothing.
+    The next timer activation can be delayed by DAILY_CAP_TIMER_LATENCY. If even
+    the minimum backoff plus that delay would cross the drain deadline, fail
+    closed rather than scheduling an unsafe retry.
     """
     if current_expires is None or now >= current_expires:
         return None
-    wait = current_expires - now - DAILY_CAP_SAFETY_MARGIN
-    return now + min(DAILY_CAP_BACKOFF, max(DAILY_CAP_MIN_WAIT, wait))
+    latest_safe_wait = (
+        current_expires - now - DAILY_CAP_SAFETY_MARGIN - DAILY_CAP_TIMER_LATENCY
+    )
+    if latest_safe_wait < DAILY_CAP_MIN_WAIT:
+        raise DailyCapMarginLost("daily cap retry would cross cycle drain margin")
+    return now + min(DAILY_CAP_BACKOFF, latest_safe_wait)
 
 
 def _detail_code(body) -> str | None:
@@ -473,13 +485,40 @@ class Runner:
             # The tick then exits 1, which is the alert.
             current = state["current_expires_at"]
             current = _parse_time(current) if current else None
-            retry = daily_cap_retry_at(now, current)
+            try:
+                retry = daily_cap_retry_at(now, current)
+            except DailyCapMarginLost:
+                reason = "daily cap retry refused: cycle drain margin cannot be preserved"
+                self._event("failed", phase="ISSUING", cycle=cycle_id, reason=reason)
+                self._event("breaker_open", reason=reason)
+                return self._save(state, "BREAKER_OPEN",
+                                  consecutive_failures=BREAKER_THRESHOLD,
+                                  next_attempt_at=None, **cleared)
             until = _iso(retry) if retry else None
             self._event("failed", phase="ISSUING", cycle=cycle_id,
                         reason=f"issue daily cap reached; retry after {until or 'next tick'}")
             expired = current is not None and now >= current
             return self._save(state, "FAILED_EXPIRED" if expired else "ACTIVE",
                               next_attempt_at=until, **cleared)
+        # Issuance itself may be slow even when the retry was scheduled with
+        # enough margin. Do not replace either role file unless N can still
+        # remain valid for the full bounded drain interval after this response.
+        # Track N+1 as FAILED_INSTALL (conservative: it exists, but no token was
+        # installed) so a failed/ambiguous revoke cannot make us forget it.
+        current_exp = state["current_expires_at"]
+        current_exp = _parse_time(current_exp) if current_exp else None
+        if (
+            current_exp is not None
+            and now < current_exp
+            and current_exp - self.clock() < DAILY_CAP_SAFETY_MARGIN
+        ):
+            reason = "successor issued too late to preserve old-cycle drain margin"
+            self._event("failed", phase="ISSUING", cycle=cycle_id, reason=reason)
+            self._event("breaker_open", reason=reason)
+            return self._save(
+                state, "FAILED_INSTALL", consecutive_failures=BREAKER_THRESHOLD,
+                next_attempt_at=None,
+            )
         try:
             expires, tokens, ids = self._check_issue_response(cycle_id, status, body, now)
             # Identity is verified with the in-memory tokens BEFORE any file is
@@ -590,6 +629,25 @@ class Runner:
                     self._event("backoff_wait", until=state["next_attempt_at"],
                                 failures=state["consecutive_failures"])
                     return 1  # renewal is due and failing: keep the unit visibly failed
+                # A daily-cap retry is scheduled against the expected timer
+                # cadence, but the process may be suspended or the timer may
+                # run late. Re-check the live N margin immediately before the
+                # POST; never rely solely on the scheduled timestamp.
+                if (
+                    state["next_attempt_at"]
+                    and state["consecutive_failures"] == 0
+                    and current_exp is not None
+                    and now < current_exp
+                    and current_exp - now < DAILY_CAP_SAFETY_MARGIN
+                ):
+                    reason = "daily cap retry refused: delayed tick exhausted cycle drain margin"
+                    self._event("failed", phase=phase, cycle=state["current_cycle_id"],
+                                reason=reason)
+                    self._event("breaker_open", reason=reason)
+                    self._save(state, "BREAKER_OPEN",
+                               consecutive_failures=BREAKER_THRESHOLD,
+                               next_attempt_at=None)
+                    return 1
                 if current_exp is not None and now >= current_exp and phase != "FAILED_EXPIRED":
                     self._event("expired_without_successor", old=state["current_cycle_id"])
                     state = self._save(state, "FAILED_EXPIRED")
@@ -600,10 +658,28 @@ class Runner:
                 if old is not None:
                     issued = _parse_time(state["next_issued_at"])
                     deadline = min(current_exp, issued + DRAIN_CAP)
-                    if now < deadline and not self._old_drained(old):
+                    drained = self._old_drained(old)
+                    if now < deadline and not drained:
                         self._event("drain_waited", old=old,
                                     seconds=int((now - issued).total_seconds()))
                         return 0
+                    # A running/uncertain execution must not be killed by
+                    # revoking its credential merely because the 35m lease
+                    # bound elapsed. Wait for natural N expiry (at most the
+                    # remaining clock-skew margin); then promote N+1 without
+                    # an explicit revoke. The authorization expires on its own.
+                    if not drained and current_exp is not None and now < current_exp:
+                        self._event("drain_cap_busy_wait", old=old,
+                                    seconds=int((now - issued).total_seconds()))
+                        return 0
+                    if not drained and current_exp is not None and now >= current_exp:
+                        self._event("old_expired_while_busy", old=old)
+                        state = self._save(
+                            state, "ACTIVE", current_cycle_id=state["next_cycle_id"],
+                            current_expires_at=state["next_expires_at"], next_cycle_id=None,
+                            next_expires_at=None, next_issued_at=None,
+                        )
+                        continue
                 state = self._save(state, "REVOKING_OLD")
             elif phase == "REVOKING_OLD":
                 old = state["current_cycle_id"]

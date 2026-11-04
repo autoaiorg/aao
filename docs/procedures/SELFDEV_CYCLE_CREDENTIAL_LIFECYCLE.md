@@ -226,21 +226,19 @@ que no se revoca nada.
     `principal.selfdev_cycle_role.issued`.
   - Después, `--reset-breaker`.
 - **429 `SELFDEV_CYCLE_ISSUANCE_DAILY_CAP`** (48 emisiones por PM en 24 h). No
-  cuenta como emisión fallida, nunca abre el cortacircuitos y no revoca nada.
+  cuenta como emisión fallida y no revoca nada mientras haya margen para un
+  reintento seguro.
   La API no expone cuándo se libera un hueco en su ventana móvil, así que el
   runner reintenta antes de que caduque N:
-  `next_attempt_at = ahora + min(1 h, max(5 min, restante_N − margen))`, con
-  `margen = DRAIN_CAP + CLOCK_SKEW + TIMER_INTERVAL + TIMER_ACCURACY`
-  (35 + 1 + 5 + 0,5 = 41,5 min: drenaje de N, desfase de reloj, y el tick del
-  timer, que actúa sobre `next_attempt_at` hasta un intervalo
-  (`OnUnitActiveSec=5min`) más `AccuracySec=30s` después). Si el 429 llega con
-  ≥ 46,5 min de N, el primer reintento ocurre con ≥ 36 min de N, más que el
-  lease máximo de 30 min; los reintentos posteriores (suelo de 5 min) pueden
-  ocurrir con menos. Un test exige
-  que esas dos constantes coincidan con la unidad del timer. Si N ya caducó (o no hay N), queda en
-  `FAILED_EXPIRED` y reintenta en cada tick de 5 min: cada 429 no emite nada y
-  el primer hueco libre se usa. Mientras espera, cada tick sale con código 1
-  (alerta) y no hace ningún POST.
+  `next_attempt_at = ahora + min(1 h, restante_N − margen − latencia_timer)`,
+  donde `margen = DRAIN_CAP + CLOCK_SKEW + TIMER_INTERVAL + TIMER_ACCURACY`
+  (41,5 min) y `latencia_timer = 5 min 30 s`. El primer reintento solo se
+  programa si quedan al menos 5 min adicionales; si el siguiente tick podría
+  perder ese margen, abre `BREAKER_OPEN` y alerta sin revocar N ni tocar sus
+  ficheros. El operador debe investigar y reiniciar explícitamente el breaker.
+  Si N ya caducó (o no hay N), queda en `FAILED_EXPIRED` y reintenta cada tick;
+  un 429 no emite nada. Mientras espera, cada tick sale con código 1 y no hace
+  ningún POST. Tests cotejan la latencia calculada y el margen con el timer.
 - Un 409 o 429 sin esos códigos sigue la ruta genérica de `FAILED_ISSUE`
   (DELETE de N+1 y backoff).
 
@@ -265,9 +263,9 @@ los logs. Los tokens viven solo en la memoria del proceso entre el POST y el
 | Estado | Significado | Transición normal | Fallo |
 |---|---|---|---|
 | `ACTIVE` | El ciclo N está instalado y verificado, y le queda más del margen | Al cruzar el umbral de renovación (§6): genera `next_cycle_id`, **persiste** y pasa a `ISSUING` | — |
-| `ISSUING` | El ID N+1 y `next_issued_at` están persistidos antes del POST; ningún fichero se ha tocado | POST correcto → verificación de identidad por API (IDs, kind y grants exactos) → `INSTALLED_PENDING` | Error, 409, 5xx, timeout o desajuste de identidad → `FAILED_ISSUE`. 400/401/403/404/422 o 409 `SELFDEV_CYCLE_CONCURRENCY_CAP` → `BREAKER_OPEN`. 429 `SELFDEV_CYCLE_ISSUANCE_DAILY_CAP` → `ACTIVE` con espera `min(1 h, max(5 min, restante_N − 41,5 min))` (o `FAILED_EXPIRED` reintentando cada tick si N caducó), sin contar fallo |
+| `ISSUING` | El ID N+1 y `next_issued_at` están persistidos antes del POST; ningún fichero se ha tocado | POST correcto → verificación de identidad por API (IDs, kind y grants exactos) → `INSTALLED_PENDING` | Error, 409, 5xx, timeout o desajuste de identidad → `FAILED_ISSUE`. 400/401/403/404/422 o 409 `SELFDEV_CYCLE_CONCURRENCY_CAP` → `BREAKER_OPEN`. 429 diario → espera solo si margen de 41,5 min más latencia máxima de 5,5 min y espera mínima de 5 min caben antes de expirar N; si no, `BREAKER_OPEN` sin alterar los ficheros N. Sin N vivo, `FAILED_EXPIRED` reintenta cada tick. |
 | `INSTALLED_PENDING` | Se persiste **antes** del primer `replace`: los ficheros **pueden** contener N+1 | `replace` + `verify` completos del revisor; solo después `replace` + `verify` del implementador (el fichero con consumidor vivo) → `VERIFIED`. Si `replace` devuelve 3 (renombrado hecho, comprobación posterior fallida), decide su `verify` | Fallo del `replace` del revisor (antes de renombrar; nada escrito) → `FAILED_ISSUE`. Cualquier fallo posterior → `FAILED_INSTALL` |
-| `VERIFIED` | N+1 está verificado; el worker lo recoge en la siguiente iteración | Si el board no muestra ejecuciones `RUNNING`/`UNCERTAIN`/`QUEUED` con `attempts>0` y `worker_id = impl-N`, o si N ya caducó → `REVOKING_OLD` | Plazo de drenaje superado → `REVOKING_OLD` igualmente (§6) |
+| `VERIFIED` | N+1 está verificado; el worker lo recoge en la siguiente iteración | Si el board no muestra ejecuciones `RUNNING`/`UNCERTAIN`/`QUEUED` con `attempts>0` y `worker_id = impl-N` → `REVOKING_OLD` | Al alcanzar el plazo de drenaje con ejecuciones aún ocupadas, no revoca N: espera a su caducidad natural y promueve N+1 sin DELETE (§6) |
 | `REVOKING_OLD` | Se revoca el ciclo N | DELETE N devuelve `revoked`, `already_revoked` o `CYCLE_NOT_FOUND` → `current := next` y `next := null` → `ACTIVE` | Error → se queda en `REVOKING_OLD` y reintenta en cada tick. Si N ya caducó, avanza con alerta para no bloquear la renovación de N+1 |
 | `FAILED_ISSUE` | N+1 puede existir o no en el servidor; ningún token suyo llegó a disco | DELETE N+1. Con `revoked`, `already_revoked` o 404 con `detail.code == "CYCLE_NOT_FOUND"` → `next := null` → `ACTIVE` con backoff (o `BREAKER_OPEN` al 5.º fallo); la siguiente emisión usa un ID **nuevo** | 409 (conjunto alterado): se alerta y se cierra igualmente, porque no hay tokens de N+1 en disco y caduca en ≤ 2 h. Otro 404, 5xx o error de red: se mantiene hasta `next_issued_at + 2 h + 1 min` y entonces se cierra con alerta. Mientras se mantiene, nunca se emite otro ciclo |
 | `FAILED_INSTALL` | Un fichero puede contener N+1 | DELETE N+1; solo una revocación confirmada (`revoked`, `already_revoked`, `CYCLE_NOT_FOUND`) o la caducidad de N+1 (`next_issued_at + 2 h + 1 min`) lo cierra, con backoff | 409, 5xx o error de red → **se mantiene** y alerta en cada tick: no se olvida un ciclo vivo con tokens en disco. Mientras, no se emite otro ciclo |
@@ -333,12 +331,20 @@ Consecuencias exactas:
   holgura, lo que permite ~4 reintentos completos de emisión antes de que el
   worker se quede sin credencial. No se renueva antes porque cada renovación
   crea un principal y abre una ventana de solape.
-- **Cota de solape (b):** N y N+1 conviven desde el POST hasta el DELETE N. El
-  DELETE espera al drenaje, pero nunca más allá de
-  `min(expires_at(N), POST + 35 min)`. 35 min es la duración del lease más el
-  `TimeoutStopSec` de #356. La caducidad de N es una cota dura e
-  independiente: **el solape máximo es de 60 min**, aunque el DELETE falle
-  siempre.
+- **Margen antes de instalar N+1:** tras el 201 se vuelve a medir el tiempo
+  restante de N. Si la latencia de emisión consumió el margen de 36 min (35 min
+  de drenaje más 1 min de skew), N+1 no se instala, los ficheros de N quedan
+  intactos y se abre el breaker mientras se intenta cerrar N+1.
+- **Drenaje de N:** el DELETE espera a que no haya ejecuciones
+  `RUNNING`/`UNCERTAIN`/`QUEUED` con intentos en curso. Al llegar a
+  `min(expires_at(N), POST + 35 min)`, si el board sigue ocupado, no revoca la
+  credencial bajo una ejecución: espera a la caducidad natural de N y luego
+  promueve N+1 sin DELETE. N no autoriza después de `expires_at(N)`; por tanto,
+  el solape queda acotado por el TTL restante de N en el POST exitoso de N+1.
+  En la renovación normal, ese máximo es 60 min (el umbral T−60); si el ciclo
+  se emitió con menos TTL restante, el límite es menor. Tras expirar, N deja de
+  autorizar por TTL, no por revocación explícita; el registro se conserva para
+  evidencia y no se vuelve a llamar DELETE contra una ejecución antigua.
 - **Credencial caducada (a):** si la emisión falla hasta `expires_at(N)`, el
   worker recibe 403 y falla cerrado. No hay reintentos indefinidos con la
   credencial muerta. Hoy #356 sale con un código distinto de cero y

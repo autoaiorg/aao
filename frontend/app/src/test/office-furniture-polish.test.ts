@@ -27,8 +27,8 @@ import { OFFICE_ROOMS } from '../features/office/types';
 
 describe('PR C: Office Furniture, Procedural IDE Textures, Biophilia & Lighting', () => {
   it('keeps workstation chair seat at ergonomic height', () => {
-    expect(OFFICE_CHAIR_ROOT_Y).toBe(0.18);
-    expect(OFFICE_CHAIR_SEAT_SURFACE_Y).toBeCloseTo(0.465);
+    expect(OFFICE_CHAIR_ROOT_Y).toBe(0.515);
+    expect(OFFICE_CHAIR_SEAT_SURFACE_Y).toBeCloseTo(0.45);
     expect(OFFICE_CHAIR_SEAT_SURFACE_Y).toBeLessThan(0.5);
   });
 

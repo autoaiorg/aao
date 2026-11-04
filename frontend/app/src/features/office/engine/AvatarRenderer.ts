@@ -953,9 +953,9 @@ export function stepAvatarKinematics(
 
   if (kind === 'TYPING_DEV' || kind === 'TYPING_AUDIT' || kind === 'TYPING_DOCS') {
     // Natural seated typing kinematics
-    // Chair seat is at y=0.44; align the pelvis and hip pivots with the seat
-    // while allowing the lower legs to reach the floor.
-    parts.characterRig.position.y = 0.07;
+    // Avatar root is at world y=0.37 and seat is at world y=0.45. Align the
+    // pelvis/hips with the cushion rather than leaving the torso perched above.
+    parts.characterRig.position.y = -0.28;
 
     // Thighs horizontal in chair
     if (parts.leftLeg) parts.leftLeg.rotation.x = -Math.PI / 2.3;
@@ -964,6 +964,8 @@ export function stepAvatarKinematics(
     // Knees bent 90 degrees downward to floor
     if (parts.leftShin) parts.leftShin.rotation.x = Math.PI / 2.2;
     if (parts.rightShin) parts.rightShin.rotation.x = Math.PI / 2.2;
+    if (parts.leftShin) parts.leftShin.scale.y = 2;
+    if (parts.rightShin) parts.rightShin.scale.y = 2;
 
     // Arms raised onto desk keyboard with natural elbow hinge
     const typingJitterL = isFarDistance ? 0 : Math.sin(time * 0.024 + phase) * 0.14;
@@ -986,6 +988,8 @@ export function stepAvatarKinematics(
   } else if (kind === 'CONVERSING') {
     // Standing or seated collaborative conversation
     parts.characterRig.position.y = 0;
+    if (parts.leftShin) parts.leftShin.scale.y = 1;
+    if (parts.rightShin) parts.rightShin.scale.y = 1;
 
     if (parts.leftLeg) parts.leftLeg.rotation.x = 0;
     if (parts.rightLeg) parts.rightLeg.rotation.x = 0;
@@ -1020,6 +1024,8 @@ export function stepAvatarKinematics(
     const stride = Math.sin(walkCycle);
 
     parts.characterRig.position.y = isFarDistance ? 0 : Math.abs(stride) * 0.025;
+    if (parts.leftShin) parts.leftShin.scale.y = 1;
+    if (parts.rightShin) parts.rightShin.scale.y = 1;
 
     // Alternating leg swing with knee flexion on back-step
     if (parts.leftLeg) parts.leftLeg.rotation.x = stride * 0.44;
@@ -1050,13 +1056,15 @@ export function stepAvatarKinematics(
     if (parts.speechBubble) parts.speechBubble.visible = false;
   } else if (kind === 'IDLE_DESK') {
     // Relaxed seated posture
-    parts.characterRig.position.y = 0.07;
+    parts.characterRig.position.y = -0.28;
     if (parts.coffeeCup) parts.coffeeCup.visible = false;
 
     if (parts.leftLeg) parts.leftLeg.rotation.x = -Math.PI / 2.3;
     if (parts.rightLeg) parts.rightLeg.rotation.x = -Math.PI / 2.3;
     if (parts.leftShin) parts.leftShin.rotation.x = Math.PI / 2.2;
     if (parts.rightShin) parts.rightShin.rotation.x = Math.PI / 2.2;
+    if (parts.leftShin) parts.leftShin.scale.y = 2;
+    if (parts.rightShin) parts.rightShin.scale.y = 2;
 
     if (parts.leftArm) {
       parts.leftArm.rotation.x = -0.28;

@@ -324,6 +324,7 @@ describe('Stylized Humanoid Worker Avatar Renderer (PR A)', () => {
         createAgentNameSprite: mockCreateSprite,
       });
       const runtime = createRuntime(typingActivity);
+      group.position.y = 0.37;
 
       stepAvatarKinematics(group, runtime, 1000, 15);
 
@@ -334,8 +335,12 @@ describe('Stylized Humanoid Worker Avatar Renderer (PR A)', () => {
       // Legs horizontal in chair
       expect(parts.leftLeg.rotation.x).toBeCloseTo(-Math.PI / 2.3, 1);
       expect(parts.rightLeg.rotation.x).toBeCloseTo(-Math.PI / 2.3, 1);
-      expect(parts.characterRig.position.y).toBeCloseTo(0.07);
+      expect(parts.characterRig.position.y).toBeCloseTo(-0.28);
       expect(parts.coffeeCup.visible).toBe(false);
+      group.updateMatrixWorld(true);
+      const leftShoeBounds = new THREE.Box3().setFromObject(parts.leftShoe);
+      expect(leftShoeBounds.min.y).toBeGreaterThan(-0.08);
+      expect(leftShoeBounds.min.y).toBeLessThan(0.08);
       // Speech bubble hidden
       expect(parts.speechBubble.visible).toBe(false);
       // STANDING pedestal invariant: stays stationary at 0.06

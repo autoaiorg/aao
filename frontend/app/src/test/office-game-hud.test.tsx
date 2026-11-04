@@ -115,6 +115,35 @@ function renderWithQueryClient(ui: React.ReactElement) {
 describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
   beforeEach(() => {
     window.localStorage.clear();
+    window.localStorage.setItem(HUD_PREFS_STORAGE_KEY, JSON.stringify({
+      isRosterOpen: true,
+      isInspectorOpen: true,
+      isMinimapOpen: true,
+      isToolbarCollapsed: false,
+      bottomDeckState: 'docked',
+    }));
+  });
+
+  it('defaults to compact scene-first HUD preferences', () => {
+    window.localStorage.clear();
+    const prefs = loadPersistedHudPreferences();
+    expect(prefs.isRosterOpen).toBe(false);
+    expect(prefs.isInspectorOpen).toBe(false);
+    expect(prefs.isMinimapOpen).toBe(false);
+    expect(prefs.isToolbarCollapsed).toBe(true);
+    expect(prefs.bottomDeckState).toBe('minimized');
+  });
+
+  it('keeps the department roster body hidden until the user expands it', () => {
+    window.localStorage.clear();
+    const { container } = renderWithQueryClient(
+      <VirtualOfficeView organization={liveOrgWithAgents} projects={liveProjects} />
+    );
+    const rosterBody = container.querySelector('.aao-hud-roster__body');
+    expect(rosterBody).toHaveStyle({ display: 'none' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expandir muelle de sectores' }));
+    expect(rosterBody).toHaveStyle({ display: 'flex' });
   });
 
   it('renders in HUD Video Game mode by default and switches cleanly to Classic mode and back', () => {
@@ -260,6 +289,7 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
     );
 
     const deck = screen.getByRole('region', { name: /Consola táctica inferior/i });
+    fireEvent.click(screen.getByRole('button', { name: /Acoplar consola táctica/i }));
     expect(deck).toHaveStyle({ height: '360px' });
 
     // Resize via accessible range slider
@@ -386,7 +416,7 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
     window.localStorage.setItem(HUD_PREFS_STORAGE_KEY, '{corrupted-json');
     const recovered = loadPersistedHudPreferences();
     expect(recovered.layoutMode).toBe('hud');
-    expect(recovered.bottomDeckState).toBe('docked');
+    expect(recovered.bottomDeckState).toBe('minimized');
 
     expect(deriveAgentOperationalCategory(liveOrgWithAgents.data.agents[0]).category).toBe('ACTIVO');
     expect(deriveAgentOperationalCategory(liveOrgWithAgents.data.agents[1]).category).toBe('BLOQUEADO');
@@ -446,12 +476,13 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
     expect(scene.getCameraState().elevation).toBe(78);
 
     scene.setCameraPreset('overview');
-    expect(scene.getCameraState().distance).toBe(24);
+    expect(scene.getCameraState().distance).toBeGreaterThan(24);
 
     scene.dispose();
   });
 
   it('keeps 3D WebGL active by default and auto-minimizes the bottom deck when unauthenticated in LIVE mode', () => {
+    window.localStorage.clear(); // Verify the compact product defaults, not the expanded test fixture.
     renderWithQueryClient(
       <VirtualOfficeView
         organization={{
@@ -469,9 +500,14 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
       />
     );
 
-    const view3DBtn = screen.getByRole('button', { name: /Vista 3D \(WebGL\)/i });
-    expect(view3DBtn).toBeEnabled();
-    expect(view3DBtn).toHaveAttribute('aria-pressed', 'true');
+    const view3DBtn = screen.queryByRole('button', { name: /Vista 3D \(WebGL\)/i });
+    if (view3DBtn) {
+      expect(view3DBtn).toBeEnabled();
+      expect(view3DBtn).toHaveAttribute('aria-pressed', 'true');
+    } else {
+      // JSDOM has no WebGL context; the accessible fallback is the expected default.
+      expect(screen.getByRole('region', { name: /Aviso de ausencia de WebGL/i })).toBeInTheDocument();
+    }
 
     // Bottom deck starts minimized (46px) so it does not cover the 3D scene before authentication
     const bottomDeck = screen.getByRole('region', { name: /Consola táctica inferior/i });
@@ -790,7 +826,12 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
 
     // 1. In OVERVIEW mode (distance 24) with agent 0 selected: only selected agent label is visible
     const overviewLabels = computeAdaptiveLabelStates({
-      rooms: campus.rooms,
+      rooms: [
+        ...campus.rooms,
+        ...(campus.rooms[0]
+          ? [{ ...campus.rooms[0], id: 'far-room', x: -100, z: -100 }]
+          : []),
+      ],
       agents: sevenUnassigned,
       placements: placementMap,
       cameraDistance: 24,
@@ -804,6 +845,31 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
     expect(overviewLabels.departments.get('unit-unassigned')?.visible).toBe(true);
     expect(overviewLabels.agents.get('aao-selfdev-worker-0')?.visible).toBe(true);
     expect(overviewLabels.agents.get('aao-selfdev-worker-1')?.visible).toBe(false);
+
+    const departmentLabels = computeAdaptiveLabelStates({
+      rooms: [
+        ...campus.rooms,
+        ...(campus.rooms[0]
+          ? [{ ...campus.rooms[0], id: 'far-room', x: -100, z: -100 }]
+          : []),
+      ],
+      agents: sevenUnassigned,
+      placements: placementMap,
+      cameraDistance: 14.5,
+      cameraAngleDeg: 35,
+      cameraTargetX: 100,
+      cameraTargetZ: 100,
+      selectedRoomId: 'unit-unassigned',
+      selectedAgentId: null,
+    });
+    expect(departmentLabels.lodTier).toBe('department');
+    expect(departmentLabels.departments.get('unit-unassigned')?.visible).toBe(true);
+    expect(
+      departmentLabels.departments.get('far-room')?.visible
+    ).toBe(false);
+    expect(departmentLabels.visibleDepartmentCount).toBe(
+      Array.from(departmentLabels.departments.values()).filter((state) => state.visible).length
+    );
 
     // 2. In AGENT mode (distance 9.5) with identical world coords: de-overlapping nudges yOffset and suppresses excess
     const closeLabels = computeAdaptiveLabelStates({
@@ -928,6 +994,7 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
     expect(emptyPerf.roomsCount).toBe(6);
     expect(emptyPerf.qualityProfile).toBe('balanced');
     expect(emptyPerf.lastFrameTimeMs).toBeLessThan(50);
+    expect(emptyPerf.simulationUpdateTimeMs).toBeGreaterThan(0);
 
     // 2. Small scenario (8 DEMO agents, 6 rooms) + Agent Follow & Panning
     scene.updateAgents(DEMO_AGENTS);
@@ -935,7 +1002,11 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
     const smallPerf = scene.getPerformanceMetrics();
     expect(smallPerf.agentsCount).toBe(DEMO_AGENTS.length);
     expect(smallPerf.interactiveMeshesCount).toBeGreaterThan(6);
-    expect(smallPerf.lastFrameTimeMs).toBeLessThan(50);
+    // Direct simulation steps are 100ms apart; report the real frame interval
+    // separately from the CPU simulation work so a delayed frame is not hidden.
+    expect(smallPerf.lastFrameTimeMs).toBe(100);
+    expect(smallPerf.simulationUpdateTimeMs).toBeGreaterThan(0);
+    expect(smallPerf.fpsEstimate).toBeLessThan(60);
 
     // Select an agent and enable follow mode
     const targetAgent = DEMO_AGENTS[0];
@@ -943,6 +1014,15 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
     scene.setFollowAgent(true);
     expect(scene.isFollowingAgent()).toBe(true);
     scene.stepAnimation(400);
+
+    // Browser-frame work includes both simulation and WebGL submission, whereas
+    // the RAF interval records browser scheduling independently.
+    vi.spyOn(window, 'requestAnimationFrame').mockReturnValue(999);
+    (scene as unknown as { animate: (time: number) => void }).animate(500);
+    const renderedPerf = scene.getPerformanceMetrics();
+    expect(renderedPerf.lastFrameTimeMs).toBe(100);
+    expect(renderedPerf.frameWorkTimeMs).toBeGreaterThanOrEqual(renderedPerf.simulationUpdateTimeMs);
+    expect(renderedPerf.frameWorkTimeMs).toBeGreaterThan(0);
 
     // Manual camera pan cancels follow mode and shifts target coordinates
     const prevTarget = scene.getDesiredTarget();

@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import type { VirtualOfficeViewProps, OfficeHudTabId, OfficeCameraPreset } from './types';
+import type { VirtualOfficeViewProps, OfficeHudTabId, OfficeCameraPreset, OfficeRoomConfig } from './types';
 import type { AgentIdentity } from '../../domain/models';
 import { OfficeToolbar } from './components/OfficeToolbar';
 import { Office3DCanvas, type WebGLCanvasHandle } from './components/Office3DCanvas';
@@ -21,7 +21,6 @@ import {
   OfficeBottomTacticalDeck,
   type HudModuleDescriptor,
 } from './components/OfficeBottomTacticalDeck';
-import { OFFICE_ROOMS } from './types';
 import { buildCorporateCampusLayout } from './liveOfficeLayout';
 import {
   filterOperationalAgents,
@@ -69,17 +68,48 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
 
   const rawUnits = useMemo(() => data?.units || [], [data]);
   const rawAgents = useMemo(() => data?.agents || [], [data]);
-  const campusLayout = useMemo(
-    () => buildCorporateCampusLayout(rawUnits, rawAgents, { isDemo }),
-    [rawUnits, rawAgents, isDemo]
-  );
+  const previousLayoutRef = useRef<{ isDemo: boolean; rooms: OfficeRoomConfig[] } | null>(null);
+  const campusLayout = useMemo(() => {
+    const previousRooms = previousLayoutRef.current?.isDemo === isDemo
+      ? previousLayoutRef.current.rooms
+      : [];
+    const layout = buildCorporateCampusLayout(rawUnits, rawAgents, { isDemo, previousRooms });
+    previousLayoutRef.current = { isDemo, rooms: layout.rooms };
+    return layout;
+  }, [rawUnits, rawAgents, isDemo]);
   const units = campusLayout.effectiveUnits;
   const allAgents = campusLayout.normalizedAgents;
   const roomConfigs = campusLayout.rooms;
-  const sceneRooms = useMemo(
-    () => (isDemo || roomConfigs.length === 0 ? OFFICE_ROOMS : roomConfigs),
-    [isDemo, roomConfigs]
-  );
+  // Scene geometry must follow the selected source exactly. In particular, an empty
+  // LIVE organization is an empty set of enterprise zones, not a reason to borrow
+  // the synthetic DEMO roster. The renderer owns the source-neutral building shell.
+  const sceneRooms = roomConfigs;
+  const liveStatusMessage = isDemo
+    ? 'DEMO · SIMULACIÓN 3D ACTIVA · Todos los departamentos, agentes y asignaciones son sintéticos y no representan datos de producción.'
+    : data && campusLayout.diagnostics.canonicalUnitsCount === 0
+    ? `LIVE · SIN DEPARTAMENTOS DECLARADOS · ${campusLayout.diagnostics.totalAgentsCount} identidades recibidas; ${campusLayout.diagnostics.unassignedAgentsCount} sin adscripción. Se muestra solo la arquitectura base, sin departamentos ni actividad simulados.`
+    : data && campusLayout.diagnostics.totalAgentsCount === 0
+    ? 'LIVE · ESTRUCTURA PERSISTIDA SIN IDENTIDADES DE AGENTE · La oficina no representa trabajadores ni actividad hasta recibir datos verificables.'
+    : data
+    ? `LIVE · ESTRUCTURA PERSISTIDA · Plano 2D y escena 3D derivados de las unidades y agentes recibidos del backend. La geometría es una representación visual; estado y actividad solo reflejan evidencia proyectada. ${
+        data.coverage
+          ? data.coverage.notes ||
+            (data.coverage.isPartial
+              ? `Cobertura parcial (${data.coverage.failedProjects} errores en ${data.coverage.totalProjects} proyectos).`
+              : `Cobertura completa (${data.coverage.inspectedProjects}/${data.coverage.totalProjects} proyectos).`)
+          : 'La presencia operativa está condicionada a telemetría verificada en tiempo real.'
+      }`
+    : organization.kind === 'empty'
+    ? 'LIVE · RESPUESTA VACÍA · El servicio respondió sin una estructura organizativa disponible; esto no equivale a un error de conexión.'
+    : organization.kind === 'forbidden'
+    ? 'LIVE · ACCESO DENEGADO · La estructura no puede mostrarse con la autorización actual.'
+    : organization.kind === 'error'
+    ? `LIVE · ERROR DE CARGA · ${organization.message}`
+    : organization.kind === 'unavailable'
+    ? `SIN CONEXIÓN AL NÚCLEO EN LIVE (F3/F4) · ${organization.reason} La vista no utiliza datos DEMO como respaldo.`
+    : organization.kind === 'ready'
+    ? 'LIVE · ESTRUCTURA PERSISTIDA · La vista representa exclusivamente los datos recibidos; no incorpora datos DEMO como respaldo.'
+    : 'LIVE · ESTADO NO DISPONIBLE · La vista no utiliza datos DEMO como respaldo.';
 
   // Compute which LIVE operational modules are available
   const availableTabs = useMemo<OfficeHudTabId[]>(() => {
@@ -665,20 +695,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
             <span aria-hidden="true" style={{ fontSize: '15px' }}>
               {isDemo ? '⚠' : data ? 'ℹ' : '🔒'}
             </span>
-            <span>
-              {isDemo
-                ? 'DEMO · SIMULACIÓN 3D ACTIVA · Todos los departamentos, agentes y asignaciones son sintéticos y no representan datos de producción.'
-                : data
-                ? `LIVE · ESTRUCTURA PERSISTIDA · Plano 2D y escena 3D derivados de las unidades y agentes recibidos del backend. La geometría es una representación visual; estado y actividad solo reflejan evidencia proyectada. ${
-                    data.coverage
-                      ? data.coverage.notes ||
-                        (data.coverage.isPartial
-                          ? `Cobertura parcial (${data.coverage.failedProjects} errores en ${data.coverage.totalProjects} proyectos).`
-                          : `Cobertura completa (${data.coverage.inspectedProjects}/${data.coverage.totalProjects} proyectos).`)
-                      : 'La presencia operativa está condicionada a telemetría verificada en tiempo real.'
-                  }`
-                : 'SIN CONEXIÓN AL NÚCLEO EN LIVE (F3/F4) · No hay estructura operativa disponible. DEMO, si se selecciona, se identifica por separado como simulación.'}
-            </span>
+            <span>{liveStatusMessage}</span>
           </div>
         </div>
 
@@ -868,8 +885,8 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
       {!zenMode && (
         <OfficeTopRibbon
           isDemo={isDemo}
+          liveStatusMessage={liveStatusMessage}
           hasLiveStructure={Boolean(data)}
-          coverage={data?.coverage}
           units={units}
           agents={operationalAgents}
           historicalAgentCount={data?.historicalAgentCount ?? (filteredAgents.length - operationalAgents.length)}

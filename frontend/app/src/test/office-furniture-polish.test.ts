@@ -157,9 +157,96 @@ describe('PR C: Office Furniture, Procedural IDE Textures, Biophilia & Lighting'
         (child) => child instanceof THREE.HemisphereLight
       ) as THREE.HemisphereLight;
       expect(hemiLight).toBeDefined();
-      expect(hemiLight.color.getHex()).toBe(0xe0f2fe);
-      expect(hemiLight.groundColor.getHex()).toBe(0x0f172a);
-      expect(hemiLight.intensity).toBeCloseTo(0.75, 2);
+      expect(hemiLight.color.getHex()).toBe(0xfff7e8);
+      expect(hemiLight.groundColor.getHex()).toBe(0x5b554c);
+      expect(hemiLight.intensity).toBeCloseTo(0.9, 2);
+    });
+
+    it('uses a shared floor datum, invisible room hit targets, and source-neutral reception architecture', () => {
+      const root = (scene as unknown as { scene: THREE.Scene }).scene;
+      const reception = root.getObjectByName('architectural-reception') as THREE.Group;
+      expect(reception).toBeDefined();
+      expect(reception.userData).toMatchObject({ role: 'architectural-common-space', zone: 'reception', sourceNeutral: true });
+      expect(reception.position.z).toBeGreaterThan(6);
+      expect(reception.position.x).toBeCloseTo(-2.1);
+      expect(reception.getObjectByName('reception-welcome-backdrop')).toBeDefined();
+      const visitorLounge = reception.getObjectByName('reception-visitor-lounge') as THREE.Group;
+      expect(visitorLounge).toBeDefined();
+      expect(visitorLounge.children).toHaveLength(4);
+      const centralLounge = root.getObjectByName('architectural-central-lounge') as THREE.Group;
+      expect(centralLounge).toBeDefined();
+      expect(centralLounge.userData).toMatchObject({ role: 'architectural-common-space', sourceNeutral: true });
+      expect(centralLounge.getObjectByName('central-lounge-sofa-west')).toBeDefined();
+      expect(centralLounge.getObjectByName('central-lounge-sofa-east')).toBeDefined();
+      expect(centralLounge.getObjectByName('central-lounge-coffee-table')).toBeDefined();
+
+      const roomGroups = (scene as unknown as { roomsGroup: THREE.Group }).roomsGroup;
+      const room = roomGroups.children.find((child) => child.name === 'room-unit-eng');
+      expect(room).toBeDefined();
+      expect(room!.position.y).toBeCloseTo(-0.35, 3);
+      const selectableFloor = (room as THREE.Group).children.find(
+        (child) => child instanceof THREE.Mesh && child.userData.type === 'room'
+      ) as THREE.Mesh;
+      expect(selectableFloor).toBeDefined();
+      expect(selectableFloor.geometry).toBeInstanceOf(THREE.PlaneGeometry);
+      expect(selectableFloor.rotation.x).toBeCloseTo(-Math.PI / 2);
+      expect(selectableFloor.position.y + room!.position.y).toBeCloseTo(0.02);
+      const hitMaterial = selectableFloor.material as THREE.MeshBasicMaterial;
+      expect(hitMaterial.opacity).toBe(0);
+      expect(hitMaterial.colorWrite).toBe(false);
+      expect(hitMaterial.depthWrite).toBe(false);
+
+      const backPartition = room!.getObjectByName('department-back-partition') as THREE.Mesh<THREE.BoxGeometry>;
+      const sideGlass = room!.getObjectByName('department-side-glass-left') as THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial>;
+      const frontGlass = room!.getObjectByName('department-front-glass-left') as THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial>;
+      expect(backPartition.geometry.parameters.height).toBeLessThan(0.65);
+      expect(sideGlass.geometry.parameters.height).toBeLessThan(0.65);
+      expect(frontGlass.geometry.parameters.height).toBeLessThan(0.65);
+      expect(sideGlass.material.opacity).toBeLessThan(0.15);
+      expect(room!.getObjectByName('department-wall-sign')).toBeDefined();
+    });
+
+    it('keeps an accessible opening in the continuous curtain facade', () => {
+      const root = (scene as unknown as { scene: THREE.Scene }).scene;
+      const facade = root.getObjectByName('architectural-curtain-facade') as THREE.Group;
+      const entrance = root.getObjectByName('architectural-main-entrance') as THREE.Group;
+      expect(facade).toBeDefined();
+      expect(entrance).toBeDefined();
+      expect(entrance.userData.accessible).toBe(true);
+      expect(entrance.children).toHaveLength(4);
+
+      const frontGlassWidth = facade.children
+        .filter((child) => child instanceof THREE.Mesh && child.rotation.y === 0 && child.position.z > 0)
+        .filter((child) => (child as THREE.Mesh).geometry instanceof THREE.BoxGeometry)
+        .map((child) => (child as THREE.Mesh<THREE.BoxGeometry>).geometry.parameters)
+        .filter((geometry) => geometry.height === 2.65)
+        .reduce((sum, geometry) => sum + geometry.width, 0);
+      expect(facade.userData.facadeWidth - frontGlassWidth).toBeCloseTo(
+        facade.userData.entranceWidth,
+        5,
+      );
+    });
+
+    it('uses a locally generated stone finish and disposes its texture with the scene', () => {
+      const groundGroup = (scene as unknown as { groundGroup: THREE.Group }).groundGroup;
+      const slab = groundGroup.children.find(
+        (child) => child instanceof THREE.Mesh && child.geometry instanceof THREE.BoxGeometry
+      ) as THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial>;
+      expect(slab).toBeDefined();
+      expect(slab.material.map).toBeInstanceOf(THREE.CanvasTexture);
+      const textureDispose = vi.spyOn(slab.material.map!, 'dispose');
+
+      scene.dispose();
+
+      expect(textureDispose).toHaveBeenCalledOnce();
+    });
+
+    it('reports renderer counters and transparent CPU-side geometry/texture memory estimates', () => {
+      const metrics = scene.getPerformanceMetrics();
+      expect(metrics.sceneBuildDurationMs).toBeGreaterThanOrEqual(0);
+      expect(metrics.geometryBytesApprox).toBeGreaterThan(0);
+      expect(metrics.textureBytesApprox).toBeGreaterThan(0);
+      expect(metrics.drawCalls).toBe(0); // The injected test renderer does not implement WebGLInfo.
     });
 
     it('builds biophilic office plants with ceramic pot and botanical foliage', () => {

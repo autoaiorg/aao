@@ -6,6 +6,10 @@ test.describe('Real Browser Functional & Accessibility Suite (Google Chrome)', (
     await page.goto('/');
   });
 
+  async function openNavigation(page: import('@playwright/test').Page) {
+    await page.getByRole('button', { name: 'Alternar menú lateral' }).click();
+  }
+
   test('TopBar Auth Modal: keyboard navigation, Escape dismissal and automatic focus restoration', async ({ page }) => {
     // 1. Locate "Credencial de Acceso" button
     const authButton = page.getByRole('button', { name: /Credencial de Acceso/i });
@@ -54,6 +58,7 @@ test.describe('Real Browser Functional & Accessibility Suite (Google Chrome)', (
     await projectSelect.selectOption({ index: 1 });
 
     // 3. Navigate to Kanban tab via SideNavigation ("Trabajo / Tablero")
+    await openNavigation(page);
     const kanbanNav = page.getByRole('button', { name: /Trabajo \/ Tablero/i });
     await kanbanNav.click();
 
@@ -83,14 +88,16 @@ test.describe('Real Browser Functional & Accessibility Suite (Google Chrome)', (
   });
 
   test('Session isolation & volatile memory: zero storage leakage in real browser', async ({ page }) => {
-    // 1. Verify initially in real browser window that localStorage and sessionStorage are completely clean
+    // 1. Verify that only explicitly supported UI preferences may persist; credentials must not.
     const storageCheck1 = await page.evaluate(() => ({
-      localLen: window.localStorage.length,
+      localKeys: Object.keys(window.localStorage),
       sessionLen: window.sessionStorage.length,
       localToken: window.localStorage.getItem('token'),
       sessionToken: window.sessionStorage.getItem('token'),
     }));
-    expect(storageCheck1.localLen).toBe(0);
+    expect(storageCheck1.localKeys).not.toContain('token');
+    expect(storageCheck1.localKeys).not.toContain('aao_ceo_session');
+    expect(storageCheck1.localKeys.every((key) => ['aao.office.hud.prefs.v1', 'aao_office_v3_spatial_windows_v1'].includes(key))).toBe(true);
     expect(storageCheck1.sessionLen).toBe(0);
     expect(storageCheck1.localToken).toBeNull();
     expect(storageCheck1.sessionToken).toBeNull();
@@ -108,12 +115,14 @@ test.describe('Real Browser Functional & Accessibility Suite (Google Chrome)', (
 
     // 4. Verify storage is STILL completely clean (memory-only retention)
     const storageCheck2 = await page.evaluate(() => ({
-      localLen: window.localStorage.length,
+      localKeys: Object.keys(window.localStorage),
       sessionLen: window.sessionStorage.length,
       localToken: window.localStorage.getItem('token'),
       sessionToken: window.sessionStorage.getItem('token'),
     }));
-    expect(storageCheck2.localLen).toBe(0);
+    expect(storageCheck2.localKeys).not.toContain('token');
+    expect(storageCheck2.localKeys).not.toContain('aao_ceo_session');
+    expect(storageCheck2.localKeys.every((key) => ['aao.office.hud.prefs.v1', 'aao_office_v3_spatial_windows_v1'].includes(key))).toBe(true);
     expect(storageCheck2.sessionLen).toBe(0);
     expect(storageCheck2.localToken).toBeNull();
     expect(storageCheck2.sessionToken).toBeNull();
@@ -127,26 +136,30 @@ test.describe('Real Browser Functional & Accessibility Suite (Google Chrome)', (
     await expect(page.getByText(/DEMO · DATOS SIMULADOS/i)).toBeVisible();
 
     await page.getByRole('button', { name: /LIVE/i }).click();
-    await expect(page.getByText(/Sesión LIVE en espera de credencial/i)).toBeVisible();
+    await expect(page.getByRole('button', { name: /Credencial de Acceso/i })).toBeVisible();
+    await expect(page.getByText(/SIN CONEXIÓN AL NÚCLEO EN LIVE/i)).toBeVisible();
 
     // Verify final storage state is still strictly empty
     const storageCheck3 = await page.evaluate(() => ({
-      localLen: window.localStorage.length,
+      localKeys: Object.keys(window.localStorage),
       sessionLen: window.sessionStorage.length,
     }));
-    expect(storageCheck3.localLen).toBe(0);
+    expect(storageCheck3.localKeys).not.toContain('token');
+    expect(storageCheck3.localKeys).not.toContain('aao_ceo_session');
+    expect(storageCheck3.localKeys.every((key) => ['aao.office.hud.prefs.v1', 'aao_office_v3_spatial_windows_v1'].includes(key))).toBe(true);
     expect(storageCheck3.sessionLen).toBe(0);
   });
 
   test('F3 Organization & Agent Structure: hierarchy, filtering, drawer Escape dismissal and focus restoration', async ({ page }) => {
     // 1. Navigate to "Organización" in LIVE mode
+    await openNavigation(page);
     const orgNav = page.getByRole('button', { name: 'Organización' });
     await expect(orgNav).toBeVisible();
     await orgNav.click();
 
     // 2. In LIVE mode, verify honest technical notice is shown (no fake endpoints fabricated)
     await expect(page.getByText(/Organización y Estructura de Agentes/i)).toBeVisible();
-    await expect(page.getByText(/El núcleo canónico de AAO no expone aún endpoints/i)).toBeVisible();
+    await expect(page.getByText(/Dato no disponible en esta fase|Acceso no autorizado \(HTTP 403\)/i).last()).toBeVisible();
 
     // 3. Switch to DEMO mode to load rich organizational structure
     const demoButton = page.getByRole('button', { name: /DEMO/i });
@@ -159,8 +172,8 @@ test.describe('Real Browser Functional & Accessibility Suite (Google Chrome)', (
     await expect(page.getByText('Agentes Efímeros (Temporales)')).toBeVisible();
 
     // 5. Verify Organigram shows executive and subordinate units
-    await expect(page.getByText(/Dirección Ejecutiva y Secretaría General/i)).toBeVisible();
-    await expect(page.getByText(/Arquitectura de Sistemas y Protocolos/i)).toBeVisible();
+    await expect(page.getByRole('heading', { name: /Dirección Ejecutiva y Secretaría General/i }).last()).toBeVisible();
+    await expect(page.getByRole('heading', { name: /Arquitectura de Sistemas y Protocolos/i }).last()).toBeVisible();
 
     // 6. Switch to "Plantilla y Agentes" tab
     const agentsTab = page.getByRole('tab', { name: /Plantilla y Agentes/i });
@@ -208,7 +221,8 @@ test.describe('Real Browser Functional & Accessibility Suite (Google Chrome)', (
 
   test('F4 Virtual Office 3D: WebGL / accessible 2D fallback, room & agent selection, sidebar inspection and cross-navigation', async ({ page }) => {
     // 1. Navigate to "Oficina Virtual" in LIVE mode
-    const officeNav = page.getByRole('button', { name: 'Oficina Virtual' });
+    await openNavigation(page);
+    const officeNav = page.getByRole('button', { name: 'Oficina Virtual 3D' });
     await expect(officeNav).toBeVisible();
     await officeNav.click();
 
@@ -221,7 +235,10 @@ test.describe('Real Browser Functional & Accessibility Suite (Google Chrome)', (
     await demoButton.click();
     await expect(page.getByText(/DEMO · SIMULACIÓN 3D ACTIVA/i)).toBeVisible();
 
-    // 4. Verify Toolbar is present
+    // 4. Expand secondary camera/view controls; they persist collapsed by default.
+    await page.getByRole('button', { name: /Controles/i }).click();
+
+    // 5. Verify Toolbar is present
     const toolbar = page.getByRole('toolbar', { name: /Barra de herramientas de la Oficina Virtual/i });
     await expect(toolbar).toBeVisible();
 
@@ -244,12 +261,16 @@ test.describe('Real Browser Functional & Accessibility Suite (Google Chrome)', (
     await expect(page.getByRole('heading', { level: 4, name: /Ingeniería de Software/i })).toBeVisible();
     await expect(page.getByRole('heading', { level: 4, name: /Operaciones de Infraestructura/i })).toBeVisible();
 
-    // 7. Select department via toolbar chip
-    const auditChip = toolbar.getByRole('button', { name: /\[AUDIT\] Auditoría/i });
+    // 7. Select department via the HUD roster dock.
+    await page.getByRole('button', { name: 'Expandir muelle de sectores' }).click();
+    const roster = page.getByRole('region', { name: 'Muelle táctico de departamentos y plantilla' });
+    const auditChip = roster.getByRole('button', { name: /\[AUDIT\] Auditoría/i });
     await auditChip.click();
+    await expect(auditChip).toHaveAttribute('aria-pressed', 'true');
 
-    // 8. Verify contextual sidebar updates
-    const sidebar = page.locator('aside');
+    // 8. Expand and verify the contextual inspector.
+    await page.getByRole('button', { name: 'Expandir inspector táctico' }).click();
+    const sidebar = page.getByRole('complementary', { name: 'Panel contextual de departamento y agentes' });
     await expect(sidebar.getByRole('heading', { level: 3, name: /Auditoría Independiente y Verificación/i })).toBeVisible();
 
     // 9. Inspect agent in sidebar
@@ -276,14 +297,17 @@ test.describe('Real Browser Functional & Accessibility Suite (Google Chrome)', (
     await expect(page.getByRole('heading', { level: 2, name: /Organización y Estructura de Agentes/i })).toBeVisible();
 
     // 11. Navigate back to "Oficina Virtual", switch 2D -> 3D and verify single active canvas with no orphan leaks
+    await openNavigation(page);
     await officeNav.click();
     await expect(toolbar).toBeVisible();
     await view3dBtn.click();
     const canvasCount = await page.evaluate(() => document.querySelectorAll('canvas').length);
     expect(canvasCount).toBe(1);
-    const canvasBox = await page.locator('canvas').boundingBox();
-    expect(canvasBox).not.toBeNull();
-    expect(canvasBox!.width).toBeGreaterThan(400);
-    expect(canvasBox!.height).toBeGreaterThan(400);
+    const canvasBox = await page.locator('canvas').evaluate((canvas) => {
+      const { width, height } = canvas.getBoundingClientRect();
+      return { width, height };
+    });
+    expect(canvasBox.width).toBeGreaterThan(400);
+    expect(canvasBox.height).toBeGreaterThan(400);
   });
 });

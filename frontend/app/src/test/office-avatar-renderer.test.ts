@@ -179,6 +179,21 @@ describe('Stylized Humanoid Worker Avatar Renderer (PR A)', () => {
       foreignGeo.dispose();
     });
 
+    it('uses pooled rounded body and limb volumes instead of block-like box segments', () => {
+      expect(pool.torsoUpperGeo).toBeInstanceOf(THREE.CapsuleGeometry);
+      expect(pool.torsoLowerGeo).toBeInstanceOf(THREE.CapsuleGeometry);
+      expect(pool.upperArmGeo).toBeInstanceOf(THREE.CapsuleGeometry);
+      expect(pool.forearmGeo).toBeInstanceOf(THREE.CapsuleGeometry);
+      expect(pool.thighGeo).toBeInstanceOf(THREE.CapsuleGeometry);
+      expect(pool.shinGeo).toBeInstanceOf(THREE.CapsuleGeometry);
+      expect(pool.handGeo).toBeInstanceOf(THREE.SphereGeometry);
+    });
+
+    it('uses domed cap geometry for non-short hairstyles instead of rectangular hair blocks', () => {
+      expect(pool.hairSidePartGeo).toBeInstanceOf(THREE.SphereGeometry);
+      expect(pool.hairMidGeo).toBeInstanceOf(THREE.SphereGeometry);
+    });
+
     it('cleans up all geometries and cached materials upon disposal', () => {
       const mat = pool.getMaterial('temp-mat', () => new THREE.MeshBasicMaterial());
       expect(pool.ownsMaterial(mat)).toBe(true);
@@ -233,6 +248,21 @@ describe('Stylized Humanoid Worker Avatar Renderer (PR A)', () => {
       expect(parts.rightArm).toBeDefined();
       expect(parts.leftLeg).toBeDefined();
       expect(parts.rightLeg).toBeDefined();
+    });
+
+    it('renders the ground telemetry halo with a subdued status tint', () => {
+      const group = buildAgentAvatar(baseAgent, idleActivity, pool, {
+        departmentAccentHex: '#10b981',
+        createSpeechBubbleSprite: mockCreateSprite,
+        createAgentNameSprite: mockCreateSprite,
+      });
+
+      const haloMaterial = (group.userData.parts.halo as THREE.Mesh)
+        .material as THREE.MeshBasicMaterial;
+      expect(haloMaterial.color.getHex()).toBe(0x668b70);
+      expect(haloMaterial.transparent).toBe(true);
+      expect(haloMaterial.opacity).toBe(0.56);
+      expect(haloMaterial.depthWrite).toBe(false);
     });
 
     it('creates EPHEMERAL primary geometry at y = 0.58 for ephemeral agents', () => {

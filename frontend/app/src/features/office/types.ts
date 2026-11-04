@@ -45,7 +45,19 @@ export interface CameraViewState {
 export interface OfficeScenePerfMetrics {
   qualityProfile: OfficeGraphicsQuality;
   fpsEstimate: number;
+  /** Time between animation-frame callbacks, including browser scheduling delays. */
   lastFrameTimeMs: number;
+  /** CPU time spent updating office state and submitting the scene to WebGL. */
+  frameWorkTimeMs: number;
+  /** CPU time spent on office simulation and interaction updates, excluding render submission. */
+  simulationUpdateTimeMs: number;
+  drawCalls: number;
+  triangleCount: number;
+  rendererGeometryCount: number;
+  rendererTextureCount: number;
+  geometryBytesApprox: number;
+  textureBytesApprox: number;
+  sceneBuildDurationMs: number;
   lastStateUpdateMs: number;
   interactiveMeshesCount: number;
   roomsCount: number;
@@ -120,7 +132,7 @@ export const OFFICE_ROOMS: OfficeRoomConfig[] = [
     code: 'EXEC',
     name: 'Dirección Ejecutiva',
     x: -6,
-    z: -4,
+    z: -6.5,
     width: 4.8,
     depth: 4.2,
     color: '#1e3a8a',
@@ -133,7 +145,7 @@ export const OFFICE_ROOMS: OfficeRoomConfig[] = [
     code: 'GOV',
     name: 'Gobernanza y Políticas',
     x: 0,
-    z: -4,
+    z: -6.5,
     width: 4.8,
     depth: 4.2,
     color: '#4c1d95',
@@ -146,7 +158,7 @@ export const OFFICE_ROOMS: OfficeRoomConfig[] = [
     code: 'AUDIT',
     name: 'Auditoría Independiente',
     x: 6,
-    z: -4,
+    z: -6.5,
     width: 4.8,
     depth: 4.2,
     color: '#064e3b',
@@ -159,7 +171,7 @@ export const OFFICE_ROOMS: OfficeRoomConfig[] = [
     code: 'ARCH',
     name: 'Arquitectura de Sistemas',
     x: -6,
-    z: 4,
+    z: 6.5,
     width: 4.8,
     depth: 4.2,
     color: '#78350f',
@@ -172,7 +184,7 @@ export const OFFICE_ROOMS: OfficeRoomConfig[] = [
     code: 'ENG',
     name: 'Ingeniería e Implementación',
     x: 0,
-    z: 4,
+    z: 6.5,
     width: 4.8,
     depth: 4.2,
     color: '#164e63',
@@ -185,7 +197,7 @@ export const OFFICE_ROOMS: OfficeRoomConfig[] = [
     code: 'OPS',
     name: 'Operaciones e Infraestructura',
     x: 6,
-    z: 4,
+    z: 6.5,
     width: 4.8,
     depth: 4.2,
     color: '#713f12',

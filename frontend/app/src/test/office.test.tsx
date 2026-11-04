@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import * as THREE from 'three';
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import { VirtualOfficeView } from '../features/office/VirtualOfficeView';
@@ -8,6 +8,16 @@ import type { AgentIdentity, DataState, OrganizationStructure } from '../domain/
 import { DEMO_ORG_STRUCTURE, DEMO_AGENTS, DEMO_ORG_UNITS } from '../data/adapters/demo/fixtures';
 
 describe('Phase F4: VirtualOfficeView & 3D Office Experience', () => {
+  beforeEach(() => {
+    // Legacy interactions exercise expanded controls; product defaults are intentionally compact.
+    window.localStorage.setItem('aao.office.hud.prefs.v1', JSON.stringify({
+      isRosterOpen: true,
+      isInspectorOpen: true,
+      isMinimapOpen: true,
+      isToolbarCollapsed: false,
+      bottomDeckState: 'docked',
+    }));
+  });
   const readyDemoState: DataState<OrganizationStructure> = {
     kind: 'ready',
     origin: 'demo',
@@ -21,6 +31,50 @@ describe('Phase F4: VirtualOfficeView & 3D Office Experience', () => {
       'El núcleo canónico de AAO no expone aún endpoints públicos para la estructura organizativa ni la telemetría de agentes (F3/F4).',
     retryable: false,
   };
+
+  it('distinguishes a loaded LIVE organization without departments from unavailable data and never borrows DEMO departments', () => {
+    const emptyLiveState: DataState<OrganizationStructure> = {
+      kind: 'ready',
+      origin: 'live',
+      data: {
+        units: [],
+        agents: [],
+        totalStandingAgents: 0,
+        totalEphemeralAgents: 0,
+        activeAssignmentsCount: 0,
+      },
+      fetchedAt: new Date().toISOString(),
+    };
+
+    render(<VirtualOfficeView organization={emptyLiveState} />);
+
+    expect(screen.getAllByRole('status').some((status) =>
+      status.textContent?.includes('LIVE · SIN DEPARTAMENTOS DECLARADOS · 0 identidades recibidas')
+    )).toBe(true);
+    expect(screen.queryByRole('button', { name: /\[(EXEC|GOV|ENG|OPS|AUDIT)\]/i })).not.toBeInTheDocument();
+  });
+
+  it('labels a persisted organization with departments but no agent identities accurately', () => {
+    const noAgents: DataState<OrganizationStructure> = {
+      kind: 'ready',
+      origin: 'live',
+      data: {
+        units: [{ ...DEMO_ORG_UNITS[0], id: 'live-unit', code: 'LIVE', name: 'Unidad LIVE' }],
+        agents: [],
+        totalStandingAgents: 0,
+        totalEphemeralAgents: 0,
+        activeAssignmentsCount: 0,
+      },
+      fetchedAt: new Date().toISOString(),
+    };
+
+    render(<VirtualOfficeView organization={noAgents} />);
+
+    expect(screen.getAllByRole('status').some((status) =>
+      status.textContent?.includes('LIVE · ESTRUCTURA PERSISTIDA SIN IDENTIDADES DE AGENTE')
+    )).toBe(true);
+    expect(screen.getByRole('button', { name: '[LIVE] Unidad LIVE' })).toBeInTheDocument();
+  });
 
   it('renders honest callout in LIVE when backend F4 endpoints are absent', () => {
     render(<VirtualOfficeView organization={unavailableLiveState} />);
@@ -257,7 +311,7 @@ describe('ThreeOfficeScene Engine Direct Regression Tests (Defects 1 & 2)', () =
       },
     });
 
-    // Initially, interactiveMeshes contains the 6 room platforms
+    // Initially, interactiveMeshes contains the 6 room-floor hit targets.
     expect(scene.getInteractiveMeshesCount()).toBe(6);
 
     // First agent update with DEMO_AGENTS
@@ -269,7 +323,7 @@ describe('ThreeOfficeScene Engine Direct Regression Tests (Defects 1 & 2)', () =
     scene.updateAgents(DEMO_AGENTS);
     expect(scene.getInteractiveMeshesCount()).toBe(countAfterFirstUpdate);
 
-    // Third agent update with empty array: should cleanly revert to exactly 6 room platforms
+    // Third agent update with empty array: should cleanly revert to exactly 6 room-floor hit targets.
     scene.updateAgents([]);
     expect(scene.getInteractiveMeshesCount()).toBe(6);
 
@@ -325,7 +379,7 @@ describe('ThreeOfficeScene Engine Direct Regression Tests (Defects 1 & 2)', () =
     scene.dispose();
   });
 
-  it('F4.7: smart zoom smoothly focuses onto selected department (14.5) and resetCamera() restores overview (24)', () => {
+  it('F4.7: smart zoom smoothly focuses onto selected department and resetCamera() restores a fitted overview', () => {
     const container = document.createElement('div');
     const scene = new ThreeOfficeScene(container, {
       renderer: createMockRenderer(),
@@ -337,28 +391,31 @@ describe('ThreeOfficeScene Engine Direct Regression Tests (Defects 1 & 2)', () =
     });
 
     // Default overview state
-    expect(scene.getDesiredDistance()).toBe(24);
+    const fittedOverviewDistance = scene.getDesiredDistance();
+    expect(fittedOverviewDistance).toBeGreaterThan(24);
     expect(scene.getDesiredTarget().x).toBe(0);
     expect(scene.getDesiredTarget().z).toBe(0);
 
-    // Select EXEC room -> camera focuses at distance 14.5 on EXEC coords (-6, -4)
+    // Select EXEC room -> camera focuses at distance 14.5 on the refitted EXEC coords (-6, -6.5)
     scene.selectRoom('unit-exec');
     expect(scene.getDesiredDistance()).toBe(14.5);
     expect(scene.getDesiredTarget().x).toBe(-6);
-    expect(scene.getDesiredTarget().z).toBe(-4);
+    expect(scene.getDesiredTarget().z).toBe(-6.5);
 
-    // Reset camera -> camera returns to overview at distance 24
+    // Reset camera -> camera returns to the same viewport-fitted overview
     scene.resetCamera();
-    expect(scene.getDesiredDistance()).toBe(24);
+    expect(scene.getDesiredDistance()).toBe(fittedOverviewDistance);
     expect(scene.getDesiredTarget().x).toBe(0);
     expect(scene.getDesiredTarget().z).toBe(0);
 
-    // Zoom clamping boundaries: minDistance 8, maxDistance 38
+    // Zoom clamping boundaries: minDistance 8 and the camera's dynamic fit limit
     scene.zoomCamera(0.1); // extreme zoom-in
     expect(scene.getDesiredDistance()).toBeGreaterThanOrEqual(8);
 
-    scene.zoomCamera(10.0); // extreme zoom-out
-    expect(scene.getDesiredDistance()).toBeLessThanOrEqual(38);
+    for (let index = 0; index < 4; index += 1) scene.zoomCamera(10.0);
+    const maxFitDistance = scene.getDesiredDistance();
+    scene.zoomCamera(10.0);
+    expect(scene.getDesiredDistance()).toBe(maxFitDistance);
 
     scene.dispose();
   });
@@ -473,7 +530,7 @@ describe('ThreeOfficeScene Engine Direct Regression Tests (Defects 1 & 2)', () =
     scene.updateAgents(agents100);
     expect(scene.getInteractiveMeshesCount()).toBe(count100);
 
-    // Clean reset to 0 agents restores exactly 6 room platforms
+    // Clean reset to 0 agents restores exactly 6 room-floor hit targets.
     scene.updateAgents([]);
     expect(scene.getInteractiveMeshesCount()).toBe(6);
 
@@ -517,7 +574,7 @@ describe('Phase F4.7: UI Contrast, Design Tokens & Operational Indicators', () =
     expect(screen.getByRole('heading', { name: 'Unidad dinámica live' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /\[GOV\]/i })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Vista 3D \(WebGL\)/i })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByText(/LIVE · ESTRUCTURA PERSISTIDA · Plano 2D y escena 3D derivados/i)).toBeInTheDocument();
+    expect(screen.getByText(/LIVE · ESTRUCTURA PERSISTIDA SIN IDENTIDADES DE AGENTE/i)).toBeInTheDocument();
     expect(screen.queryByText(/La escena 3D es solo DEMO/i)).not.toBeInTheDocument();
   });
 
@@ -553,7 +610,7 @@ describe('Phase F4.7: UI Contrast, Design Tokens & Operational Indicators', () =
     render(<VirtualOfficeView organization={liveState} />);
 
     expect(screen.getByRole('button', { name: /Vista 3D \(WebGL\)/i })).toBeEnabled();
-    expect(screen.getByText(/LIVE · ESTRUCTURA PERSISTIDA/i)).toBeInTheDocument();
+    expect(screen.getByText(/LIVE · SIN DEPARTAMENTOS DECLARADOS/i)).toBeInTheDocument();
   });
 
   it('renders "Vista General" reset button and triggers camera reset callback', () => {

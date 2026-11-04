@@ -98,6 +98,18 @@ contra PostgreSQL.
   firmante/socket revisado, y pruebas de integración/disposable host, el endpoint
   de ciclo responde 503 en producción.
 
+## Recuperación de certificados de ciclo
+
+La migración 048 persiste únicamente la cadena pública y permite recuperarla
+mediante identidad mTLS activa autenticada. No almacena claves privadas ni
+permite recuperar una entrega inicial perdida; no habilita ni activa producción.
+
+## Recuperación de certificados de ciclo
+
+La migración 048 persiste únicamente la cadena pública y permite recuperarla
+mediante identidad mTLS activa autenticada. No almacena claves privadas ni
+permite recuperar una entrega inicial perdida; no habilita ni activa producción.
+
 ## Decisiones y trabajo pendiente
 
 1. **CEO/host administrator:** elegir custodia real (servicio dedicado root o

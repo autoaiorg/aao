@@ -8,6 +8,11 @@ GRANT CONNECT ON DATABASE aao_prod TO aao_runtime;
 GRANT USAGE ON SCHEMA public TO aao_runtime;
 
 GRANT SELECT ON TABLE schema_migrations TO aao_runtime;
+-- Organization proposal planning and its durable execution journal (043/045).
+GRANT SELECT, INSERT, UPDATE ON TABLE organization_proposals TO aao_runtime;
+GRANT SELECT, INSERT, UPDATE ON TABLE organization_executions TO aao_runtime;
+GRANT SELECT, INSERT ON TABLE organization_execution_events TO aao_runtime;
+GRANT USAGE ON SEQUENCE organization_execution_events_id_seq TO aao_runtime;
 GRANT SELECT, INSERT ON TABLE
   events, execution_journal, patch_proposals, patch_proposal_validations,
   work_item_dependencies, work_group_partial_reports, protocol_instances,
@@ -30,10 +35,11 @@ GRANT SELECT, INSERT, UPDATE ON TABLE
 TO aao_runtime;
 GRANT SELECT, INSERT ON TABLE host_worker_bindings TO aao_runtime;
 GRANT SELECT, INSERT, UPDATE ON TABLE pm_coordinator_presence TO aao_runtime;
-GRANT SELECT, INSERT ON TABLE workload_identity_bindings TO aao_runtime;
-GRANT UPDATE (enabled, revoked_at) ON TABLE workload_identity_bindings TO aao_runtime;
-GRANT SELECT, INSERT, UPDATE (state, completed_at, revoked_at)
-  ON TABLE selfdev_cycle_mtls_intents TO aao_runtime;
+GRANT SELECT ON TABLE workload_identity_bindings, selfdev_cycle_mtls_intents TO aao_runtime;
+GRANT EXECUTE ON FUNCTION create_selfdev_cycle_mtls_intent(uuid,uuid,text,text,text,timestamptz,timestamptz) TO aao_runtime;
+GRANT EXECUTE ON FUNCTION expire_selfdev_cycle_mtls_intent(uuid) TO aao_runtime;
+GRANT EXECUTE ON FUNCTION revoke_selfdev_cycle_mtls_intent(uuid) TO aao_runtime;
+-- Binding completion stays ungranted until an isolated certificate verifier exists.
 -- Narrow ACTIVE->FENCED retirement for revoked Self Development cycle implementers (041).
 GRANT EXECUTE ON FUNCTION retire_selfdev_cycle_host_binding(text, uuid) TO aao_runtime;
 GRANT SELECT, INSERT, DELETE ON TABLE project_grants TO aao_runtime;

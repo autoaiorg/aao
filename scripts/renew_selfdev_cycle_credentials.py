@@ -56,6 +56,12 @@ DEFINITIVE_REJECTIONS = {400, 401, 403, 404, 422}
 CONCURRENCY_CAP_CODE = "SELFDEV_CYCLE_CONCURRENCY_CAP"
 DAILY_CAP_CODE = "SELFDEV_CYCLE_ISSUANCE_DAILY_CAP"
 DAILY_CAP_BACKOFF = timedelta(hours=1)
+# On a daily-cap 429, retry early enough that a successor can still be issued,
+# installed, verified and N drained before N expires.
+TIMER_INTERVAL = timedelta(minutes=5)
+TIMER_ACCURACY = timedelta(seconds=30)
+DAILY_CAP_SAFETY_MARGIN = DRAIN_CAP + CLOCK_SKEW + TIMER_INTERVAL + TIMER_ACCURACY
+DAILY_CAP_MIN_WAIT = BACKOFF[0]
 PHASES = {
     "ACTIVE", "ISSUING", "INSTALLED_PENDING", "VERIFIED", "REVOKING_OLD",
     "FAILED_ISSUE", "FAILED_INSTALL", "FAILED_EXPIRED", "BREAKER_OPEN",
@@ -291,6 +297,18 @@ def exclusive_lock(path: Path):
 # ----------------------------------------------------------------------- runner
 
 
+def daily_cap_retry_at(now: datetime, current_expires: datetime | None) -> datetime | None:
+    """next_attempt_at after a daily-cap 429; None retries on every timer tick.
+
+    With N live: min(1 h, max(5 min, remaining_N - safety margin)). With N gone
+    there is nothing to protect by waiting; each rejected POST issues nothing.
+    """
+    if current_expires is None or now >= current_expires:
+        return None
+    wait = current_expires - now - DAILY_CAP_SAFETY_MARGIN
+    return now + min(DAILY_CAP_BACKOFF, max(DAILY_CAP_MIN_WAIT, wait))
+
+
 def _detail_code(body) -> str | None:
     detail = body.get("detail") if isinstance(body, dict) else None
     return detail.get("code") if isinstance(detail, dict) else None
@@ -436,8 +454,8 @@ class Runner:
             # Rejected before issuance: nothing exists server-side to revoke.
             # Definitive codes (auth, grant, validation) cannot succeed on retry.
             # The concurrency cap means an untracked live cycle exists (manual, a
-            # pre-reboot state, ...). The API cannot list cycles and every ID this
-            # runner abandons is revoked or expired, so it cannot be identified
+            # pre-reboot state, a FAILED_ISSUE closed on a 409 revoke mismatch,
+            # ...). The API cannot list cycles, so it cannot be identified
             # safely: stop and alert instead of guessing.
             reason = f"HTTP {status}" + (f" {code}" if code else "")
             self._event("failed", phase="ISSUING", cycle=cycle_id,
@@ -446,13 +464,19 @@ class Runner:
             return self._save(state, "BREAKER_OPEN", consecutive_failures=BREAKER_THRESHOLD,
                               next_attempt_at=None, **cleared)
         if status == 429 and code == DAILY_CAP_CODE:
-            # Nothing issued; not an issuance failure and nothing to revoke. Re-check
-            # after a long wait: the API does not expose when its rolling 24 h
-            # window frees a slot.
-            until = _iso(now + DAILY_CAP_BACKOFF)
+            # Nothing issued; not an issuance failure, never opens the breaker and
+            # nothing is revoked. The API does not expose when its rolling 24 h
+            # window frees a slot, so retry before N runs out (daily_cap_retry_at).
+            # The tick then exits 1, which is the alert.
+            current = state["current_expires_at"]
+            current = _parse_time(current) if current else None
+            retry = daily_cap_retry_at(now, current)
+            until = _iso(retry) if retry else None
             self._event("failed", phase="ISSUING", cycle=cycle_id,
-                        reason=f"issue daily cap reached; retry after {until}")
-            return self._save(state, "ACTIVE", next_attempt_at=until, **cleared)
+                        reason=f"issue daily cap reached; retry after {until or 'next tick'}")
+            expired = current is not None and now >= current
+            return self._save(state, "FAILED_EXPIRED" if expired else "ACTIVE",
+                              next_attempt_at=until, **cleared)
         try:
             expires, tokens, ids = self._check_issue_response(cycle_id, status, body, now)
             # Identity is verified with the in-memory tokens BEFORE any file is
@@ -467,7 +491,9 @@ class Runner:
         # the implementer file holding cycle N. The only remaining case where the
         # implementer file ends up with a revoked N+1 token is a failure of the
         # implementer's own step after its rename: replace rc 3, a failed
-        # implementer verify, or a crash after the implementer replace. The two
+        # implementer verify, a wrapper timeout (WrapperInstaller returns 1 but
+        # the rename may already have happened), or a crash after the
+        # implementer replace. The two
         # files live in two accounts' runtime dirs, so no single rename can
         # switch both.
         written = False

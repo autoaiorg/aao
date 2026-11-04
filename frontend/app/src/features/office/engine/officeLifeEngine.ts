@@ -363,59 +363,31 @@ export function projectAgentOperationalActivity(
     };
   }
 
-  // 6. Demo-only simulated conversation for idle pairs in the same unit or executive coordination
-  if (isDemo && agent.status === 'IDLE' && agent.heartbeatStatus === 'HEALTHY') {
-    const idlePeers = allAgents.filter(
-      (other) =>
-        other.id !== agent.id &&
-        (other.isSyntheticDemo || isDemo) &&
-        other.status === 'IDLE' &&
-        other.heartbeatStatus === 'HEALTHY' &&
-        !other.currentAssignments.some((a) => isAssignmentLeaseValid(a, nowMs).valid)
-    );
-    if (idlePeers.length > 0) {
-      const partner = idlePeers[0];
-      return {
-        agentId: agent.id,
-        kind: 'CONVERSING',
-        provenance: 'DEMO_SIMULATION',
-        label: `Conversando con ${partner.name.split(' ')[0]} (Simulación DEMO)`,
-        shortBadge: '💬 DEMO CHAT',
-        detail: `Interacción simulada en modo DEMO con ${partner.name}; no representa una conversación real del backend.`,
-        isLeaseExpired: false,
-        activeTaskId: null,
-        activeProjectId: null,
-        conversationPartnerId: partner.id,
-      };
-    }
-  }
-
-  // 7. Ambient Walking Animation (explicitly identified as ambient animation, NEVER business evidence)
+  // 6. Idle, healthy agents take an ambient coffee walk rather than standing
+  // at their chair. This remains purely visual: it creates no task, event, or
+  // business evidence, and reduced-motion callers can disable it.
   if (
     ambientWalkEnabled &&
     agent.status === 'IDLE' &&
     agent.heartbeatStatus === 'HEALTHY'
   ) {
-    // Deterministic cycle based on stable hash and time window so idle connected agents occasionally stretch/walk
-    const cycleSlot = Math.floor(nowMs / 20_000 + (stableAgentHash(agent.id) % 5)) % 3;
-    if (cycleSlot === 1) {
-      return {
-        agentId: agent.id,
-        kind: 'WALKING',
-        provenance: isDemo ? 'DEMO_SIMULATION' : 'AMBIENT_ANIMATION',
-        label: 'Paseo ambiental por la oficina (Sin acción de negocio)',
-        shortBadge: '🚶 AMBIENTAL',
-        detail:
-          'Animación ambiental de desplazamiento visual para agente disponible; no representa una tarea ni evento empresarial.',
-        isLeaseExpired: false,
-        activeTaskId: null,
-        activeProjectId: null,
-        conversationPartnerId: null,
-      };
-    }
+    return {
+      agentId: agent.id,
+      kind: 'WALKING',
+      provenance: isDemo ? 'DEMO_SIMULATION' : 'AMBIENT_ANIMATION',
+      label: 'Paseo ambiental con café (Sin acción de negocio)',
+      shortBadge: '☕ PASEO AMBIENTAL',
+      detail:
+        'Desplazamiento visual con café para agente disponible; no representa una tarea ni evento empresarial.',
+      isLeaseExpired: false,
+      activeTaskId: null,
+      activeProjectId: null,
+      conversationPartnerId: null,
+    };
   }
 
-  // 8. Default: Seated & Idle at Assigned Workstation
+  // 7. Reduced motion or other explicitly disabled ambient animation:
+  // remain seated at the assigned workstation.
   return {
     agentId: agent.id,
     kind: 'IDLE_DESK',
@@ -592,8 +564,14 @@ export function planOfficeLifePlacements(
         activity.kind === 'TYPING_DOCS' ||
         activity.kind === 'IDLE_DESK';
 
-      // Build obstacle-free corridor waypoints (Chair -> Central Aisle -> Room Door -> Atrium Ring)
-      const aisleWaypoint = { x: room.x, z: slot.chairWorldZ };
+      // Leave the chair footprint before following the neighborhood aisle.
+      // Starting a WALKING loop at chairWorldX/Z made idle avatars stand on
+      // top of their own seats for the first segment of every ambient route.
+      const chairExitWaypoint = {
+        x: slot.chairWorldX,
+        z: slot.chairWorldZ + 0.75,
+      };
+      const aisleWaypoint = { x: room.x, z: chairExitWaypoint.z };
       const doorWaypoint = layout.corridorEntryWorld;
       const walkSide = stableAgentHash(agent.id) % 2 === 0 ? -1 : 1;
       const neighborhoodWaypoint = {
@@ -602,7 +580,7 @@ export function planOfficeLifePlacements(
       };
 
       const waypoints = [
-        { x: slot.chairWorldX, z: slot.chairWorldZ },
+        chairExitWaypoint,
         aisleWaypoint,
         doorWaypoint,
         neighborhoodWaypoint,

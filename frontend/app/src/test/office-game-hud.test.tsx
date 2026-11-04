@@ -585,6 +585,36 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
     expect(projectedIdleAudit.kind).toBe('IDLE_DESK');
     expect(projectedIdleAudit.provenance).toBe('LIVE_VERIFIED_EVIDENCE');
 
+    // Healthy idle agents use an explicitly ambient coffee walk by default;
+    // it must not create task or project evidence in LIVE.
+    const ambientIdleAudit = projectAgentOperationalActivity(
+      idleAuditAgent,
+      [idleAuditAgent],
+      { isDemo: false, nowMs }
+    );
+    expect(ambientIdleAudit.kind).toBe('WALKING');
+    expect(ambientIdleAudit.provenance).toBe('AMBIENT_ANIMATION');
+    expect(ambientIdleAudit.activeTaskId).toBeNull();
+    expect(ambientIdleAudit.activeProjectId).toBeNull();
+    expect(ambientIdleAudit.shortBadge).toContain('PASEO');
+
+    const demoIdleAudit = projectAgentOperationalActivity(
+      { ...idleAuditAgent, isSyntheticDemo: true },
+      [{ ...idleAuditAgent, isSyntheticDemo: true }],
+      { isDemo: true, nowMs }
+    );
+    expect(demoIdleAudit.kind).toBe('WALKING');
+    expect(demoIdleAudit.provenance).toBe('DEMO_SIMULATION');
+
+    const ambientPlacement = planOfficeLifePlacements([idleAuditAgent], OFFICE_ROOMS, {
+      isDemo: false,
+      nowMs,
+    }).get(idleAuditAgent.id)!;
+    expect(ambientPlacement.activity.kind).toBe('WALKING');
+    expect(ambientPlacement.waypoints[0].z).toBeGreaterThan(
+      ambientPlacement.workstationSlot.chairWorldZ
+    );
+
     // 4. Sharing a projectId in LIVE without explicit coordination evidence must NOT attribute CONVERSING
     const peerA: AgentIdentity = {
       ...activeAuditAgent,

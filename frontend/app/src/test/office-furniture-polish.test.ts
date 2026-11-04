@@ -162,6 +162,22 @@ describe('PR C: Office Furniture, Procedural IDE Textures, Biophilia & Lighting'
       expect(hemiLight.intensity).toBeCloseTo(0.9, 2);
     });
 
+    it('keeps circulation geometry flush with the shared floor instead of drawing raised floor pads', () => {
+      const groundGroup = (scene as unknown as { groundGroup: THREE.Group }).groundGroup;
+      const walkwaysGroup = (scene as unknown as { walkwaysGroup: THREE.Group }).walkwaysGroup;
+      const slab = groundGroup.children.find((child) => child.name === 'campus-continuous-floor') as THREE.Mesh;
+
+      expect(slab).toBeDefined();
+      const slabTop = slab.position.y + (slab.geometry as THREE.BoxGeometry).parameters.height / 2;
+      expect(walkwaysGroup.children.length).toBeGreaterThan(0);
+
+      for (const segment of walkwaysGroup.children as THREE.Mesh[]) {
+        const geometry = segment.geometry as THREE.BoxGeometry;
+        const bottom = segment.position.y - geometry.parameters.height / 2;
+        expect(bottom).toBeCloseTo(slabTop, 3);
+      }
+    });
+
     it('uses a shared floor datum, invisible room hit targets, and source-neutral reception architecture', () => {
       const root = (scene as unknown as { scene: THREE.Scene }).scene;
       const reception = root.getObjectByName('architectural-reception') as THREE.Group;

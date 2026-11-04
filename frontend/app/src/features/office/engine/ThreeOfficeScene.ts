@@ -787,20 +787,10 @@ export class ThreeOfficeScene {
       // Keep the continuous slab visibly distinct from the lighter circulation paths.
       new THREE.MeshStandardMaterial({ map: stoneTexture, color: 0xffffff, roughness: 0.9, metalness: 0.01 })
     );
+    campusSlab.name = 'campus-continuous-floor';
     campusSlab.position.y = -0.04;
     campusSlab.receiveShadow = true;
     this.groundGroup.add(campusSlab);
-
-    // Polished Central Circulation Spine (terrazzo plaza connecting campus corridors)
-    const centralPlaza = new THREE.Mesh(
-      new THREE.BoxGeometry(Math.min(width - 3, 7.2), 0.02, Math.min(depth - 3, 7.2)),
-      // The atrium is distinguished by its geometry and furnishing, not by a
-      // high-contrast square of different flooring across the continuous slab.
-      new THREE.MeshStandardMaterial({ color: 0xaaa79e, roughness: 0.82, metalness: 0.01 })
-    );
-    centralPlaza.position.y = 0.022;
-    centralPlaza.receiveShadow = true;
-    this.groundGroup.add(centralPlaza);
 
     const ground = new THREE.Mesh(
       new THREE.BoxGeometry(width + 6, 0.4, depth + 6),
@@ -917,12 +907,15 @@ export class ThreeOfficeScene {
         const midZ = (start.z + end.z) * 0.5;
         const angle = Math.atan2(dx, dz);
 
-        const pathGeo = new THREE.BoxGeometry(seg.width, 0.02, distance + 0.35);
+        // Keep circulation finish flush with the shared slab. Raised, independently
+        // shaded corridor boxes read as overlapping floor pads in an isometric view.
+        const pathGeo = new THREE.BoxGeometry(seg.width, 0.002, distance + 0.35);
         const path = new THREE.Mesh(
           pathGeo,
           seg.isUnassignedWing ? holdingWalkwayMat : walkwayMat
         );
-        path.position.set(midX, 0.03, midZ);
+        path.name = `campus-circulation-segment-${seg.id}-${index}`;
+        path.position.set(midX, 0.021, midZ);
         path.rotation.y = angle;
         path.receiveShadow = true;
         this.walkwaysGroup.add(path);

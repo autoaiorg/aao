@@ -1,5 +1,21 @@
 # Self Development cycle roles
 
+## Current production boundary (2026-11-04)
+
+This procedure describes the persisted cycle-role intent and revocation
+plumbing, not an operational certificate lifecycle. The production signer,
+independent certificate verifier, and their isolated deployment are not
+provided by this change. Until those components exist, are independently
+reviewed, and are explicitly activated, production cycle identities remain
+disabled and the self-development execution cycle is unavailable. An intent or
+an idempotent replay is not proof of a usable certificate: `verified` is
+reported only while the principal is enabled and its binding is enabled,
+unrevoked, and unexpired. Otherwise the response reports `inactive`.
+
+Do not enable this workflow as a way to create runnable agents. W2 publisher
+credentials and other already-supported, separately governed paths are not
+substitutes for the missing production signer/verifier.
+
 The PM coordinator may request one fixed implementer/reviewer pair for the
 active `AAO — Self Development` project. This removes routine CEO-token use;
 it does **not** delegate general credential issuance. A CEO must first grant

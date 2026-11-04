@@ -656,6 +656,8 @@ def test_user_units_are_oneshot_without_no_new_privileges():
                       "RestrictAddressFamilies", "SystemCallFilter"):
         assert not any(line.startswith(forbidden) for line in directives)
     assert "OnUnitActiveSec=5min" in timer and "Unit=aao-selfdev-cycle-renew.service" in timer
+    assert renew.TIMER_INTERVAL == timedelta(minutes=5) and "AccuracySec=30s" in timer
+    assert renew.TIMER_ACCURACY == timedelta(seconds=30)
     assert "OnFailure=aao-selfdev-cycle-renew-alert.service" in directives
     alert = (unit_dir / "aao-selfdev-cycle-renew-alert.service").read_text()
     assert "-p err" in alert and "[Install]" not in alert
@@ -919,27 +921,143 @@ def test_concurrency_cap_409_opens_breaker_without_revoking_anything(env):
     assert any("SELFDEV_CYCLE_CONCURRENCY_CAP" in e.get("reason", "") for e in logs)
 
 
-def test_daily_cap_429_waits_long_without_counting_or_revoking(env):
-    clock, server, _installer, store, _logs, make = env
+DAILY_CAP_429 = (429, {"detail": {"code": "SELFDEV_CYCLE_ISSUANCE_DAILY_CAP",
+                                  "message": "48 per day"}})
+
+
+@pytest.mark.parametrize(("remaining", "wait"), [
+    (timedelta(hours=2), timedelta(hours=1)),        # capped at 1 h
+    (timedelta(minutes=97), timedelta(minutes=55, seconds=30)),
+    (timedelta(minutes=96), timedelta(minutes=54, seconds=30)),
+    (timedelta(minutes=95), timedelta(minutes=53, seconds=30)),
+    (timedelta(minutes=60), timedelta(minutes=18, seconds=30)),  # renewal threshold: 60 - 41.5
+    (timedelta(minutes=42), timedelta(minutes=5)),
+    (timedelta(minutes=41), timedelta(minutes=5)),   # exactly the floor
+    (timedelta(minutes=40), timedelta(minutes=5)),   # floor
+    (timedelta(seconds=1), timedelta(minutes=5)),
+])
+def test_daily_cap_retry_at_targets_n_remaining_minus_margin(remaining, wait):
+    assert renew.DAILY_CAP_SAFETY_MARGIN == timedelta(minutes=41, seconds=30)
+    assert renew.daily_cap_retry_at(T0, T0 + remaining) == T0 + wait
+
+
+@pytest.mark.parametrize("expires", [None, T0, T0 - timedelta(seconds=1)])
+def test_daily_cap_retry_at_without_live_n_retries_every_tick(expires):
+    assert renew.daily_cap_retry_at(T0, expires) is None
+
+
+def test_daily_cap_429_retries_before_n_expires_and_never_revokes(env):
+    clock, server, installer, store, logs, make = env
     c1 = _bootstrap(env)
-    _to_renewal(env)
-    server.fail["issue"] = lambda _c: (429, {"detail": {
-        "code": "SELFDEV_CYCLE_ISSUANCE_DAILY_CAP", "message": "24 per day"}})
+    _to_renewal(env)  # N has 60 min left
+    server.fail["issue"] = lambda _c: DAILY_CAP_429
     server.calls.clear()
     assert make().tick() == 1
     state = store.load()
     assert state["phase"] == "ACTIVE" and state["consecutive_failures"] == 0
     assert state["next_cycle_id"] is None and state["current_cycle_id"] == c1
-    assert _parse(state["next_attempt_at"]) == clock.now + renew.DAILY_CAP_BACKOFF
+    assert _parse(state["next_attempt_at"]) == clock.now + timedelta(minutes=18, seconds=30)
     assert [c[0] for c in server.calls] == ["issue"]
-    for _ in range(11):  # still inside the hour: alert, no POST
+    for _ in range(3):  # 15 min: still waiting, alert, no POST
         clock.advance(minutes=5)
         assert make().tick() == 1
     assert [c[0] for c in server.calls] == ["issue"]
+    clock.advance(minutes=5)  # 20 min: first timer tick after retry_at
+    assert make().tick() == 1
+    assert [c[0] for c in server.calls] == ["issue", "issue"]
+    assert _parse(store.load()["next_attempt_at"]) == clock.now + renew.DAILY_CAP_MIN_WAIT
+    assert not any(c[0] == "revoke" for c in server.calls)
+    assert installer.files["aao-impl-codex"] == f"SECRET-impl-{c1}"
+    assert any("daily cap" in e.get("reason", "") for e in logs)
     del server.fail["issue"]
     clock.advance(minutes=5)
     assert make().tick() == 0
     assert store.load()["current_cycle_id"] != c1
+
+
+def test_daily_cap_429_after_n_expired_keeps_alerting_every_tick_without_breaker(env):
+    clock, server, _installer, store, _logs, make = env
+    c1 = _bootstrap(env)
+    clock.advance(hours=2, minutes=1)  # N expired with no successor
+    server.fail["issue"] = lambda _c: DAILY_CAP_429
+    server.calls.clear()
+    for _ in range(30):  # many ticks: POST every tick, never the breaker
+        assert make().tick() == 1
+        state = store.load()
+        assert state["phase"] == "FAILED_EXPIRED" and state["next_attempt_at"] is None
+        assert state["consecutive_failures"] == 0 and state["current_cycle_id"] == c1
+        clock.advance(minutes=5)
+    assert [c[0] for c in server.calls] == ["issue"] * 30
+    del server.fail["issue"]
+    assert make().tick() == 0
+    assert store.load()["phase"] == "ACTIVE"
+
+
+class CappedServer(FakeServer):
+    """FakeServer that also enforces the API's two H1b issuance caps."""
+
+    def __init__(self, clock, daily_cap):
+        super().__init__(clock)
+        self.daily_cap = daily_cap
+        self.rejected = []
+
+    def issue(self, cycle_id):
+        day_ago = self.clock() - timedelta(hours=24)
+        if len(self.live()) >= 2:
+            return 409, {"detail": {"code": renew.CONCURRENCY_CAP_CODE}}
+        if sum(v["issued"] > day_ago for v in self.cycles.values()) >= self.daily_cap:
+            self.rejected.append(self.clock())
+            return DAILY_CAP_429
+        return super().issue(cycle_id)
+
+
+class FlakyInstaller(FakeInstaller):
+    """Fails the reviewer verify of every ``every``-th issued cycle (FAILED_INSTALL)."""
+
+    def __init__(self, server, every):
+        super().__init__(server)
+        self.every = every
+
+    def run(self, account, kind, operation, token):
+        rc = super().run(account, kind, operation, token)
+        cycle = token.rsplit("-", 1)[1]
+        ordinal = list(self.server.cycles).index(cycle) + 1
+        if account == "aao-auditor" and operation == "verify" and ordinal % self.every == 0:
+            return 1
+        return rc
+
+
+def test_steady_state_72h_with_jitter_and_install_failures_never_leaves_a_gap(tmp_path):
+    """P1 regression: ~23 renewals/day + 3 install failures/day stay under the cap."""
+    import random
+
+    from aao.work_management_api import SELFDEV_CYCLE_ISSUANCE_DAILY_CAP
+
+    rng = random.Random(388)
+    clock = Clock()
+    server = CappedServer(clock, SELFDEV_CYCLE_ISSUANCE_DAILY_CAP)
+    installer = FlakyInstaller(server, every=8)  # ~3 failures per day
+    store = renew.StateStore(tmp_path / "state.json", PROJECT)
+    logs = []
+    runner = renew.Runner(project_id=PROJECT, api=server, installer=installer, store=store,
+                          clock=clock, log=logs.append)
+    assert runner.tick(bootstrap=True) == 0
+
+    def assert_live_cycle():
+        cycle = installer.files["aao-impl-codex"].removeprefix("SECRET-impl-")
+        live = server.cycles[cycle]
+        assert not live["revoked"] and live["expires"] > clock(), f"gap at {clock()}"
+
+    for tick in range(1, 72 * 12 + 1):  # 5-min timer with up to 60 s jitter
+        clock.now = T0 + timedelta(minutes=5 * tick, seconds=rng.uniform(0, 60))
+        assert_live_cycle()
+        runner.tick()
+        assert_live_cycle()
+        assert store.load()["phase"] != "BREAKER_OPEN"
+    failures = sum(e["event"] == "selfdev_cycle.failed" for e in logs)
+    assert failures >= 3 * 3  # the scenario really injected the failures
+    assert server.rejected == []
+    assert len(server.cycles) >= 72
 
 
 @pytest.mark.parametrize("response", [(429, {"detail": "slow down"}), (409, {"detail": "exists"})])

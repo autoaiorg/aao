@@ -11,15 +11,22 @@ import {
 } from '../types';
 import { buildCampusNavGraph, computeCampusBounds } from '../liveOfficeLayout';
 import {
+  AvatarResourcePool,
+  buildAgentAvatar as buildHumanoidAgentAvatar,
+  stepAvatarKinematics,
+  type AvatarSemanticParts,
+} from './AvatarRenderer';
+import {
   buildDepartmentInteriorLayout,
   computeAdaptiveLabelStates,
   deriveLabelLodTier,
   planOfficeLifePlacements,
   sampleWaypointRoute,
-  stableAgentHash,
   type PlannedAgentPlacement,
   type ProjectedAgentActivity,
 } from './officeLifeEngine';
+
+export type { AvatarSemanticParts };
 
 export interface ThreeSceneCallbacks {
   onSelectRoom: (roomId: string) => void;
@@ -35,22 +42,8 @@ export interface ThreeSceneOptions {
   renderer?: THREE.WebGLRenderer;
   rooms?: OfficeRoomConfig[];
   demoFurniture?: boolean;
+  dragMode?: 'pan' | 'orbit';
   activeCoordinationAgentIds?: ReadonlySet<string>;
-}
-
-export interface AvatarSemanticParts {
-  halo: THREE.Mesh;
-  primaryGeometry: THREE.Mesh;
-  characterRig: THREE.Group;
-  torso?: THREE.Mesh;
-  head?: THREE.Mesh;
-  visor?: THREE.Mesh;
-  leftArm?: THREE.Mesh;
-  rightArm?: THREE.Mesh;
-  leftLeg?: THREE.Mesh;
-  rightLeg?: THREE.Mesh;
-  speechBubble?: THREE.Sprite;
-  nameLabel: THREE.Sprite;
 }
 
 interface AgentAnimatedRuntimeState {
@@ -64,13 +57,69 @@ interface AgentAnimatedRuntimeState {
  * Shared geometry and material pool for repetitive office furniture
  * (desks, chairs, monitors, keyboards) to minimize GPU memory footprint and draw overhead.
  */
-class SharedFurniturePool {
+export function createProceduralIdeTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    // Dark editor background
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(0, 0, 256, 128);
+
+    // Sidebar panel
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(0, 0, 48, 128);
+
+    // Sidebar file tree lines
+    ctx.fillStyle = '#64748b';
+    for (let y = 14; y < 110; y += 14) {
+      ctx.fillRect(8, y, 28, 4);
+    }
+
+    // Tab bar
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(48, 0, 208, 18);
+    ctx.fillStyle = '#38bdf8';
+    ctx.fillRect(52, 4, 46, 10);
+
+    // Code lines in editor area with syntax colors
+    const colors = ['#f43f5e', '#38bdf8', '#a855f7', '#22c55e', '#f59e0b', '#e2e8f0'];
+    let lineY = 28;
+    for (let i = 0; i < 7; i++) {
+      let lineX = 56 + (i % 3 === 0 ? 0 : (i % 2) * 12);
+      const segments = 2 + (i % 4);
+      for (let s = 0; s < segments; s++) {
+        const segWidth = 14 + ((i * 7 + s * 13) % 26);
+        ctx.fillStyle = colors[(i + s) % colors.length];
+        ctx.fillRect(lineX, lineY, segWidth, 5);
+        lineX += segWidth + 6;
+      }
+      lineY += 12;
+    }
+
+    // Status bar at bottom
+    ctx.fillStyle = '#2563eb';
+    ctx.fillRect(48, 116, 208, 12);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(54, 120, 24, 4);
+    ctx.fillRect(84, 120, 36, 4);
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.generateMipmaps = true;
+  return texture;
+}
+
+export class SharedFurniturePool {
   public readonly deskTopGeo = new THREE.BoxGeometry(0.95, 0.06, 0.48);
   public readonly deskLegGeo = new THREE.BoxGeometry(0.06, 0.42, 0.44);
   public readonly monitorPanelGeo = new THREE.BoxGeometry(0.36, 0.24, 0.03);
+  public readonly ultrawideMonitorGeo = new THREE.BoxGeometry(0.58, 0.26, 0.03);
   public readonly monitorStandGeo = new THREE.BoxGeometry(0.06, 0.12, 0.06);
   public readonly keyboardGeo = new THREE.BoxGeometry(0.28, 0.02, 0.11);
   public readonly mouseGeo = new THREE.BoxGeometry(0.05, 0.02, 0.08);
+  public readonly deskGrommetGeo = new THREE.CylinderGeometry(0.035, 0.035, 0.07, 12);
 
   public readonly chairBaseGeo = new THREE.CylinderGeometry(0.18, 0.2, 0.05, 12);
   public readonly chairStemGeo = new THREE.CylinderGeometry(0.035, 0.035, 0.2, 10);
@@ -80,6 +129,14 @@ class SharedFurniturePool {
 
   public readonly meetingTableTopGeo = new THREE.CylinderGeometry(0.46, 0.46, 0.05, 20);
   public readonly meetingTablePedGeo = new THREE.CylinderGeometry(0.12, 0.22, 0.4, 14);
+
+  public readonly planterPotGeo = new THREE.CylinderGeometry(0.18, 0.14, 0.36, 14);
+  public readonly plantFoliageGeo = new THREE.DodecahedronGeometry(0.24, 1);
+
+  public readonly ideTexture = createProceduralIdeTexture();
+  public readonly monitorIdeMat = new THREE.MeshBasicMaterial({
+    map: this.ideTexture,
+  });
 
   public readonly deskWoodMat = new THREE.MeshStandardMaterial({
     color: 0x1e293b,
@@ -111,6 +168,21 @@ class SharedFurniturePool {
     roughness: 0.4,
     metalness: 0.4,
   });
+  public readonly plantPotMat = new THREE.MeshStandardMaterial({
+    color: 0xe2e8f0,
+    roughness: 0.45,
+    metalness: 0.1,
+  });
+  public readonly plantLeafMat = new THREE.MeshStandardMaterial({
+    color: 0x225e3b,
+    roughness: 0.65,
+    metalness: 0.1,
+  });
+  public readonly deskTrimMat = new THREE.MeshStandardMaterial({
+    color: 0x334155,
+    roughness: 0.4,
+    metalness: 0.5,
+  });
 
   private readonly allGeometries: THREE.BufferGeometry[];
   private readonly allMaterials: THREE.Material[];
@@ -120,9 +192,11 @@ class SharedFurniturePool {
       this.deskTopGeo,
       this.deskLegGeo,
       this.monitorPanelGeo,
+      this.ultrawideMonitorGeo,
       this.monitorStandGeo,
       this.keyboardGeo,
       this.mouseGeo,
+      this.deskGrommetGeo,
       this.chairBaseGeo,
       this.chairStemGeo,
       this.chairSeatGeo,
@@ -130,6 +204,8 @@ class SharedFurniturePool {
       this.chairArmGeo,
       this.meetingTableTopGeo,
       this.meetingTablePedGeo,
+      this.planterPotGeo,
+      this.plantFoliageGeo,
     ];
     this.allMaterials = [
       this.deskWoodMat,
@@ -138,6 +214,10 @@ class SharedFurniturePool {
       this.chairCushionMat,
       this.keyboardMat,
       this.meetingTableMat,
+      this.monitorIdeMat,
+      this.plantPotMat,
+      this.plantLeafMat,
+      this.deskTrimMat,
     ];
   }
 
@@ -160,6 +240,7 @@ class SharedFurniturePool {
   public dispose(): void {
     this.allGeometries.forEach((g) => g.dispose());
     this.allMaterials.forEach((m) => m.dispose());
+    this.ideTexture.dispose();
   }
 }
 
@@ -174,6 +255,7 @@ export class ThreeOfficeScene {
   private isDisposed = false;
   private contextLost = false;
   private furniturePool = new SharedFurniturePool();
+  private avatarPool = new AvatarResourcePool();
   private qualityProfile: OfficeGraphicsQuality = 'balanced';
 
   // Interaction & Raycasting
@@ -181,10 +263,16 @@ export class ThreeOfficeScene {
   private mouse = new THREE.Vector2();
   private pointerDownPos = new THREE.Vector2();
   private isDragging = false;
+  private readonly activePointers = new Map<number, { x: number; y: number }>();
+  private lastPinchDistance: number | null = null;
+  private lastTwoFingerAngle: number | null = null;
+  private gestureDragDistance = 0;
 
   // Camera Orbit, Smart Zoom & Follow parameters
   private cameraAngle = 35; // degrees around Y
+  private desiredAngle = 35;
   private cameraElevation = 42; // degrees tilt
+  private desiredElevation = 42;
   private cameraDistance = 24; // distance from target
   private desiredDistance = 24; // smart zoom destination
   private minDistance = 8;
@@ -192,6 +280,7 @@ export class ThreeOfficeScene {
   private cameraTarget = new THREE.Vector3(0, 0, 0);
   private desiredTarget = new THREE.Vector3(0, 0, 0);
   private followSelectedAgent = false;
+  private readonly pressedKeys = new Set<string>();
 
   // Groups and Interactive Meshes
   private roomsGroup = new THREE.Group();
@@ -336,7 +425,7 @@ export class ThreeOfficeScene {
   }
 
   private setupLighting(): void {
-    const ambient = new THREE.AmbientLight(0x334766, 2.25);
+    const ambient = new THREE.AmbientLight(0x334766, 2.0);
     this.lightsGroup.add(ambient);
 
     const dirLight = new THREE.DirectionalLight(0xf8fafc, 2.5);
@@ -345,6 +434,7 @@ export class ThreeOfficeScene {
     const shadowSize = this.qualityProfile === 'high' ? 2048 : 1024;
     dirLight.shadow.mapSize.width = shadowSize;
     dirLight.shadow.mapSize.height = shadowSize;
+    dirLight.shadow.bias = -0.0004; // Architectural soft contact shadow bias
     dirLight.shadow.camera.near = 0.5;
     dirLight.shadow.camera.far = 90;
     const d = 18;
@@ -355,6 +445,9 @@ export class ThreeOfficeScene {
     this.mainDirLight = dirLight;
     this.lightsGroup.add(dirLight);
 
+    const hemiLight = new THREE.HemisphereLight(0xe0f2fe, 0x0f172a, 0.75);
+    this.lightsGroup.add(hemiLight);
+
     const fillLight = new THREE.DirectionalLight(0x38bdf8, 1.15);
     fillLight.position.set(-20, 15, -15);
     this.lightsGroup.add(fillLight);
@@ -363,6 +456,31 @@ export class ThreeOfficeScene {
     this.roomSpotlight.position.set(-5, 12, -3.1);
     this.roomSpotlight.castShadow = this.qualityProfile === 'high';
     this.lightsGroup.add(this.roomSpotlight);
+  }
+
+  public buildBiophilicOfficePlant(x: number, z: number): THREE.Group {
+    const plantGroup = new THREE.Group();
+    plantGroup.position.set(x, 0.04, z);
+
+    // Matte ceramic cylindrical planter
+    const pot = new THREE.Mesh(this.furniturePool.planterPotGeo, this.furniturePool.plantPotMat);
+    pot.position.y = 0.18;
+    pot.castShadow = true;
+    pot.receiveShadow = true;
+    plantGroup.add(pot);
+
+    // Architectural botanical foliage
+    const foliage = new THREE.Mesh(this.furniturePool.plantFoliageGeo, this.furniturePool.plantLeafMat);
+    foliage.position.y = 0.44;
+    foliage.scale.set(1.15, 1.25, 1.15);
+    foliage.castShadow = true;
+    plantGroup.add(foliage);
+
+    return plantGroup;
+  }
+
+  public getFurniturePool(): SharedFurniturePool {
+    return this.furniturePool;
   }
 
   private buildWorld(): void {
@@ -401,6 +519,17 @@ export class ThreeOfficeScene {
     compass.position.y = 0.15;
     this.scene.add(compass);
 
+    // Biophilic Office Plants around Central Atrium Perimeter
+    const plantCorners: [number, number][] = [
+      [-3.4, -3.4],
+      [3.4, -3.4],
+      [3.4, 3.4],
+      [-3.4, 3.4],
+    ];
+    for (const [px, pz] of plantCorners) {
+      this.groundGroup.add(this.buildBiophilicOfficePlant(px, pz));
+    }
+
     // 2. Connected Architectural Corridors linking the Central Atrium to each Department Doorway
     this.buildWalkways();
 
@@ -437,11 +566,20 @@ export class ThreeOfficeScene {
     // Continuous Corporate Campus Floor Slab
     const campusSlab = new THREE.Mesh(
       new THREE.BoxGeometry(width - 1.5, 0.12, depth - 1.5),
-      new THREE.MeshStandardMaterial({ color: 0x0f1d33, roughness: 0.75, metalness: 0.2 })
+      new THREE.MeshStandardMaterial({ color: 0x111c2e, roughness: 0.65, metalness: 0.25 })
     );
     campusSlab.position.y = -0.04;
     campusSlab.receiveShadow = true;
     this.groundGroup.add(campusSlab);
+
+    // Polished Central Circulation Spine (terrazzo plaza connecting campus corridors)
+    const centralPlaza = new THREE.Mesh(
+      new THREE.BoxGeometry(Math.min(width - 3, 7.2), 0.02, Math.min(depth - 3, 7.2)),
+      new THREE.MeshStandardMaterial({ color: 0x18283e, roughness: 0.35, metalness: 0.45 })
+    );
+    centralPlaza.position.y = 0.022;
+    centralPlaza.receiveShadow = true;
+    this.groundGroup.add(centralPlaza);
 
     const ground = new THREE.Mesh(
       new THREE.BoxGeometry(width + 6, 0.4, depth + 6),
@@ -520,16 +658,36 @@ export class ThreeOfficeScene {
 
   private buildRoom(room: OfficeRoomConfig): void {
     const roomGroup = new THREE.Group();
+    roomGroup.name = `room-${room.id}`;
+    roomGroup.userData = { room };
     roomGroup.position.set(room.x, 0, room.z);
     const isUnassignedHolding =
       room.kind === 'unassigned-holding' || room.id === 'unit-unassigned';
 
     // Platform Slab (Interactive room target — ONLY mesh added to interactiveMeshes for rooms)
     const platGeo = new THREE.BoxGeometry(room.width, 0.35, room.depth);
+    let platColor = new THREE.Color(room.color).multiplyScalar(isUnassignedHolding ? 0.55 : 0.72);
+    let platRoughness = isUnassignedHolding ? 0.8 : 0.58;
+    let platMetalness = isUnassignedHolding ? 0.15 : 0.3;
+
+    if (room.floorFinish === 'hardwood-walnut' || room.kind === 'executive-suite') {
+      platColor = new THREE.Color(0x2a1c14);
+      platRoughness = 0.38;
+      platMetalness = 0.18;
+    } else if (room.floorFinish === 'high-security-frosted' || room.kind === 'audit-enclave') {
+      platColor = new THREE.Color(0x0e2620);
+      platRoughness = 0.46;
+      platMetalness = 0.26;
+    } else if (room.kind === 'agile-squad-pod') {
+      platColor = new THREE.Color(0x13283a);
+      platRoughness = 0.62;
+      platMetalness = 0.22;
+    }
+
     const platMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(room.color).multiplyScalar(isUnassignedHolding ? 0.55 : 0.72),
-      roughness: isUnassignedHolding ? 0.8 : 0.58,
-      metalness: isUnassignedHolding ? 0.15 : 0.3,
+      color: platColor,
+      roughness: platRoughness,
+      metalness: platMetalness,
     });
     const platform = new THREE.Mesh(platGeo, platMat);
     platform.position.y = 0.175;
@@ -603,6 +761,13 @@ export class ThreeOfficeScene {
       this.buildDepartmentAccentEquipment(roomGroup, room);
     }
 
+    // Biophilic Plant in rear corner of canonical departments
+    if (!isUnassignedHolding) {
+      const plantX = room.width / 2 - 0.42;
+      const plantZ = (room.z < 0 ? -room.depth / 2 : room.depth / 2) + (room.z < 0 ? 0.42 : -0.42);
+      roomGroup.add(this.buildBiophilicOfficePlant(plantX, plantZ));
+    }
+
     // Floating Department Label Sprite (managed by Adaptive Label System)
     const labelSprite = this.createDepartmentLabelSprite(
       room.code,
@@ -659,24 +824,18 @@ export class ThreeOfficeScene {
       deskGroup.add(rightLeg);
 
       if (!isUnassignedHolding) {
-        // Canonical Department: Dual Monitors + Keyboard + Mouse
-        const monLeft = new THREE.Mesh(this.furniturePool.monitorPanelGeo, screenMat);
-        monLeft.position.set(-0.2, 0.64, -0.1);
-        monLeft.rotation.y = 0.14;
-        deskGroup.add(monLeft);
+        // Modern Ergonomic Workstation: Ultrawide Curved Monitor with procedural IDE code display + cable grommet
+        const mon = new THREE.Mesh(this.furniturePool.ultrawideMonitorGeo, this.furniturePool.monitorIdeMat);
+        mon.position.set(0, 0.65, -0.09);
+        deskGroup.add(mon);
 
-        const standLeft = new THREE.Mesh(this.furniturePool.monitorStandGeo, this.furniturePool.metalLegMat);
-        standLeft.position.set(-0.2, 0.51, -0.12);
-        deskGroup.add(standLeft);
+        const stand = new THREE.Mesh(this.furniturePool.monitorStandGeo, this.furniturePool.metalLegMat);
+        stand.position.set(0, 0.51, -0.12);
+        deskGroup.add(stand);
 
-        const monRight = new THREE.Mesh(this.furniturePool.monitorPanelGeo, screenMat);
-        monRight.position.set(0.2, 0.64, -0.1);
-        monRight.rotation.y = -0.14;
-        deskGroup.add(monRight);
-
-        const standRight = new THREE.Mesh(this.furniturePool.monitorStandGeo, this.furniturePool.metalLegMat);
-        standRight.position.set(0.2, 0.51, -0.12);
-        deskGroup.add(standRight);
+        const grommet = new THREE.Mesh(this.furniturePool.deskGrommetGeo, this.furniturePool.deskTrimMat);
+        grommet.position.set(0.32, 0.45, -0.15);
+        deskGroup.add(grommet);
 
         const keyboard = new THREE.Mesh(this.furniturePool.keyboardGeo, this.furniturePool.keyboardMat);
         keyboard.position.set(-0.04, 0.48, 0.1);
@@ -835,6 +994,34 @@ export class ThreeOfficeScene {
     const lintel = new THREE.Mesh(lintelGeo, lintelMat);
     lintel.position.set(0, 1.26, frontZ);
     group.add(lintel);
+
+    // 4. Acoustic Manifestation Band for Audit Enclave (eye level 0.85m)
+    const isAuditEnclave = room.kind === 'audit-enclave' || room.id === 'unit-audit';
+    if (isAuditEnclave) {
+      const manifestSideGeo = new THREE.BoxGeometry(0.088, 0.14, room.depth * 0.68 + 0.02);
+      const manifestFrontGeo = new THREE.BoxGeometry(frontPanelWidth + 0.02, 0.14, 0.088);
+      const manifestMat = new THREE.MeshBasicMaterial({
+        color: 0x34d399,
+        transparent: true,
+        opacity: 0.65,
+      });
+
+      const mLeft = new THREE.Mesh(manifestSideGeo, manifestMat);
+      mLeft.position.set(-room.width / 2 + 0.12, 0.85, 0);
+      group.add(mLeft);
+
+      const mRight = new THREE.Mesh(manifestSideGeo, manifestMat);
+      mRight.position.set(room.width / 2 - 0.12, 0.85, 0);
+      group.add(mRight);
+
+      const mFrontL = new THREE.Mesh(manifestFrontGeo, manifestMat);
+      mFrontL.position.set(-doorwayWidth / 2 - frontPanelWidth / 2, 0.85, frontZ);
+      group.add(mFrontL);
+
+      const mFrontR = new THREE.Mesh(manifestFrontGeo, manifestMat);
+      mFrontR.position.set(doorwayWidth / 2 + frontPanelWidth / 2, 0.85, frontZ);
+      group.add(mFrontR);
+    }
   }
 
   private buildDepartmentAccentEquipment(group: THREE.Group, room: OfficeRoomConfig): void {
@@ -1109,6 +1296,49 @@ export class ThreeOfficeScene {
     }
   }
 
+  public orbitCamera(deltaAngle: number, deltaElevation = 0): void {
+    this.followSelectedAgent = false;
+    this.desiredAngle = (this.desiredAngle + deltaAngle) % 360;
+    if (this.desiredAngle < 0) this.desiredAngle += 360;
+    this.desiredElevation = Math.max(15, Math.min(75, this.desiredElevation + deltaElevation));
+    this.cameraAngle = this.desiredAngle;
+    this.cameraElevation = this.desiredElevation;
+    this.updateCameraPosition();
+    this.syncAdaptiveLabels();
+  }
+
+  public getCameraAngle(): { angle: number; elevation: number } {
+    return { angle: this.cameraAngle, elevation: this.cameraElevation };
+  }
+
+  public getDesiredAngle(): { angle: number; elevation: number } {
+    return { angle: this.desiredAngle, elevation: this.desiredElevation };
+  }
+
+  public simulateKeyboardKey(key: string, isDown: boolean): void {
+    if (isDown) {
+      this.pressedKeys.add(key.toLowerCase());
+    } else {
+      this.pressedKeys.delete(key.toLowerCase());
+    }
+  }
+
+  public simulateGesturePan(deltaScreenX: number, deltaScreenY: number): void {
+    const rad = (this.cameraAngle * Math.PI) / 180;
+    const panSensitivity = 0.024 * (this.cameraDistance / 24);
+    const worldDeltaX = (-deltaScreenX * Math.cos(rad) + deltaScreenY * Math.sin(rad)) * panSensitivity;
+    const worldDeltaZ = (-deltaScreenX * Math.sin(rad) - deltaScreenY * Math.cos(rad)) * panSensitivity;
+    this.panCamera(worldDeltaX, worldDeltaZ);
+  }
+
+  public simulateGesturePinch(scaleFactor: number): void {
+    this.zoomCamera(scaleFactor);
+  }
+
+  public simulateGestureRotate(deltaDegrees: number): void {
+    this.orbitCamera(-deltaDegrees);
+  }
+
   public isFollowingAgent(): boolean {
     return this.followSelectedAgent;
   }
@@ -1131,179 +1361,19 @@ export class ThreeOfficeScene {
     this.syncAdaptiveLabels();
   }
 
+  private getDepartmentAccentHex(unitId?: string): string | undefined {
+    if (!unitId) return undefined;
+    return this.rooms.find((r) => r.id === unitId)?.color;
+  }
+
   private buildAgentAvatar(agent: AgentIdentity, activity: ProjectedAgentActivity): THREE.Group {
-    const group = new THREE.Group();
-
-    const isStanding = agent.type === 'STANDING';
-    const isEphemeral = agent.type === 'EPHEMERAL';
-    const bodyColor = isStanding ? 0x2563eb : isEphemeral ? 0x0891b2 : 0x64748b;
-
-    let haloColor = 0x64748b; // UNKNOWN
-    if (agent.heartbeatStatus === 'HEALTHY') haloColor = 0x22c55e;
-    else if (agent.heartbeatStatus === 'STALE') haloColor = 0xeab308;
-    else if (agent.heartbeatStatus === 'UNAVAILABLE') haloColor = 0xef4444;
-
-    // children[0]: Base Telemetry Halo Ring
-    const haloGeo = new THREE.RingGeometry(0.24, 0.36, 16);
-    haloGeo.rotateX(-Math.PI / 2);
-    const haloMat = new THREE.MeshBasicMaterial({
-      color: haloColor,
-      side: THREE.DoubleSide,
+    const departmentAccentHex = this.getDepartmentAccentHex(agent.unitId);
+    return buildHumanoidAgentAvatar(agent, activity, this.avatarPool, {
+      departmentAccentHex,
+      createSpeechBubbleSprite: () => this.createSpeechBubbleSprite(),
+      createAgentNameSprite: (name, roleBadge, haloColor) =>
+        this.createAgentNameSprite(name, roleBadge, haloColor),
     });
-    const halo = new THREE.Mesh(haloGeo, haloMat);
-    halo.position.y = 0.02;
-    group.add(halo);
-
-    // children[1]: Primary Agent Geometry (Preserves exact Defect 2 test contract!)
-    let primaryGeometry: THREE.Mesh;
-    if (isStanding) {
-      const pedGeo = new THREE.CylinderGeometry(0.24, 0.28, 0.1, 16);
-      const pedMat = new THREE.MeshStandardMaterial({
-        color: 0x1e293b,
-        roughness: 0.4,
-        metalness: 0.6,
-      });
-      primaryGeometry = new THREE.Mesh(pedGeo, pedMat);
-      primaryGeometry.position.y = 0.06;
-      primaryGeometry.castShadow = true;
-      group.add(primaryGeometry);
-    } else if (isEphemeral) {
-      const bodyGeo = new THREE.OctahedronGeometry(0.28, 0);
-      const bodyMat = new THREE.MeshStandardMaterial({
-        color: bodyColor,
-        roughness: 0.15,
-        metalness: 0.75,
-        emissive: new THREE.Color(bodyColor).multiplyScalar(0.35),
-      });
-      primaryGeometry = new THREE.Mesh(bodyGeo, bodyMat);
-      primaryGeometry.position.y = 0.58;
-      primaryGeometry.castShadow = true;
-      group.add(primaryGeometry);
-    } else {
-      const bodyGeo = new THREE.CylinderGeometry(0.2, 0.2, 0.1, 12);
-      const bodyMat = new THREE.MeshStandardMaterial({
-        color: bodyColor,
-        roughness: 0.6,
-        metalness: 0.2,
-      });
-      primaryGeometry = new THREE.Mesh(bodyGeo, bodyMat);
-      primaryGeometry.position.y = 0.06;
-      primaryGeometry.castShadow = true;
-      group.add(primaryGeometry);
-    }
-
-    // children[2]: Articulated Character Rig (Torso, Head, Visor, Arms, Legs)
-    const characterRig = new THREE.Group();
-    const suitMat = new THREE.MeshStandardMaterial({
-      color: bodyColor,
-      roughness: 0.35,
-      metalness: 0.4,
-      emissive:
-        activity.kind === 'TYPING_DEV' ||
-        activity.kind === 'TYPING_AUDIT' ||
-        activity.kind === 'TYPING_DOCS'
-          ? new THREE.Color(bodyColor).multiplyScalar(0.22)
-          : new THREE.Color(0x000000),
-    });
-    const limbMat = new THREE.MeshStandardMaterial({
-      color: isStanding ? 0x1e40af : isEphemeral ? 0x0e7490 : 0x475569,
-      roughness: 0.45,
-      metalness: 0.3,
-    });
-
-    const torsoGeo = new THREE.BoxGeometry(0.3, 0.38, 0.18);
-    const torso = new THREE.Mesh(torsoGeo, suitMat);
-    torso.position.y = 0.44;
-    torso.castShadow = true;
-    characterRig.add(torso);
-
-    const headGeo = new THREE.SphereGeometry(0.15, 14, 14);
-    const headMat = new THREE.MeshStandardMaterial({
-      color: 0xe2e8f0,
-      roughness: 0.3,
-      metalness: 0.2,
-    });
-    const head = new THREE.Mesh(headGeo, headMat);
-    head.position.y = 0.76;
-    head.castShadow = true;
-    characterRig.add(head);
-
-    const visorColor =
-      activity.kind === 'TYPING_AUDIT'
-        ? 0x10b981
-        : activity.kind === 'TYPING_DOCS'
-        ? 0xa855f7
-        : activity.kind === 'CONVERSING'
-        ? 0xf59e0b
-        : 0x38bdf8;
-    const visorGeo = new THREE.BoxGeometry(0.2, 0.06, 0.06);
-    const visorMat = new THREE.MeshBasicMaterial({ color: visorColor });
-    const visor = new THREE.Mesh(visorGeo, visorMat);
-    visor.position.set(0, 0.77, 0.13);
-    characterRig.add(visor);
-
-    const armGeo = new THREE.BoxGeometry(0.08, 0.28, 0.08);
-    const leftArm = new THREE.Mesh(armGeo, limbMat);
-    leftArm.position.set(-0.21, 0.46, 0.06);
-    characterRig.add(leftArm);
-
-    const rightArm = new THREE.Mesh(armGeo, limbMat);
-    rightArm.position.set(0.21, 0.46, 0.06);
-    characterRig.add(rightArm);
-
-    const legGeo = new THREE.BoxGeometry(0.08, 0.26, 0.08);
-    const leftLeg = new THREE.Mesh(legGeo, limbMat);
-    leftLeg.position.set(-0.08, 0.18, 0);
-    characterRig.add(leftLeg);
-
-    const rightLeg = new THREE.Mesh(legGeo, limbMat);
-    rightLeg.position.set(0.08, 0.18, 0);
-    characterRig.add(rightLeg);
-
-    group.add(characterRig);
-
-    // children[3]: Speech / Conversation Bubble Sprite (visible when CONVERSING)
-    const speechBubble = this.createSpeechBubbleSprite();
-    speechBubble.position.set(0, 1.56, 0);
-    speechBubble.visible = activity.kind === 'CONVERSING';
-    group.add(speechBubble);
-
-    // children[4]: Name, Activity & Provenance Badge Sprite
-    const provTag =
-      activity.provenance === 'LIVE_VERIFIED_EVIDENCE'
-        ? 'LIVE'
-        : activity.provenance === 'DEMO_SIMULATION'
-        ? 'DEMO'
-        : activity.provenance === 'AMBIENT_ANIMATION'
-        ? 'AMB'
-        : 'UNK';
-    const nameLabel = this.createAgentNameSprite(
-      agent.name.split(' ')[0],
-      agent.coordinatorState
-        ? `${agent.coordinatorState === 'COORDINATING' ? 'COORDINANDO · NO EJECUTA TAREA' : agent.coordinatorState === 'WAITING' ? 'EN ESPERA' : 'ESTADO DESACTUALIZADO'} · ${provTag}`
-        : `${activity.shortBadge} · ${provTag}`,
-      haloColor
-    );
-    nameLabel.position.set(0, 1.24, 0);
-    group.add(nameLabel);
-
-    const semanticParts: AvatarSemanticParts = {
-      halo,
-      primaryGeometry,
-      characterRig,
-      torso,
-      head,
-      visor,
-      leftArm,
-      rightArm,
-      leftLeg,
-      rightLeg,
-      speechBubble,
-      nameLabel,
-    };
-    group.userData.parts = semanticParts;
-
-    return group;
   }
 
   private createSpeechBubbleSprite(): THREE.Sprite {
@@ -1440,9 +1510,7 @@ export class ThreeOfficeScene {
   }
 
   public rotateCamera(deltaAngleDegrees: number): void {
-    this.cameraAngle = (this.cameraAngle + deltaAngleDegrees) % 360;
-    this.updateCameraPosition();
-    this.syncAdaptiveLabels();
+    this.orbitCamera(deltaAngleDegrees, 0);
   }
 
   public zoomCamera(deltaFactor: number): void {
@@ -1461,7 +1529,9 @@ export class ThreeOfficeScene {
     this.followSelectedAgent = false;
     const bounds = computeCampusBounds(this.rooms);
     this.cameraAngle = 35;
+    this.desiredAngle = 35;
     this.cameraElevation = 42;
+    this.desiredElevation = 42;
     this.desiredDistance = bounds.recommendedOverviewDistance;
     this.desiredTarget.set(bounds.centerX, 0, bounds.centerZ);
 
@@ -1482,17 +1552,22 @@ export class ThreeOfficeScene {
     if (preset === 'isometric') {
       this.followSelectedAgent = false;
       this.cameraAngle = 45;
+      this.desiredAngle = 45;
       this.cameraElevation = 40;
+      this.desiredElevation = 40;
       this.desiredDistance = 20;
       this.desiredTarget.set(bounds.centerX, 0, bounds.centerZ);
     } else if (preset === 'top-down') {
       this.followSelectedAgent = false;
       this.cameraAngle = 0;
+      this.desiredAngle = 0;
       this.cameraElevation = 78;
+      this.desiredElevation = 78;
       this.desiredDistance = Math.max(25, bounds.recommendedOverviewDistance);
       this.desiredTarget.set(bounds.centerX, 0, bounds.centerZ);
     } else if (preset === 'agent-focus') {
       this.cameraElevation = 34;
+      this.desiredElevation = 34;
       if (this.activeAgentId) {
         const agentGroup = this.agentMeshes.get(this.activeAgentId);
         if (agentGroup) {
@@ -1550,10 +1625,48 @@ export class ThreeOfficeScene {
     dom.addEventListener('pointerdown', this.handlePointerDown);
     dom.addEventListener('pointermove', this.handlePointerMove);
     dom.addEventListener('pointerup', this.handlePointerUp);
+    dom.addEventListener('pointercancel', this.handlePointerCancel);
+    dom.addEventListener('dblclick', this.handleDblClick);
+    dom.addEventListener('contextmenu', this.handleContextMenu);
     dom.addEventListener('wheel', this.handleWheel, { passive: false });
+    dom.addEventListener('touchstart', this.handleTouchStart, { passive: false });
+    dom.addEventListener('touchmove', this.handleTouchMove, { passive: false });
     dom.addEventListener('webglcontextlost', this.handleContextLost as EventListener);
     dom.addEventListener('webglcontextrestored', this.handleContextRestored as EventListener);
+
+    if (typeof window !== 'undefined' && window.addEventListener) {
+      window.addEventListener('keydown', this.handleKeyDown);
+      window.addEventListener('keyup', this.handleKeyUp);
+    }
   }
+
+  private handleKeyDown = (e: KeyboardEvent): void => {
+    const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
+    if (
+      activeEl &&
+      (activeEl.tagName === 'INPUT' ||
+        activeEl.tagName === 'TEXTAREA' ||
+        activeEl.tagName === 'SELECT' ||
+        (activeEl as HTMLElement).isContentEditable)
+    ) {
+      return;
+    }
+    const key = e.key.toLowerCase();
+    if (
+      ['w', 'a', 's', 'd', 'q', 'e', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(
+        key
+      )
+    ) {
+      this.pressedKeys.add(key);
+      if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(key)) {
+        e.preventDefault();
+      }
+    }
+  };
+
+  private handleKeyUp = (e: KeyboardEvent): void => {
+    this.pressedKeys.delete(e.key.toLowerCase());
+  };
 
   private handleContextLost = (e: Event): void => {
     e.preventDefault();
@@ -1569,74 +1682,204 @@ export class ThreeOfficeScene {
   };
 
   private handlePointerDown = (e: PointerEvent): void => {
+    this.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     this.pointerDownPos.set(e.clientX, e.clientY);
     this.isDragging = false;
-    this.renderer.domElement.setPointerCapture(e.pointerId);
+    this.gestureDragDistance = 0;
+
+    if (this.activePointers.size === 2) {
+      const [p1, p2] = Array.from(this.activePointers.values());
+      this.lastPinchDistance = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+      this.lastTwoFingerAngle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+    }
+
+    if (typeof this.renderer.domElement.setPointerCapture === 'function') {
+      try {
+        this.renderer.domElement.setPointerCapture(e.pointerId);
+      } catch {
+        // Safe fallback in test environments
+      }
+    }
   };
 
   private handlePointerMove = (e: PointerEvent): void => {
+    if (this.activePointers.has(e.pointerId)) {
+      this.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    }
+
+    // 1. Two-finger Gestures: Pinch-to-zoom & Two-finger Orbit
+    if (this.activePointers.size === 2) {
+      const [p1, p2] = Array.from(this.activePointers.values());
+      const currentDistance = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+      const currentAngle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+
+      if (this.lastPinchDistance && this.lastPinchDistance > 10) {
+        const pinchRatio = this.lastPinchDistance / Math.max(10, currentDistance);
+        this.zoomCamera(1 + (pinchRatio - 1) * 0.75);
+      }
+      this.lastPinchDistance = currentDistance;
+
+      if (this.lastTwoFingerAngle !== null) {
+        let deltaAngleRad = currentAngle - this.lastTwoFingerAngle;
+        if (deltaAngleRad > Math.PI) deltaAngleRad -= Math.PI * 2;
+        if (deltaAngleRad < -Math.PI) deltaAngleRad += Math.PI * 2;
+        const deltaDeg = (deltaAngleRad * 180) / Math.PI;
+        this.orbitCamera(-deltaDeg * 0.9);
+      }
+      this.lastTwoFingerAngle = currentAngle;
+      this.isDragging = true;
+      return;
+    }
+
+    // 2. Single-finger / Single-pointer Drag
     const deltaX = e.clientX - this.pointerDownPos.x;
     const deltaY = e.clientY - this.pointerDownPos.y;
 
-    if (e.buttons === 1) {
-      if (Math.abs(deltaX) > 4 || Math.abs(deltaY) > 4) {
+    if (e.buttons !== 0 || e.pointerType === 'touch') {
+      this.gestureDragDistance += Math.hypot(deltaX, deltaY);
+      if (this.gestureDragDistance > 4) {
         this.isDragging = true;
       }
+
       if (this.isDragging) {
-        this.cameraAngle = (this.cameraAngle - deltaX * 0.3) % 360;
-        this.cameraElevation = Math.max(15, Math.min(80, this.cameraElevation + deltaY * 0.25));
+        const isRightClick = (e.buttons & 2) !== 0;
+        const isLeftClick = (e.buttons & 1) !== 0;
+
+        // 1. Orbital View Rotation (Yaw & Pitch):
+        // Right-Click Drag, or Left-Click with Orbit mode / Shift / Alt
+        const isOrbitDrag =
+          isRightClick ||
+          e.shiftKey ||
+          e.altKey ||
+          (isLeftClick && this.options.dragMode === 'orbit');
+
+        if (isOrbitDrag) {
+          this.renderer.domElement.style.cursor = 'all-scroll';
+          this.orbitCamera(-deltaX * 0.35, deltaY * 0.25);
+          this.pointerDownPos.set(e.clientX, e.clientY);
+          return;
+        }
+
+        // 2. Planar Floor Panning:
+        // Middle-Click (wheel click), Left-Click (default dragMode 'pan'), or touch drag
+        this.renderer.domElement.style.cursor = 'grabbing';
+        const rad = (this.cameraAngle * Math.PI) / 180;
+        const panSensitivity = 0.024 * (this.cameraDistance / 24);
+        const worldDeltaX = (-deltaX * Math.cos(rad) + deltaY * Math.sin(rad)) * panSensitivity;
+        const worldDeltaZ = (-deltaX * Math.sin(rad) - deltaY * Math.cos(rad)) * panSensitivity;
+
+        this.panCamera(worldDeltaX, worldDeltaZ);
         this.pointerDownPos.set(e.clientX, e.clientY);
-        this.updateCameraPosition();
-        this.syncAdaptiveLabels();
         return;
       }
     }
 
+    // 3. Hover Raycasting (when not dragging)
     if (!this.isDragging) {
       const rect = this.renderer.domElement.getBoundingClientRect();
-      this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-      this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      if (rect.width > 0 && rect.height > 0) {
+        this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 
-      this.raycaster.setFromCamera(this.mouse, this.camera);
-      const intersects = this.raycaster.intersectObjects(this.interactiveMeshes, false);
+        this.raycaster.setFromCamera(this.mouse, this.camera);
+        const intersects = this.raycaster.intersectObjects(this.interactiveMeshes, false);
 
-      if (intersects.length > 0) {
-        const hit = intersects[0].object;
-        this.renderer.domElement.style.cursor = 'pointer';
-        if (hit.userData?.type === 'agent') {
-          this.options.callbacks.onHoverObject({ type: 'agent', id: hit.userData.id });
-        } else if (hit.userData?.type === 'room') {
-          this.options.callbacks.onHoverObject({ type: 'room', id: hit.userData.id });
+        if (intersects.length > 0) {
+          const hit = intersects[0].object;
+          this.renderer.domElement.style.cursor = 'pointer';
+          if (hit.userData?.type === 'agent') {
+            this.options.callbacks.onHoverObject({ type: 'agent', id: hit.userData.id });
+          } else if (hit.userData?.type === 'room') {
+            this.options.callbacks.onHoverObject({ type: 'room', id: hit.userData.id });
+          }
+        } else {
+          this.renderer.domElement.style.cursor = 'grab';
+          this.options.callbacks.onHoverObject(null);
         }
-      } else {
-        this.renderer.domElement.style.cursor = 'grab';
-        this.options.callbacks.onHoverObject(null);
       }
     }
   };
 
   private handlePointerUp = (e: PointerEvent): void => {
-    this.renderer.domElement.releasePointerCapture(e.pointerId);
-
-    if (!this.isDragging) {
-      const rect = this.renderer.domElement.getBoundingClientRect();
-      this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-      this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-
-      this.raycaster.setFromCamera(this.mouse, this.camera);
-      const intersects = this.raycaster.intersectObjects(this.interactiveMeshes, false);
-
-      if (intersects.length > 0) {
-        const hit = intersects[0].object;
-        if (hit.userData?.type === 'agent') {
-          this.options.callbacks.onSelectAgent(hit.userData.id);
-        } else if (hit.userData?.type === 'room') {
-          this.options.callbacks.onSelectRoom(hit.userData.id);
-        }
+    this.activePointers.delete(e.pointerId);
+    if (typeof this.renderer.domElement.releasePointerCapture === 'function') {
+      try {
+        this.renderer.domElement.releasePointerCapture(e.pointerId);
+      } catch {
+        // Safe fallback in test environments
       }
     }
 
-    this.isDragging = false;
+    if (this.activePointers.size === 0) {
+      if (!this.isDragging && (e.button === 0 || e.pointerType === 'touch')) {
+        const rect = this.renderer.domElement.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+          this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+          this.raycaster.setFromCamera(this.mouse, this.camera);
+          const intersects = this.raycaster.intersectObjects(this.interactiveMeshes, false);
+
+          if (intersects.length > 0) {
+            const hit = intersects[0].object;
+            if (hit.userData?.type === 'agent') {
+              this.options.callbacks.onSelectAgent(hit.userData.id);
+            } else if (hit.userData?.type === 'room') {
+              this.options.callbacks.onSelectRoom(hit.userData.id);
+            }
+          }
+        }
+      }
+
+      this.isDragging = false;
+      this.renderer.domElement.style.cursor = 'grab';
+      this.lastPinchDistance = null;
+      this.lastTwoFingerAngle = null;
+    }
+  };
+
+  private handlePointerCancel = (e: PointerEvent): void => {
+    this.activePointers.delete(e.pointerId);
+    if (this.activePointers.size === 0) {
+      this.isDragging = false;
+      this.lastPinchDistance = null;
+      this.lastTwoFingerAngle = null;
+    }
+  };
+
+  private handleContextMenu = (e: MouseEvent): void => {
+    e.preventDefault();
+  };
+
+  private handleDblClick = (e: MouseEvent): void => {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const width = rect.width > 0 ? rect.width : 1024;
+    const height = rect.height > 0 ? rect.height : 768;
+
+    this.mouse.x = ((e.clientX - (rect.left || 0)) / width) * 2 - 1;
+    this.mouse.y = -((e.clientY - (rect.top || 0)) / height) * 2 + 1;
+
+    this.raycaster.setFromCamera(this.mouse, this.camera);
+    const intersects = this.raycaster.intersectObjects(this.interactiveMeshes, false);
+    if (intersects.length > 0) {
+      const hit = intersects[0].object;
+      if (hit.userData?.type === 'agent') {
+        this.selectAgent(hit.userData.id);
+        this.setFollowAgent(true);
+      } else if (hit.userData?.type === 'room') {
+        this.selectRoom(hit.userData.id);
+      }
+    } else {
+      this.resetCamera();
+    }
+  };
+
+  private handleTouchStart = (e: TouchEvent): void => {
+    if (e.cancelable) e.preventDefault();
+  };
+
+  private handleTouchMove = (e: TouchEvent): void => {
+    if (e.cancelable) e.preventDefault();
   };
 
   private handleWheel = (e: WheelEvent): void => {
@@ -1684,15 +1927,74 @@ export class ThreeOfficeScene {
       }
     }
 
-    // 1. Smooth camera panning and smart zooming
+    // 1. Keyboard Navigation across campus floor plate (W, A, S, D, Q, E, Space)
+    if (this.pressedKeys.size > 0 && !this.options.reducedMotion) {
+      const dtSec = 0.016;
+      const moveSpeed = 16 * (this.cameraDistance / 24);
+      const rad = THREE.MathUtils.degToRad(this.cameraAngle);
+
+      let forward = 0;
+      let strafe = 0;
+
+      if (this.pressedKeys.has('w') || this.pressedKeys.has('arrowup')) forward += 1;
+      if (this.pressedKeys.has('s') || this.pressedKeys.has('arrowdown')) forward -= 1;
+      if (this.pressedKeys.has('d') || this.pressedKeys.has('arrowright')) strafe += 1;
+      if (this.pressedKeys.has('a') || this.pressedKeys.has('arrowleft')) strafe -= 1;
+
+      if (forward !== 0 || strafe !== 0) {
+        this.followSelectedAgent = false;
+        const mag = Math.hypot(forward, strafe);
+        const normForward = forward / mag;
+        const normStrafe = strafe / mag;
+
+        const fx = -Math.sin(rad);
+        const fz = -Math.cos(rad);
+        const sx = Math.cos(rad);
+        const sz = -Math.sin(rad);
+
+        const deltaX = (fx * normForward + sx * normStrafe) * moveSpeed * dtSec;
+        const deltaZ = (fz * normForward + sz * normStrafe) * moveSpeed * dtSec;
+        this.panCamera(deltaX, deltaZ);
+      }
+
+      const turnSpeed = 90; // degrees per second
+      if (this.pressedKeys.has('q')) {
+        this.orbitCamera(-turnSpeed * dtSec, 0);
+      }
+      if (this.pressedKeys.has('e')) {
+        this.orbitCamera(turnSpeed * dtSec, 0);
+      }
+      if (this.pressedKeys.has(' ')) {
+        this.pressedKeys.delete(' ');
+        if (this.activeAgentId) {
+          this.setFollowAgent(true);
+        } else {
+          this.resetCamera();
+        }
+      }
+    }
+
+    // 2. Smooth camera tracking, smart zooming and angular damping
     if (!this.options.reducedMotion) {
       let needsCameraUpdate = false;
       if (this.cameraTarget.distanceTo(this.desiredTarget) > 0.02) {
-        this.cameraTarget.lerp(this.desiredTarget, 0.08);
+        this.cameraTarget.lerp(this.desiredTarget, 0.12);
         needsCameraUpdate = true;
       }
       if (Math.abs(this.cameraDistance - this.desiredDistance) > 0.05) {
-        this.cameraDistance += (this.desiredDistance - this.cameraDistance) * 0.08;
+        this.cameraDistance += (this.desiredDistance - this.cameraDistance) * 0.12;
+        needsCameraUpdate = true;
+      }
+      let angleDiff = (this.desiredAngle - this.cameraAngle) % 360;
+      if (angleDiff > 180) angleDiff -= 360;
+      if (angleDiff < -180) angleDiff += 360;
+      if (Math.abs(angleDiff) > 0.05) {
+        this.cameraAngle = (this.cameraAngle + angleDiff * 0.2) % 360;
+        if (this.cameraAngle < 0) this.cameraAngle += 360;
+        needsCameraUpdate = true;
+      }
+      if (Math.abs(this.desiredElevation - this.cameraElevation) > 0.05) {
+        this.cameraElevation += (this.desiredElevation - this.cameraElevation) * 0.2;
         needsCameraUpdate = true;
       }
       if (needsCameraUpdate) {
@@ -1703,106 +2005,14 @@ export class ThreeOfficeScene {
 
     // 2. Agent Animations (Preserving Defect 2 contract on children[1] + Articulating characterRig)
     if (!this.options.reducedMotion) {
-      const t = time * 0.002;
-
       this.agentMeshes.forEach((group, agentId) => {
-        const parts = group.userData?.parts as AvatarSemanticParts | undefined;
         const runtime = this.agentRuntimeStates.get(agentId);
+        if (!runtime) return;
 
-        // Enforce Defect 2 invariant: ONLY EPHEMERAL primaryGeometry (children[1]) animates directly,
-        // NEVER STANDING primaryGeometry (children[1] remains at y = 0.06, rotation.y = 0)
-        if (group.userData?.agentType === 'EPHEMERAL' && parts?.primaryGeometry) {
-          parts.primaryGeometry.position.y = 0.58 + Math.sin(t + group.position.x) * 0.04;
-          parts.primaryGeometry.rotation.y = t * 0.5;
-        }
-
-        if (!parts?.characterRig || !runtime) return;
-
-        const { placement } = runtime;
-        const kind = placement.activity.kind;
-        const phase = (stableAgentHash(agentId) % 100) * 0.1;
-
-        let destX = placement.targetWorldX;
-        let destZ = placement.targetWorldZ;
-        let destAngle = placement.targetFacingAngle;
-
-        if (kind === 'WALKING') {
-          const sampled = sampleWaypointRoute(
-            placement.waypoints,
-            time,
-            stableAgentHash(agentId) % 7
-          );
-          destX = sampled.x;
-          destZ = sampled.z;
-          destAngle = sampled.facingAngle;
-        }
-
-        // Smooth position & orientation interpolation
-        runtime.currentX += (destX - runtime.currentX) * 0.12;
-        runtime.currentZ += (destZ - runtime.currentZ) * 0.12;
-        runtime.currentAngle += (destAngle - runtime.currentAngle) * 0.15;
-
-        group.position.x = runtime.currentX;
-        group.position.z = runtime.currentZ;
-        parts.characterRig.rotation.y = runtime.currentAngle;
-
-        if (kind === 'TYPING_DEV' || kind === 'TYPING_AUDIT' || kind === 'TYPING_DOCS') {
-          parts.characterRig.position.y = -0.06;
-          if (parts.leftLeg) parts.leftLeg.rotation.x = -Math.PI / 2.5;
-          if (parts.rightLeg) parts.rightLeg.rotation.x = -Math.PI / 2.5;
-          if (parts.leftArm) {
-            parts.leftArm.rotation.x = -0.85 + Math.sin(time * 0.022 + phase) * 0.22;
-          }
-          if (parts.rightArm) {
-            parts.rightArm.rotation.x = -0.85 + Math.cos(time * 0.022 + phase) * 0.22;
-          }
-          if (parts.head) {
-            parts.head.rotation.y = Math.sin(time * 0.004 + phase) * 0.1;
-          }
-          if (parts.speechBubble) parts.speechBubble.visible = false;
-        } else if (kind === 'CONVERSING') {
-          parts.characterRig.position.y = 0;
-          if (parts.leftLeg) parts.leftLeg.rotation.x = 0;
-          if (parts.rightLeg) parts.rightLeg.rotation.x = 0;
-          if (parts.leftArm) {
-            parts.leftArm.rotation.x = -0.45 + Math.sin(time * 0.008 + phase) * 0.25;
-          }
-          if (parts.rightArm) {
-            parts.rightArm.rotation.x = -0.35 + Math.cos(time * 0.007 + phase) * 0.22;
-          }
-          if (parts.head) {
-            parts.head.rotation.y = Math.sin(time * 0.005 + phase) * 0.08;
-          }
-          if (parts.speechBubble) {
-            parts.speechBubble.visible = true;
-            parts.speechBubble.position.y = 1.56 + Math.sin(time * 0.006 + phase) * 0.04;
-          }
-        } else if (kind === 'WALKING') {
-          parts.characterRig.position.y = Math.abs(Math.sin(time * 0.01 + phase)) * 0.03;
-          const stride = Math.sin(time * 0.01 + phase);
-          if (parts.leftLeg) parts.leftLeg.rotation.x = stride * 0.45;
-          if (parts.rightLeg) parts.rightLeg.rotation.x = -stride * 0.45;
-          if (parts.leftArm) parts.leftArm.rotation.x = -stride * 0.32;
-          if (parts.rightArm) parts.rightArm.rotation.x = stride * 0.32;
-          if (parts.head) parts.head.rotation.y = 0;
-          if (parts.speechBubble) parts.speechBubble.visible = false;
-        } else if (kind === 'IDLE_DESK') {
-          parts.characterRig.position.y = -0.06;
-          if (parts.leftLeg) parts.leftLeg.rotation.x = -Math.PI / 2.5;
-          if (parts.rightLeg) parts.rightLeg.rotation.x = -Math.PI / 2.5;
-          if (parts.leftArm) parts.leftArm.rotation.x = -0.3;
-          if (parts.rightArm) parts.rightArm.rotation.x = -0.3;
-          if (parts.head) parts.head.rotation.y = 0;
-          if (parts.speechBubble) parts.speechBubble.visible = false;
-        } else {
-          parts.characterRig.position.y = 0;
-          if (parts.leftLeg) parts.leftLeg.rotation.x = 0;
-          if (parts.rightLeg) parts.rightLeg.rotation.x = 0;
-          if (parts.leftArm) parts.leftArm.rotation.x = 0;
-          if (parts.rightArm) parts.rightArm.rotation.x = 0;
-          if (parts.head) parts.head.rotation.y = 0;
-          if (parts.speechBubble) parts.speechBubble.visible = false;
-        }
+        stepAvatarKinematics(group, runtime, time, this.cameraDistance, {
+          reducedMotion: false,
+          sampleWaypointRoute,
+        });
       });
 
       if (this.selectionRing && this.selectionRing.visible && this.activeAgentId) {
@@ -1843,14 +2053,27 @@ export class ThreeOfficeScene {
   private disposeHierarchy(obj: THREE.Object3D): void {
     obj.traverse((child) => {
       if (child instanceof THREE.Mesh) {
-        if (child.geometry && !this.furniturePool.ownsGeometry(child.geometry)) {
+        if (
+          child.geometry &&
+          !this.furniturePool.ownsGeometry(child.geometry) &&
+          !this.avatarPool.ownsGeometry(child.geometry)
+        ) {
           child.geometry.dispose();
         }
         if (Array.isArray(child.material)) {
           child.material.forEach((m) => {
-            if (!this.furniturePool.ownsMaterial(m)) m.dispose();
+            if (
+              !this.furniturePool.ownsMaterial(m) &&
+              !this.avatarPool.ownsMaterial(m)
+            ) {
+              m.dispose();
+            }
           });
-        } else if (child.material && !this.furniturePool.ownsMaterial(child.material)) {
+        } else if (
+          child.material &&
+          !this.furniturePool.ownsMaterial(child.material) &&
+          !this.avatarPool.ownsMaterial(child.material)
+        ) {
           child.material.dispose();
         }
       } else if (child instanceof THREE.Sprite) {
@@ -1872,13 +2095,24 @@ export class ThreeOfficeScene {
       dom.removeEventListener('pointerdown', this.handlePointerDown);
       dom.removeEventListener('pointermove', this.handlePointerMove);
       dom.removeEventListener('pointerup', this.handlePointerUp);
+      dom.removeEventListener('pointercancel', this.handlePointerCancel);
+      dom.removeEventListener('dblclick', this.handleDblClick);
+      dom.removeEventListener('contextmenu', this.handleContextMenu);
       dom.removeEventListener('wheel', this.handleWheel);
+      dom.removeEventListener('touchstart', this.handleTouchStart);
+      dom.removeEventListener('touchmove', this.handleTouchMove);
       dom.removeEventListener('webglcontextlost', this.handleContextLost as EventListener);
       dom.removeEventListener('webglcontextrestored', this.handleContextRestored as EventListener);
     }
 
+    if (typeof window !== 'undefined' && window.removeEventListener) {
+      window.removeEventListener('keydown', this.handleKeyDown);
+      window.removeEventListener('keyup', this.handleKeyUp);
+    }
+
     this.disposeHierarchy(this.scene);
     this.furniturePool.dispose();
+    this.avatarPool.dispose();
     if (this.renderer && typeof this.renderer.dispose === 'function') {
       this.renderer.dispose();
     }

@@ -465,6 +465,52 @@ def test_revoke_disables_binding_and_principal_atomically(seeded_intent):
         )
 
 
+def test_concurrent_completion_and_revoke_leave_cycle_revoked(seeded_intent):
+    """A completion racing a revoke cannot resurrect a runnable identity."""
+    from aao.postgresql_connection import connect_postgres
+    from aao.selfdev_cycle_mtls import CycleMtlError
+    from aao.selfdev_cycle_mtls_repository import PostgresCycleIntentRepository
+
+    repo = PostgresCycleIntentRepository()
+    intent = repo.create_intent(seeded_intent)
+    barrier = threading.Barrier(2)
+
+    def complete():
+        barrier.wait(timeout=10)
+        try:
+            repo.complete_binding(intent, "a" * 64, "b" * 64)
+        except CycleMtlError:
+            # Revoke may acquire the intent lock first; then completion must
+            # fail closed rather than restore the principal.
+            return
+
+    def revoke():
+        barrier.wait(timeout=10)
+        return repo.revoke(intent.intent_id)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        completion = pool.submit(complete)
+        revocation = pool.submit(revoke)
+        completion.result(timeout=10)
+        assert revocation.result(timeout=10) is True
+
+    with connect_postgres() as db:
+        assert db.execute(
+            "SELECT state FROM selfdev_cycle_mtls_intents WHERE intent_id=%s",
+            (intent.intent_id,),
+        ).fetchone()[0] == "REVOKED"
+        assert db.execute(
+            "SELECT enabled FROM principal_credentials WHERE principal_id=%s",
+            (intent.principal_id,),
+        ).fetchone()[0] is False
+        assert db.execute(
+            "SELECT count(*) FROM workload_identity_bindings "
+            "WHERE intent_id=%s AND enabled AND revoked_at IS NULL "
+            "AND expires_at>clock_timestamp()",
+            (intent.intent_id,),
+        ).fetchone()[0] == 0
+
+
 def test_runtime_cannot_write_binding_or_complete_intent(seeded_intent, runtime_role):
     """Exercise actual PostgreSQL role privileges, not SQL-text expectations."""
     from aao.postgresql_connection import connect_postgres

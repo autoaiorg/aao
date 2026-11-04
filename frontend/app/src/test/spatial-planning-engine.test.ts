@@ -36,6 +36,19 @@ describe('planOfficeZones', () => {
     }
   });
 
+  it('keeps a normal six-unit campus compact around the shared core', () => {
+    const standardUnits = Array.from({ length: 6 }, (_, index) => ({
+      id: `compact-${String(index).padStart(2, '0')}`,
+      parentId: null,
+      width: 4.8,
+      depth: 4.2,
+    }));
+    const plan = planOfficeZones(standardUnits);
+    const farthestUnit = Math.max(...plan.map(({ x, z }) => Math.hypot(x, z)));
+
+    expect(farthestUnit).toBeLessThan(14);
+  });
+
   it('retains existing locations when zones are added and places children adjacent to their parent', () => {
     const initial = requestsFor(5);
     const previous = planOfficeZones(initial);

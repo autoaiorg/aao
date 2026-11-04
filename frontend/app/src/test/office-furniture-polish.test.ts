@@ -196,6 +196,8 @@ describe('PR C: Office Furniture, Procedural IDE Textures, Biophilia & Lighting'
       expect(hitMaterial.colorWrite).toBe(false);
       expect(hitMaterial.depthWrite).toBe(false);
 
+      expect(room!.getObjectByName('department-finish-acoustic-carpet')).toBeUndefined();
+
       const backPartition = room!.getObjectByName('department-back-partition') as THREE.Mesh<THREE.BoxGeometry>;
       const sideGlass = room!.getObjectByName('department-side-glass-left') as THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial>;
       const frontGlass = room!.getObjectByName('department-front-glass-left') as THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial>;

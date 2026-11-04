@@ -14,6 +14,8 @@ import * as THREE from 'three';
 import {
   ThreeOfficeScene,
   SharedFurniturePool,
+  computeArchitecturalEnvelope,
+  OFFICE_ENVELOPE_EXPANSION_METERS,
   createProceduralIdeTexture,
   type ThreeSceneCallbacks,
 } from '../features/office/engine/ThreeOfficeScene';
@@ -21,6 +23,16 @@ import { DEMO_AGENTS } from '../data/adapters/demo/fixtures';
 import { OFFICE_ROOMS } from '../features/office/types';
 
 describe('PR C: Office Furniture, Procedural IDE Textures, Biophilia & Lighting', () => {
+  it('fits the architectural shell to occupied neighborhoods with a bounded reserve', () => {
+    const empty = computeArchitecturalEnvelope([]);
+    expect(empty).toEqual({ halfWidth: 9, halfDepth: 8 });
+    const room = { ...OFFICE_ROOMS[0], x: 3, z: -2, width: 10, depth: 8 };
+    const fitted = computeArchitecturalEnvelope([room]);
+    expect(fitted.halfWidth).toBe(Math.abs(room.x) + room.width / 2 + OFFICE_ENVELOPE_EXPANSION_METERS);
+    expect(fitted.halfDepth).toBe(Math.abs(room.z) + room.depth / 2 + OFFICE_ENVELOPE_EXPANSION_METERS);
+    expect(computeArchitecturalEnvelope([{ ...room, x: 20 }]).halfWidth).toBeGreaterThan(fitted.halfWidth);
+  });
+
   describe('SharedFurniturePool & Procedural Textures', () => {
     it('creates procedural IDE code editor texture with correct dimensions and mipmaps', () => {
       const texture = createProceduralIdeTexture();

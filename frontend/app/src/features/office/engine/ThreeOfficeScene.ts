@@ -28,6 +28,16 @@ import {
 
 export type { AvatarSemanticParts };
 
+export const OFFICE_ENVELOPE_EXPANSION_METERS = 2.5;
+
+/** Fit the open shell to used neighborhoods plus a small configurable reserve. */
+export function computeArchitecturalEnvelope(rooms: readonly OfficeRoomConfig[]): { halfWidth: number; halfDepth: number } {
+  return {
+    halfWidth: Math.max(9, ...rooms.map((room) => Math.abs(room.x) + room.width / 2 + OFFICE_ENVELOPE_EXPANSION_METERS)),
+    halfDepth: Math.max(8, ...rooms.map((room) => Math.abs(room.z) + room.depth / 2 + OFFICE_ENVELOPE_EXPANSION_METERS)),
+  };
+}
+
 export interface ThreeSceneCallbacks {
   onSelectRoom: (roomId: string) => void;
   onSelectAgent: (agentId: string) => void;
@@ -563,7 +573,7 @@ export class ThreeOfficeScene {
     // Reserve a recognizable lobby position just inside the south entrance. The
     // former hard-coded atrium position put the counter directly in the common
     // circulation area and made it read as a decorative island.
-    const halfDepth = Math.max(11, ...this.rooms.map((room) => Math.abs(room.z) + room.depth / 2 + 2.5));
+    const { halfDepth } = computeArchitecturalEnvelope(this.rooms);
     const entranceInteriorZ = halfDepth - 1.5 - 2.0;
     reception.userData = { role: 'architectural-common-space', zone: 'reception', sourceNeutral: true };
     reception.position.set(-2.1, 0, entranceInteriorZ);
@@ -660,8 +670,10 @@ export class ThreeOfficeScene {
       this.groundGroup.remove(child);
       this.disposeHierarchy(child);
     }
-    const halfWidth = Math.max(14, ...this.rooms.map((room) => Math.abs(room.x) + room.width / 2 + 2.5));
-    const halfDepth = Math.max(11, ...this.rooms.map((room) => Math.abs(room.z) + room.depth / 2 + 2.5));
+    // Bound the shell from occupied neighborhoods with a modest expansion
+    // reserve. The former 28x22m minimum made small organizations look lost in
+    // a nave; LIVE without departments still keeps a compact lobby shell.
+    const { halfWidth, halfDepth } = computeArchitecturalEnvelope(this.rooms);
     const width = halfWidth * 2;
     const depth = halfDepth * 2;
 

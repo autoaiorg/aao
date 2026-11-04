@@ -34,6 +34,10 @@ test('Capture real screenshots of F4.7 and F4.8 Office', async ({ page }) => {
 
   // Capture 1: General 3D Overview
   await page.screenshot({ path: path.join(screenshotsDir, '01-office-3d-overview.png'), fullPage: false });
+  await page.screenshot({
+    path: path.join(v42EvidenceDir, 'office-overview-neighborhood-floors.png'),
+    fullPage: false,
+  });
 
   // Capture the semantically selected Audit neighborhood separately from its sign.
   const auditChip = toolbar.getByRole('button', { name: /\[AUDIT\]/i });

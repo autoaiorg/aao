@@ -920,6 +920,44 @@ export class ThreeOfficeScene {
 
     this.interactiveMeshes.push(floor);
 
+    // Soft, rounded carpet islands make work neighborhoods readable without
+    // drawing walls or raised rectangular pads around departments. Keep a wide
+    // common-floor margin so circulation remains visibly continuous.
+    const rugWidth = Math.max(1.35, room.width - 0.9);
+    const rugDepth = Math.max(1.2, room.depth - 1.05);
+    const radius = Math.min(0.62, rugWidth * 0.22, rugDepth * 0.22);
+    const rugShape = new THREE.Shape();
+    rugShape.moveTo(-rugWidth / 2 + radius, -rugDepth / 2);
+    rugShape.lineTo(rugWidth / 2 - radius, -rugDepth / 2);
+    rugShape.quadraticCurveTo(rugWidth / 2, -rugDepth / 2, rugWidth / 2, -rugDepth / 2 + radius);
+    rugShape.lineTo(rugWidth / 2, rugDepth / 2 - radius);
+    rugShape.quadraticCurveTo(rugWidth / 2, rugDepth / 2, rugWidth / 2 - radius, rugDepth / 2);
+    rugShape.lineTo(-rugWidth / 2 + radius, rugDepth / 2);
+    rugShape.quadraticCurveTo(-rugWidth / 2, rugDepth / 2, -rugWidth / 2, rugDepth / 2 - radius);
+    rugShape.lineTo(-rugWidth / 2, -rugDepth / 2 + radius);
+    rugShape.quadraticCurveTo(-rugWidth / 2, -rugDepth / 2, -rugWidth / 2 + radius, -rugDepth / 2);
+    const finishColors: Record<NonNullable<OfficeRoomConfig['floorFinish']>, number> = {
+      'acoustic-carpet': new THREE.Color(room.color).lerp(new THREE.Color('#c5c1b7'), 0.76).getHex(),
+      'hardwood-walnut': 0x8c7660,
+      'polished-terrazzo': 0x9c9991,
+      'high-security-frosted': 0x9ba79c,
+    };
+    const rug = new THREE.Mesh(
+      new THREE.ShapeGeometry(rugShape),
+      new THREE.MeshStandardMaterial({
+        color: finishColors[room.floorFinish ?? 'acoustic-carpet'],
+        roughness: 0.96,
+        metalness: 0,
+        transparent: true,
+        opacity: 0.54,
+      }),
+    );
+    rug.name = 'neighborhood-soft-finish';
+    rug.rotation.x = -Math.PI / 2;
+    rug.position.set(0, 0.38, 0);
+    rug.receiveShadow = true;
+    roomGroup.add(rug);
+
     // Architectural Perimeter Walls & Open Doorway Entrance
     this.buildRoomArchitecture(roomGroup, room, isUnassignedHolding);
 

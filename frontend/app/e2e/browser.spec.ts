@@ -187,7 +187,7 @@ test.describe('Real Browser Functional & Accessibility Suite (Google Chrome)', (
     await expect(page.getByText(/Claude Core/i)).not.toBeVisible();
 
     // Clear search
-    await searchInput.clear();
+    await searchInput.fill('');
     await expect(page.getByText(/Claude Core/i)).toBeVisible();
 
     // 8. Open Agent Detail Drawer via keyboard

@@ -233,6 +233,10 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
       return true;
     });
   }, [allAgents, typeFilter, searchQuery]);
+  // Keep the renderer input independent of roster search/type filters. Passing a
+  // keystroke-filtered array into ThreeOfficeScene rebuilt every avatar and
+  // route on each query change; filtering is a presentation concern for the HUD.
+  const sceneAgents = useMemo(() => filterOperationalAgents(allAgents), [allAgents]);
   // Revoked identities remain available to the top-level historical count and
   // detail/history views, but should not occupy the live office or rosters.
   const operationalAgents = useMemo(() => filterOperationalAgents(filteredAgents), [filteredAgents]);
@@ -733,7 +737,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
             {viewMode === '3d' ? (
               <Office3DCanvas
                 ref={canvas3DRef}
-                agents={operationalAgents}
+                agents={sceneAgents}
                 rooms={sceneRooms}
                 demoFurniture={isDemo}
                 selectedRoomId={selectedRoomId}
@@ -791,7 +795,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
         {viewMode === '3d' ? (
           <Office3DCanvas
             ref={canvas3DRef}
-            agents={operationalAgents}
+            agents={sceneAgents}
             rooms={sceneRooms}
             demoFurniture={isDemo}
             selectedRoomId={selectedRoomId}

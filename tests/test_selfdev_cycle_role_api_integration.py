@@ -6,7 +6,7 @@ import json
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -656,6 +656,52 @@ def test_production_cycle_issue_creates_only_pending_mtls_intents_and_revoke_is_
     assert {role["intent_id"] for role in replay["roles"]} == {
         role["intent_id"] for role in result["roles"]
     }
+
+    # A completed intent is not sufficient to claim the certificate is
+    # verified: replay must reflect current principal and binding validity.
+    repository = PostgresCycleIntentRepository()
+    role_by_kind = {role["kind"]: role for role in result["roles"]}
+    for role in result["roles"]:
+        repository.complete_binding(
+            repository.get_pending_intent(UUID(role["intent_id"])),
+            "a" * 64 if role["kind"] == "AGENT" else "c" * 64,
+            "b" * 64 if role["kind"] == "AGENT" else "d" * 64,
+        )
+    completed_replay = issue_selfdev_cycle_roles(
+        project, SelfDevCycleIssueRequest(cycle_id=cycle, lifetime_seconds=600), principal,
+    )
+    assert all(role["certificate_status"] == "verified" for role in completed_replay["roles"])
+    with connect_postgres() as db:
+        db.execute(
+            "UPDATE workload_identity_bindings SET expires_at=clock_timestamp()-interval '1 second' "
+            "WHERE intent_id=%s",
+            (UUID(role_by_kind["AGENT"]["intent_id"]),),
+        )
+    expired_binding_replay = issue_selfdev_cycle_roles(
+        project, SelfDevCycleIssueRequest(cycle_id=cycle, lifetime_seconds=600), principal,
+    )
+    by_kind = {role["kind"]: role for role in expired_binding_replay["roles"]}
+    assert by_kind["AGENT"]["certificate_status"] == "inactive"
+    assert by_kind["AUDITOR"]["certificate_status"] == "verified"
+    with connect_postgres() as db:
+        db.execute(
+            "UPDATE workload_identity_bindings SET expires_at=clock_timestamp()+interval '10 minutes' "
+            "WHERE intent_id=%s",
+            (UUID(role_by_kind["AGENT"]["intent_id"]),),
+        )
+        db.execute(
+            "UPDATE principal_credentials SET enabled=false WHERE principal_id=%s",
+            (role_by_kind["AGENT"]["principal_id"],),
+        )
+        db.execute(
+            "UPDATE workload_identity_bindings SET enabled=false,revoked_at=clock_timestamp() "
+            "WHERE intent_id=%s",
+            (UUID(role_by_kind["AUDITOR"]["intent_id"]),),
+        )
+    invalidated_replay = issue_selfdev_cycle_roles(
+        project, SelfDevCycleIssueRequest(cycle_id=cycle, lifetime_seconds=600), principal,
+    )
+    assert all(role["certificate_status"] == "inactive" for role in invalidated_replay["roles"])
 
     # Pending intents reserve the H1b overlap slot despite disabled credentials.
     second_cycle = uuid4().hex

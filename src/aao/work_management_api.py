@@ -1313,10 +1313,16 @@ def issue_selfdev_cycle_roles(
                 # never a token. Returning the existing pending/completed
                 # intents makes a lost HTTP response recoverable by cycle_id.
                 existing_intents = db.execute(
-                    "SELECT principal_id,kind,intent_id,state,not_after "
-                    "FROM selfdev_cycle_mtls_intents WHERE project_id=%s AND cycle_id=%s "
-                    "AND not_after>clock_timestamp() "
-                    "ORDER BY kind",
+                    "SELECT i.principal_id,i.kind,i.intent_id,i.state,i.not_after, "
+                    "(c.enabled AND (c.expires_at IS NULL OR c.expires_at>clock_timestamp()) "
+                    " AND b.enabled AND b.revoked_at IS NULL "
+                    " AND b.expires_at>clock_timestamp()) AS certificate_active "
+                    "FROM selfdev_cycle_mtls_intents i "
+                    "JOIN principal_credentials c USING(principal_id) "
+                    "LEFT JOIN workload_identity_bindings b USING(intent_id) "
+                    "WHERE i.project_id=%s AND i.cycle_id=%s "
+                    "AND i.not_after>clock_timestamp() "
+                    "ORDER BY i.kind",
                     (project_id, cycle_id),
                 ).fetchall()
                 expected_intents = {
@@ -1342,7 +1348,11 @@ def issue_selfdev_cycle_roles(
                                 ),
                                 "intent_id": str(row[2]),
                                 "certificate_status": (
-                                    "pending_verifier" if row[3] == "PENDING" else "verified"
+                                    "pending_verifier"
+                                    if row[3] == "PENDING"
+                                    else "verified"
+                                    if row[3] == "COMPLETED" and row[5] is True
+                                    else "inactive"
                                 ),
                             }
                             for row in existing_intents

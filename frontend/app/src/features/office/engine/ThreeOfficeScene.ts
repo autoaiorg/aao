@@ -1046,7 +1046,6 @@ export class ThreeOfficeScene {
 
     const isTopRow = room.z < 0;
     const backZ = isTopRow ? -room.depth / 2 + 0.12 : room.depth / 2 - 0.12;
-    const frontZ = isTopRow ? room.depth / 2 - 0.1 : -room.depth / 2 + 0.1;
 
     // 1. A short acoustic screen anchors the department sign without outlining
     // a room-sized bay. Long uninterrupted partitions made the open floor read
@@ -1084,49 +1083,9 @@ export class ThreeOfficeScene {
     sideGlassRight.position.set(room.width / 2 - 0.12, 0.61, backZ + (isTopRow ? 0.18 : -0.18));
     group.add(sideGlassRight);
 
-    // 3. Two small entrance-side glass markers; the opening stays broad for
-    // agents and visitors instead of drawing a wall across the department bay.
-    const doorwayWidth = 1.4;
-    const frontPanelWidth = Math.min(0.48, Math.max(0.25, (room.width - doorwayWidth - 0.4) / 2));
-    const frontGlassGeo = new THREE.BoxGeometry(frontPanelWidth, 0.48, 0.045);
-
-    const frontLeft = new THREE.Mesh(frontGlassGeo, glassMat);
-    frontLeft.name = 'department-front-glass-left';
-    frontLeft.position.set(-room.width / 2 + frontPanelWidth / 2 + 0.12, 0.61, frontZ);
-    group.add(frontLeft);
-
-    const frontRight = new THREE.Mesh(frontGlassGeo, glassMat);
-    frontRight.name = 'department-front-glass-right';
-    frontRight.position.set(room.width / 2 - frontPanelWidth / 2 - 0.12, 0.61, frontZ);
-    group.add(frontRight);
-
-    // 4. Acoustic Manifestation Band for Audit Enclave (eye level 0.85m)
-    const isAuditEnclave = room.kind === 'audit-enclave';
-    if (isAuditEnclave) {
-      const manifestSideGeo = new THREE.BoxGeometry(0.06, 0.1, sideBaffleDepth + 0.02);
-      const manifestFrontGeo = new THREE.BoxGeometry(frontPanelWidth + 0.02, 0.14, 0.088);
-      const manifestMat = new THREE.MeshBasicMaterial({
-        color: 0x9dbaa8,
-        transparent: true,
-        opacity: 0.22,
-      });
-
-      const mLeft = new THREE.Mesh(manifestSideGeo, manifestMat);
-      mLeft.position.set(-room.width / 2 + 0.12, 0.85, sideGlassLeft.position.z);
-      group.add(mLeft);
-
-      const mRight = new THREE.Mesh(manifestSideGeo, manifestMat);
-      mRight.position.set(room.width / 2 - 0.12, 0.85, sideGlassRight.position.z);
-      group.add(mRight);
-
-      const mFrontL = new THREE.Mesh(manifestFrontGeo, manifestMat);
-      mFrontL.position.set(frontLeft.position.x, 0.85, frontZ);
-      group.add(mFrontL);
-
-      const mFrontR = new THREE.Mesh(manifestFrontGeo, manifestMat);
-      mFrontR.position.set(frontRight.position.x, 0.85, frontZ);
-      group.add(mFrontR);
-    }
+    // No front glass: a doorway-shaped line at every department recreated the
+    // box-room reading we are removing. Shared sightlines stay open; the short
+    // rear acoustic marker and furniture define the work neighborhood.
   }
 
   private createDepartmentLabelSprite(
@@ -1161,7 +1120,9 @@ export class ThreeOfficeScene {
     const spriteMat = new THREE.SpriteMaterial({
       map: texture,
       transparent: true,
-      depthTest: false,
+      // Keep signs occluded by nearer architecture and people. Always-on-top
+      // sprites read as floating UI and can misleadingly show through walls.
+      depthTest: true,
     });
     const sprite = new THREE.Sprite(spriteMat);
     // At overview distance the scene is framed to include the whole building;

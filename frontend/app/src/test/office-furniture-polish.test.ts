@@ -222,19 +222,19 @@ describe('PR C: Office Furniture, Procedural IDE Textures, Biophilia & Lighting'
 
       const backPartition = room!.getObjectByName('department-back-partition') as THREE.Mesh<THREE.BoxGeometry>;
       const sideGlass = room!.getObjectByName('department-side-glass-left') as THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial>;
-      const frontGlass = room!.getObjectByName('department-front-glass-left') as THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial>;
       expect(backPartition.geometry.parameters.height).toBeLessThan(0.65);
       expect(sideGlass.geometry.parameters.height).toBeLessThan(0.65);
-      expect(frontGlass.geometry.parameters.height).toBeLessThan(0.65);
+      expect(room!.getObjectByName('department-front-glass-left')).toBeUndefined();
+      expect(room!.getObjectByName('department-front-glass-right')).toBeUndefined();
       const roomConfig = (room as THREE.Group).userData.room as (typeof OFFICE_ROOMS)[number];
       expect(backPartition.geometry.parameters.width).toBeLessThan(roomConfig.width * 0.5);
       expect(sideGlass.geometry.parameters.depth).toBeLessThan(roomConfig.depth * 0.3);
-      expect(frontGlass.geometry.parameters.width).toBeLessThan(0.5);
       expect(sideGlass.material.opacity).toBeLessThan(0.15);
       expect(room!.getObjectByName('department-wall-sign')).toBeDefined();
       const departmentLabel = room!.children.find((child) => child instanceof THREE.Sprite);
       expect(departmentLabel).toBeDefined();
       expect((departmentLabel as THREE.Sprite).scale.x).toBeGreaterThan(1.8);
+      expect(((departmentLabel as THREE.Sprite).material as THREE.SpriteMaterial).depthTest).toBe(true);
     });
 
     it('keeps an accessible opening in the continuous curtain facade', () => {

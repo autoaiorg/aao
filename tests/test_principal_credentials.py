@@ -355,6 +355,35 @@ def test_grant_contract_accepts_execution_capabilities_only_as_exact_values():
             GrantRequest(principal_id="agent-1", capability=invalid)
 
 
+def test_grant_contract_accepts_only_enumerated_organizational_operations():
+    from pydantic import ValidationError
+
+    from aao.work_management_api import GrantRequest
+
+    operations = (
+        "organization.squad.create_temporary",
+        "organization.squad.dissolve",
+        "organization.slot.assign",
+        "organization.unit.create_permanent",
+        "organization.unit.merge",
+        "organization.unit.split",
+    )
+    assert [
+        GrantRequest(principal_id="agent-1", capability=operation).capability
+        for operation in operations
+    ] == list(operations)
+    for invalid in (
+        "organization.squad.create_temporary.extra",
+        "organization.unit.delete",
+        "organization.security.change",
+        "organization.mission.change",
+        "constitution.change",
+        "authority.expand",
+    ):
+        with pytest.raises(ValidationError):
+            GrantRequest(principal_id="agent-1", capability=invalid)
+
+
 def test_shared_development_headers_are_not_accepted(monkeypatch):
     from fastapi import HTTPException
 

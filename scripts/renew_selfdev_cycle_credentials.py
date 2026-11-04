@@ -58,7 +58,9 @@ DAILY_CAP_CODE = "SELFDEV_CYCLE_ISSUANCE_DAILY_CAP"
 DAILY_CAP_BACKOFF = timedelta(hours=1)
 # On a daily-cap 429, retry early enough that a successor can still be issued,
 # installed, verified and N drained before N expires.
-DAILY_CAP_SAFETY_MARGIN = DRAIN_CAP + CLOCK_SKEW
+TIMER_INTERVAL = timedelta(minutes=5)
+TIMER_ACCURACY = timedelta(seconds=30)
+DAILY_CAP_SAFETY_MARGIN = DRAIN_CAP + CLOCK_SKEW + TIMER_INTERVAL + TIMER_ACCURACY
 DAILY_CAP_MIN_WAIT = BACKOFF[0]
 PHASES = {
     "ACTIVE", "ISSUING", "INSTALLED_PENDING", "VERIFIED", "REVOKING_OLD",

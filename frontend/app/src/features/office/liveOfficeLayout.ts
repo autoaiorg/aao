@@ -1,5 +1,12 @@
 import type { AgentIdentity, OrgUnit } from '../../domain/models';
-import { OFFICE_ROOMS, type OfficeRoomConfig } from './types';
+import {
+  OFFICE_ROOMS,
+  type OfficeDoorwayPortal,
+  type OfficeFloorFinish,
+  type OfficeGlassWallSegment,
+  type OfficeRoomConfig,
+  type OfficeZoneKind,
+} from './types';
 
 const UNIT_COLORS = [
   ['#1e3a8a', '#3b82f6'],
@@ -12,6 +19,89 @@ const UNIT_COLORS = [
 
 export const UNASSIGNED_UNIT_ID = 'unit-unassigned';
 export const UNASSIGNED_HOLDING_COLORS = ['#334155', '#94a3b8'] as const;
+
+/**
+ * Computes architectural features (doorway portal and glass wall segments with doorway cutouts)
+ * for a room box based on its position relative to the central atrium.
+ */
+export function computeRoomArchitectureFeatures(room: {
+  x: number;
+  z: number;
+  width: number;
+  depth: number;
+  kind?: OfficeZoneKind;
+}): { doorway: OfficeDoorwayPortal; glassWalls: OfficeGlassWallSegment[] } {
+  const doorwaySignZ = room.z < 0 ? 1 : room.z > 0 ? -1 : 1;
+  const frontZ = Number((room.z + doorwaySignZ * (room.depth / 2)).toFixed(2));
+  const doorwayWidth = 1.4;
+
+  const doorway: OfficeDoorwayPortal = {
+    x: room.x,
+    z: Number((frontZ + doorwaySignZ * 0.25).toFixed(2)),
+    width: doorwayWidth,
+    facingAngle: doorwaySignZ < 0 ? Math.PI : 0,
+  };
+
+  const isAudit = room.kind === 'audit-enclave';
+  const wallHeight = 1.15;
+  const hw = room.width / 2;
+  const hd = room.depth / 2;
+
+  // 1. Back Wall
+  const backZ = room.z - doorwaySignZ * hd;
+  const backWall: OfficeGlassWallSegment = {
+    startX: room.x - hw,
+    startZ: backZ,
+    endX: room.x + hw,
+    endZ: backZ,
+    height: wallHeight,
+    hasManifestationBand: isAudit,
+  };
+
+  // 2. Left Wall
+  const leftWall: OfficeGlassWallSegment = {
+    startX: room.x - hw,
+    startZ: room.z - hd,
+    endX: room.x - hw,
+    endZ: room.z + hd,
+    height: wallHeight,
+    hasManifestationBand: isAudit,
+  };
+
+  // 3. Right Wall
+  const rightWall: OfficeGlassWallSegment = {
+    startX: room.x + hw,
+    startZ: room.z - hd,
+    endX: room.x + hw,
+    endZ: room.z + hd,
+    height: wallHeight,
+    hasManifestationBand: isAudit,
+  };
+
+  // 4. Front Wall with Doorway cutout (left panel and right panel)
+  const frontWallLeft: OfficeGlassWallSegment = {
+    startX: room.x - hw,
+    startZ: frontZ,
+    endX: room.x - doorwayWidth / 2,
+    endZ: frontZ,
+    height: wallHeight,
+    hasManifestationBand: isAudit,
+  };
+
+  const frontWallRight: OfficeGlassWallSegment = {
+    startX: room.x + doorwayWidth / 2,
+    startZ: frontZ,
+    endX: room.x + hw,
+    endZ: frontZ,
+    height: wallHeight,
+    hasManifestationBand: isAudit,
+  };
+
+  return {
+    doorway,
+    glassWalls: [backWall, leftWall, rightWall, frontWallLeft, frontWallRight],
+  };
+}
 
 export type AgentAttributionReason =
   | 'RESOLVED_UNIT'
@@ -408,11 +498,15 @@ export function buildCorporateCampusLayout(
     for (const a of agents) {
       demoCounts.set(a.unitId, (demoCounts.get(a.unitId) ?? 0) + 1);
     }
-    const demoRooms: OfficeRoomConfig[] = OFFICE_ROOMS.map((r) => ({
-      ...r,
-      kind: 'canonical-department',
-      workstationCapacity: Math.max(4, demoCounts.get(r.id) ?? 4),
-    }));
+    const demoRooms: OfficeRoomConfig[] = OFFICE_ROOMS.map((r) => {
+      const arch = computeRoomArchitectureFeatures(r);
+      return {
+        ...r,
+        doorway: arch.doorway,
+        glassWalls: arch.glassWalls,
+        workstationCapacity: Math.max(4, demoCounts.get(r.id) ?? 4),
+      };
+    });
     const navGraph = buildCampusNavGraph(demoRooms);
     return {
       rooms: demoRooms,
@@ -518,6 +612,32 @@ export function buildCorporateCampusLayout(
       z = Number((Math.sin(angle) * radiusZ).toFixed(2));
     }
 
+    const isExec = unit.code === 'EXEC' || unit.id === 'unit-exec';
+    const isAudit = unit.code === 'AUDIT' || unit.id === 'unit-audit';
+    const isSquad = Boolean(unit.parentId && unit.parentId !== 'unit-root');
+
+    const kind: OfficeZoneKind = isExec
+      ? 'executive-suite'
+      : isAudit
+      ? 'audit-enclave'
+      : isSquad
+      ? 'agile-squad-pod'
+      : 'canonical-department';
+
+    const floorFinish: OfficeFloorFinish = isExec
+      ? 'hardwood-walnut'
+      : isAudit
+      ? 'high-security-frosted'
+      : 'acoustic-carpet';
+
+    const arch = computeRoomArchitectureFeatures({
+      x,
+      z,
+      width: dims.width,
+      depth: dims.depth,
+      kind,
+    });
+
     rooms.push({
       id: unit.id,
       code: unit.code,
@@ -528,7 +648,10 @@ export function buildCorporateCampusLayout(
       depth: dims.depth,
       color,
       accentColor,
-      kind: 'canonical-department',
+      kind,
+      floorFinish,
+      doorway: arch.doorway,
+      glassWalls: arch.glassWalls,
       parentId: unit.parentId,
       workstationCapacity: dims.workstationCapacity,
     });
@@ -547,6 +670,14 @@ export function buildCorporateCampusLayout(
     const holdingZ = orderedCanonical.length === 0 ? 5.6 :orderedCanonical.length <= 3 ? 5.4 : 9.6;
     const holdingX = 0;
 
+    const arch = computeRoomArchitectureFeatures({
+      x: holdingX,
+      z: holdingZ,
+      width: dims.width,
+      depth: dims.depth,
+      kind: 'unassigned-holding',
+    });
+
     rooms.push({
       id: UNASSIGNED_UNIT_ID,
       code: existingUnassignedUnit?.code || 'UNKNOWN',
@@ -558,6 +689,9 @@ export function buildCorporateCampusLayout(
       color: UNASSIGNED_HOLDING_COLORS[0],
       accentColor: UNASSIGNED_HOLDING_COLORS[1],
       kind: 'unassigned-holding',
+      floorFinish: 'acoustic-carpet',
+      doorway: arch.doorway,
+      glassWalls: arch.glassWalls,
       parentId: null,
       workstationCapacity: dims.workstationCapacity,
     });
@@ -626,12 +760,12 @@ export function buildCampusNavGraph(rooms: readonly OfficeRoomConfig[]): CampusN
 
   // Connect each room's doorway to the nearest Atrium Ring node via a corridor segment
   for (const room of rooms) {
-    const doorwaySignZ = room.z < 0 ? 1 : room.z > 0 ? -1 : room.x < 0 ? 1 : -1;
-    const doorwayX = room.x;
-    const doorwayZ =
-      Math.abs(room.z) >= 2.2
-        ? room.z + doorwaySignZ * (room.depth / 2 + 0.35)
-        : room.z;
+    const doorwayX = room.doorway ? room.doorway.x : room.x;
+    const doorwayZ = room.doorway
+      ? room.doorway.z
+      : Math.abs(room.z) >= 2.2
+      ? room.z + (room.z < 0 ? 1 : room.z > 0 ? -1 : room.x < 0 ? 1 : -1) * (room.depth / 2 + 0.35)
+      : room.z;
 
     const doorwayId = `doorway-${room.id}`;
     const aisleId = `aisle-${room.id}`;

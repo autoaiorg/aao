@@ -48,6 +48,11 @@ class Cursor:
     def fetchone(self):
         return self.row
 
+    def fetchall(self):
+        if self.row is None:
+            return []
+        return self.row if isinstance(self.row, list) else [self.row]
+
 
 class ExecutionDB:
     def __init__(self, execution_row, proposal_row):
@@ -129,3 +134,104 @@ def test_execute_fails_closed_when_operation_has_no_executor(monkeypatch):
 
     assert caught.value.status_code == 409
     assert not any(query.startswith(("INSERT", "UPDATE")) for query, _ in db.statements)
+
+
+def test_execute_assignment_reuses_competency_and_grant_checked_work_path(monkeypatch):
+    from aao.organization_execution import build_execution_plan
+
+    parameters = {
+        "work_id": "57f2415f-e654-426a-846d-34302a305117",
+        "assignee_principal_id": "agent-target",
+    }
+    proposal = {
+        "id": "prop-assign", "version": 2, "state": "AUTONOMOUS_APPROVED",
+        "operation": "organization.slot.assign", "project_id": PROJECT_ID,
+        "scope_description": "Assign an approved project task",
+        "operation_parameters": parameters, "budget_ceiling_usd": 0.0,
+    }
+    plan = build_execution_plan(proposal)
+    proposal_row = (
+        2, "AUTONOMOUS_APPROVED", proposal["operation"], PROJECT_ID,
+        proposal["scope_description"], parameters, Decimal("0.00"),
+        2, plan.sha256, "ceo",
+    )
+
+    class AssignmentDB(ExecutionDB):
+        def execute(self, query, params=None):
+            self.statements.append((query, params))
+            if "SELECT proposal_id,proposal_version,project_id FROM organization_executions" in query:
+                return Cursor((proposal["id"], 2, PROJECT_ID))
+            if "FROM organization_proposals WHERE id=%s FOR UPDATE" in query:
+                return Cursor(proposal_row)
+            if "SELECT state FROM projects" in query:
+                return Cursor(("ACTIVE",))
+            if "FROM organization_executions WHERE id=%s FOR UPDATE" in query:
+                return Cursor((proposal["id"], 2, PROJECT_ID, plan.sha256,
+                               plan.as_dict(), "PLANNED", None))
+            if query.startswith("UPDATE organization_executions SET state="):
+                return Cursor(("exec-assign",))
+            if query.startswith("SELECT project_id,parent_work_id,status,required_competencies"):
+                return Cursor((PROJECT_ID, None, "INBOX", ["python"]))
+            if query.startswith("SELECT 1 FROM work_groups"):
+                return Cursor((1,))
+            if query.startswith("SELECT enabled FROM principal_credentials"):
+                return Cursor((True,))
+            if query.startswith("SELECT capability FROM project_grants"):
+                return Cursor([("work.admit",), ("execution.claim",)])
+            if "FROM organization_profiles" in query and "FOR SHARE" in query:
+                return Cursor((["python", "testing"],))
+            if "FROM execution_queue" in query:
+                return Cursor(None)
+            if query.startswith("SELECT principal_id FROM work_item_assignments"):
+                return Cursor(("agent-old",))
+            if query.startswith("INSERT INTO work_item_assignments"):
+                return Cursor(("agent-target",))
+            if "SELECT a.principal_id,w.project_id FROM work_item_assignments" in query:
+                return Cursor(("agent-target", PROJECT_ID))
+            if query.startswith("UPDATE organization_executions SET result_json="):
+                return Cursor(None)
+            if query.startswith("INSERT INTO organization_execution_events"):
+                return Cursor(None)
+            raise AssertionError(f"unexpected SQL: {query}")
+
+    db = AssignmentDB(None, proposal_row)
+    install_db(monkeypatch, db)
+    grant_calls = []
+    monkeypatch.setattr(
+        api, "require_grant",
+        lambda _db, _principal, _project, capability: grant_calls.append(capability),
+    )
+    monkeypatch.setattr(api, "audit", lambda *_args, **_kwargs: None)
+
+    response = api.execute_organization_execution("exec-assign", principal="agent-pm")
+
+    assert response["state"] == "EXECUTED"
+    assert response["result"] == {
+        "verified": True, "work_id": parameters["work_id"],
+        "previous_assignee_id": "agent-old", "assignee_id": "agent-target",
+        "project_id": PROJECT_ID,
+    }
+    assert grant_calls == ["organization.slot.assign", "work.assign"]
+
+
+def test_assignment_executor_rejects_work_outside_approved_project(monkeypatch):
+    from fastapi import HTTPException
+
+    class ScopeDB:
+        def __init__(self):
+            self.statements = []
+
+        def execute(self, query, params=None):
+            self.statements.append(query)
+            return Cursor(("other-project", "group-parent", "INBOX", ["python"]))
+
+    db = ScopeDB()
+    with pytest.raises(HTTPException, match="outside the approved project scope") as caught:
+        api._assign_group_child_work(
+            "57f2415f-e654-426a-846d-34302a305117",
+            api.WorkAssignmentRequest(principal_id="agent-target"),
+            assigned_by="agent-pm", database=db, expected_project_id=PROJECT_ID,
+        )
+
+    assert caught.value.status_code == 409
+    assert len(db.statements) == 1

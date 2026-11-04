@@ -9,7 +9,7 @@ import os
 import re
 import secrets
 import unicodedata
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -2933,8 +2933,7 @@ def execute_organization_execution(
                 or str(execution[2]) != str(project_id)):
             raise HTTPException(409, "Execution binding changed concurrently")
         (_, _, _, plan_sha256, stored_plan, state, stored_result) = execution
-        require_grant(db, principal, str(project_id),
-                      "organization.squad.create_temporary")
+        require_grant(db, principal, str(project_id), str(proposal[2]))
 
         if state == "EXECUTED":
             return {
@@ -2966,130 +2965,206 @@ def execute_organization_execution(
                 or stored_plan.get("proposal_id") != proposal_id
                 or stored_plan.get("proposal_version") != version):
             raise HTTPException(409, "Execution plan no longer matches the approved proposal")
-        if plan.operation != OrganizationOperation.CREATE_TEMPORARY_SQUAD:
+        if plan.operation not in {
+            OrganizationOperation.CREATE_TEMPORARY_SQUAD,
+            OrganizationOperation.ASSIGN_SLOT,
+        }:
             raise HTTPException(409, "No executor is enabled for this organization operation")
 
-        request_data = plan.operation_parameters["work_group_request"]
-        try:
-            group_request = ConversationWorkGroupRequest.model_validate(request_data)
-        except (TypeError, ValueError) as exc:
-            raise HTTPException(409, "Approved temporary-squad request is invalid") from exc
+        if plan.operation == OrganizationOperation.ASSIGN_SLOT:
+            _transition_organization_execution(
+                db, execution_id, "PLANNED", "AWAITING_AUTHORIZATION", actor,
+                "authorization.recheck_started", {
+                    "plan_sha256": plan.sha256, "proposal_id": proposal_id,
+                    "proposal_version": version,
+                },
+            )
+            _transition_organization_execution(
+                db, execution_id, "AWAITING_AUTHORIZATION", "AUTHORIZED", actor,
+                "authorization.revalidated", {
+                    "plan_sha256": plan.sha256, "proposal_id": proposal_id,
+                    "proposal_version": version, "capability": plan.authority_required,
+                    "project_id": str(project_id), "decision_authority": approved_by,
+                },
+            )
+            _transition_organization_execution(
+                db, execution_id, "AUTHORIZED", "EXECUTING", actor,
+                "execution.started", {"plan_sha256": plan.sha256},
+            )
+            work_id = plan.operation_parameters["work_id"]
+            assignee_id = plan.operation_parameters["assignee_principal_id"]
+            _assignment_result, previous_assignee = _assign_group_child_work(
+                work_id,
+                WorkAssignmentRequest(principal_id=assignee_id),
+                assigned_by=actor,
+                coordinator=principal,
+                database=db,
+                expected_project_id=str(project_id),
+                allow_non_group_work=True,
+                return_previous=True,
+            )
+            actual = db.execute(
+                "SELECT a.principal_id,w.project_id FROM work_item_assignments a "
+                "JOIN work_items w ON w.id=a.work_id AND w.project_id=a.project_id "
+                "WHERE a.work_id=%s FOR SHARE OF a,w",
+                (work_id,),
+            ).fetchone()
+            evidence = {
+                "verified": bool(actual and str(actual[0]) == assignee_id
+                                 and str(actual[1]) == str(project_id)),
+                "work_id": work_id, "previous_assignee_id": previous_assignee,
+                "assignee_id": assignee_id, "project_id": str(project_id),
+            }
+            if not evidence["verified"]:
+                reconcile_pending = True
+                evidence["reason"] = "persisted_assignment_differs_from_approved_request"
+                _transition_organization_execution(
+                    db, execution_id, "EXECUTING", "RECONCILIATION_REQUIRED", actor,
+                    "reconciliation.mismatch", evidence,
+                )
+                db.execute(
+                    "UPDATE organization_executions SET result_json=%s::jsonb "
+                    "WHERE id=%s AND state='RECONCILIATION_REQUIRED'",
+                    (json.dumps(evidence), execution_id),
+                )
+                audit(db, execution_id, "organization.execution_reconciliation_required", {
+                    "actor": actor, "project_id": str(project_id), **evidence,
+                })
+            else:
+                db.execute(
+                    "UPDATE organization_executions SET result_json=%s::jsonb "
+                    "WHERE id=%s AND state='EXECUTING'",
+                    (json.dumps(evidence), execution_id),
+                )
+                _transition_organization_execution(
+                    db, execution_id, "EXECUTING", "EXECUTED", actor,
+                    "execution.reconciled", evidence,
+                )
+                audit(db, execution_id, "organization.execution_verified", {
+                    "actor": actor, "project_id": str(project_id), **evidence,
+                })
+        else:
+            request_data = plan.operation_parameters["work_group_request"]
+            try:
+                group_request = ConversationWorkGroupRequest.model_validate(request_data)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(409, "Approved temporary-squad request is invalid") from exc
 
-        details = {"plan_sha256": plan.sha256, "proposal_id": proposal_id,
-                   "proposal_version": version}
-        _transition_organization_execution(
-            db, execution_id, "PLANNED", "AWAITING_AUTHORIZATION", actor,
-            "authorization.recheck_started", details,
-        )
-        _transition_organization_execution(
-            db, execution_id, "AWAITING_AUTHORIZATION", "AUTHORIZED", actor,
-            "authorization.revalidated", {
-                **details, "capability": plan.authority_required,
-                "project_id": str(project_id), "decision_authority": approved_by,
-            },
-        )
-        _transition_organization_execution(
-            db, execution_id, "AUTHORIZED", "EXECUTING", actor,
-            "execution.started", details,
-        )
-        group_result = _create_conversation_work_group_in_transaction(
-            db,
-            str(project_id),
-            str(plan.operation_parameters["conversation_id"]),
-            group_request,
-            actor=actor,
-            execution_id=execution_id,
-        )
+            details = {"plan_sha256": plan.sha256, "proposal_id": proposal_id,
+                       "proposal_version": version}
+            _transition_organization_execution(
+                db, execution_id, "PLANNED", "AWAITING_AUTHORIZATION", actor,
+                "authorization.recheck_started", details,
+            )
+            _transition_organization_execution(
+                db, execution_id, "AWAITING_AUTHORIZATION", "AUTHORIZED", actor,
+                "authorization.revalidated", {
+                    **details, "capability": plan.authority_required,
+                    "project_id": str(project_id), "decision_authority": approved_by,
+                },
+            )
+            _transition_organization_execution(
+                db, execution_id, "AUTHORIZED", "EXECUTING", actor,
+                "execution.started", details,
+            )
+            group_result = _create_conversation_work_group_in_transaction(
+                db,
+                str(project_id),
+                str(plan.operation_parameters["conversation_id"]),
+                group_request,
+                actor=actor,
+                execution_id=execution_id,
+            )
 
-        expected_children = sorted(
-            (task.title, task.assigned_principal_id, tuple(task.required_competencies))
-            for task in group_request.tasks
-        )
-        actual_children = db.execute(
-            "SELECT title,status,required_competencies,a.principal_id "
-            "FROM work_items w LEFT JOIN work_item_assignments a "
-            "ON a.project_id=w.project_id AND a.work_id=w.id "
-            "WHERE w.project_id=%s AND w.parent_work_id=%s ORDER BY w.id",
-            (project_id, group_result["parent_work_id"]),
-        ).fetchall()
-        actual_signature = sorted(
-            (title, assignee, tuple(competencies or []))
-            for title, status, competencies, assignee in actual_children
-            if status == "INBOX"
-        )
-        group_row = db.execute(
-            "SELECT id,request_sha256 FROM work_groups "
-            "WHERE id=%s AND project_id=%s AND execution_id=%s FOR SHARE",
-            (group_result["id"], project_id, execution_id),
-        ).fetchone()
-        expected_request_sha256 = hashlib.sha256(
-            json.dumps(group_request.model_dump(mode="json"), sort_keys=True,
-                       separators=(",", ":")).encode()
-        ).hexdigest()
-        actual_edges = {
-            (str(row[0]), str(row[1])) for row in db.execute(
-                "SELECT d.work_id,d.depends_on_work_id FROM work_item_dependencies d "
-                "JOIN work_items w ON w.project_id=d.project_id AND w.id=d.work_id "
-                "WHERE d.project_id=%s AND w.parent_work_id=%s",
+            expected_children = sorted(
+                (task.title, task.assigned_principal_id, tuple(task.required_competencies))
+                for task in group_request.tasks
+            )
+            actual_children = db.execute(
+                "SELECT title,status,required_competencies,a.principal_id "
+                "FROM work_items w LEFT JOIN work_item_assignments a "
+                "ON a.project_id=w.project_id AND a.work_id=w.id "
+                "WHERE w.project_id=%s AND w.parent_work_id=%s ORDER BY w.id",
                 (project_id, group_result["parent_work_id"]),
             ).fetchall()
-        }
-        task_ids_by_key = {task["key"]: task["id"] for task in group_result["tasks"]}
-        expected_edges = {
-            (task_ids_by_key[task.key], task_ids_by_key[dependency])
-            for task in group_request.tasks for dependency in task.depends_on
-        }
-        dependency_count = len(actual_edges)
-        expected_dependency_count = len(expected_edges)
-        if (not group_row or group_row[1] != expected_request_sha256
-                or len(actual_children) != len(group_request.tasks)
-                or actual_signature != expected_children
-                or actual_edges != expected_edges):
-            reconcile_pending = True
-            evidence = {
-                "verified": False, "reason": "persisted_group_differs_from_approved_request",
-                "group_id": group_result["id"],
-                "parent_work_id": group_result["parent_work_id"],
-                "child_count": len(actual_children),
-                "expected_child_count": len(group_request.tasks),
-                "dependency_count": dependency_count,
-                "expected_dependency_count": expected_dependency_count,
+            actual_signature = sorted(
+                (title, assignee, tuple(competencies or []))
+                for title, status, competencies, assignee in actual_children
+                if status == "INBOX"
+            )
+            group_row = db.execute(
+                "SELECT id,request_sha256 FROM work_groups "
+                "WHERE id=%s AND project_id=%s AND execution_id=%s FOR SHARE",
+                (group_result["id"], project_id, execution_id),
+            ).fetchone()
+            expected_request_sha256 = hashlib.sha256(
+                json.dumps(group_request.model_dump(mode="json"), sort_keys=True,
+                           separators=(",", ":")).encode()
+            ).hexdigest()
+            actual_edges = {
+                (str(row[0]), str(row[1])) for row in db.execute(
+                    "SELECT d.work_id,d.depends_on_work_id FROM work_item_dependencies d "
+                    "JOIN work_items w ON w.project_id=d.project_id AND w.id=d.work_id "
+                    "WHERE d.project_id=%s AND w.parent_work_id=%s",
+                    (project_id, group_result["parent_work_id"]),
+                ).fetchall()
             }
-            _transition_organization_execution(
-                db, execution_id, "EXECUTING", "RECONCILIATION_REQUIRED", actor,
-                "reconciliation.mismatch", evidence,
-            )
-        else:
-            evidence = {
-                "verified": True, "group_id": str(group_row[0]),
-                "parent_work_id": group_result["parent_work_id"],
-                "child_work_ids": [task["id"] for task in group_result["tasks"]],
-                "request_sha256": group_row[1],
-                "child_count": len(actual_children),
-                "dependency_count": dependency_count,
+            task_ids_by_key = {task["key"]: task["id"] for task in group_result["tasks"]}
+            expected_edges = {
+                (task_ids_by_key[task.key], task_ids_by_key[dependency])
+                for task in group_request.tasks for dependency in task.depends_on
             }
-            db.execute(
-                "UPDATE organization_executions SET result_json=%s::jsonb "
-                "WHERE id=%s AND state='EXECUTING'",
-                (json.dumps(evidence), execution_id),
-            )
-            _transition_organization_execution(
-                db, execution_id, "EXECUTING", "EXECUTED", actor,
-                "execution.reconciled", evidence,
-            )
-            audit(db, execution_id, "organization.execution_verified", {
-                "actor": actor, "project_id": str(project_id), **evidence,
-            })
+            dependency_count = len(actual_edges)
+            expected_dependency_count = len(expected_edges)
+            if (not group_row or group_row[1] != expected_request_sha256
+                    or len(actual_children) != len(group_request.tasks)
+                    or actual_signature != expected_children
+                    or actual_edges != expected_edges):
+                reconcile_pending = True
+                evidence = {
+                    "verified": False, "reason": "persisted_group_differs_from_approved_request",
+                    "group_id": group_result["id"],
+                    "parent_work_id": group_result["parent_work_id"],
+                    "child_count": len(actual_children),
+                    "expected_child_count": len(group_request.tasks),
+                    "dependency_count": dependency_count,
+                    "expected_dependency_count": expected_dependency_count,
+                }
+                _transition_organization_execution(
+                    db, execution_id, "EXECUTING", "RECONCILIATION_REQUIRED", actor,
+                    "reconciliation.mismatch", evidence,
+                )
+            else:
+                evidence = {
+                    "verified": True, "group_id": str(group_row[0]),
+                    "parent_work_id": group_result["parent_work_id"],
+                    "child_work_ids": [task["id"] for task in group_result["tasks"]],
+                    "request_sha256": group_row[1],
+                    "child_count": len(actual_children),
+                    "dependency_count": dependency_count,
+                }
+                db.execute(
+                    "UPDATE organization_executions SET result_json=%s::jsonb "
+                    "WHERE id=%s AND state='EXECUTING'",
+                    (json.dumps(evidence), execution_id),
+                )
+                _transition_organization_execution(
+                    db, execution_id, "EXECUTING", "EXECUTED", actor,
+                    "execution.reconciled", evidence,
+                )
+                audit(db, execution_id, "organization.execution_verified", {
+                    "actor": actor, "project_id": str(project_id), **evidence,
+                })
 
-        if reconcile_pending:
-            db.execute(
-                "UPDATE organization_executions SET result_json=%s::jsonb "
-                "WHERE id=%s AND state='RECONCILIATION_REQUIRED'",
-                (json.dumps(evidence), execution_id),
-            )
-            audit(db, execution_id, "organization.execution_reconciliation_required", {
-                "actor": actor, "project_id": str(project_id), **evidence,
-            })
+            if reconcile_pending:
+                db.execute(
+                    "UPDATE organization_executions SET result_json=%s::jsonb "
+                    "WHERE id=%s AND state='RECONCILIATION_REQUIRED'",
+                    (json.dumps(evidence), execution_id),
+                )
+                audit(db, execution_id, "organization.execution_reconciliation_required", {
+                    "actor": actor, "project_id": str(project_id), **evidence,
+                })
 
     if reconcile_pending:
         raise HTTPException(409, "Execution effects persisted but reconciliation is required")
@@ -4527,8 +4602,13 @@ def _assign_group_child_work(
     *,
     assigned_by: str,
     coordinator: AuthenticatedPrincipal | None = None,
+    database: Any | None = None,
+    expected_project_id: str | None = None,
+    allow_non_group_work: bool = False,
+    return_previous: bool = False,
 ):
-    with tx() as db:
+    transaction = tx() if database is None else nullcontext(database)
+    with transaction as db:
         work = db.execute(
             "SELECT project_id,parent_work_id,status,required_competencies "
             "FROM work_items WHERE id=%s FOR UPDATE",
@@ -4537,13 +4617,15 @@ def _assign_group_child_work(
         if not work:
             raise HTTPException(404, "Work not found")
         project_id, parent_work_id, status, required_competencies = work
+        if expected_project_id is not None and str(project_id) != expected_project_id:
+            raise HTTPException(409, "Work item is outside the approved project scope")
         if coordinator is not None:
             require_grant(db, coordinator, str(project_id), "work.assign")
             if payload.principal_id == str(coordinator):
                 raise HTTPException(409, "A coordinator cannot assign group work to themselves")
-        if parent_work_id is None or not db.execute(
+        if not allow_non_group_work and (parent_work_id is None or not db.execute(
             "SELECT 1 FROM work_groups WHERE parent_work_id=%s", (parent_work_id,),
-        ).fetchone():
+        ).fetchone()):
             raise HTTPException(409, "Only persistent work-group children can be assigned")
         if status in {"IN_REVIEW", "VERIFIED", "DONE"}:
             raise HTTPException(409, "Reviewed or completed work cannot be reassigned")
@@ -4602,8 +4684,9 @@ def _assign_group_child_work(
             "previous_principal_id": previous[0] if previous else None,
             "assigned_by": assigned_by, "grants_created": False,
         })
-    return {"work_id": work_id, "principal_id": payload.principal_id,
-            "assigned_by": assigned_by, "grants_created": False}
+    result = {"work_id": work_id, "principal_id": payload.principal_id,
+              "assigned_by": assigned_by, "grants_created": False}
+    return (result, previous[0] if previous else None) if return_previous else result
 
 
 @app.post("/v1/projects/{project_id}/conversations", status_code=201)

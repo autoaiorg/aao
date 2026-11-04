@@ -17,6 +17,8 @@ import {
   computeArchitecturalEnvelope,
   computeArchitecturalOutline,
   OFFICE_ENVELOPE_EXPANSION_METERS,
+  OFFICE_CHAIR_ROOT_Y,
+  OFFICE_CHAIR_SEAT_SURFACE_Y,
   createProceduralIdeTexture,
   type ThreeSceneCallbacks,
 } from '../features/office/engine/ThreeOfficeScene';
@@ -24,6 +26,12 @@ import { DEMO_AGENTS } from '../data/adapters/demo/fixtures';
 import { OFFICE_ROOMS } from '../features/office/types';
 
 describe('PR C: Office Furniture, Procedural IDE Textures, Biophilia & Lighting', () => {
+  it('keeps workstation chair seat at ergonomic height', () => {
+    expect(OFFICE_CHAIR_ROOT_Y).toBe(0.18);
+    expect(OFFICE_CHAIR_SEAT_SURFACE_Y).toBeCloseTo(0.465);
+    expect(OFFICE_CHAIR_SEAT_SURFACE_Y).toBeLessThan(0.5);
+  });
+
   it('fits the architectural shell to occupied neighborhoods with a bounded reserve', () => {
     const empty = computeArchitecturalEnvelope([]);
     expect(empty).toEqual({ halfWidth: 9, halfDepth: 8 });

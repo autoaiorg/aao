@@ -334,7 +334,7 @@ describe('Stylized Humanoid Worker Avatar Renderer (PR A)', () => {
       // Legs horizontal in chair
       expect(parts.leftLeg.rotation.x).toBeCloseTo(-Math.PI / 2.3, 1);
       expect(parts.rightLeg.rotation.x).toBeCloseTo(-Math.PI / 2.3, 1);
-      expect(parts.characterRig.position.y).toBeCloseTo(0.24);
+      expect(parts.characterRig.position.y).toBeCloseTo(0.07);
       expect(parts.coffeeCup.visible).toBe(false);
       // Speech bubble hidden
       expect(parts.speechBubble.visible).toBe(false);

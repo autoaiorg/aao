@@ -953,9 +953,9 @@ export function stepAvatarKinematics(
 
   if (kind === 'TYPING_DEV' || kind === 'TYPING_AUDIT' || kind === 'TYPING_DOCS') {
     // Natural seated typing kinematics
-    // Chair seat is at y=0.62; lift the hip pivot onto the seat rather than
-    // leaving the pelvis at standing height (which reads as perched/floating).
-    parts.characterRig.position.y = 0.24;
+    // Chair seat is at y=0.44; align the pelvis and hip pivots with the seat
+    // while allowing the lower legs to reach the floor.
+    parts.characterRig.position.y = 0.07;
 
     // Thighs horizontal in chair
     if (parts.leftLeg) parts.leftLeg.rotation.x = -Math.PI / 2.3;
@@ -1050,7 +1050,7 @@ export function stepAvatarKinematics(
     if (parts.speechBubble) parts.speechBubble.visible = false;
   } else if (kind === 'IDLE_DESK') {
     // Relaxed seated posture
-    parts.characterRig.position.y = 0.24;
+    parts.characterRig.position.y = 0.07;
     if (parts.coffeeCup) parts.coffeeCup.visible = false;
 
     if (parts.leftLeg) parts.leftLeg.rotation.x = -Math.PI / 2.3;

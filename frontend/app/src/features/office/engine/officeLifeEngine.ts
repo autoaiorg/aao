@@ -971,7 +971,7 @@ export function computeAdaptiveLabelStates(params: {
   // camera plane before lifting them above heads and monitors.
   const minSepX = 1.85;
   const minSepY = 0.56;
-  const maxVisibleAgentLabels = lodTier === 'overview' ? 3 : lodTier === 'department' ? 8 : 3;
+  const maxVisibleAgentLabels = lodTier === 'overview' ? 3 : lodTier === 'department' ? 8 : 1;
 
   let visibleAgentCount = 0;
   let suppressedOverlapCount = 0;
@@ -1068,9 +1068,9 @@ export function computeAdaptiveLabelStates(params: {
     visibleAgentCount += 1;
     const scale =
       cand.priority >= 1000
-        ? lodTier === 'agent' ? 0.82 : 1.12
+        ? lodTier === 'agent' ? 0.48 : 1.12
         : lodTier === 'agent'
-        ? 1.02
+        ? 0.48
         : lodTier === 'department'
         ? 0.92
         : 0.88;

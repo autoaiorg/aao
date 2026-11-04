@@ -887,8 +887,8 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
       Array.from(departmentLabels.departments.values()).filter((state) => state.visible).length
     );
 
-    // 2. In AGENT mode (distance 9.5) with identical world coords: labels offset
-    // laterally in screen space instead of stacking over heads/monitors.
+    // 2. In AGENT mode prioritize only the selected agent so no label cluster
+    // obscures the person being inspected.
     const closeLabels = computeAdaptiveLabelStates({
       rooms: campus.rooms,
       agents: sevenUnassigned,
@@ -906,10 +906,11 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
     const visibleStates = states.filter((s) => s.visible);
     const suppressedStates = states.filter((s) => s.suppressedByOverlap);
     expect(visibleStates.length).toBeGreaterThan(0);
-    expect(visibleStates.length).toBeLessThanOrEqual(3);
+    expect(visibleStates.length).toBeLessThanOrEqual(1);
     expect(suppressedStates.length).toBeLessThanOrEqual(7);
     expect(visibleStates.some((state) => state.agentId === 'aao-selfdev-worker-0')).toBe(true);
-    expect(visibleStates.some((state) => Math.abs(state.offsetX) + Math.abs(state.offsetZ) > 0)).toBe(true);
+    expect(visibleStates[0].offsetX).toBe(0);
+    expect(visibleStates[0].offsetZ).toBe(0);
     expect(visibleStates.every((state) => Number.isFinite(state.offsetX) && Number.isFinite(state.offsetZ))).toBe(true);
   });
 

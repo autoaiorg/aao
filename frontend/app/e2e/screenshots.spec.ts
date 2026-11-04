@@ -5,7 +5,10 @@ import fs from 'fs';
 test('Capture real screenshots of F4.7 and F4.8 Office', async ({ page }) => {
   // This capture exercises WebGL scene initialization and post-selection camera
   // interaction; its real-browser cost exceeds Playwright's 30s default here.
-  test.setTimeout(60_000);
+  test.setTimeout(90_000);
+  // Match a usable desktop viewport so the actual WebGL area, not just the HUD,
+  // occupies a meaningful portion of the evidence frame.
+  await page.setViewportSize({ width: 1600, height: 1000 });
   const screenshotsDir = path.resolve(process.cwd(), 'docs/screenshots');
   const v42EvidenceDir = path.join(screenshotsDir, 'v42-comparison');
   if (!fs.existsSync(screenshotsDir)) {
@@ -71,7 +74,10 @@ test('Capture real screenshots of F4.7 and F4.8 Office', async ({ page }) => {
     // Capture a genuine browser close-up of the selected agent, not just the
     // surrounding department. Keep this separate so posture and label
     // occlusion can be reviewed at the scale where they are easiest to spot.
-    for (let step = 0; step < 7; step += 1) await zoomIn.click({ force: true });
+    for (let step = 0; step < 16; step += 1) {
+      if (!(await zoomIn.isVisible()) || !(await zoomIn.isEnabled())) break;
+      await zoomIn.click({ force: true, timeout: 2_000 });
+    }
     await page.waitForTimeout(900);
     await page.screenshot({
       path: path.join(v42EvidenceDir, 'office-agent-working-close.png'),

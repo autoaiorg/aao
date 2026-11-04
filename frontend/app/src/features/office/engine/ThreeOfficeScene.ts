@@ -30,6 +30,8 @@ export type { AvatarSemanticParts };
 export { computeArchitecturalOutline } from '../liveOfficeLayout';
 
 export const OFFICE_ENVELOPE_EXPANSION_METERS = 2.5;
+export const OFFICE_CHAIR_ROOT_Y = 0.18;
+export const OFFICE_CHAIR_SEAT_SURFACE_Y = OFFICE_CHAIR_ROOT_Y + 0.26 + 0.025;
 type OutlinePoint = { x: number; z: number };
 
 /** Fit the open shell to used neighborhoods plus a small configurable reserve. */
@@ -1065,7 +1067,8 @@ export class ThreeOfficeScene {
 
       // Ergonomic Chair at (slot.chairLocalX, slot.chairLocalZ)
       const chairGroup = this.buildErgonomicChair(chairAccentMat);
-      chairGroup.position.set(slot.chairLocalX, 0.36, slot.chairLocalZ);
+      // Keep the seat surface at ergonomic height (~0.44 m), not 0.62 m.
+      chairGroup.position.set(slot.chairLocalX, OFFICE_CHAIR_ROOT_Y, slot.chairLocalZ);
       chairGroup.rotation.y = slot.facingAngle;
       group.add(chairGroup);
     }

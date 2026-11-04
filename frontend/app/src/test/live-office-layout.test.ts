@@ -4,6 +4,7 @@ import {
   buildCampusNavGraph,
   buildCorporateCampusLayout,
   buildLiveOfficeRooms,
+  computeArchitecturalOutline,
   resolveLiveOrganizationAttribution,
 } from '../features/office/liveOfficeLayout';
 import { buildDepartmentInteriorLayout } from '../features/office/engine/officeLifeEngine';
@@ -65,6 +66,22 @@ describe('buildLiveOfficeRooms', () => {
 });
 
 describe('capacity-aware spatial layout', () => {
+  it('places the navigation entry at the rendered envelope facade opening', () => {
+    const rooms = buildCorporateCampusLayout([
+      unit('unit-a', 'A'), unit('unit-b', 'B'), unit('unit-c', 'C'),
+    ], []).rooms;
+    const outline = computeArchitecturalOutline(rooms);
+    const edge = [...outline].map((start, index) => ({ start, end: outline[(index + 1) % outline.length] }))
+      .sort((a, b) => ((b.start.z + b.end.z) / 2) - ((a.start.z + a.end.z) / 2))[0];
+    const dx = edge.end.x - edge.start.x;
+    const dz = edge.end.z - edge.start.z;
+    const length = Math.hypot(dx, dz);
+    const entry = buildCampusNavGraph(rooms).nodes.get('main-entry')!;
+
+    expect(entry.x).toBeCloseTo((edge.start.x + edge.end.x) / 2 + dz / length * 2.4);
+    expect(entry.z).toBeCloseTo((edge.start.z + edge.end.z) / 2 - dx / length * 2.4);
+  });
+
   it('does not materialize desks from declared headcount without assigned identities', () => {
     const planned = { ...unit('unit-planned', 'PLAN'), standingCount: 12, ephemeralCount: 3 };
     const { rooms, normalizedAgents } = buildCorporateCampusLayout([planned], [], { isDemo: false });

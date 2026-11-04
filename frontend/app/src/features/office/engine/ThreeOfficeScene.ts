@@ -9,7 +9,7 @@ import {
   type OfficeRoomConfig,
   type OfficeScenePerfMetrics,
 } from '../types';
-import { buildCampusNavGraph, computeCampusBounds } from '../liveOfficeLayout';
+import { buildCampusNavGraph, computeArchitecturalOutline, computeCampusBounds } from '../liveOfficeLayout';
 import {
   AvatarResourcePool,
   buildAgentAvatar as buildHumanoidAgentAvatar,
@@ -27,8 +27,10 @@ import {
 } from './officeLifeEngine';
 
 export type { AvatarSemanticParts };
+export { computeArchitecturalOutline } from '../liveOfficeLayout';
 
 export const OFFICE_ENVELOPE_EXPANSION_METERS = 2.5;
+type OutlinePoint = { x: number; z: number };
 
 /** Fit the open shell to used neighborhoods plus a small configurable reserve. */
 export function computeArchitecturalEnvelope(rooms: readonly OfficeRoomConfig[]): { halfWidth: number; halfDepth: number } {
@@ -36,43 +38,6 @@ export function computeArchitecturalEnvelope(rooms: readonly OfficeRoomConfig[])
     halfWidth: Math.max(9, ...rooms.map((room) => Math.abs(room.x) + room.width / 2 + OFFICE_ENVELOPE_EXPANSION_METERS)),
     halfDepth: Math.max(8, ...rooms.map((room) => Math.abs(room.z) + room.depth / 2 + OFFICE_ENVELOPE_EXPANSION_METERS)),
   };
-}
-
-type OutlinePoint = { x: number; z: number };
-
-/** A stable convex perimeter around occupied neighborhoods, rather than an empty rectangle. */
-export function computeArchitecturalOutline(
-  rooms: readonly OfficeRoomConfig[],
-  reserve = OFFICE_ENVELOPE_EXPANSION_METERS,
-): OutlinePoint[] {
-  const candidates = rooms.length
-    ? rooms.flatMap((room) => [
-        { x: room.x - room.width / 2 - reserve, z: room.z - room.depth / 2 - reserve },
-        { x: room.x + room.width / 2 + reserve, z: room.z - room.depth / 2 - reserve },
-        { x: room.x + room.width / 2 + reserve, z: room.z + room.depth / 2 + reserve },
-        { x: room.x - room.width / 2 - reserve, z: room.z + room.depth / 2 + reserve },
-      ])
-    : (() => {
-        const { halfWidth, halfDepth } = computeArchitecturalEnvelope([]);
-        return [
-          { x: -halfWidth, z: -halfDepth }, { x: halfWidth, z: -halfDepth },
-          { x: halfWidth, z: halfDepth }, { x: -halfWidth, z: halfDepth },
-        ];
-      })();
-  const sorted = [...candidates].sort((a, b) => a.x - b.x || a.z - b.z);
-  const cross = (o: OutlinePoint, a: OutlinePoint, b: OutlinePoint) =>
-    (a.x - o.x) * (b.z - o.z) - (a.z - o.z) * (b.x - o.x);
-  const lower: OutlinePoint[] = [];
-  for (const point of sorted) {
-    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], point) <= 0) lower.pop();
-    lower.push(point);
-  }
-  const upper: OutlinePoint[] = [];
-  for (const point of [...sorted].reverse()) {
-    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], point) <= 0) upper.pop();
-    upper.push(point);
-  }
-  return [...lower.slice(0, -1), ...upper.slice(0, -1)];
 }
 
 export interface ThreeSceneCallbacks {

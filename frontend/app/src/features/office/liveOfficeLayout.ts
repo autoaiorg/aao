@@ -20,6 +20,37 @@ const UNIT_COLORS = [
 export const UNASSIGNED_UNIT_ID = 'unit-unassigned';
 export const UNASSIGNED_HOLDING_COLORS = ['#334155', '#94a3b8'] as const;
 
+export interface ArchitecturalOutlinePoint { x: number; z: number }
+
+/** Shared deterministic envelope used by both rendered facade and circulation entry. */
+export function computeArchitecturalOutline(
+  rooms: readonly Pick<OfficeRoomConfig, 'x' | 'z' | 'width' | 'depth'>[],
+  reserve = 2.5,
+): ArchitecturalOutlinePoint[] {
+  const candidates = rooms.length
+    ? rooms.flatMap((room) => [
+        { x: room.x - room.width / 2 - reserve, z: room.z - room.depth / 2 - reserve },
+        { x: room.x + room.width / 2 + reserve, z: room.z - room.depth / 2 - reserve },
+        { x: room.x + room.width / 2 + reserve, z: room.z + room.depth / 2 + reserve },
+        { x: room.x - room.width / 2 - reserve, z: room.z + room.depth / 2 + reserve },
+      ])
+    : [{ x: -9, z: -8 }, { x: 9, z: -8 }, { x: 9, z: 8 }, { x: -9, z: 8 }];
+  const sorted = [...candidates].sort((a, b) => a.x - b.x || a.z - b.z);
+  const cross = (o: ArchitecturalOutlinePoint, a: ArchitecturalOutlinePoint, b: ArchitecturalOutlinePoint) =>
+    (a.x - o.x) * (b.z - o.z) - (a.z - o.z) * (b.x - o.x);
+  const lower: ArchitecturalOutlinePoint[] = [];
+  for (const point of sorted) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], point) <= 0) lower.pop();
+    lower.push(point);
+  }
+  const upper: ArchitecturalOutlinePoint[] = [];
+  for (const point of [...sorted].reverse()) {
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], point) <= 0) upper.pop();
+    upper.push(point);
+  }
+  return [...lower.slice(0, -1), ...upper.slice(0, -1)];
+}
+
 /**
  * Computes architectural features (doorway portal and glass wall segments with doorway cutouts)
  * for a room box based on its position relative to the central atrium.
@@ -888,8 +919,20 @@ export function buildCampusNavGraph(rooms: readonly OfficeRoomConfig[]): CampusN
     adjacency.get(b)?.push(a);
   };
 
-  const bounds = computeCampusBounds(rooms);
-  const entry = { x: bounds.centerX, z: bounds.maxZ + 2.4 };
+  const outline = computeArchitecturalOutline(rooms);
+  const entryEdge = [...outline].map((start, index) => ({
+    start,
+    end: outline[(index + 1) % outline.length],
+  })).sort((a, b) => ((b.start.z + b.end.z) / 2) - ((a.start.z + a.end.z) / 2))[0];
+  const edgeDx = entryEdge.end.x - entryEdge.start.x;
+  const edgeDz = entryEdge.end.z - entryEdge.start.z;
+  const edgeLength = Math.hypot(edgeDx, edgeDz) || 1;
+  // The convex outline is consistently wound; the right-hand edge normal points
+  // outward. Keep the route target in front of the very same south facade edge.
+  const entry = {
+    x: (entryEdge.start.x + entryEdge.end.x) / 2 + (edgeDz / edgeLength) * 2.4,
+    z: (entryEdge.start.z + entryEdge.end.z) / 2 - (edgeDx / edgeLength) * 2.4,
+  };
   addNode({ id: 'main-entry', kind: 'main-entry', ...entry });
 
   // Connect each neighborhood to the entry with an obstacle-aware path.

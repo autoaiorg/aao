@@ -79,16 +79,38 @@ def test_api_and_recovery_use_distinct_database_roles_and_secrets():
     assert "principal_credentials" in api_grants
 
 
-def test_api_runtime_can_resolve_but_not_manage_workload_identity_bindings():
+def test_api_runtime_has_narrow_cycle_binding_and_intent_privileges():
     grants = (BOOTSTRAP / "apply_api_grants.sql").read_text()
-    migration = (REPO_ROOT / "db/postgres/044_workload_identity_bindings.sql").read_text()
+    migration = (REPO_ROOT / "db/postgres/046_selfdev_cycle_mtls_intents.sql").read_text()
 
-    assert "GRANT SELECT ON TABLE workload_identity_bindings TO aao_runtime" in grants
-    assert "GRANT INSERT" not in grants.split(
-        "GRANT SELECT ON TABLE workload_identity_bindings TO aao_runtime", 1
-    )[0].split("workload_identity_bindings", 1)[-1]
-    assert "REVOKE ALL ON TABLE workload_identity_bindings FROM PUBLIC" in migration
-    assert "certificate_sha256 text PRIMARY KEY" in migration
+    assert (
+        "GRANT SELECT ON TABLE workload_identity_bindings, selfdev_cycle_mtls_intents TO aao_runtime"
+        in grants
+    )
+    # Bootstrap grants read-only table access and only bounded functions;
+    # it must not grant direct table mutation or completion to the API runtime.
+    assert "INSERT, UPDATE ON TABLE workload_identity_bindings" not in grants
+    assert "UPDATE (state, completed_at, revoked_at) ON TABLE selfdev_cycle_mtls_intents" not in grants
+    assert "GRANT EXECUTE ON FUNCTION create_selfdev_cycle_mtls_intent" in grants
+    assert "GRANT EXECUTE ON FUNCTION expire_selfdev_cycle_mtls_intent" in grants
+    assert "GRANT EXECUTE ON FUNCTION revoke_selfdev_cycle_mtls_intent" in grants
+    assert "complete_selfdev_cycle_mtls_binding(uuid,text,text) TO aao_runtime" not in grants
+    assert (
+        "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE workload_identity_bindings FROM PUBLIC"
+        in migration
+    )
+    assert "rolname='aao_runtime'" in migration
+    assert (
+        "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE workload_identity_bindings FROM aao_runtime"
+        in migration
+    )
+    assert (
+        "GRANT EXECUTE ON FUNCTION complete_selfdev_cycle_mtls_binding(uuid,text,text) TO aao_runtime"
+        not in migration
+    )
+    assert "principal_id text NOT NULL UNIQUE" in migration
+    assert "principal does not match cycle role" in migration
+    assert "VALUES ('046_selfdev_cycle_mtls_intents')" in migration
 
 
 def test_api_runtime_has_minimal_organization_execution_journal_grants():

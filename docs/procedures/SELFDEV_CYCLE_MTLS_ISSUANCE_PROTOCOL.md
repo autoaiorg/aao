@@ -94,27 +94,40 @@ contra PostgreSQL.
 - Revoke debe deshabilitar principal y binding dentro de la misma transacción
   que invalida el ciclo; repetición es no-op seguro. Certificados vencidos o
   revocados no pueden revivir por reintento.
-- No hay fallback bearer en producción. Hasta que exista el adaptador SQL, el
-  firmante/socket revisado, y pruebas de integración/disposable host, el endpoint
-  de ciclo responde 503 en producción.
+- No hay fallback bearer en producción. La integración de API con el repositorio
+  crea únicamente identidades deshabilitadas e intents pendientes; la respuesta
+  contiene metadatos e IDs de intent, nunca tokens, CSR ni certificados. La ruta
+  no crea bindings de host ni perfiles, y esos principales no pueden ejecutar
+  trabajo. Revocación invalida intents, bindings y credenciales dentro de la
+  transacción de ciclo.
+- Esto no equivale a emisión mTLS utilizable: sin firmante/socket y verificador
+  independientes, el intent queda pendiente y la identidad no se activa. La
+  reconciliación y activación en producción siguen bloqueadas; no se despliega
+  ni se decide custodia aquí.
 
 ## Decisiones y trabajo pendiente
 
 1. **CEO/host administrator:** elegir custodia real (servicio dedicado root o
    mecanismo hardware) y custodio/rotación de la clave CA. No se toma aquí.
-2. **API/DB owner:** migración de intenciones tipadas, estados y permisos
-   mínimos; ciclo no ejecutable hasta completar binding; revocación y retención
-   idempotentes bajo concurrencia.
+2. **API/DB owner:** migration 046 and `PostgresCycleIntentRepository` persist
+   intents and implement binding, expiry and revocation with bounded runtime
+   permissions. API route wiring is in a separate draft PR and needs combined
+   review against the corrected #397 head. It keeps production principals
+   disabled and revocation transactionally invalidates their intents. This
+   does not satisfy signer/verifier or host-custody gates and does not activate
+   production cycles.
 3. **Host owner:** ACL socket para API y cada UID workload, store de certificados
    públicos, entrega privada de key/cert por `LoadCredential=` y recuperación
    de crash. Nada desplegado.
 4. **GOV-REV-001:** auditoría independiente del protocolo, signer, esquema,
-   reconciliador y suites adversariales antes de merge/activación.
+   repositorio, reconciliador y suites adversariales antes de merge/activación.
 
 ## Evidencia de este PR
 
 Los tests del reconciliador usan dobles en memoria; no crean CA ni certificados
-reales. Demuestran el orden verify-before-bind, redacción de fallos, límites de
-entrada e idempotencia de replay en el adaptador. No prueban PostgreSQL,
-concurrencia real, socket, custodia CA, TLS en producción ni comportamiento del
-host; el test de atomicidad usa un fake que modela un único registro persistido.
+reales. La integración PostgreSQL del repositorio requiere
+`AAO_TEST_POSTGRES_URL` y `AAO_TEST_DB_DISPOSABLE=yes`; comprueba idempotencia
+concurrente de creación/completado, expiración y revocación contra una base
+explícitamente desechable. No prueba socket, custodia CA, TLS en producción ni
+comportamiento del host. La integración del firmante y la activación siguen
+fuera de alcance.

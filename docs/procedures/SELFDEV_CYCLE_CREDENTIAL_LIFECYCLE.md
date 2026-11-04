@@ -231,13 +231,7 @@ que no se revoca nada.
   runner reintenta antes de que caduque N:
   `next_attempt_at = ahora + min(1 h, max(5 min, restante_N − margen))`, con
   `margen = DRAIN_CAP + CLOCK_SKEW + TIMER_INTERVAL + TIMER_ACCURACY`
-  (35 + 1 + 5 + 0,5 = 41,5 min: drenaje de N, desfase de reloj, y el tick del
-  timer, que actúa sobre `next_attempt_at` hasta un intervalo
-  (`OnUnitActiveSec=5min`) más `AccuracySec=30s` después). Si el 429 llega con
-  ≥ 46,5 min de N, el primer reintento ocurre con ≥ 36 min de N, más que el
-  lease máximo de 30 min; los reintentos posteriores (suelo de 5 min) pueden
-  ocurrir con menos. Un test exige
-  que esas dos constantes coincidan con la unidad del timer. Si N ya caducó (o no hay N), queda en
+  (41,5 min: drenaje de N, desfase de reloj y tick del timer). Si N ya caducó (o no hay N), queda en
   `FAILED_EXPIRED` y reintenta en cada tick de 5 min: cada 429 no emite nada y
   el primer hueco libre se usa. Mientras espera, cada tick sale con código 1
   (alerta) y no hace ningún POST.

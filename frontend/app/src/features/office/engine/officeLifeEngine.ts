@@ -766,6 +766,8 @@ export interface AdaptiveAgentLabelState {
   priority: number;
   scale: number;
   yOffset: number;
+  offsetX: number;
+  offsetZ: number;
   suppressedByOverlap: boolean;
   provenanceCode: 'LIVE' | 'DEMO' | 'AMBIENT' | 'UNKNOWN';
 }
@@ -945,8 +947,11 @@ export function computeAdaptiveLabelStates(params: {
   });
 
   const acceptedBoxes: Array<{ screenX: number; screenY: number }> = [];
-  const minSepX = lodTier === 'agent' ? 1.05 : 1.25;
-  const minSepY = 0.34;
+  // A label sprite is roughly 1.6 world units wide. Give each accepted label
+  // at least its own footprint, then shift colliding labels sideways in the
+  // camera plane before lifting them above heads and monitors.
+  const minSepX = 1.85;
+  const minSepY = 0.56;
   const maxVisibleAgentLabels = lodTier === 'overview' ? 3 : lodTier === 'department' ? 8 : 12;
 
   let visibleAgentCount = 0;
@@ -962,6 +967,8 @@ export function computeAdaptiveLabelStates(params: {
         priority: cand.priority,
         scale: 0.85,
         yOffset: 1.24,
+        offsetX: 0,
+        offsetZ: 0,
         suppressedByOverlap: false,
         provenanceCode: cand.provenanceCode,
       });
@@ -977,6 +984,8 @@ export function computeAdaptiveLabelStates(params: {
         priority: cand.priority,
         scale: 0.85,
         yOffset: 1.24,
+        offsetX: 0,
+        offsetZ: 0,
         suppressedByOverlap: true,
         provenanceCode: cand.provenanceCode,
       });
@@ -984,6 +993,8 @@ export function computeAdaptiveLabelStates(params: {
     }
 
     let baseWy = 1.24;
+    let offsetX = 0;
+    let offsetZ = 0;
     let proj = projectToScreenPlane(cand.pos.x, cand.pos.z, baseWy);
     const collides = (sx: number, sy: number) =>
       acceptedBoxes.some(
@@ -992,22 +1003,28 @@ export function computeAdaptiveLabelStates(params: {
 
     let hasOverlap = collides(proj.screenX, proj.screenY);
     if (hasOverlap) {
-      // Try vertical nudge Tier 1 (+0.38)
-      const nudgedWy1 = 1.62;
-      const proj1 = projectToScreenPlane(cand.pos.x, cand.pos.z, nudgedWy1);
-      if (!collides(proj1.screenX, proj1.screenY)) {
-        baseWy = nudgedWy1;
-        proj = proj1;
-        hasOverlap = false;
-      } else {
-        // Try vertical nudge Tier 2 (+0.74)
-        const nudgedWy2 = 1.98;
-        const proj2 = projectToScreenPlane(cand.pos.x, cand.pos.z, nudgedWy2);
-        if (!collides(proj2.screenX, proj2.screenY)) {
-          baseWy = nudgedWy2;
-          proj = proj2;
+      const lateralOffsets = [0, -1.9, 1.9, -3.8, 3.8, -5.7, 5.7];
+      const verticalOffsets = [1.24, 1.62, 1.98];
+      for (const yOffset of verticalOffsets) {
+        let placed = false;
+        for (const screenOffset of lateralOffsets) {
+          const candidateX = screenOffset * cosA;
+          const candidateZ = -screenOffset * sinA;
+          const candidateProjection = projectToScreenPlane(
+            cand.pos.x + candidateX,
+            cand.pos.z + candidateZ,
+            yOffset,
+          );
+          if (collides(candidateProjection.screenX, candidateProjection.screenY)) continue;
+          baseWy = yOffset;
+          offsetX = candidateX;
+          offsetZ = candidateZ;
+          proj = candidateProjection;
           hasOverlap = false;
+          placed = true;
+          break;
         }
+        if (placed) break;
       }
     }
 
@@ -1020,6 +1037,8 @@ export function computeAdaptiveLabelStates(params: {
         priority: cand.priority,
         scale: 0.85,
         yOffset: 1.24,
+        offsetX: 0,
+        offsetZ: 0,
         suppressedByOverlap: true,
         provenanceCode: cand.provenanceCode,
       });
@@ -1044,6 +1063,8 @@ export function computeAdaptiveLabelStates(params: {
       priority: cand.priority,
       scale,
       yOffset: baseWy,
+      offsetX,
+      offsetZ,
       suppressedByOverlap: false,
       provenanceCode: cand.provenanceCode,
     });

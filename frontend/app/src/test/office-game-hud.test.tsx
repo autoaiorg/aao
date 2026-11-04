@@ -887,7 +887,8 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
       Array.from(departmentLabels.departments.values()).filter((state) => state.visible).length
     );
 
-    // 2. In AGENT mode (distance 9.5) with identical world coords: de-overlapping nudges yOffset and suppresses excess
+    // 2. In AGENT mode (distance 9.5) with identical world coords: labels offset
+    // laterally in screen space instead of stacking over heads/monitors.
     const closeLabels = computeAdaptiveLabelStates({
       rooms: campus.rooms,
       agents: sevenUnassigned,
@@ -903,11 +904,11 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
     const states = Array.from(closeLabels.agents.values());
     const visibleStates = states.filter((s) => s.visible);
     const suppressedStates = states.filter((s) => s.suppressedByOverlap);
-    // At exact screen-space collision, 3 vertical offset tiers fit (1.24, 1.62, 1.98) and the rest are suppressed
-    expect(visibleStates.length).toBe(3);
-    expect(suppressedStates.length).toBe(4);
-    const uniqueYOffsets = new Set(visibleStates.map((s) => s.yOffset));
-    expect(uniqueYOffsets.size).toBe(3);
+    expect(visibleStates.length).toBeGreaterThan(3);
+    expect(visibleStates.length + suppressedStates.length).toBe(7);
+    expect(visibleStates.some((state) => state.agentId === 'aao-selfdev-worker-0')).toBe(true);
+    expect(visibleStates.some((state) => Math.abs(state.offsetX) + Math.abs(state.offsetZ) > 0)).toBe(true);
+    expect(visibleStates.every((state) => Number.isFinite(state.offsetX) && Number.isFinite(state.offsetZ))).toBe(true);
   });
 
   it('Phase 1 & 4 (Iteración 2): displays LIVE organizational attribution diagnostics, opens Organization shortcut, and compacts HUD toolbar', () => {

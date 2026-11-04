@@ -1365,6 +1365,8 @@ export class ThreeOfficeScene {
       }
       parts.nameLabel.visible = state.visible;
       parts.nameLabel.position.y = state.yOffset;
+      parts.nameLabel.position.x = state.offsetX;
+      parts.nameLabel.position.z = state.offsetZ;
       parts.nameLabel.scale.set(1.58 * state.scale, 0.5 * state.scale, 1);
     });
   }

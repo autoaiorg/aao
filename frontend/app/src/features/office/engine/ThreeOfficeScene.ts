@@ -11,15 +11,22 @@ import {
 } from '../types';
 import { buildCampusNavGraph, computeCampusBounds } from '../liveOfficeLayout';
 import {
+  AvatarResourcePool,
+  buildAgentAvatar as buildHumanoidAgentAvatar,
+  stepAvatarKinematics,
+  type AvatarSemanticParts,
+} from './AvatarRenderer';
+import {
   buildDepartmentInteriorLayout,
   computeAdaptiveLabelStates,
   deriveLabelLodTier,
   planOfficeLifePlacements,
   sampleWaypointRoute,
-  stableAgentHash,
   type PlannedAgentPlacement,
   type ProjectedAgentActivity,
 } from './officeLifeEngine';
+
+export type { AvatarSemanticParts };
 
 export interface ThreeSceneCallbacks {
   onSelectRoom: (roomId: string) => void;
@@ -36,21 +43,6 @@ export interface ThreeSceneOptions {
   rooms?: OfficeRoomConfig[];
   demoFurniture?: boolean;
   activeCoordinationAgentIds?: ReadonlySet<string>;
-}
-
-export interface AvatarSemanticParts {
-  halo: THREE.Mesh;
-  primaryGeometry: THREE.Mesh;
-  characterRig: THREE.Group;
-  torso?: THREE.Mesh;
-  head?: THREE.Mesh;
-  visor?: THREE.Mesh;
-  leftArm?: THREE.Mesh;
-  rightArm?: THREE.Mesh;
-  leftLeg?: THREE.Mesh;
-  rightLeg?: THREE.Mesh;
-  speechBubble?: THREE.Sprite;
-  nameLabel: THREE.Sprite;
 }
 
 interface AgentAnimatedRuntimeState {
@@ -174,6 +166,7 @@ export class ThreeOfficeScene {
   private isDisposed = false;
   private contextLost = false;
   private furniturePool = new SharedFurniturePool();
+  private avatarPool = new AvatarResourcePool();
   private qualityProfile: OfficeGraphicsQuality = 'balanced';
 
   // Interaction & Raycasting
@@ -1131,179 +1124,19 @@ export class ThreeOfficeScene {
     this.syncAdaptiveLabels();
   }
 
+  private getDepartmentAccentHex(unitId?: string): string | undefined {
+    if (!unitId) return undefined;
+    return this.rooms.find((r) => r.id === unitId)?.color;
+  }
+
   private buildAgentAvatar(agent: AgentIdentity, activity: ProjectedAgentActivity): THREE.Group {
-    const group = new THREE.Group();
-
-    const isStanding = agent.type === 'STANDING';
-    const isEphemeral = agent.type === 'EPHEMERAL';
-    const bodyColor = isStanding ? 0x2563eb : isEphemeral ? 0x0891b2 : 0x64748b;
-
-    let haloColor = 0x64748b; // UNKNOWN
-    if (agent.heartbeatStatus === 'HEALTHY') haloColor = 0x22c55e;
-    else if (agent.heartbeatStatus === 'STALE') haloColor = 0xeab308;
-    else if (agent.heartbeatStatus === 'UNAVAILABLE') haloColor = 0xef4444;
-
-    // children[0]: Base Telemetry Halo Ring
-    const haloGeo = new THREE.RingGeometry(0.24, 0.36, 16);
-    haloGeo.rotateX(-Math.PI / 2);
-    const haloMat = new THREE.MeshBasicMaterial({
-      color: haloColor,
-      side: THREE.DoubleSide,
+    const departmentAccentHex = this.getDepartmentAccentHex(agent.unitId);
+    return buildHumanoidAgentAvatar(agent, activity, this.avatarPool, {
+      departmentAccentHex,
+      createSpeechBubbleSprite: () => this.createSpeechBubbleSprite(),
+      createAgentNameSprite: (name, roleBadge, haloColor) =>
+        this.createAgentNameSprite(name, roleBadge, haloColor),
     });
-    const halo = new THREE.Mesh(haloGeo, haloMat);
-    halo.position.y = 0.02;
-    group.add(halo);
-
-    // children[1]: Primary Agent Geometry (Preserves exact Defect 2 test contract!)
-    let primaryGeometry: THREE.Mesh;
-    if (isStanding) {
-      const pedGeo = new THREE.CylinderGeometry(0.24, 0.28, 0.1, 16);
-      const pedMat = new THREE.MeshStandardMaterial({
-        color: 0x1e293b,
-        roughness: 0.4,
-        metalness: 0.6,
-      });
-      primaryGeometry = new THREE.Mesh(pedGeo, pedMat);
-      primaryGeometry.position.y = 0.06;
-      primaryGeometry.castShadow = true;
-      group.add(primaryGeometry);
-    } else if (isEphemeral) {
-      const bodyGeo = new THREE.OctahedronGeometry(0.28, 0);
-      const bodyMat = new THREE.MeshStandardMaterial({
-        color: bodyColor,
-        roughness: 0.15,
-        metalness: 0.75,
-        emissive: new THREE.Color(bodyColor).multiplyScalar(0.35),
-      });
-      primaryGeometry = new THREE.Mesh(bodyGeo, bodyMat);
-      primaryGeometry.position.y = 0.58;
-      primaryGeometry.castShadow = true;
-      group.add(primaryGeometry);
-    } else {
-      const bodyGeo = new THREE.CylinderGeometry(0.2, 0.2, 0.1, 12);
-      const bodyMat = new THREE.MeshStandardMaterial({
-        color: bodyColor,
-        roughness: 0.6,
-        metalness: 0.2,
-      });
-      primaryGeometry = new THREE.Mesh(bodyGeo, bodyMat);
-      primaryGeometry.position.y = 0.06;
-      primaryGeometry.castShadow = true;
-      group.add(primaryGeometry);
-    }
-
-    // children[2]: Articulated Character Rig (Torso, Head, Visor, Arms, Legs)
-    const characterRig = new THREE.Group();
-    const suitMat = new THREE.MeshStandardMaterial({
-      color: bodyColor,
-      roughness: 0.35,
-      metalness: 0.4,
-      emissive:
-        activity.kind === 'TYPING_DEV' ||
-        activity.kind === 'TYPING_AUDIT' ||
-        activity.kind === 'TYPING_DOCS'
-          ? new THREE.Color(bodyColor).multiplyScalar(0.22)
-          : new THREE.Color(0x000000),
-    });
-    const limbMat = new THREE.MeshStandardMaterial({
-      color: isStanding ? 0x1e40af : isEphemeral ? 0x0e7490 : 0x475569,
-      roughness: 0.45,
-      metalness: 0.3,
-    });
-
-    const torsoGeo = new THREE.BoxGeometry(0.3, 0.38, 0.18);
-    const torso = new THREE.Mesh(torsoGeo, suitMat);
-    torso.position.y = 0.44;
-    torso.castShadow = true;
-    characterRig.add(torso);
-
-    const headGeo = new THREE.SphereGeometry(0.15, 14, 14);
-    const headMat = new THREE.MeshStandardMaterial({
-      color: 0xe2e8f0,
-      roughness: 0.3,
-      metalness: 0.2,
-    });
-    const head = new THREE.Mesh(headGeo, headMat);
-    head.position.y = 0.76;
-    head.castShadow = true;
-    characterRig.add(head);
-
-    const visorColor =
-      activity.kind === 'TYPING_AUDIT'
-        ? 0x10b981
-        : activity.kind === 'TYPING_DOCS'
-        ? 0xa855f7
-        : activity.kind === 'CONVERSING'
-        ? 0xf59e0b
-        : 0x38bdf8;
-    const visorGeo = new THREE.BoxGeometry(0.2, 0.06, 0.06);
-    const visorMat = new THREE.MeshBasicMaterial({ color: visorColor });
-    const visor = new THREE.Mesh(visorGeo, visorMat);
-    visor.position.set(0, 0.77, 0.13);
-    characterRig.add(visor);
-
-    const armGeo = new THREE.BoxGeometry(0.08, 0.28, 0.08);
-    const leftArm = new THREE.Mesh(armGeo, limbMat);
-    leftArm.position.set(-0.21, 0.46, 0.06);
-    characterRig.add(leftArm);
-
-    const rightArm = new THREE.Mesh(armGeo, limbMat);
-    rightArm.position.set(0.21, 0.46, 0.06);
-    characterRig.add(rightArm);
-
-    const legGeo = new THREE.BoxGeometry(0.08, 0.26, 0.08);
-    const leftLeg = new THREE.Mesh(legGeo, limbMat);
-    leftLeg.position.set(-0.08, 0.18, 0);
-    characterRig.add(leftLeg);
-
-    const rightLeg = new THREE.Mesh(legGeo, limbMat);
-    rightLeg.position.set(0.08, 0.18, 0);
-    characterRig.add(rightLeg);
-
-    group.add(characterRig);
-
-    // children[3]: Speech / Conversation Bubble Sprite (visible when CONVERSING)
-    const speechBubble = this.createSpeechBubbleSprite();
-    speechBubble.position.set(0, 1.56, 0);
-    speechBubble.visible = activity.kind === 'CONVERSING';
-    group.add(speechBubble);
-
-    // children[4]: Name, Activity & Provenance Badge Sprite
-    const provTag =
-      activity.provenance === 'LIVE_VERIFIED_EVIDENCE'
-        ? 'LIVE'
-        : activity.provenance === 'DEMO_SIMULATION'
-        ? 'DEMO'
-        : activity.provenance === 'AMBIENT_ANIMATION'
-        ? 'AMB'
-        : 'UNK';
-    const nameLabel = this.createAgentNameSprite(
-      agent.name.split(' ')[0],
-      agent.coordinatorState
-        ? `${agent.coordinatorState === 'COORDINATING' ? 'COORDINANDO · NO EJECUTA TAREA' : agent.coordinatorState === 'WAITING' ? 'EN ESPERA' : 'ESTADO DESACTUALIZADO'} · ${provTag}`
-        : `${activity.shortBadge} · ${provTag}`,
-      haloColor
-    );
-    nameLabel.position.set(0, 1.24, 0);
-    group.add(nameLabel);
-
-    const semanticParts: AvatarSemanticParts = {
-      halo,
-      primaryGeometry,
-      characterRig,
-      torso,
-      head,
-      visor,
-      leftArm,
-      rightArm,
-      leftLeg,
-      rightLeg,
-      speechBubble,
-      nameLabel,
-    };
-    group.userData.parts = semanticParts;
-
-    return group;
   }
 
   private createSpeechBubbleSprite(): THREE.Sprite {
@@ -1703,106 +1536,14 @@ export class ThreeOfficeScene {
 
     // 2. Agent Animations (Preserving Defect 2 contract on children[1] + Articulating characterRig)
     if (!this.options.reducedMotion) {
-      const t = time * 0.002;
-
       this.agentMeshes.forEach((group, agentId) => {
-        const parts = group.userData?.parts as AvatarSemanticParts | undefined;
         const runtime = this.agentRuntimeStates.get(agentId);
+        if (!runtime) return;
 
-        // Enforce Defect 2 invariant: ONLY EPHEMERAL primaryGeometry (children[1]) animates directly,
-        // NEVER STANDING primaryGeometry (children[1] remains at y = 0.06, rotation.y = 0)
-        if (group.userData?.agentType === 'EPHEMERAL' && parts?.primaryGeometry) {
-          parts.primaryGeometry.position.y = 0.58 + Math.sin(t + group.position.x) * 0.04;
-          parts.primaryGeometry.rotation.y = t * 0.5;
-        }
-
-        if (!parts?.characterRig || !runtime) return;
-
-        const { placement } = runtime;
-        const kind = placement.activity.kind;
-        const phase = (stableAgentHash(agentId) % 100) * 0.1;
-
-        let destX = placement.targetWorldX;
-        let destZ = placement.targetWorldZ;
-        let destAngle = placement.targetFacingAngle;
-
-        if (kind === 'WALKING') {
-          const sampled = sampleWaypointRoute(
-            placement.waypoints,
-            time,
-            stableAgentHash(agentId) % 7
-          );
-          destX = sampled.x;
-          destZ = sampled.z;
-          destAngle = sampled.facingAngle;
-        }
-
-        // Smooth position & orientation interpolation
-        runtime.currentX += (destX - runtime.currentX) * 0.12;
-        runtime.currentZ += (destZ - runtime.currentZ) * 0.12;
-        runtime.currentAngle += (destAngle - runtime.currentAngle) * 0.15;
-
-        group.position.x = runtime.currentX;
-        group.position.z = runtime.currentZ;
-        parts.characterRig.rotation.y = runtime.currentAngle;
-
-        if (kind === 'TYPING_DEV' || kind === 'TYPING_AUDIT' || kind === 'TYPING_DOCS') {
-          parts.characterRig.position.y = -0.06;
-          if (parts.leftLeg) parts.leftLeg.rotation.x = -Math.PI / 2.5;
-          if (parts.rightLeg) parts.rightLeg.rotation.x = -Math.PI / 2.5;
-          if (parts.leftArm) {
-            parts.leftArm.rotation.x = -0.85 + Math.sin(time * 0.022 + phase) * 0.22;
-          }
-          if (parts.rightArm) {
-            parts.rightArm.rotation.x = -0.85 + Math.cos(time * 0.022 + phase) * 0.22;
-          }
-          if (parts.head) {
-            parts.head.rotation.y = Math.sin(time * 0.004 + phase) * 0.1;
-          }
-          if (parts.speechBubble) parts.speechBubble.visible = false;
-        } else if (kind === 'CONVERSING') {
-          parts.characterRig.position.y = 0;
-          if (parts.leftLeg) parts.leftLeg.rotation.x = 0;
-          if (parts.rightLeg) parts.rightLeg.rotation.x = 0;
-          if (parts.leftArm) {
-            parts.leftArm.rotation.x = -0.45 + Math.sin(time * 0.008 + phase) * 0.25;
-          }
-          if (parts.rightArm) {
-            parts.rightArm.rotation.x = -0.35 + Math.cos(time * 0.007 + phase) * 0.22;
-          }
-          if (parts.head) {
-            parts.head.rotation.y = Math.sin(time * 0.005 + phase) * 0.08;
-          }
-          if (parts.speechBubble) {
-            parts.speechBubble.visible = true;
-            parts.speechBubble.position.y = 1.56 + Math.sin(time * 0.006 + phase) * 0.04;
-          }
-        } else if (kind === 'WALKING') {
-          parts.characterRig.position.y = Math.abs(Math.sin(time * 0.01 + phase)) * 0.03;
-          const stride = Math.sin(time * 0.01 + phase);
-          if (parts.leftLeg) parts.leftLeg.rotation.x = stride * 0.45;
-          if (parts.rightLeg) parts.rightLeg.rotation.x = -stride * 0.45;
-          if (parts.leftArm) parts.leftArm.rotation.x = -stride * 0.32;
-          if (parts.rightArm) parts.rightArm.rotation.x = stride * 0.32;
-          if (parts.head) parts.head.rotation.y = 0;
-          if (parts.speechBubble) parts.speechBubble.visible = false;
-        } else if (kind === 'IDLE_DESK') {
-          parts.characterRig.position.y = -0.06;
-          if (parts.leftLeg) parts.leftLeg.rotation.x = -Math.PI / 2.5;
-          if (parts.rightLeg) parts.rightLeg.rotation.x = -Math.PI / 2.5;
-          if (parts.leftArm) parts.leftArm.rotation.x = -0.3;
-          if (parts.rightArm) parts.rightArm.rotation.x = -0.3;
-          if (parts.head) parts.head.rotation.y = 0;
-          if (parts.speechBubble) parts.speechBubble.visible = false;
-        } else {
-          parts.characterRig.position.y = 0;
-          if (parts.leftLeg) parts.leftLeg.rotation.x = 0;
-          if (parts.rightLeg) parts.rightLeg.rotation.x = 0;
-          if (parts.leftArm) parts.leftArm.rotation.x = 0;
-          if (parts.rightArm) parts.rightArm.rotation.x = 0;
-          if (parts.head) parts.head.rotation.y = 0;
-          if (parts.speechBubble) parts.speechBubble.visible = false;
-        }
+        stepAvatarKinematics(group, runtime, time, this.cameraDistance, {
+          reducedMotion: false,
+          sampleWaypointRoute,
+        });
       });
 
       if (this.selectionRing && this.selectionRing.visible && this.activeAgentId) {
@@ -1843,14 +1584,27 @@ export class ThreeOfficeScene {
   private disposeHierarchy(obj: THREE.Object3D): void {
     obj.traverse((child) => {
       if (child instanceof THREE.Mesh) {
-        if (child.geometry && !this.furniturePool.ownsGeometry(child.geometry)) {
+        if (
+          child.geometry &&
+          !this.furniturePool.ownsGeometry(child.geometry) &&
+          !this.avatarPool.ownsGeometry(child.geometry)
+        ) {
           child.geometry.dispose();
         }
         if (Array.isArray(child.material)) {
           child.material.forEach((m) => {
-            if (!this.furniturePool.ownsMaterial(m)) m.dispose();
+            if (
+              !this.furniturePool.ownsMaterial(m) &&
+              !this.avatarPool.ownsMaterial(m)
+            ) {
+              m.dispose();
+            }
           });
-        } else if (child.material && !this.furniturePool.ownsMaterial(child.material)) {
+        } else if (
+          child.material &&
+          !this.furniturePool.ownsMaterial(child.material) &&
+          !this.avatarPool.ownsMaterial(child.material)
+        ) {
           child.material.dispose();
         }
       } else if (child instanceof THREE.Sprite) {
@@ -1879,6 +1633,7 @@ export class ThreeOfficeScene {
 
     this.disposeHierarchy(this.scene);
     this.furniturePool.dispose();
+    this.avatarPool.dispose();
     if (this.renderer && typeof this.renderer.dispose === 'function') {
       this.renderer.dispose();
     }

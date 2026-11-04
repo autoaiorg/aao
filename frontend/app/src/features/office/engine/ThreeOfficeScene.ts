@@ -1153,10 +1153,11 @@ export class ThreeOfficeScene {
     const backZ = isTopRow ? -room.depth / 2 + 0.12 : room.depth / 2 - 0.12;
     const frontZ = isTopRow ? room.depth / 2 - 0.1 : -room.depth / 2 + 0.1;
 
-    // 1. Low acoustic partition: retain room identity while keeping long views
-    // across the single floor plate. Full-height-looking bay walls were making
-    // departments read as separate kiosks rather than open-plan work zones.
-    const backWallGeo = new THREE.BoxGeometry(room.width - 0.5, 0.58, 0.1);
+    // 1. A short acoustic screen anchors the department sign without outlining
+    // a room-sized bay. Long uninterrupted partitions made the open floor read
+    // as a collection of kiosks from the isometric camera.
+    const backWallWidth = Math.min(1.45, room.width * 0.46);
+    const backWallGeo = new THREE.BoxGeometry(backWallWidth, 0.48, 0.08);
     const backWall = new THREE.Mesh(backWallGeo, wallMat);
     backWall.name = 'department-back-partition';
     backWall.position.set(0, 0.66, backZ);
@@ -1174,37 +1175,40 @@ export class ThreeOfficeScene {
     board.position.set(0, 0.79, backZ + (isTopRow ? 0.065 : -0.065));
     group.add(board);
 
-    // 2. Side Translucent Glass Acoustic Partitions
-    const sideGlassGeo = new THREE.BoxGeometry(0.055, 0.58, room.depth * 0.68);
+    // 2. Short glass baffles provide acoustic zoning while leaving broad sight
+    // lines and circulation between neighboring work areas.
+    const sideBaffleDepth = Math.min(0.78, room.depth * 0.26);
+    const sideGlassGeo = new THREE.BoxGeometry(0.045, 0.48, sideBaffleDepth);
     const sideGlassLeft = new THREE.Mesh(sideGlassGeo, glassMat);
     sideGlassLeft.name = 'department-side-glass-left';
-    sideGlassLeft.position.set(-room.width / 2 + 0.12, 0.66, 0);
+    sideGlassLeft.position.set(-room.width / 2 + 0.12, 0.61, backZ + (isTopRow ? 0.18 : -0.18));
     group.add(sideGlassLeft);
 
     const sideGlassRight = new THREE.Mesh(sideGlassGeo, glassMat);
     sideGlassRight.name = 'department-side-glass-right';
-    sideGlassRight.position.set(room.width / 2 - 0.12, 0.66, 0);
+    sideGlassRight.position.set(room.width / 2 - 0.12, 0.61, backZ + (isTopRow ? 0.18 : -0.18));
     group.add(sideGlassRight);
 
-    // 3. Front Entrance Wall with Open Central Doorway (1.4u gap so agents walk through cleanly)
+    // 3. Two small entrance-side glass markers; the opening stays broad for
+    // agents and visitors instead of drawing a wall across the department bay.
     const doorwayWidth = 1.4;
-    const frontPanelWidth = Math.max(0.5, (room.width - doorwayWidth - 0.4) / 2);
-    const frontGlassGeo = new THREE.BoxGeometry(frontPanelWidth, 0.58, 0.055);
+    const frontPanelWidth = Math.min(0.48, Math.max(0.25, (room.width - doorwayWidth - 0.4) / 2));
+    const frontGlassGeo = new THREE.BoxGeometry(frontPanelWidth, 0.48, 0.045);
 
     const frontLeft = new THREE.Mesh(frontGlassGeo, glassMat);
     frontLeft.name = 'department-front-glass-left';
-    frontLeft.position.set(-doorwayWidth / 2 - frontPanelWidth / 2, 0.66, frontZ);
+    frontLeft.position.set(-room.width / 2 + frontPanelWidth / 2 + 0.12, 0.61, frontZ);
     group.add(frontLeft);
 
     const frontRight = new THREE.Mesh(frontGlassGeo, glassMat);
     frontRight.name = 'department-front-glass-right';
-    frontRight.position.set(doorwayWidth / 2 + frontPanelWidth / 2, 0.66, frontZ);
+    frontRight.position.set(room.width / 2 - frontPanelWidth / 2 - 0.12, 0.61, frontZ);
     group.add(frontRight);
 
     // 4. Acoustic Manifestation Band for Audit Enclave (eye level 0.85m)
     const isAuditEnclave = room.kind === 'audit-enclave' || room.id === 'unit-audit';
     if (isAuditEnclave) {
-      const manifestSideGeo = new THREE.BoxGeometry(0.088, 0.14, room.depth * 0.68 + 0.02);
+      const manifestSideGeo = new THREE.BoxGeometry(0.06, 0.1, sideBaffleDepth + 0.02);
       const manifestFrontGeo = new THREE.BoxGeometry(frontPanelWidth + 0.02, 0.14, 0.088);
       const manifestMat = new THREE.MeshBasicMaterial({
         color: 0x9dbaa8,
@@ -1213,19 +1217,19 @@ export class ThreeOfficeScene {
       });
 
       const mLeft = new THREE.Mesh(manifestSideGeo, manifestMat);
-      mLeft.position.set(-room.width / 2 + 0.12, 0.85, 0);
+      mLeft.position.set(-room.width / 2 + 0.12, 0.85, sideGlassLeft.position.z);
       group.add(mLeft);
 
       const mRight = new THREE.Mesh(manifestSideGeo, manifestMat);
-      mRight.position.set(room.width / 2 - 0.12, 0.85, 0);
+      mRight.position.set(room.width / 2 - 0.12, 0.85, sideGlassRight.position.z);
       group.add(mRight);
 
       const mFrontL = new THREE.Mesh(manifestFrontGeo, manifestMat);
-      mFrontL.position.set(-doorwayWidth / 2 - frontPanelWidth / 2, 0.85, frontZ);
+      mFrontL.position.set(frontLeft.position.x, 0.85, frontZ);
       group.add(mFrontL);
 
       const mFrontR = new THREE.Mesh(manifestFrontGeo, manifestMat);
-      mFrontR.position.set(doorwayWidth / 2 + frontPanelWidth / 2, 0.85, frontZ);
+      mFrontR.position.set(frontRight.position.x, 0.85, frontZ);
       group.add(mFrontR);
     }
   }

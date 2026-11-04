@@ -220,6 +220,10 @@ describe('PR C: Office Furniture, Procedural IDE Textures, Biophilia & Lighting'
       expect(backPartition.geometry.parameters.height).toBeLessThan(0.65);
       expect(sideGlass.geometry.parameters.height).toBeLessThan(0.65);
       expect(frontGlass.geometry.parameters.height).toBeLessThan(0.65);
+      const roomConfig = (room as THREE.Group).userData.room as (typeof OFFICE_ROOMS)[number];
+      expect(backPartition.geometry.parameters.width).toBeLessThan(roomConfig.width * 0.5);
+      expect(sideGlass.geometry.parameters.depth).toBeLessThan(roomConfig.depth * 0.3);
+      expect(frontGlass.geometry.parameters.width).toBeLessThan(0.5);
       expect(sideGlass.material.opacity).toBeLessThan(0.15);
       expect(room!.getObjectByName('department-wall-sign')).toBeDefined();
     });

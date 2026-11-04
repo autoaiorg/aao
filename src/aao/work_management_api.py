@@ -3000,7 +3000,6 @@ def execute_organization_execution(
                 coordinator=principal,
                 database=db,
                 expected_project_id=str(project_id),
-                allow_non_group_work=True,
                 return_previous=True,
             )
             actual = db.execute(
@@ -4604,7 +4603,6 @@ def _assign_group_child_work(
     coordinator: AuthenticatedPrincipal | None = None,
     database: Any | None = None,
     expected_project_id: str | None = None,
-    allow_non_group_work: bool = False,
     return_previous: bool = False,
 ):
     transaction = tx() if database is None else nullcontext(database)
@@ -4623,9 +4621,9 @@ def _assign_group_child_work(
             require_grant(db, coordinator, str(project_id), "work.assign")
             if payload.principal_id == str(coordinator):
                 raise HTTPException(409, "A coordinator cannot assign group work to themselves")
-        if not allow_non_group_work and (parent_work_id is None or not db.execute(
+        if parent_work_id is None or not db.execute(
             "SELECT 1 FROM work_groups WHERE parent_work_id=%s", (parent_work_id,),
-        ).fetchone()):
+        ).fetchone():
             raise HTTPException(409, "Only persistent work-group children can be assigned")
         if status in {"IN_REVIEW", "VERIFIED", "DONE"}:
             raise HTTPException(409, "Reviewed or completed work cannot be reassigned")
@@ -4637,7 +4635,8 @@ def _assign_group_child_work(
             raise HTTPException(409, "Claimed or uncertain execution prevents reassignment")
         identity = db.execute(
             "SELECT enabled FROM principal_credentials WHERE principal_id=%s "
-            "AND kind='AGENT' FOR SHARE", (payload.principal_id,),
+            "AND kind='AGENT' AND (expires_at IS NULL OR expires_at>clock_timestamp()) "
+            "FOR SHARE", (payload.principal_id,),
         ).fetchone()
         if not identity or not identity[0]:
             raise HTTPException(409, "Assignment target must be an active agent identity")

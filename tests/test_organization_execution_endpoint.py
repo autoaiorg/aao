@@ -171,7 +171,7 @@ def test_execute_assignment_reuses_competency_and_grant_checked_work_path(monkey
             if query.startswith("UPDATE organization_executions SET state="):
                 return Cursor(("exec-assign",))
             if query.startswith("SELECT project_id,parent_work_id,status,required_competencies"):
-                return Cursor((PROJECT_ID, None, "INBOX", ["python"]))
+                return Cursor((PROJECT_ID, "group-parent", "INBOX", ["python"]))
             if query.startswith("SELECT 1 FROM work_groups"):
                 return Cursor((1,))
             if query.startswith("SELECT enabled FROM principal_credentials"):
@@ -235,3 +235,35 @@ def test_assignment_executor_rejects_work_outside_approved_project(monkeypatch):
 
     assert caught.value.status_code == 409
     assert len(db.statements) == 1
+
+
+def test_assignment_rejects_expired_target_identity(monkeypatch):
+    from fastapi import HTTPException
+
+    class ExpiredIdentityDB:
+        def __init__(self):
+            self.statements = []
+
+        def execute(self, query, params=None):
+            self.statements.append(query)
+            if query.startswith("SELECT project_id,parent_work_id,status,required_competencies"):
+                return Cursor((PROJECT_ID, "group-parent", "INBOX", ["python"]))
+            if query.startswith("SELECT 1 FROM work_groups"):
+                return Cursor((1,))
+            if query.startswith("SELECT 1 FROM execution_queue"):
+                return Cursor(None)
+            if "FROM principal_credentials WHERE principal_id=%s" in query:
+                assert "expires_at IS NULL OR expires_at>clock_timestamp()" in query
+                return Cursor((False,))
+            raise AssertionError(f"unexpected SQL: {query}")
+
+    db = ExpiredIdentityDB()
+    with pytest.raises(HTTPException, match="active agent identity") as caught:
+        api._assign_group_child_work(
+            "57f2415f-e654-426a-846d-34302a305117",
+            api.WorkAssignmentRequest(principal_id="agent-expired"),
+            assigned_by="ceo", database=db,
+        )
+
+    assert caught.value.status_code == 409
+    assert not any(query.startswith("INSERT") for query in db.statements)

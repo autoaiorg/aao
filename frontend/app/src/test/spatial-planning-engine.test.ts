@@ -47,7 +47,7 @@ describe('planOfficeZones', () => {
     const plan = planOfficeZones(standardUnits);
     const farthestUnit = Math.max(...plan.map(({ x, z }) => Math.hypot(x, z)));
 
-    expect(farthestUnit).toBeLessThan(16);
+    expect(farthestUnit).toBeLessThan(13);
   });
 
   it('retains existing locations when zones are added and places children adjacent to their parent', () => {

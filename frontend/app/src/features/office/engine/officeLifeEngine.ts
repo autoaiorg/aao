@@ -847,10 +847,11 @@ export function computeAdaptiveLabelStates(params: {
     const isSelected = room.id === selectedRoomId;
     const roomDistance = Math.hypot(room.x - cameraTargetX, room.z - cameraTargetZ);
     // Keep distant room headers out of focused views; room geometry remains selectable.
-    const visible =
+    const visible = lodTier !== 'agent' && (
       lodTier === 'overview' ||
       isSelected ||
-      roomDistance <= (lodTier === 'department' ? 8 : 4.2);
+      roomDistance <= 8
+    );
     const scale =
       lodTier === 'overview'
         ? isSelected
@@ -945,7 +946,7 @@ export function computeAdaptiveLabelStates(params: {
     } else if (lodTier === 'department') {
       eligibleByLod = isSelected || hasCriticalAlert || isInSelectedRoom || distToCameraTarget <= 6.2;
     } else {
-      eligibleByLod = isSelected || hasCriticalAlert || isInSelectedRoom || distToCameraTarget <= 8.5;
+      eligibleByLod = isSelected || hasCriticalAlert || distToCameraTarget <= 4.5;
     }
 
     candidates.push({
@@ -970,7 +971,7 @@ export function computeAdaptiveLabelStates(params: {
   // camera plane before lifting them above heads and monitors.
   const minSepX = 1.85;
   const minSepY = 0.56;
-  const maxVisibleAgentLabels = lodTier === 'overview' ? 3 : lodTier === 'department' ? 8 : 12;
+  const maxVisibleAgentLabels = lodTier === 'overview' ? 3 : lodTier === 'department' ? 8 : 3;
 
   let visibleAgentCount = 0;
   let suppressedOverlapCount = 0;
@@ -1067,7 +1068,7 @@ export function computeAdaptiveLabelStates(params: {
     visibleAgentCount += 1;
     const scale =
       cand.priority >= 1000
-        ? 1.12
+        ? lodTier === 'agent' ? 0.82 : 1.12
         : lodTier === 'agent'
         ? 1.02
         : lodTier === 'department'

@@ -94,6 +94,21 @@ describe('Immersive Gestural Camera Controls & Navigation (PR B)', () => {
     expect(newTarget.z).not.toBeCloseTo(initialTarget.z, 3);
   });
 
+  it('frames the selected agent while preserving the operator-controlled zoom', () => {
+    const agent = DEMO_AGENTS[0];
+    const placement = scene.getAgentPlacement(agent.id);
+    expect(placement).toBeDefined();
+    scene.selectRoom(agent.unitId);
+    const distanceBeforeSelection = scene.getDesiredDistance();
+
+    scene.selectAgent(agent.id);
+
+    const target = scene.getDesiredTarget();
+    expect(target.x).toBeCloseTo(placement!.targetWorldX, 4);
+    expect(target.z).toBeCloseTo(placement!.targetWorldZ, 4);
+    expect(scene.getDesiredDistance()).toBe(distanceBeforeSelection);
+  });
+
   it('performs pinch-to-zoom with distance boundary clamping', () => {
     const initialDistance = scene.getCameraDistance();
 
@@ -101,11 +116,11 @@ describe('Immersive Gestural Camera Controls & Navigation (PR B)', () => {
     scene.simulateGesturePinch(0.7);
     expect(scene.getDesiredDistance()).toBeLessThan(initialDistance);
 
-    // Extreme zoom in: must not breach minDistance (8)
+    // Extreme zoom in: must not breach the agent-inspection minDistance (4.5)
     for (let i = 0; i < 15; i++) {
       scene.simulateGesturePinch(0.5);
     }
-    expect(scene.getDesiredDistance()).toBeGreaterThanOrEqual(8);
+    expect(scene.getDesiredDistance()).toBeGreaterThanOrEqual(4.5);
 
     // Extreme zoom out: the overview fit may require more than 38 units for
     // this viewport; once clamped, further pinches must not change the bound.

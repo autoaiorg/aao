@@ -55,6 +55,7 @@ export interface AvatarSemanticParts {
   rightForearm?: THREE.Object3D;
   leftHand?: THREE.Object3D;
   rightHand?: THREE.Object3D;
+  coffeeCup?: THREE.Group;
   leftLeg?: THREE.Object3D;
   rightLeg?: THREE.Object3D;
   leftShin?: THREE.Object3D;
@@ -591,6 +592,33 @@ export function buildHumanoidCharacterRig(
   rightHand.castShadow = true;
   rightForearmGroup.add(rightHand);
 
+  // Small reusable prop, shown only during explicitly ambient walking. It is
+  // visual storytelling, never a claim about real agent activity.
+  const coffeeCup = new THREE.Group();
+  coffeeCup.name = 'ambient-coffee-cup';
+  const cup = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.035, 0.028, 0.07, 8),
+    new THREE.MeshStandardMaterial({ color: 0xf5f1e8, roughness: 0.65 }),
+  );
+  cup.position.set(0, -0.015, 0.025);
+  coffeeCup.add(cup);
+  const coffee = new THREE.Mesh(
+    new THREE.CircleGeometry(0.027, 8),
+    new THREE.MeshStandardMaterial({ color: 0x53321f, roughness: 0.8, side: THREE.DoubleSide }),
+  );
+  coffee.rotation.x = -Math.PI / 2;
+  coffee.position.set(0, 0.021, 0.025);
+  coffeeCup.add(coffee);
+  const handle = new THREE.Mesh(
+    new THREE.TorusGeometry(0.022, 0.006, 5, 8, Math.PI),
+    new THREE.MeshStandardMaterial({ color: 0xf5f1e8, roughness: 0.65 }),
+  );
+  handle.position.set(0.039, -0.012, 0.025);
+  handle.rotation.z = -Math.PI / 2;
+  coffeeCup.add(handle);
+  coffeeCup.position.set(0, -0.17, 0.09);
+  rightHand.add(coffeeCup);
+
   rightArmGroup.add(rightForearmGroup);
   rig.add(rightArmGroup);
 
@@ -660,6 +688,7 @@ export function buildHumanoidCharacterRig(
     rightForearm: rightForearmGroup,
     leftHand,
     rightHand,
+    coffeeCup,
     leftLeg: leftLegGroup,
     rightLeg: rightLegGroup,
     leftShin: leftShinGroup,
@@ -794,7 +823,10 @@ export function buildAgentAvatar(
 
   // children[3]: Speech Bubble
   const speechBubble = options.createSpeechBubbleSprite();
-  speechBubble.position.set(0, 1.56, 0);
+  // Keep conversation markers above the name badge footprint. The prior
+  // 1.56m anchor overlapped the 1.24m-high label sprite whenever both were
+  // visible in a close camera view.
+  speechBubble.position.set(0, 2.02, 0);
   speechBubble.visible = activity.kind === 'CONVERSING';
   group.add(speechBubble);
 
@@ -833,6 +865,7 @@ export function buildAgentAvatar(
     rightForearm: rigParts.rightForearm,
     leftHand: rigParts.leftHand,
     rightHand: rigParts.rightHand,
+    coffeeCup: rigParts.coffeeCup,
     leftLeg: rigParts.leftLeg,
     rightLeg: rigParts.rightLeg,
     leftShin: rigParts.leftShin,
@@ -888,6 +921,10 @@ export function stepAvatarKinematics(
 
   const { placement } = runtime;
   const kind = placement.activity.kind;
+  if (parts.coffeeCup) {
+    parts.coffeeCup.visible =
+      kind === 'WALKING' && placement.activity.provenance !== 'LIVE_VERIFIED_EVIDENCE';
+  }
   const phaseSeed = hashStringSeed(agentId) % 100;
   const phase = phaseSeed * 0.1;
 
@@ -916,7 +953,9 @@ export function stepAvatarKinematics(
 
   if (kind === 'TYPING_DEV' || kind === 'TYPING_AUDIT' || kind === 'TYPING_DOCS') {
     // Natural seated typing kinematics
-    parts.characterRig.position.y = -0.06;
+    // Chair seat is at y=0.62; lift the hip pivot onto the seat rather than
+    // leaving the pelvis at standing height (which reads as perched/floating).
+    parts.characterRig.position.y = 0.24;
 
     // Thighs horizontal in chair
     if (parts.leftLeg) parts.leftLeg.rotation.x = -Math.PI / 2.3;
@@ -973,7 +1012,7 @@ export function stepAvatarKinematics(
 
     if (parts.speechBubble) {
       parts.speechBubble.visible = true;
-      parts.speechBubble.position.y = 1.58 + Math.sin(time * 0.006 + phase) * 0.03;
+      parts.speechBubble.position.y = 2.02 + Math.sin(time * 0.006 + phase) * 0.03;
     }
   } else if (kind === 'WALKING') {
     // Sinusoidal walking stride with counter-swinging arms and vertical bob
@@ -1011,7 +1050,8 @@ export function stepAvatarKinematics(
     if (parts.speechBubble) parts.speechBubble.visible = false;
   } else if (kind === 'IDLE_DESK') {
     // Relaxed seated posture
-    parts.characterRig.position.y = -0.06;
+    parts.characterRig.position.y = 0.24;
+    if (parts.coffeeCup) parts.coffeeCup.visible = false;
 
     if (parts.leftLeg) parts.leftLeg.rotation.x = -Math.PI / 2.3;
     if (parts.rightLeg) parts.rightLeg.rotation.x = -Math.PI / 2.3;

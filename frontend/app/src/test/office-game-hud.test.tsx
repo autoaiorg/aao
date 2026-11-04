@@ -901,11 +901,13 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
       selectedAgentId: 'aao-selfdev-worker-0',
     });
     expect(closeLabels.lodTier).toBe('agent');
+    expect(closeLabels.visibleDepartmentCount).toBe(0);
     const states = Array.from(closeLabels.agents.values());
     const visibleStates = states.filter((s) => s.visible);
     const suppressedStates = states.filter((s) => s.suppressedByOverlap);
-    expect(visibleStates.length).toBeGreaterThan(3);
-    expect(visibleStates.length + suppressedStates.length).toBe(7);
+    expect(visibleStates.length).toBeGreaterThan(0);
+    expect(visibleStates.length).toBeLessThanOrEqual(3);
+    expect(suppressedStates.length).toBeLessThanOrEqual(7);
     expect(visibleStates.some((state) => state.agentId === 'aao-selfdev-worker-0')).toBe(true);
     expect(visibleStates.some((state) => Math.abs(state.offsetX) + Math.abs(state.offsetZ) > 0)).toBe(true);
     expect(visibleStates.every((state) => Number.isFinite(state.offsetX) && Number.isFinite(state.offsetZ))).toBe(true);

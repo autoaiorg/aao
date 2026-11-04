@@ -68,6 +68,15 @@ test('Capture real screenshots of F4.7 and F4.8 Office', async ({ page }) => {
       path: path.join(v42EvidenceDir, 'office-operational-department-close.png'),
       fullPage: false,
     });
+    // Capture a genuine browser close-up of the selected agent, not just the
+    // surrounding department. Keep this separate so posture and label
+    // occlusion can be reviewed at the scale where they are easiest to spot.
+    for (let step = 0; step < 7; step += 1) await zoomIn.click({ force: true });
+    await page.waitForTimeout(900);
+    await page.screenshot({
+      path: path.join(v42EvidenceDir, 'office-agent-working-close.png'),
+      fullPage: false,
+    });
   }
 
   // Capture 4: Accessible 2D Plan

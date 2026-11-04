@@ -288,7 +288,9 @@ export class ThreeOfficeScene {
   private desiredElevation = 42;
   private cameraDistance = 24; // distance from target
   private desiredDistance = 24; // smart zoom destination
-  private minDistance = 8;
+  // Permit an actual agent/workstation close-up after the camera has focused
+  // a selection. Eight meters left people too small for posture inspection.
+  private minDistance = 4.5;
   private maxDistance = 38;
   private cameraTarget = new THREE.Vector3(0, 0, 0);
   private desiredTarget = new THREE.Vector3(0, 0, 0);
@@ -1645,6 +1647,12 @@ export class ThreeOfficeScene {
       if (unitId && unitId !== this.activeRoomId) {
         this.selectRoom(unitId);
       }
+      // Selecting a roster or scene agent should frame that person, not leave
+      // the camera parked at the department centroid. Keep current zoom so the
+      // operator controls how close to inspect.
+      // Aim at the torso plane rather than the floor so the head, posture and
+      // its adaptive badge remain inside the canvas at close zoom.
+      this.desiredTarget.set(agentGroup.position.x, 0.8, agentGroup.position.z);
     } else {
       this.selectionRing.visible = false;
     }

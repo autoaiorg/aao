@@ -428,6 +428,39 @@ describe('Phase 1 & 2 (Iteración 2): resolveLiveOrganizationAttribution & build
     }
   });
 
+  it('keeps routes available across deterministic irregular executive organizations', () => {
+    // Exercise layouts with unbalanced trees and varied executive occupancy,
+    // rather than only uniformly numbered, flat department lists.
+    let state = 0x5173;
+    const next = (max: number) => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return state % max;
+    };
+    for (let sample = 0; sample < 30; sample += 1) {
+      const count = 1 + next(40);
+      const units = Array.from({ length: count }, (_, index) => {
+        const id = index === 0 ? 'unit-exec' : `irregular-${sample}-${index}`;
+        const parentIndex = index > 1 && next(3) === 0 ? next(index) : -1;
+        return unit(
+          id,
+          `U${index}`,
+          index === 0 ? 'Dirección Ejecutiva' : `Área ${sample}-${index}`,
+          parentIndex >= 0 ? (parentIndex === 0 ? 'unit-exec' : `irregular-${sample}-${parentIndex}`) : null,
+        );
+      });
+      const agents = units.flatMap((department, index) => Array.from(
+        { length: index === 0 ? next(10) : next(9) },
+        (_, agentIndex) => makeAgent({
+          id: `${department.id}-agent-${agentIndex}`,
+          unitId: department.id,
+          credentialStatus: 'ENABLED',
+        }),
+      ));
+
+      expect(() => buildCorporateCampusLayout(units, agents, { isDemo: false })).not.toThrow();
+    }
+  }, 20_000);
+
   it('preserves positions and routes after existing departments gain or lose agents', () => {
     const units = [
       unit('unit-exec', 'EXEC', 'Dirección Ejecutiva'),

@@ -270,7 +270,9 @@ export class ThreeOfficeScene {
 
   // Camera Orbit, Smart Zoom & Follow parameters
   private cameraAngle = 35; // degrees around Y
+  private desiredAngle = 35;
   private cameraElevation = 42; // degrees tilt
+  private desiredElevation = 42;
   private cameraDistance = 24; // distance from target
   private desiredDistance = 24; // smart zoom destination
   private minDistance = 8;
@@ -278,6 +280,7 @@ export class ThreeOfficeScene {
   private cameraTarget = new THREE.Vector3(0, 0, 0);
   private desiredTarget = new THREE.Vector3(0, 0, 0);
   private followSelectedAgent = false;
+  private readonly pressedKeys = new Set<string>();
 
   // Groups and Interactive Meshes
   private roomsGroup = new THREE.Group();
@@ -1295,14 +1298,29 @@ export class ThreeOfficeScene {
 
   public orbitCamera(deltaAngle: number, deltaElevation = 0): void {
     this.followSelectedAgent = false;
-    this.cameraAngle = (this.cameraAngle + deltaAngle) % 360;
-    this.cameraElevation = Math.max(15, Math.min(75, this.cameraElevation + deltaElevation));
+    this.desiredAngle = (this.desiredAngle + deltaAngle) % 360;
+    if (this.desiredAngle < 0) this.desiredAngle += 360;
+    this.desiredElevation = Math.max(15, Math.min(75, this.desiredElevation + deltaElevation));
+    this.cameraAngle = this.desiredAngle;
+    this.cameraElevation = this.desiredElevation;
     this.updateCameraPosition();
     this.syncAdaptiveLabels();
   }
 
   public getCameraAngle(): { angle: number; elevation: number } {
     return { angle: this.cameraAngle, elevation: this.cameraElevation };
+  }
+
+  public getDesiredAngle(): { angle: number; elevation: number } {
+    return { angle: this.desiredAngle, elevation: this.desiredElevation };
+  }
+
+  public simulateKeyboardKey(key: string, isDown: boolean): void {
+    if (isDown) {
+      this.pressedKeys.add(key.toLowerCase());
+    } else {
+      this.pressedKeys.delete(key.toLowerCase());
+    }
   }
 
   public simulateGesturePan(deltaScreenX: number, deltaScreenY: number): void {
@@ -1492,9 +1510,7 @@ export class ThreeOfficeScene {
   }
 
   public rotateCamera(deltaAngleDegrees: number): void {
-    this.cameraAngle = (this.cameraAngle + deltaAngleDegrees) % 360;
-    this.updateCameraPosition();
-    this.syncAdaptiveLabels();
+    this.orbitCamera(deltaAngleDegrees, 0);
   }
 
   public zoomCamera(deltaFactor: number): void {
@@ -1513,7 +1529,9 @@ export class ThreeOfficeScene {
     this.followSelectedAgent = false;
     const bounds = computeCampusBounds(this.rooms);
     this.cameraAngle = 35;
+    this.desiredAngle = 35;
     this.cameraElevation = 42;
+    this.desiredElevation = 42;
     this.desiredDistance = bounds.recommendedOverviewDistance;
     this.desiredTarget.set(bounds.centerX, 0, bounds.centerZ);
 
@@ -1534,17 +1552,22 @@ export class ThreeOfficeScene {
     if (preset === 'isometric') {
       this.followSelectedAgent = false;
       this.cameraAngle = 45;
+      this.desiredAngle = 45;
       this.cameraElevation = 40;
+      this.desiredElevation = 40;
       this.desiredDistance = 20;
       this.desiredTarget.set(bounds.centerX, 0, bounds.centerZ);
     } else if (preset === 'top-down') {
       this.followSelectedAgent = false;
       this.cameraAngle = 0;
+      this.desiredAngle = 0;
       this.cameraElevation = 78;
+      this.desiredElevation = 78;
       this.desiredDistance = Math.max(25, bounds.recommendedOverviewDistance);
       this.desiredTarget.set(bounds.centerX, 0, bounds.centerZ);
     } else if (preset === 'agent-focus') {
       this.cameraElevation = 34;
+      this.desiredElevation = 34;
       if (this.activeAgentId) {
         const agentGroup = this.agentMeshes.get(this.activeAgentId);
         if (agentGroup) {
@@ -1610,7 +1633,40 @@ export class ThreeOfficeScene {
     dom.addEventListener('touchmove', this.handleTouchMove, { passive: false });
     dom.addEventListener('webglcontextlost', this.handleContextLost as EventListener);
     dom.addEventListener('webglcontextrestored', this.handleContextRestored as EventListener);
+
+    if (typeof window !== 'undefined' && window.addEventListener) {
+      window.addEventListener('keydown', this.handleKeyDown);
+      window.addEventListener('keyup', this.handleKeyUp);
+    }
   }
+
+  private handleKeyDown = (e: KeyboardEvent): void => {
+    const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
+    if (
+      activeEl &&
+      (activeEl.tagName === 'INPUT' ||
+        activeEl.tagName === 'TEXTAREA' ||
+        activeEl.tagName === 'SELECT' ||
+        (activeEl as HTMLElement).isContentEditable)
+    ) {
+      return;
+    }
+    const key = e.key.toLowerCase();
+    if (
+      ['w', 'a', 's', 'd', 'q', 'e', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(
+        key
+      )
+    ) {
+      this.pressedKeys.add(key);
+      if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(key)) {
+        e.preventDefault();
+      }
+    }
+  };
+
+  private handleKeyUp = (e: KeyboardEvent): void => {
+    this.pressedKeys.delete(e.key.toLowerCase());
+  };
 
   private handleContextLost = (e: Event): void => {
     e.preventDefault();
@@ -1686,17 +1742,27 @@ export class ThreeOfficeScene {
       }
 
       if (this.isDragging) {
-        // Orbit on right-click, Shift+drag, or if dragMode === 'orbit'
+        const isRightClick = (e.buttons & 2) !== 0;
+        const isLeftClick = (e.buttons & 1) !== 0;
+
+        // 1. Orbital View Rotation (Yaw & Pitch):
+        // Right-Click Drag, or Left-Click with Orbit mode / Shift / Alt
         const isOrbitDrag =
-          e.buttons === 2 || e.shiftKey || e.altKey || this.options.dragMode === 'orbit';
+          isRightClick ||
+          e.shiftKey ||
+          e.altKey ||
+          (isLeftClick && this.options.dragMode === 'orbit');
 
         if (isOrbitDrag) {
-          this.orbitCamera(-deltaX * 0.3, deltaY * 0.25);
+          this.renderer.domElement.style.cursor = 'all-scroll';
+          this.orbitCamera(-deltaX * 0.35, deltaY * 0.25);
           this.pointerDownPos.set(e.clientX, e.clientY);
           return;
         }
 
-        // Default: Smooth architectural pan across campus floor plate
+        // 2. Planar Floor Panning:
+        // Middle-Click (wheel click), Left-Click (default dragMode 'pan'), or touch drag
+        this.renderer.domElement.style.cursor = 'grabbing';
         const rad = (this.cameraAngle * Math.PI) / 180;
         const panSensitivity = 0.024 * (this.cameraDistance / 24);
         const worldDeltaX = (-deltaX * Math.cos(rad) + deltaY * Math.sin(rad)) * panSensitivity;
@@ -1745,7 +1811,7 @@ export class ThreeOfficeScene {
     }
 
     if (this.activePointers.size === 0) {
-      if (!this.isDragging) {
+      if (!this.isDragging && (e.button === 0 || e.pointerType === 'touch')) {
         const rect = this.renderer.domElement.getBoundingClientRect();
         if (rect.width > 0 && rect.height > 0) {
           this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -1766,6 +1832,7 @@ export class ThreeOfficeScene {
       }
 
       this.isDragging = false;
+      this.renderer.domElement.style.cursor = 'grab';
       this.lastPinchDistance = null;
       this.lastTwoFingerAngle = null;
     }
@@ -1860,15 +1927,74 @@ export class ThreeOfficeScene {
       }
     }
 
-    // 1. Smooth camera panning and smart zooming
+    // 1. Keyboard Navigation across campus floor plate (W, A, S, D, Q, E, Space)
+    if (this.pressedKeys.size > 0 && !this.options.reducedMotion) {
+      const dtSec = 0.016;
+      const moveSpeed = 16 * (this.cameraDistance / 24);
+      const rad = THREE.MathUtils.degToRad(this.cameraAngle);
+
+      let forward = 0;
+      let strafe = 0;
+
+      if (this.pressedKeys.has('w') || this.pressedKeys.has('arrowup')) forward += 1;
+      if (this.pressedKeys.has('s') || this.pressedKeys.has('arrowdown')) forward -= 1;
+      if (this.pressedKeys.has('d') || this.pressedKeys.has('arrowright')) strafe += 1;
+      if (this.pressedKeys.has('a') || this.pressedKeys.has('arrowleft')) strafe -= 1;
+
+      if (forward !== 0 || strafe !== 0) {
+        this.followSelectedAgent = false;
+        const mag = Math.hypot(forward, strafe);
+        const normForward = forward / mag;
+        const normStrafe = strafe / mag;
+
+        const fx = -Math.sin(rad);
+        const fz = -Math.cos(rad);
+        const sx = Math.cos(rad);
+        const sz = -Math.sin(rad);
+
+        const deltaX = (fx * normForward + sx * normStrafe) * moveSpeed * dtSec;
+        const deltaZ = (fz * normForward + sz * normStrafe) * moveSpeed * dtSec;
+        this.panCamera(deltaX, deltaZ);
+      }
+
+      const turnSpeed = 90; // degrees per second
+      if (this.pressedKeys.has('q')) {
+        this.orbitCamera(-turnSpeed * dtSec, 0);
+      }
+      if (this.pressedKeys.has('e')) {
+        this.orbitCamera(turnSpeed * dtSec, 0);
+      }
+      if (this.pressedKeys.has(' ')) {
+        this.pressedKeys.delete(' ');
+        if (this.activeAgentId) {
+          this.setFollowAgent(true);
+        } else {
+          this.resetCamera();
+        }
+      }
+    }
+
+    // 2. Smooth camera tracking, smart zooming and angular damping
     if (!this.options.reducedMotion) {
       let needsCameraUpdate = false;
       if (this.cameraTarget.distanceTo(this.desiredTarget) > 0.02) {
-        this.cameraTarget.lerp(this.desiredTarget, 0.08);
+        this.cameraTarget.lerp(this.desiredTarget, 0.12);
         needsCameraUpdate = true;
       }
       if (Math.abs(this.cameraDistance - this.desiredDistance) > 0.05) {
-        this.cameraDistance += (this.desiredDistance - this.cameraDistance) * 0.08;
+        this.cameraDistance += (this.desiredDistance - this.cameraDistance) * 0.12;
+        needsCameraUpdate = true;
+      }
+      let angleDiff = (this.desiredAngle - this.cameraAngle) % 360;
+      if (angleDiff > 180) angleDiff -= 360;
+      if (angleDiff < -180) angleDiff += 360;
+      if (Math.abs(angleDiff) > 0.05) {
+        this.cameraAngle = (this.cameraAngle + angleDiff * 0.2) % 360;
+        if (this.cameraAngle < 0) this.cameraAngle += 360;
+        needsCameraUpdate = true;
+      }
+      if (Math.abs(this.desiredElevation - this.cameraElevation) > 0.05) {
+        this.cameraElevation += (this.desiredElevation - this.cameraElevation) * 0.2;
         needsCameraUpdate = true;
       }
       if (needsCameraUpdate) {
@@ -1977,6 +2103,11 @@ export class ThreeOfficeScene {
       dom.removeEventListener('touchmove', this.handleTouchMove);
       dom.removeEventListener('webglcontextlost', this.handleContextLost as EventListener);
       dom.removeEventListener('webglcontextrestored', this.handleContextRestored as EventListener);
+    }
+
+    if (typeof window !== 'undefined' && window.removeEventListener) {
+      window.removeEventListener('keydown', this.handleKeyDown);
+      window.removeEventListener('keyup', this.handleKeyUp);
     }
 
     this.disposeHierarchy(this.scene);

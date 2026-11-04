@@ -777,7 +777,9 @@ export class ThreeOfficeScene {
     stoneTexture.colorSpace = THREE.SRGBColorSpace;
     stoneTexture.wrapS = THREE.RepeatWrapping;
     stoneTexture.wrapT = THREE.RepeatWrapping;
-    stoneTexture.repeat.set(width / 5, depth / 5);
+    // Apply a single continuous stone finish across the slab. Repeating a small
+    // texture on a 5 m grid made its tile boundaries read as room-sized floor pads.
+    stoneTexture.repeat.set(1, 1);
 
     // Continuous Corporate Campus Floor Slab
     const campusSlab = new THREE.Mesh(

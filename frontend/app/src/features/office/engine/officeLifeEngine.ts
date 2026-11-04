@@ -593,17 +593,17 @@ export function planOfficeLifePlacements(
       // Build obstacle-free corridor waypoints (Chair -> Central Aisle -> Room Door -> Atrium Ring)
       const aisleWaypoint = { x: room.x, z: slot.chairWorldZ };
       const doorWaypoint = layout.corridorEntryWorld;
-      const hashAngle = ((stableAgentHash(agent.id) % 12) / 12) * Math.PI * 2;
-      const atriumWaypoint = {
-        x: Math.cos(hashAngle) * 2.1,
-        z: Math.sin(hashAngle) * 2.1,
+      const walkSide = stableAgentHash(agent.id) % 2 === 0 ? -1 : 1;
+      const neighborhoodWaypoint = {
+        x: room.x + walkSide * (room.width / 2 + 0.75),
+        z: doorWaypoint.z,
       };
 
       const waypoints = [
         { x: slot.chairWorldX, z: slot.chairWorldZ },
         aisleWaypoint,
         doorWaypoint,
-        atriumWaypoint,
+        neighborhoodWaypoint,
         doorWaypoint,
         aisleWaypoint,
       ];
@@ -628,7 +628,8 @@ export function planOfficeLifePlacements(
     });
   }
 
-  // Unassigned agents placed on distinct outer ring spots in the central atrium
+  // Unassigned agents remain in a neutral holding area near the campus origin;
+  // no organizational unit is inferred for them.
   const sortedUnassigned = [...unassignedAgents].sort((a, b) => a.id.localeCompare(b.id));
   sortedUnassigned.forEach((agent, index) => {
     const ring = Math.floor(index / 8);
@@ -687,52 +688,25 @@ export function planOfficeLifePlacements(
     pairedVisited.add(placement.agentId);
     pairedVisited.add(partnerPlacement.agentId);
 
-    // If both belong to the same room, use that room's meeting table spots; otherwise meet in the central atrium hub
-    const sameRoomLayout =
-      placement.unitId === partnerPlacement.unitId
-        ? roomLayouts.get(placement.unitId)
-        : undefined;
+    // Conversations use a local standing pair in a real team neighborhood,
+    // never a fabricated radial gathering around the origin.
+    const conversationRoomId = [placement.unitId, partnerPlacement.unitId].sort()[0];
+    const conversationRoom = rooms.find((room) => room.id === conversationRoomId);
+    const baseX = conversationRoom?.x ?? (placement.workstationSlot.chairWorldX + partnerPlacement.workstationSlot.chairWorldX) / 2;
+    const baseZ = conversationRoom?.z ?? (placement.workstationSlot.chairWorldZ + partnerPlacement.workstationSlot.chairWorldZ) / 2;
+    const offset = 0.48 + (conversationClusterIdx % 3) * 0.24;
+    conversationClusterIdx += 1;
+    const spotAX = baseX - offset;
+    const spotBX = baseX + offset;
 
-    if (sameRoomLayout && sameRoomLayout.meetingSpots.length >= 2) {
-      const spotA = sameRoomLayout.meetingSpots[0];
-      const spotB = sameRoomLayout.meetingSpots[1];
-      placement.targetWorldX = spotA.worldX;
-      placement.targetWorldZ = spotA.worldZ;
-      placement.targetFacingAngle = Math.atan2(
-        spotB.worldX - spotA.worldX,
-        spotB.worldZ - spotA.worldZ
-      );
-      placement.isSeated = false;
-
-      partnerPlacement.targetWorldX = spotB.worldX;
-      partnerPlacement.targetWorldZ = spotB.worldZ;
-      partnerPlacement.targetFacingAngle = Math.atan2(
-        spotA.worldX - spotB.worldX,
-        spotA.worldZ - spotB.worldZ
-      );
-      partnerPlacement.isSeated = false;
-    } else {
-      // Distinct conversation spot on the central atrium hub
-      const hubAngle = (conversationClusterIdx * Math.PI) / 3 + 0.35;
-      conversationClusterIdx += 1;
-      const centerX = Math.cos(hubAngle) * 1.65;
-      const centerZ = Math.sin(hubAngle) * 1.65;
-
-      const spotAX = centerX - 0.42;
-      const spotAZ = centerZ;
-      const spotBX = centerX + 0.42;
-      const spotBZ = centerZ;
-
-      placement.targetWorldX = spotAX;
-      placement.targetWorldZ = spotAZ;
-      placement.targetFacingAngle = Math.atan2(spotBX - spotAX, spotBZ - spotAZ);
-      placement.isSeated = false;
-
-      partnerPlacement.targetWorldX = spotBX;
-      partnerPlacement.targetWorldZ = spotBZ;
-      partnerPlacement.targetFacingAngle = Math.atan2(spotAX - spotBX, spotAZ - spotBZ);
-      partnerPlacement.isSeated = false;
-    }
+    placement.targetWorldX = spotAX;
+    placement.targetWorldZ = baseZ + 0.15;
+    placement.targetFacingAngle = Math.PI / 2;
+    placement.isSeated = false;
+    partnerPlacement.targetWorldX = spotBX;
+    partnerPlacement.targetWorldZ = baseZ + 0.15;
+    partnerPlacement.targetFacingAngle = -Math.PI / 2;
+    partnerPlacement.isSeated = false;
   }
 
   return result;

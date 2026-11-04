@@ -988,28 +988,9 @@ export class ThreeOfficeScene {
       group.add(chairGroup);
     }
 
-    // Collaborative Meeting Table in canonical departments
-    if (!isUnassignedHolding) {
-      const meetingGroup = new THREE.Group();
-      meetingGroup.position.set(layout.meetingTableLocal.x, 0.36, layout.meetingTableLocal.z);
-
-      const tableTop = new THREE.Mesh(
-        this.furniturePool.meetingTableTopGeo,
-        this.furniturePool.meetingTableMat
-      );
-      tableTop.position.y = 0.42;
-      tableTop.castShadow = true;
-      meetingGroup.add(tableTop);
-
-      const tablePed = new THREE.Mesh(
-        this.furniturePool.meetingTablePedGeo,
-        this.furniturePool.metalLegMat
-      );
-      tablePed.position.y = 0.2;
-      meetingGroup.add(tablePed);
-
-      group.add(meetingGroup);
-    }
+    // Conversations use clear, temporary standing positions from officeLifeEngine.
+    // Do not stamp a round meeting table into every department neighborhood:
+    // shared collaboration furniture belongs in a planned common amenity.
   }
 
   private buildErgonomicChair(backrestAccentMat: THREE.Material): THREE.Group {

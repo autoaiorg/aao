@@ -608,6 +608,8 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
       ...peerA,
       id: 'agent-peer-b',
       name: 'Ingeniera Beta',
+      unitId: 'unit-audit',
+      unitName: 'Auditoría Independiente',
       currentAssignments: [
         {
           id: 'asg-peer-b',
@@ -647,6 +649,20 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
     expect(livePeerAWithCoord.kind).toBe('CONVERSING');
     expect(livePeerAWithCoord.provenance).toBe('LIVE_VERIFIED_EVIDENCE');
     expect(livePeerAWithCoord.conversationPartnerId).toBe('agent-peer-b');
+
+    const conversationPlacements = planOfficeLifePlacements([peerA, peerB], OFFICE_ROOMS, {
+      isDemo: false,
+      nowMs,
+      activeCoordinationAgentIds: new Set(['agent-peer-a', 'agent-peer-b']),
+      ambientWalkEnabled: false,
+    });
+    const placedPeerA = conversationPlacements.get('agent-peer-a')!;
+    const placedPeerB = conversationPlacements.get('agent-peer-b')!;
+    expect(placedPeerA.activity.kind).toBe('CONVERSING');
+    expect(placedPeerB.activity.kind).toBe('CONVERSING');
+    expect(Math.abs(placedPeerA.targetWorldX - placedPeerB.targetWorldX)).toBeCloseTo(0.96);
+    expect((placedPeerA.targetWorldX + placedPeerB.targetWorldX) / 2).toBeCloseTo(6);
+    expect((placedPeerA.targetWorldZ + placedPeerB.targetWorldZ) / 2).toBeGreaterThan(-8);
   });
 
   it('maintains stable workstation slots across LLM/session changes, avoids collisions, and computes deterministic corridor routes', () => {

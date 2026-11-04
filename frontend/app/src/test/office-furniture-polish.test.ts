@@ -208,6 +208,13 @@ describe('PR C: Office Furniture, Procedural IDE Textures, Biophilia & Lighting'
       expect(selectableFloor.position.y + room!.position.y).toBeCloseTo(0.02);
       const hitMaterial = selectableFloor.material as THREE.MeshBasicMaterial;
       expect(hitMaterial.opacity).toBe(0);
+      const furniturePool = scene.getFurniturePool();
+      const renderedGeometry: THREE.BufferGeometry[] = [];
+      room!.traverse((object) => {
+        if (object instanceof THREE.Mesh) renderedGeometry.push(object.geometry);
+      });
+      expect(renderedGeometry).not.toContain(furniturePool.meetingTableTopGeo);
+      expect(renderedGeometry).not.toContain(furniturePool.meetingTablePedGeo);
       expect(hitMaterial.colorWrite).toBe(false);
       expect(hitMaterial.depthWrite).toBe(false);
 

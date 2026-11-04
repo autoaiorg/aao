@@ -78,6 +78,10 @@ test('Capture real screenshots of F4.7 and F4.8 Office', async ({ page }) => {
       await page.mouse.wheel(0, -120);
       await page.waitForTimeout(90);
     }
+    const inspectionDistance = Number(await officeCanvas.getAttribute('data-camera-distance'));
+    if (!Number.isFinite(inspectionDistance) || inspectionDistance > 3.5) {
+      throw new Error(`Agent close-up did not reach the inspection distance (got ${inspectionDistance})`);
+    }
     await page.screenshot({
       path: path.join(v42EvidenceDir, 'office-operational-department-close.png'),
       fullPage: false,

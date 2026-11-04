@@ -293,8 +293,6 @@ export class ThreeOfficeScene {
   private desiredElevation = 42;
   private cameraDistance = 24; // distance from target
   private desiredDistance = 24; // smart zoom destination
-  // Permit an actual agent/workstation close-up after the camera has focused
-  // a selection. Eight meters left people too small for posture inspection.
   // Permit a genuine agent-workstation close view (desk + seated posture),
   // rather than clamping zoom while the entire neighborhood is still framed.
   private minDistance = 3.2;
@@ -1775,6 +1773,11 @@ export class ThreeOfficeScene {
 
     this.camera.position.set(x, y, z);
     this.camera.lookAt(this.cameraTarget);
+    // Expose the current camera range for accessible diagnostics and browser
+    // evidence; this is scene telemetry, not enterprise or activity data.
+    if (this.renderer) {
+      this.renderer.domElement.dataset.cameraDistance = this.cameraDistance.toFixed(2);
+    }
     this.options.callbacks.onCameraChange?.(this.getCameraState());
   }
 

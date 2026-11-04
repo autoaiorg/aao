@@ -57,13 +57,69 @@ interface AgentAnimatedRuntimeState {
  * Shared geometry and material pool for repetitive office furniture
  * (desks, chairs, monitors, keyboards) to minimize GPU memory footprint and draw overhead.
  */
-class SharedFurniturePool {
+export function createProceduralIdeTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    // Dark editor background
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(0, 0, 256, 128);
+
+    // Sidebar panel
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(0, 0, 48, 128);
+
+    // Sidebar file tree lines
+    ctx.fillStyle = '#64748b';
+    for (let y = 14; y < 110; y += 14) {
+      ctx.fillRect(8, y, 28, 4);
+    }
+
+    // Tab bar
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(48, 0, 208, 18);
+    ctx.fillStyle = '#38bdf8';
+    ctx.fillRect(52, 4, 46, 10);
+
+    // Code lines in editor area with syntax colors
+    const colors = ['#f43f5e', '#38bdf8', '#a855f7', '#22c55e', '#f59e0b', '#e2e8f0'];
+    let lineY = 28;
+    for (let i = 0; i < 7; i++) {
+      let lineX = 56 + (i % 3 === 0 ? 0 : (i % 2) * 12);
+      const segments = 2 + (i % 4);
+      for (let s = 0; s < segments; s++) {
+        const segWidth = 14 + ((i * 7 + s * 13) % 26);
+        ctx.fillStyle = colors[(i + s) % colors.length];
+        ctx.fillRect(lineX, lineY, segWidth, 5);
+        lineX += segWidth + 6;
+      }
+      lineY += 12;
+    }
+
+    // Status bar at bottom
+    ctx.fillStyle = '#2563eb';
+    ctx.fillRect(48, 116, 208, 12);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(54, 120, 24, 4);
+    ctx.fillRect(84, 120, 36, 4);
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.generateMipmaps = true;
+  return texture;
+}
+
+export class SharedFurniturePool {
   public readonly deskTopGeo = new THREE.BoxGeometry(0.95, 0.06, 0.48);
   public readonly deskLegGeo = new THREE.BoxGeometry(0.06, 0.42, 0.44);
   public readonly monitorPanelGeo = new THREE.BoxGeometry(0.36, 0.24, 0.03);
+  public readonly ultrawideMonitorGeo = new THREE.BoxGeometry(0.58, 0.26, 0.03);
   public readonly monitorStandGeo = new THREE.BoxGeometry(0.06, 0.12, 0.06);
   public readonly keyboardGeo = new THREE.BoxGeometry(0.28, 0.02, 0.11);
   public readonly mouseGeo = new THREE.BoxGeometry(0.05, 0.02, 0.08);
+  public readonly deskGrommetGeo = new THREE.CylinderGeometry(0.035, 0.035, 0.07, 12);
 
   public readonly chairBaseGeo = new THREE.CylinderGeometry(0.18, 0.2, 0.05, 12);
   public readonly chairStemGeo = new THREE.CylinderGeometry(0.035, 0.035, 0.2, 10);
@@ -73,6 +129,14 @@ class SharedFurniturePool {
 
   public readonly meetingTableTopGeo = new THREE.CylinderGeometry(0.46, 0.46, 0.05, 20);
   public readonly meetingTablePedGeo = new THREE.CylinderGeometry(0.12, 0.22, 0.4, 14);
+
+  public readonly planterPotGeo = new THREE.CylinderGeometry(0.18, 0.14, 0.36, 14);
+  public readonly plantFoliageGeo = new THREE.DodecahedronGeometry(0.24, 1);
+
+  public readonly ideTexture = createProceduralIdeTexture();
+  public readonly monitorIdeMat = new THREE.MeshBasicMaterial({
+    map: this.ideTexture,
+  });
 
   public readonly deskWoodMat = new THREE.MeshStandardMaterial({
     color: 0x1e293b,
@@ -104,6 +168,21 @@ class SharedFurniturePool {
     roughness: 0.4,
     metalness: 0.4,
   });
+  public readonly plantPotMat = new THREE.MeshStandardMaterial({
+    color: 0xe2e8f0,
+    roughness: 0.45,
+    metalness: 0.1,
+  });
+  public readonly plantLeafMat = new THREE.MeshStandardMaterial({
+    color: 0x225e3b,
+    roughness: 0.65,
+    metalness: 0.1,
+  });
+  public readonly deskTrimMat = new THREE.MeshStandardMaterial({
+    color: 0x334155,
+    roughness: 0.4,
+    metalness: 0.5,
+  });
 
   private readonly allGeometries: THREE.BufferGeometry[];
   private readonly allMaterials: THREE.Material[];
@@ -113,9 +192,11 @@ class SharedFurniturePool {
       this.deskTopGeo,
       this.deskLegGeo,
       this.monitorPanelGeo,
+      this.ultrawideMonitorGeo,
       this.monitorStandGeo,
       this.keyboardGeo,
       this.mouseGeo,
+      this.deskGrommetGeo,
       this.chairBaseGeo,
       this.chairStemGeo,
       this.chairSeatGeo,
@@ -123,6 +204,8 @@ class SharedFurniturePool {
       this.chairArmGeo,
       this.meetingTableTopGeo,
       this.meetingTablePedGeo,
+      this.planterPotGeo,
+      this.plantFoliageGeo,
     ];
     this.allMaterials = [
       this.deskWoodMat,
@@ -131,6 +214,10 @@ class SharedFurniturePool {
       this.chairCushionMat,
       this.keyboardMat,
       this.meetingTableMat,
+      this.monitorIdeMat,
+      this.plantPotMat,
+      this.plantLeafMat,
+      this.deskTrimMat,
     ];
   }
 
@@ -153,6 +240,7 @@ class SharedFurniturePool {
   public dispose(): void {
     this.allGeometries.forEach((g) => g.dispose());
     this.allMaterials.forEach((m) => m.dispose());
+    this.ideTexture.dispose();
   }
 }
 
@@ -334,7 +422,7 @@ export class ThreeOfficeScene {
   }
 
   private setupLighting(): void {
-    const ambient = new THREE.AmbientLight(0x334766, 2.25);
+    const ambient = new THREE.AmbientLight(0x334766, 2.0);
     this.lightsGroup.add(ambient);
 
     const dirLight = new THREE.DirectionalLight(0xf8fafc, 2.5);
@@ -343,6 +431,7 @@ export class ThreeOfficeScene {
     const shadowSize = this.qualityProfile === 'high' ? 2048 : 1024;
     dirLight.shadow.mapSize.width = shadowSize;
     dirLight.shadow.mapSize.height = shadowSize;
+    dirLight.shadow.bias = -0.0004; // Architectural soft contact shadow bias
     dirLight.shadow.camera.near = 0.5;
     dirLight.shadow.camera.far = 90;
     const d = 18;
@@ -353,6 +442,9 @@ export class ThreeOfficeScene {
     this.mainDirLight = dirLight;
     this.lightsGroup.add(dirLight);
 
+    const hemiLight = new THREE.HemisphereLight(0xe0f2fe, 0x0f172a, 0.75);
+    this.lightsGroup.add(hemiLight);
+
     const fillLight = new THREE.DirectionalLight(0x38bdf8, 1.15);
     fillLight.position.set(-20, 15, -15);
     this.lightsGroup.add(fillLight);
@@ -361,6 +453,31 @@ export class ThreeOfficeScene {
     this.roomSpotlight.position.set(-5, 12, -3.1);
     this.roomSpotlight.castShadow = this.qualityProfile === 'high';
     this.lightsGroup.add(this.roomSpotlight);
+  }
+
+  public buildBiophilicOfficePlant(x: number, z: number): THREE.Group {
+    const plantGroup = new THREE.Group();
+    plantGroup.position.set(x, 0.04, z);
+
+    // Matte ceramic cylindrical planter
+    const pot = new THREE.Mesh(this.furniturePool.planterPotGeo, this.furniturePool.plantPotMat);
+    pot.position.y = 0.18;
+    pot.castShadow = true;
+    pot.receiveShadow = true;
+    plantGroup.add(pot);
+
+    // Architectural botanical foliage
+    const foliage = new THREE.Mesh(this.furniturePool.plantFoliageGeo, this.furniturePool.plantLeafMat);
+    foliage.position.y = 0.44;
+    foliage.scale.set(1.15, 1.25, 1.15);
+    foliage.castShadow = true;
+    plantGroup.add(foliage);
+
+    return plantGroup;
+  }
+
+  public getFurniturePool(): SharedFurniturePool {
+    return this.furniturePool;
   }
 
   private buildWorld(): void {
@@ -398,6 +515,17 @@ export class ThreeOfficeScene {
     const compass = new THREE.Mesh(compassGeo, compassMat);
     compass.position.y = 0.15;
     this.scene.add(compass);
+
+    // Biophilic Office Plants around Central Atrium Perimeter
+    const plantCorners: [number, number][] = [
+      [-3.4, -3.4],
+      [3.4, -3.4],
+      [3.4, 3.4],
+      [-3.4, 3.4],
+    ];
+    for (const [px, pz] of plantCorners) {
+      this.groundGroup.add(this.buildBiophilicOfficePlant(px, pz));
+    }
 
     // 2. Connected Architectural Corridors linking the Central Atrium to each Department Doorway
     this.buildWalkways();
@@ -527,6 +655,8 @@ export class ThreeOfficeScene {
 
   private buildRoom(room: OfficeRoomConfig): void {
     const roomGroup = new THREE.Group();
+    roomGroup.name = `room-${room.id}`;
+    roomGroup.userData = { room };
     roomGroup.position.set(room.x, 0, room.z);
     const isUnassignedHolding =
       room.kind === 'unassigned-holding' || room.id === 'unit-unassigned';
@@ -628,6 +758,13 @@ export class ThreeOfficeScene {
       this.buildDepartmentAccentEquipment(roomGroup, room);
     }
 
+    // Biophilic Plant in rear corner of canonical departments
+    if (!isUnassignedHolding) {
+      const plantX = room.width / 2 - 0.42;
+      const plantZ = (room.z < 0 ? -room.depth / 2 : room.depth / 2) + (room.z < 0 ? 0.42 : -0.42);
+      roomGroup.add(this.buildBiophilicOfficePlant(plantX, plantZ));
+    }
+
     // Floating Department Label Sprite (managed by Adaptive Label System)
     const labelSprite = this.createDepartmentLabelSprite(
       room.code,
@@ -684,24 +821,18 @@ export class ThreeOfficeScene {
       deskGroup.add(rightLeg);
 
       if (!isUnassignedHolding) {
-        // Canonical Department: Dual Monitors + Keyboard + Mouse
-        const monLeft = new THREE.Mesh(this.furniturePool.monitorPanelGeo, screenMat);
-        monLeft.position.set(-0.2, 0.64, -0.1);
-        monLeft.rotation.y = 0.14;
-        deskGroup.add(monLeft);
+        // Modern Ergonomic Workstation: Ultrawide Curved Monitor with procedural IDE code display + cable grommet
+        const mon = new THREE.Mesh(this.furniturePool.ultrawideMonitorGeo, this.furniturePool.monitorIdeMat);
+        mon.position.set(0, 0.65, -0.09);
+        deskGroup.add(mon);
 
-        const standLeft = new THREE.Mesh(this.furniturePool.monitorStandGeo, this.furniturePool.metalLegMat);
-        standLeft.position.set(-0.2, 0.51, -0.12);
-        deskGroup.add(standLeft);
+        const stand = new THREE.Mesh(this.furniturePool.monitorStandGeo, this.furniturePool.metalLegMat);
+        stand.position.set(0, 0.51, -0.12);
+        deskGroup.add(stand);
 
-        const monRight = new THREE.Mesh(this.furniturePool.monitorPanelGeo, screenMat);
-        monRight.position.set(0.2, 0.64, -0.1);
-        monRight.rotation.y = -0.14;
-        deskGroup.add(monRight);
-
-        const standRight = new THREE.Mesh(this.furniturePool.monitorStandGeo, this.furniturePool.metalLegMat);
-        standRight.position.set(0.2, 0.51, -0.12);
-        deskGroup.add(standRight);
+        const grommet = new THREE.Mesh(this.furniturePool.deskGrommetGeo, this.furniturePool.deskTrimMat);
+        grommet.position.set(0.32, 0.45, -0.15);
+        deskGroup.add(grommet);
 
         const keyboard = new THREE.Mesh(this.furniturePool.keyboardGeo, this.furniturePool.keyboardMat);
         keyboard.position.set(-0.04, 0.48, 0.1);

@@ -927,10 +927,10 @@ DAILY_CAP_429 = (429, {"detail": {"code": "SELFDEV_CYCLE_ISSUANCE_DAILY_CAP",
 
 @pytest.mark.parametrize(("remaining", "wait"), [
     (timedelta(hours=2), timedelta(hours=1)),        # capped at 1 h
-    (timedelta(minutes=97), timedelta(minutes=55, seconds=30)),
+    (timedelta(minutes=97), timedelta(minutes=55, seconds=30)), # 55m30s
     (timedelta(minutes=96), timedelta(minutes=54, seconds=30)),
     (timedelta(minutes=95), timedelta(minutes=53, seconds=30)),
-    (timedelta(minutes=60), timedelta(minutes=18, seconds=30)),  # renewal threshold: 60 - 41.5
+    (timedelta(minutes=60), timedelta(minutes=18, seconds=30)), # 60 - 41m30s
     (timedelta(minutes=42), timedelta(minutes=5)),
     (timedelta(minutes=41), timedelta(minutes=5)),   # exactly the floor
     (timedelta(minutes=40), timedelta(minutes=5)),   # floor
@@ -962,7 +962,7 @@ def test_daily_cap_429_retries_before_n_expires_and_never_revokes(env):
         clock.advance(minutes=5)
         assert make().tick() == 1
     assert [c[0] for c in server.calls] == ["issue"]
-    clock.advance(minutes=5)  # 20 min: first timer tick after retry_at
+    clock.advance(minutes=5)  # 20 min: retry while N still has 40 min left
     assert make().tick() == 1
     assert [c[0] for c in server.calls] == ["issue", "issue"]
     assert _parse(store.load()["next_attempt_at"]) == clock.now + renew.DAILY_CAP_MIN_WAIT

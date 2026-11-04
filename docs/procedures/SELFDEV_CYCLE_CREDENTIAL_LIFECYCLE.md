@@ -231,7 +231,8 @@ que no se revoca nada.
   runner reintenta antes de que caduque N:
   `next_attempt_at = ahora + min(1 h, max(5 min, restante_N − margen))`, con
   `margen = DRAIN_CAP + CLOCK_SKEW + TIMER_INTERVAL + TIMER_ACCURACY`
-  (41,5 min: drenaje de N, desfase de reloj y tick del timer). Si N ya caducó (o no hay N), queda en
+  (41 min 30 s: emisión/instalación/verificación, drenaje, desfase de reloj,
+  un tick del timer y su precisión). Si N ya caducó (o no hay N), queda en
   `FAILED_EXPIRED` y reintenta en cada tick de 5 min: cada 429 no emite nada y
   el primer hueco libre se usa. Mientras espera, cada tick sale con código 1
   (alerta) y no hace ningún POST.
@@ -259,7 +260,7 @@ los logs. Los tokens viven solo en la memoria del proceso entre el POST y el
 | Estado | Significado | Transición normal | Fallo |
 |---|---|---|---|
 | `ACTIVE` | El ciclo N está instalado y verificado, y le queda más del margen | Al cruzar el umbral de renovación (§6): genera `next_cycle_id`, **persiste** y pasa a `ISSUING` | — |
-| `ISSUING` | El ID N+1 y `next_issued_at` están persistidos antes del POST; ningún fichero se ha tocado | POST correcto → verificación de identidad por API (IDs, kind y grants exactos) → `INSTALLED_PENDING` | Error, 409, 5xx, timeout o desajuste de identidad → `FAILED_ISSUE`. 400/401/403/404/422 o 409 `SELFDEV_CYCLE_CONCURRENCY_CAP` → `BREAKER_OPEN`. 429 `SELFDEV_CYCLE_ISSUANCE_DAILY_CAP` → `ACTIVE` con espera `min(1 h, max(5 min, restante_N − 41,5 min))` (o `FAILED_EXPIRED` reintentando cada tick si N caducó), sin contar fallo |
+| `ISSUING` | El ID N+1 y `next_issued_at` están persistidos antes del POST; ningún fichero se ha tocado | POST correcto → verificación de identidad por API (IDs, kind y grants exactos) → `INSTALLED_PENDING` | Error, 409, 5xx, timeout o desajuste de identidad → `FAILED_ISSUE`. 400/401/403/404/422 o 409 `SELFDEV_CYCLE_CONCURRENCY_CAP` → `BREAKER_OPEN`. 429 `SELFDEV_CYCLE_ISSUANCE_DAILY_CAP` → `ACTIVE` con espera `min(1 h, max(5 min, restante_N − 41 min 30 s))` (o `FAILED_EXPIRED` reintentando cada tick si N caducó), sin contar fallo |
 | `INSTALLED_PENDING` | Se persiste **antes** del primer `replace`: los ficheros **pueden** contener N+1 | `replace` + `verify` completos del revisor; solo después `replace` + `verify` del implementador (el fichero con consumidor vivo) → `VERIFIED`. Si `replace` devuelve 3 (renombrado hecho, comprobación posterior fallida), decide su `verify` | Fallo del `replace` del revisor (antes de renombrar; nada escrito) → `FAILED_ISSUE`. Cualquier fallo posterior → `FAILED_INSTALL` |
 | `VERIFIED` | N+1 está verificado; el worker lo recoge en la siguiente iteración | Si el board no muestra ejecuciones `RUNNING`/`UNCERTAIN`/`QUEUED` con `attempts>0` y `worker_id = impl-N`, o si N ya caducó → `REVOKING_OLD` | Plazo de drenaje superado → `REVOKING_OLD` igualmente (§6) |
 | `REVOKING_OLD` | Se revoca el ciclo N | DELETE N devuelve `revoked`, `already_revoked` o `CYCLE_NOT_FOUND` → `current := next` y `next := null` → `ACTIVE` | Error → se queda en `REVOKING_OLD` y reintenta en cada tick. Si N ya caducó, avanza con alerta para no bloquear la renovación de N+1 |

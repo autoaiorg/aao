@@ -1480,6 +1480,11 @@ def revoke_selfdev_cycle_roles(
     principal: Annotated[AuthenticatedPrincipal, Depends(require_worker)],
 ):
     """Disable exactly the two principals from a cycle issued by this scoped API."""
+    production = os.getenv("AAO_ENV", "").strip().lower() == "production"
+    if production and not _production_selfdev_cycle_mtls_ready():
+        raise HTTPException(503, "Self Development mTLS signer is not configured")
+    if production and not principal.workload_fingerprint:
+        raise HTTPException(503, "Production cycle revocation requires verified mTLS")
     if not re.fullmatch(r"[0-9a-f]{32}", cycle_id):
         raise HTTPException(404, "Self Development cycle not found")
     expected = (
@@ -1505,7 +1510,8 @@ def revoke_selfdev_cycle_roles(
             rows = db.execute(
                 "SELECT c.kind,c.enabled,g.project_id,g.capability FROM principal_credentials c "
                 "JOIN project_grants g ON g.principal_id=c.principal_id "
-                "WHERE c.principal_id=%s ORDER BY g.project_id,g.capability FOR UPDATE OF c,g",
+                "WHERE c.principal_id=%s ORDER BY g.project_id,g.capability"
+                + ("" if production else " FOR UPDATE OF c,g"),
                 (principal_id,),
             ).fetchall()
             if ({row[3] for row in rows} != set(grants)
@@ -1513,6 +1519,14 @@ def revoke_selfdev_cycle_roles(
                     or any(row[0] != kind or str(row[2]) != project_id for row in rows)):
                 raise HTTPException(409, "Self Development cycle role set does not match")
             if any(bool(row[1]) for row in rows):
+                already_revoked = False
+        if production:
+            active_intents = db.execute(
+                "SELECT count(*) FROM selfdev_cycle_mtls_intents "
+                "WHERE project_id=%s AND cycle_id=%s AND state IN ('PENDING','COMPLETED')",
+                (project_id, cycle_id),
+            ).fetchone()[0]
+            if active_intents:
                 already_revoked = False
         if already_revoked:
             # Repair/verify cleanup for cycles revoked by an earlier API version
@@ -1533,6 +1547,18 @@ def revoke_selfdev_cycle_roles(
         # credential. The transaction would roll back on a later failure, but
         # this keeps the operation fail-before-mutation as well as atomic.
         _require_selfdev_cycle_retirement_migration(db)
+        if production:
+            from aao.selfdev_cycle_mtls_repository import PostgresCycleIntentRepository
+
+            intent_rows = db.execute(
+                "SELECT intent_id FROM selfdev_cycle_mtls_intents "
+                "WHERE project_id=%s AND cycle_id=%s ORDER BY kind",
+                (project_id, cycle_id),
+            ).fetchall()
+            if len(intent_rows) != len(expected):
+                raise HTTPException(503, "Production cycle identity intents are incomplete")
+            for (intent_id,) in intent_rows:
+                PostgresCycleIntentRepository.revoke_in_transaction(db, intent_id)
         for principal_id, kind, _grants in expected:
             db.execute(
                 "UPDATE principal_credentials SET enabled=false,pending_token_digest=NULL,"

@@ -496,7 +496,7 @@ class PrincipalCredentialRequest(BaseModel):
 
 class GrantRequest(BaseModel):
     principal_id: str = Field(min_length=1)
-    capability: str = Field(pattern=r"^(?:work\.(?:create|admit|review|progress|coordinate|assign)|project\.read|execution\.claim|execution\.reconcile|effect\.(?:propose|reconcile)|evidence\.submit|code\.(?:propose|publish)|credential\.issue_selfdev_cycle_roles)$")
+    capability: str = Field(pattern=r"^(?:work\.(?:create|admit|review|progress|coordinate|assign)|project\.read|execution\.claim|execution\.reconcile|effect\.(?:propose|reconcile)|evidence\.submit|code\.(?:propose|publish)|credential\.issue_selfdev_cycle_roles|organization\.(?:squad\.(?:create_temporary|dissolve)|slot\.assign|unit\.(?:create_permanent|merge|split)))$")
     expires_at: datetime | None = None
 
     @field_validator("expires_at")
@@ -1269,6 +1269,14 @@ def issue_selfdev_cycle_roles(
     principal: Annotated[AuthenticatedPrincipal, Depends(require_worker)],
 ):
     """Issue only the fixed, short-lived implementer/reviewer pair for Self Development."""
+    # The existing response contains development bearer credentials. Production
+    # must remain closed until the typed mTLS intent/signer flow is wired end to
+    # end; never create or return cycle bearer credentials there.
+    if os.getenv("AAO_ENV", "").strip().lower() == "production":
+        raise HTTPException(
+            503,
+            "Self Development cycle issuance requires the production mTLS signer flow",
+        )
     from aao.principal_credentials import digest_token
 
     cycle_id = payload.cycle_id
@@ -2842,6 +2850,255 @@ def plan_organization_execution(
     }
 
 
+def _transition_organization_execution(
+    db, execution_id: str, current: str, target: str, actor: str,
+    event_type: str, details: dict[str, Any],
+) -> None:
+    from aao.organization_execution import (
+        OrganizationExecutionState,
+        validate_execution_transition,
+    )
+
+    try:
+        current_state = OrganizationExecutionState(current)
+        target_state = OrganizationExecutionState(target)
+    except ValueError as exc:
+        raise HTTPException(409, "Execution journal contains an unknown state") from exc
+    if not validate_execution_transition(current_state, target_state):
+        raise HTTPException(409, f"Invalid execution transition {current} -> {target}")
+    updated = db.execute(
+        "UPDATE organization_executions SET state=%s,updated_at=clock_timestamp() "
+        "WHERE id=%s AND state=%s RETURNING id",
+        (target, execution_id, current),
+    ).fetchone()
+    if not updated:
+        raise HTTPException(409, "Execution state changed concurrently")
+    db.execute(
+        "INSERT INTO organization_execution_events(execution_id,from_state,to_state,"
+        "actor_principal_id,event_type,details_json) VALUES (%s,%s,%s,%s,%s,%s::jsonb)",
+        (execution_id, current, target, actor, event_type, json.dumps(details)),
+    )
+
+
+@app.post("/v1/organization/executions/{execution_id}/execute")
+def execute_organization_execution(
+    execution_id: str,
+    principal: str = Depends(require_worker),
+):
+    """Execute a currently authorized temporary-squad plan transactionally.
+
+    Authority, proposal snapshot and project status are rechecked in the same
+    transaction as the work-group effects. Other operations remain fail-closed.
+    """
+    from aao.organization_execution import (
+        OrganizationOperation,
+        build_execution_plan,
+    )
+
+    reconcile_pending = False
+    actor = str(principal)
+    with tx() as db:
+        execution_ref = db.execute(
+            "SELECT proposal_id,proposal_version,project_id FROM organization_executions WHERE id=%s",
+            (execution_id,),
+        ).fetchone()
+        if not execution_ref:
+            raise HTTPException(404, "Organization execution not found")
+        proposal_id, proposal_version, project_id = execution_ref
+
+        # Follow the planner's lock order (proposal -> project -> execution).
+        proposal = db.execute(
+            "SELECT version,state,operation,project_id,scope_description,"
+            "operation_parameters_json,budget_ceiling_usd,approved_version,"
+            "approved_plan_sha256,approved_by_principal_id "
+            "FROM organization_proposals WHERE id=%s FOR UPDATE",
+            (proposal_id,),
+        ).fetchone()
+        if not proposal:
+            raise HTTPException(409, "Execution proposal no longer exists")
+
+        project = db.execute(
+            "SELECT state FROM projects WHERE id=%s FOR UPDATE", (project_id,),
+        ).fetchone()
+        if not project:
+            raise HTTPException(404, "Execution project not found")
+
+        execution = db.execute(
+            "SELECT proposal_id,proposal_version,project_id,plan_sha256,plan_json,state,result_json "
+            "FROM organization_executions WHERE id=%s FOR UPDATE",
+            (execution_id,),
+        ).fetchone()
+        if not execution or (str(execution[0]) != str(proposal_id)
+                or execution[1] != proposal_version
+                or str(execution[2]) != str(project_id)):
+            raise HTTPException(409, "Execution binding changed concurrently")
+        (_, _, _, plan_sha256, stored_plan, state, stored_result) = execution
+        require_grant(db, principal, str(project_id),
+                      "organization.squad.create_temporary")
+
+        if state == "EXECUTED":
+            return {
+                "id": execution_id, "state": state,
+                "idempotent_replay": True, "result": stored_result,
+            }
+        if state != "PLANNED":
+            raise HTTPException(409, f"Execution is not runnable from state {state}")
+        if project[0] != "ACTIVE":
+            raise HTTPException(409, "Execution project is not active")
+
+        (version, proposal_state, operation, proposal_project_id, purpose,
+         parameters, budget, approved_version, approved_hash, approved_by) = proposal
+        if (proposal_state != "AUTONOMOUS_APPROVED"
+                or version != proposal_version or approved_version != version
+                or approved_by != "ceo" or str(proposal_project_id) != str(project_id)):
+            raise HTTPException(409, "Proposal approval or scope is no longer current")
+        try:
+            _validate_organization_effect_parameters(operation, parameters)
+            plan = build_execution_plan({
+                "id": proposal_id, "version": version, "state": proposal_state,
+                "operation": operation, "project_id": str(proposal_project_id),
+                "scope_description": purpose, "operation_parameters": parameters,
+                "budget_ceiling_usd": float(budget),
+            })
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(409, f"Approved proposal is no longer executable: {exc}") from exc
+        if (plan.sha256 != plan_sha256 or plan.sha256 != approved_hash
+                or stored_plan.get("proposal_id") != proposal_id
+                or stored_plan.get("proposal_version") != version):
+            raise HTTPException(409, "Execution plan no longer matches the approved proposal")
+        if plan.operation != OrganizationOperation.CREATE_TEMPORARY_SQUAD:
+            raise HTTPException(409, "No executor is enabled for this organization operation")
+
+        request_data = plan.operation_parameters["work_group_request"]
+        try:
+            group_request = ConversationWorkGroupRequest.model_validate(request_data)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(409, "Approved temporary-squad request is invalid") from exc
+
+        details = {"plan_sha256": plan.sha256, "proposal_id": proposal_id,
+                   "proposal_version": version}
+        _transition_organization_execution(
+            db, execution_id, "PLANNED", "AWAITING_AUTHORIZATION", actor,
+            "authorization.recheck_started", details,
+        )
+        _transition_organization_execution(
+            db, execution_id, "AWAITING_AUTHORIZATION", "AUTHORIZED", actor,
+            "authorization.revalidated", {
+                **details, "capability": plan.authority_required,
+                "project_id": str(project_id), "decision_authority": approved_by,
+            },
+        )
+        _transition_organization_execution(
+            db, execution_id, "AUTHORIZED", "EXECUTING", actor,
+            "execution.started", details,
+        )
+        group_result = _create_conversation_work_group_in_transaction(
+            db,
+            str(project_id),
+            str(plan.operation_parameters["conversation_id"]),
+            group_request,
+            actor=actor,
+            execution_id=execution_id,
+        )
+
+        expected_children = sorted(
+            (task.title, task.assigned_principal_id, tuple(task.required_competencies))
+            for task in group_request.tasks
+        )
+        actual_children = db.execute(
+            "SELECT title,status,required_competencies,a.principal_id "
+            "FROM work_items w LEFT JOIN work_item_assignments a "
+            "ON a.project_id=w.project_id AND a.work_id=w.id "
+            "WHERE w.project_id=%s AND w.parent_work_id=%s ORDER BY w.id",
+            (project_id, group_result["parent_work_id"]),
+        ).fetchall()
+        actual_signature = sorted(
+            (title, assignee, tuple(competencies or []))
+            for title, status, competencies, assignee in actual_children
+            if status == "INBOX"
+        )
+        group_row = db.execute(
+            "SELECT id,request_sha256 FROM work_groups "
+            "WHERE id=%s AND project_id=%s AND execution_id=%s FOR SHARE",
+            (group_result["id"], project_id, execution_id),
+        ).fetchone()
+        expected_request_sha256 = hashlib.sha256(
+            json.dumps(group_request.model_dump(mode="json"), sort_keys=True,
+                       separators=(",", ":")).encode()
+        ).hexdigest()
+        actual_edges = {
+            (str(row[0]), str(row[1])) for row in db.execute(
+                "SELECT d.work_id,d.depends_on_work_id FROM work_item_dependencies d "
+                "JOIN work_items w ON w.project_id=d.project_id AND w.id=d.work_id "
+                "WHERE d.project_id=%s AND w.parent_work_id=%s",
+                (project_id, group_result["parent_work_id"]),
+            ).fetchall()
+        }
+        task_ids_by_key = {task["key"]: task["id"] for task in group_result["tasks"]}
+        expected_edges = {
+            (task_ids_by_key[task.key], task_ids_by_key[dependency])
+            for task in group_request.tasks for dependency in task.depends_on
+        }
+        dependency_count = len(actual_edges)
+        expected_dependency_count = len(expected_edges)
+        if (not group_row or group_row[1] != expected_request_sha256
+                or len(actual_children) != len(group_request.tasks)
+                or actual_signature != expected_children
+                or actual_edges != expected_edges):
+            reconcile_pending = True
+            evidence = {
+                "verified": False, "reason": "persisted_group_differs_from_approved_request",
+                "group_id": group_result["id"],
+                "parent_work_id": group_result["parent_work_id"],
+                "child_count": len(actual_children),
+                "expected_child_count": len(group_request.tasks),
+                "dependency_count": dependency_count,
+                "expected_dependency_count": expected_dependency_count,
+            }
+            _transition_organization_execution(
+                db, execution_id, "EXECUTING", "RECONCILIATION_REQUIRED", actor,
+                "reconciliation.mismatch", evidence,
+            )
+        else:
+            evidence = {
+                "verified": True, "group_id": str(group_row[0]),
+                "parent_work_id": group_result["parent_work_id"],
+                "child_work_ids": [task["id"] for task in group_result["tasks"]],
+                "request_sha256": group_row[1],
+                "child_count": len(actual_children),
+                "dependency_count": dependency_count,
+            }
+            db.execute(
+                "UPDATE organization_executions SET result_json=%s::jsonb "
+                "WHERE id=%s AND state='EXECUTING'",
+                (json.dumps(evidence), execution_id),
+            )
+            _transition_organization_execution(
+                db, execution_id, "EXECUTING", "EXECUTED", actor,
+                "execution.reconciled", evidence,
+            )
+            audit(db, execution_id, "organization.execution_verified", {
+                "actor": actor, "project_id": str(project_id), **evidence,
+            })
+
+        if reconcile_pending:
+            db.execute(
+                "UPDATE organization_executions SET result_json=%s::jsonb "
+                "WHERE id=%s AND state='RECONCILIATION_REQUIRED'",
+                (json.dumps(evidence), execution_id),
+            )
+            audit(db, execution_id, "organization.execution_reconciliation_required", {
+                "actor": actor, "project_id": str(project_id), **evidence,
+            })
+
+    if reconcile_pending:
+        raise HTTPException(409, "Execution effects persisted but reconciliation is required")
+    return {
+        "id": execution_id, "state": "EXECUTED", "idempotent_replay": False,
+        "result": evidence,
+    }
+
+
 @app.get("/v1/projects/{project_id}/organization-executions")
 def list_organization_executions(
     project_id: str,
@@ -3089,20 +3346,20 @@ def create_work(project_id: str, payload: WorkRequest,
     return {"id": wid, "status": "INBOX"}
 
 
-def _insert_ceo_work_request(
+def _insert_attributed_work_request(
     db, project_id: str, title: str, description: str,
-    acceptance_criteria: list[str], *, due_date: date | None = None,
+    acceptance_criteria: list[str], *, actor: str = "ceo", due_date: date | None = None,
     source_message_id: str | None = None,
 ) -> str:
-    """Persist CEO direction using the canonical, unadmitted work-item semantics."""
+    """Persist authorized direction using the canonical, unadmitted work semantics."""
     work_id = str(uuid4())
     db.execute(
         "INSERT INTO work_items(id,project_id,title,description,author_id,status,acceptance_criteria,due_date) "
-        "VALUES (%s,%s,%s,%s,'ceo','INBOX',%s::jsonb,%s)",
-        (work_id, project_id, title, description, json.dumps(acceptance_criteria), due_date),
+        "VALUES (%s,%s,%s,%s,%s,'INBOX',%s::jsonb,%s)",
+        (work_id, project_id, title, description, actor, json.dumps(acceptance_criteria), due_date),
     )
     details = {
-        "project_id": project_id, "actor": "ceo", "status": "INBOX",
+        "project_id": project_id, "actor": actor, "status": "INBOX",
         "admitted": False,
     }
     if source_message_id is not None:
@@ -3112,7 +3369,7 @@ def _insert_ceo_work_request(
         db,
         protocol_id="intake-classification",
         work_id=work_id,
-        started_by="ceo",
+        started_by=actor,
         request={
             "project_id": project_id,
             "title": title,
@@ -3265,7 +3522,7 @@ def create_ceo_work_request(
             raise HTTPException(404, "Project not found")
         if row[0] != "ACTIVE":
             raise HTTPException(409, "Project not active")
-        work_id = _insert_ceo_work_request(
+        work_id = _insert_attributed_work_request(
             db, project_id, payload.title, payload.description,
             payload.acceptance_criteria, due_date=payload.due_date,
         )
@@ -3315,7 +3572,7 @@ def create_work_request_from_conversation_message(
                 raise HTTPException(409, "Conversation work link is inconsistent")
             return {"id": str(message[2]), "status": existing[1], "created": False}
 
-        work_id = _insert_ceo_work_request(
+        work_id = _insert_attributed_work_request(
             db, project_id, payload.title, message[1],
             payload.acceptance_criteria, due_date=payload.due_date, source_message_id=message_id,
         )
@@ -3355,7 +3612,7 @@ def create_work_request_from_conversation(
         ).fetchone()
         if not conversation:
             raise HTTPException(404, "Conversation not found")
-        work_id = _insert_ceo_work_request(
+        work_id = _insert_attributed_work_request(
             db, project_id, payload.title, payload.description,
             payload.acceptance_criteria,
         )
@@ -3364,6 +3621,156 @@ def create_work_request_from_conversation(
             "actor": "ceo", "status": "INBOX", "admitted": False,
         })
     return {"id": work_id, "status": "INBOX", "created": True}
+
+
+def _create_conversation_work_group_in_transaction(
+    db, project_id: str, conversation_id: str, payload: ConversationWorkGroupRequest,
+    *, actor: str, execution_id: str | None = None,
+):
+    """Create/replay a canonical INBOX group within the caller's transaction."""
+    request_hash = hashlib.sha256(
+        json.dumps(payload.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    project = db.execute(
+        "SELECT state FROM projects WHERE id=%s FOR UPDATE", (project_id,),
+    ).fetchone()
+    if not project:
+        raise HTTPException(404, "Project not found")
+    if project[0] != "ACTIVE":
+        raise HTTPException(409, "Project not active")
+    conversation = db.execute(
+        "SELECT id FROM project_conversations WHERE id=%s AND project_id=%s FOR UPDATE",
+        (conversation_id, project_id),
+    ).fetchone()
+    if not conversation:
+        raise HTTPException(404, "Conversation not found")
+
+    existing = db.execute(
+        "SELECT id,request_sha256,parent_work_id,execution_id FROM work_groups "
+        "WHERE conversation_id=%s AND idempotency_key=%s",
+        (conversation_id, payload.idempotency_key),
+    ).fetchone()
+    task_key_by_id: dict[str, str] = {}
+    if existing:
+        if existing[1] != request_hash:
+            raise HTTPException(409, "Idempotency key was used with a different breakdown")
+        if execution_id is not None and str(existing[3]) != execution_id:
+            raise HTTPException(409, "Work group idempotency key is already bound outside this execution")
+        group_id, parent_work_id, created = str(existing[0]), str(existing[2]), False
+    else:
+        if payload.based_on_message_ids is not None:
+            current_message_ids = [row[0] for row in db.execute(
+                "SELECT id FROM project_conversation_messages "
+                "WHERE conversation_id=%s ORDER BY created_at,id",
+                (conversation_id,),
+            ).fetchall()]
+            if current_message_ids != payload.based_on_message_ids:
+                raise HTTPException(409, "Conversation changed; regenerate the proposal before confirming")
+        group_id = str(uuid4())
+        parent_work_id = _insert_attributed_work_request(
+            db, project_id, payload.title, payload.description,
+            payload.acceptance_criteria, actor=actor, due_date=payload.due_date,
+        )
+        db.execute(
+            "INSERT INTO work_groups(id,project_id,conversation_id,parent_work_id,"
+            "idempotency_key,request_sha256,execution_id) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            (group_id, project_id, conversation_id, parent_work_id,
+             payload.idempotency_key, request_hash, execution_id),
+        )
+        start_work_protocol(
+            db,
+            protocol_id="planning-assignment",
+            work_id=group_id,
+            subject_type="work_group",
+            started_by=actor,
+            request={
+                "project_id": project_id,
+                "conversation_id": conversation_id,
+                **payload.model_dump(mode="json"),
+            },
+        )
+        task_ids = {task.key: str(uuid4()) for task in payload.tasks}
+        task_key_by_id = {work_id: key for key, work_id in task_ids.items()}
+        assigned_principals = {task.assigned_principal_id for task in payload.tasks
+                               if task.assigned_principal_id is not None}
+        for assigned_principal in assigned_principals:
+            identity = db.execute(
+                "SELECT enabled FROM principal_credentials WHERE principal_id=%s "
+                "AND kind='AGENT' FOR SHARE", (assigned_principal,),
+            ).fetchone()
+            grants = {row[0] for row in db.execute(
+                "SELECT capability FROM project_grants WHERE principal_id=%s "
+                "AND project_id=%s AND capability IN ('work.admit','execution.claim') "
+                "AND (expires_at IS NULL OR expires_at>clock_timestamp()) FOR SHARE",
+                (assigned_principal, project_id),
+            ).fetchall()}
+            if not identity or not identity[0] or grants != {"work.admit", "execution.claim"}:
+                raise HTTPException(
+                    409, "Assigned child requires an active AGENT identity and existing work.admit/execution.claim grants",
+                )
+        for task in payload.tasks:
+            db.execute(
+                "INSERT INTO work_items(id,project_id,title,description,author_id,status,"
+                "acceptance_criteria,parent_work_id,due_date,required_competencies) "
+                "VALUES (%s,%s,%s,%s,%s,'INBOX',%s::jsonb,%s,%s,%s)",
+                (task_ids[task.key], project_id, task.title, task.description,
+                 actor, json.dumps(task.acceptance_criteria), parent_work_id, task.due_date,
+                 task.required_competencies),
+            )
+            if task.assigned_principal_id is not None:
+                db.execute(
+                    "INSERT INTO work_item_assignments(project_id,work_id,principal_id,assigned_by) "
+                    "VALUES (%s,%s,%s,%s)",
+                    (project_id, task_ids[task.key], task.assigned_principal_id, actor),
+                )
+                audit(db, task_ids[task.key], "work.assigned", {
+                    "project_id": project_id, "principal_id": task.assigned_principal_id,
+                    "previous_principal_id": None, "assigned_by": actor,
+                    "grants_created": False,
+                })
+        for task in payload.tasks:
+            for dependency_key in task.depends_on:
+                db.execute(
+                    "INSERT INTO work_item_dependencies(project_id,work_id,depends_on_work_id) "
+                    "VALUES (%s,%s,%s)",
+                    (project_id, task_ids[task.key], task_ids[dependency_key]),
+                )
+        audit(db, parent_work_id, "work.group_created", {
+            "group_id": group_id, "project_id": project_id,
+            "conversation_id": conversation_id, "actor": actor,
+            "child_work_ids": list(task_ids.values()), "admitted": False,
+            "execution_created": False,
+            "based_on_message_ids": [str(item) for item in payload.based_on_message_ids]
+            if payload.based_on_message_ids is not None else None,
+        })
+        created = True
+
+    children = db.execute(
+        "SELECT w.id,w.title,w.status,a.principal_id,w.required_competencies FROM work_items w "
+        "LEFT JOIN work_item_assignments a ON a.work_id=w.id "
+        "WHERE w.project_id=%s AND w.parent_work_id=%s ORDER BY w.id",
+        (project_id, parent_work_id),
+    ).fetchall()
+    dependency_rows = db.execute(
+        "SELECT work_id,depends_on_work_id FROM work_item_dependencies "
+        "WHERE project_id=%s AND work_id IN "
+        "(SELECT id FROM work_items WHERE project_id=%s AND parent_work_id=%s) "
+        "ORDER BY work_id,depends_on_work_id",
+        (project_id, project_id, parent_work_id),
+    ).fetchall()
+    dependencies: dict[str, list[str]] = {}
+    for work_id, depends_on_work_id in dependency_rows:
+        dependencies.setdefault(str(work_id), []).append(str(depends_on_work_id))
+    return {
+        "id": group_id, "project_id": project_id,
+        "conversation_id": conversation_id, "parent_work_id": parent_work_id,
+        "status": "INBOX", "created": created,
+        "tasks": [{"id": str(child[0]), "key": task_key_by_id.get(str(child[0])),
+                   "title": child[1], "status": child[2],
+                   "assigned_principal_id": child[3],
+                   "required_competencies": child[4],
+                   "depends_on": dependencies.get(str(child[0]), [])} for child in children],
+    }
 
 
 @app.post(
@@ -3377,146 +3784,10 @@ def create_conversation_work_group(
     _: str = Depends(require_ceo),
 ):
     """Persist a CEO-confirmed parent/child breakdown; creation never admits work."""
-    request_hash = hashlib.sha256(
-        json.dumps(payload.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
     with tx() as db:
-        project = db.execute(
-            "SELECT state FROM projects WHERE id=%s FOR UPDATE", (project_id,),
-        ).fetchone()
-        if not project:
-            raise HTTPException(404, "Project not found")
-        if project[0] != "ACTIVE":
-            raise HTTPException(409, "Project not active")
-        conversation = db.execute(
-            "SELECT id FROM project_conversations WHERE id=%s AND project_id=%s FOR UPDATE",
-            (conversation_id, project_id),
-        ).fetchone()
-        if not conversation:
-            raise HTTPException(404, "Conversation not found")
-
-        existing = db.execute(
-            "SELECT id,request_sha256,parent_work_id FROM work_groups "
-            "WHERE conversation_id=%s AND idempotency_key=%s",
-            (conversation_id, payload.idempotency_key),
-        ).fetchone()
-        if existing:
-            if existing[1] != request_hash:
-                raise HTTPException(409, "Idempotency key was used with a different breakdown")
-            group_id, parent_work_id, created = str(existing[0]), str(existing[2]), False
-        else:
-            if payload.based_on_message_ids is not None:
-                current_message_ids = [row[0] for row in db.execute(
-                    "SELECT id FROM project_conversation_messages "
-                    "WHERE conversation_id=%s ORDER BY created_at,id",
-                    (conversation_id,),
-                ).fetchall()]
-                if current_message_ids != payload.based_on_message_ids:
-                    raise HTTPException(409, "Conversation changed; regenerate the proposal before confirming")
-            group_id = str(uuid4())
-            parent_work_id = _insert_ceo_work_request(
-                db, project_id, payload.title, payload.description,
-                payload.acceptance_criteria, due_date=payload.due_date,
-            )
-            db.execute(
-                "INSERT INTO work_groups(id,project_id,conversation_id,parent_work_id,"
-                "idempotency_key,request_sha256) VALUES (%s,%s,%s,%s,%s,%s)",
-                (group_id, project_id, conversation_id, parent_work_id,
-                 payload.idempotency_key, request_hash),
-            )
-            start_work_protocol(
-                db,
-                protocol_id="planning-assignment",
-                work_id=group_id,
-                subject_type="work_group",
-                started_by="ceo",
-                request={
-                    "project_id": project_id,
-                    "conversation_id": conversation_id,
-                    **payload.model_dump(mode="json"),
-                },
-            )
-            task_ids = {task.key: str(uuid4()) for task in payload.tasks}
-            assigned_principals = {task.assigned_principal_id for task in payload.tasks
-                                   if task.assigned_principal_id is not None}
-            for assigned_principal in assigned_principals:
-                identity = db.execute(
-                    "SELECT enabled FROM principal_credentials WHERE principal_id=%s "
-                    "AND kind='AGENT' FOR SHARE", (assigned_principal,),
-                ).fetchone()
-                grants = {row[0] for row in db.execute(
-                    "SELECT capability FROM project_grants WHERE principal_id=%s "
-                    "AND project_id=%s AND capability IN ('work.admit','execution.claim') "
-                    "AND (expires_at IS NULL OR expires_at>clock_timestamp()) FOR SHARE",
-                    (assigned_principal, project_id),
-                ).fetchall()}
-                if not identity or not identity[0] or grants != {"work.admit", "execution.claim"}:
-                    raise HTTPException(
-                        409, "Assigned child requires an active AGENT identity and existing work.admit/execution.claim grants",
-                    )
-            for task in payload.tasks:
-                db.execute(
-                    "INSERT INTO work_items(id,project_id,title,description,author_id,status,"
-                    "acceptance_criteria,parent_work_id,due_date,required_competencies) "
-                    "VALUES (%s,%s,%s,%s,'ceo','INBOX',%s::jsonb,%s,%s,%s)",
-                    (task_ids[task.key], project_id, task.title, task.description,
-                     json.dumps(task.acceptance_criteria), parent_work_id, task.due_date,
-                     task.required_competencies),
-                )
-                if task.assigned_principal_id is not None:
-                    db.execute(
-                        "INSERT INTO work_item_assignments(project_id,work_id,principal_id,assigned_by) "
-                        "VALUES (%s,%s,%s,'ceo')",
-                        (project_id, task_ids[task.key], task.assigned_principal_id),
-                    )
-                    audit(db, task_ids[task.key], "work.assigned", {
-                        "project_id": project_id, "principal_id": task.assigned_principal_id,
-                        "previous_principal_id": None, "assigned_by": "ceo",
-                        "grants_created": False,
-                    })
-            for task in payload.tasks:
-                for dependency_key in task.depends_on:
-                    db.execute(
-                        "INSERT INTO work_item_dependencies(project_id,work_id,depends_on_work_id) "
-                        "VALUES (%s,%s,%s)",
-                        (project_id, task_ids[task.key], task_ids[dependency_key]),
-                    )
-            audit(db, parent_work_id, "work.group_created", {
-                "group_id": group_id, "project_id": project_id,
-                "conversation_id": conversation_id, "actor": "ceo",
-                "child_work_ids": list(task_ids.values()), "admitted": False,
-                "execution_created": False,
-                "based_on_message_ids": [str(item) for item in payload.based_on_message_ids]
-                if payload.based_on_message_ids is not None else None,
-            })
-            created = True
-
-        children = db.execute(
-            "SELECT w.id,w.title,w.status,a.principal_id,w.required_competencies FROM work_items w "
-            "LEFT JOIN work_item_assignments a ON a.work_id=w.id "
-            "WHERE w.project_id=%s AND w.parent_work_id=%s ORDER BY w.id",
-            (project_id, parent_work_id),
-        ).fetchall()
-        dependency_rows = db.execute(
-            "SELECT work_id,depends_on_work_id FROM work_item_dependencies "
-            "WHERE project_id=%s AND work_id IN "
-            "(SELECT id FROM work_items WHERE project_id=%s AND parent_work_id=%s) "
-            "ORDER BY work_id,depends_on_work_id",
-            (project_id, project_id, parent_work_id),
-        ).fetchall()
-        dependencies: dict[str, list[str]] = {}
-        for work_id, depends_on_work_id in dependency_rows:
-            dependencies.setdefault(str(work_id), []).append(str(depends_on_work_id))
-        return {
-            "id": group_id, "project_id": project_id,
-            "conversation_id": conversation_id, "parent_work_id": parent_work_id,
-            "status": "INBOX", "created": created,
-            "tasks": [{"id": str(child[0]), "title": child[1], "status": child[2],
-                       "assigned_principal_id": child[3],
-                       "required_competencies": child[4],
-                       "depends_on": dependencies.get(str(child[0]), [])} for child in children],
-        }
-
+        return _create_conversation_work_group_in_transaction(
+            db, project_id, conversation_id, payload, actor="ceo",
+        )
 
 def _work_group_source_snapshot(db, project_id: str, parent_work_id: str, *, lock: bool = False):
     lock_clause = " FOR UPDATE OF w" if lock else ""

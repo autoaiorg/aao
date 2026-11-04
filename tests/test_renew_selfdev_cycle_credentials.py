@@ -660,6 +660,9 @@ def test_user_units_are_oneshot_without_no_new_privileges():
                       "RestrictAddressFamilies", "SystemCallFilter"):
         assert not any(line.startswith(forbidden) for line in directives)
     assert "OnUnitActiveSec=5min" in timer and "Unit=aao-selfdev-cycle-renew.service" in timer
+    # The 429 retry margin is derived from these two directives.
+    assert renew.TIMER_INTERVAL == timedelta(minutes=5) and "AccuracySec=30s" in timer
+    assert renew.TIMER_ACCURACY == timedelta(seconds=30)
     assert "OnFailure=aao-selfdev-cycle-renew-alert.service" in directives
     alert = (unit_dir / "aao-selfdev-cycle-renew-alert.service").read_text()
     assert "-p err" in alert and "[Install]" not in alert
@@ -923,25 +926,35 @@ def test_concurrency_cap_409_opens_breaker_without_revoking_anything(env):
     assert any("SELFDEV_CYCLE_CONCURRENCY_CAP" in e.get("reason", "") for e in logs)
 
 
+# Just at the ~26/day peak demand of the 72 h scenario: 429s happen every day and
+# retrying before N runs out reaches the freed slot in time. Any lower cap (25 or
+# less here) leaves a gap whatever the retry timing: the runner renews at T-60, so
+# a cap below demand exhausts the window for longer than N's remaining TTL. That
+# is why the API cap carries 2x headroom (48) rather than relying on this path.
+LOW_DAILY_CAP = 26
 DAILY_CAP_429 = (429, {"detail": {"code": "SELFDEV_CYCLE_ISSUANCE_DAILY_CAP",
                                   "message": "48 per day"}})
 
 
 @pytest.mark.parametrize(("remaining", "wait"), [
-    (timedelta(hours=2), timedelta(hours=1)),         # capped at 1 h
-    (timedelta(minutes=97), timedelta(minutes=55, seconds=30)),
-    (timedelta(minutes=96), timedelta(minutes=54, seconds=30)),
-    (timedelta(minutes=95), timedelta(minutes=53, seconds=30)),
-    (timedelta(minutes=60), timedelta(minutes=18, seconds=30)),
+    (timedelta(hours=2), timedelta(hours=1)),
+    (timedelta(minutes=101, seconds=31), timedelta(minutes=54, seconds=31)),
+    (timedelta(minutes=101, seconds=30), timedelta(minutes=54, seconds=30)),
+    (timedelta(minutes=101, seconds=29), timedelta(minutes=54, seconds=29)),
+    (timedelta(minutes=60), timedelta(minutes=13)),
+    (timedelta(minutes=52, seconds=31), timedelta(minutes=5, seconds=31)),
+    (timedelta(minutes=52, seconds=30), timedelta(minutes=5, seconds=30)),
+    (timedelta(minutes=52), timedelta(minutes=5)),
 ])
 def test_daily_cap_retry_at_targets_n_remaining_minus_margin(remaining, wait):
-    assert renew.DAILY_CAP_SAFETY_MARGIN == timedelta(minutes=36)
+    # Drain/skew/timer margin plus worst-case 5m30 timer observation latency.
+    assert renew.DAILY_CAP_SAFETY_MARGIN == timedelta(minutes=41, seconds=30)
     assert renew.DAILY_CAP_TIMER_LATENCY == timedelta(minutes=5, seconds=30)
     assert renew.daily_cap_retry_at(T0, T0 + remaining) == T0 + wait
 
 
 @pytest.mark.parametrize("remaining", [
-    timedelta(minutes=46, seconds=29), timedelta(minutes=42),
+    timedelta(minutes=51, seconds=59), timedelta(minutes=47),
 ])
 def test_daily_cap_retry_refuses_when_minimum_wait_cannot_preserve_margin(remaining):
     with pytest.raises(renew.DailyCapMarginLost):
@@ -1033,8 +1046,10 @@ def test_busy_old_cycle_is_not_revoked_at_drain_cap_and_expires_naturally(env):
     clock, server, _installer, store, logs, make = env
     c1 = _bootstrap(env)
     state = store.load()
-    # Give old N exactly the 36m minimum margin at successor issuance.
-    expires = clock.now + renew.DAILY_CAP_SAFETY_MARGIN
+    # Normal renewal begins with 60m left on N. If its worker remains busy,
+    # the maximum successor overlap is therefore bounded by that remaining TTL.
+    issued = clock.now
+    expires = issued + renew.RENEW_MARGIN
     state["current_expires_at"] = expires.isoformat()
     store.save(state)
     server.cycles[c1]["expires"] = expires
@@ -1042,7 +1057,6 @@ def test_busy_old_cycle_is_not_revoked_at_drain_cap_and_expires_naturally(env):
 
     assert make().tick() == 0
     state = store.load()
-    c2 = state["next_cycle_id"]
     assert state["phase"] == "VERIFIED"
 
     clock.advance(minutes=35)
@@ -1051,16 +1065,22 @@ def test_busy_old_cycle_is_not_revoked_at_drain_cap_and_expires_naturally(env):
     assert not server.cycles[c1]["revoked"]
     assert any(e["event"] == "selfdev_cycle.drain_cap_busy_wait" for e in logs)
 
-    # At N's natural expiry, promote the installed successor without an explicit
-    # revoke that would terminate the still-running old execution.
-    clock.advance(minutes=1)
+    # The post-DRAIN_CAP wait does not revoke N. Promote exactly at its natural
+    # expiry; the old authorization's own TTL bounds overlap to 60 minutes.
+    clock.advance(minutes=25)
+    clock.now = expires
     assert make().tick() == 0
     state = store.load()
-    assert state["phase"] == "ACTIVE" and state["current_cycle_id"] == c2
+    # The promoted cycle is itself exactly at the one-hour renewal threshold,
+    # so this same tick may issue its successor. Either way the expired busy
+    # credential is not revoked or made current again.
+    assert state["phase"] in {"ACTIVE", "VERIFIED"}
+    assert state["current_cycle_id"] != c1
     assert not server.cycles[c1]["revoked"]
     assert c1 not in server.live()
     assert f"aao-selfdev-impl-{c1}" == server.busy_worker
     assert not any(call == ("revoke", c1) for call in server.calls)
+    assert expires - issued == renew.RENEW_MARGIN == timedelta(minutes=60)
 
 
 @pytest.mark.parametrize("expires", [None, T0, T0 - timedelta(seconds=1)])
@@ -1078,13 +1098,13 @@ def test_repeated_daily_cap_429_fails_closed_before_drain_margin_is_lost(env):
     state = store.load()
     assert state["phase"] == "ACTIVE" and state["consecutive_failures"] == 0
     assert state["next_cycle_id"] is None and state["current_cycle_id"] == c1
-    assert _parse(state["next_attempt_at"]) == clock.now + timedelta(minutes=18, seconds=30)
+    assert _parse(state["next_attempt_at"]) == clock.now + timedelta(minutes=13)
     assert [c[0] for c in server.calls] == ["issue"]
-    for _ in range(3):  # 15 min: still waiting, alert, no POST
+    for _ in range(2):  # 10 min: still waiting, alert, no POST
         clock.advance(minutes=5)
         assert make().tick() == 1
     assert [c[0] for c in server.calls] == ["issue"]
-    clock.advance(minutes=5)  # 20 min: retry while N still has 40 min left
+    clock.advance(minutes=5)  # 15 min: first tick after retry_at
     assert make().tick() == 1
     assert [c[0] for c in server.calls] == ["issue", "issue"]
     state = store.load()
@@ -1151,16 +1171,14 @@ class FlakyInstaller(FakeInstaller):
         return rc
 
 
-def test_steady_state_72h_with_jitter_and_install_failures_never_leaves_a_gap(tmp_path):
-    """P1 regression: ~23 renewals/day + 3 install failures/day stay under the cap."""
+def _simulate_72h(tmp_path, daily_cap, *, stop_on_breaker=False):
+    """5-min timer with jitter; optionally stop at fail-closed breaker."""
     import random
-
-    from aao.work_management_api import SELFDEV_CYCLE_ISSUANCE_DAILY_CAP
 
     rng = random.Random(388)
     clock = Clock()
-    server = CappedServer(clock, SELFDEV_CYCLE_ISSUANCE_DAILY_CAP)
-    installer = FlakyInstaller(server, every=8)  # ~3 failures per day
+    server = CappedServer(clock, daily_cap)
+    installer = FlakyInstaller(server, every=8)
     store = renew.StateStore(tmp_path / "state.json", PROJECT)
     logs = []
     runner = renew.Runner(project_id=PROJECT, api=server, installer=installer, store=store,
@@ -1172,16 +1190,42 @@ def test_steady_state_72h_with_jitter_and_install_failures_never_leaves_a_gap(tm
         live = server.cycles[cycle]
         assert not live["revoked"] and live["expires"] > clock(), f"gap at {clock()}"
 
-    for tick in range(1, 72 * 12 + 1):  # 5-min timer with up to 60 s jitter
+    for tick in range(1, 72 * 12 + 1):
         clock.now = T0 + timedelta(minutes=5 * tick, seconds=rng.uniform(0, 60))
         assert_live_cycle()
         runner.tick()
         assert_live_cycle()
-        assert store.load()["phase"] != "BREAKER_OPEN"
-    failures = sum(e["event"] == "selfdev_cycle.failed" for e in logs)
-    assert failures >= 3 * 3  # the scenario really injected the failures
+        if store.load()["phase"] == "BREAKER_OPEN":
+            assert stop_on_breaker
+            break
+    failures = sum(e["event"] == "selfdev_cycle.failed" and "daily cap" not in e["reason"]
+                   for e in logs)
+    if not stop_on_breaker:
+        assert failures >= 3 * 3  # the scenario really injected the install failures
+    return server, store, clock, installer
+
+
+def test_steady_state_72h_with_jitter_and_install_failures_never_leaves_a_gap(tmp_path):
+    """P1 regression: ~23 renewals/day + 3 install failures/day stay under the cap."""
+    from aao.work_management_api import SELFDEV_CYCLE_ISSUANCE_DAILY_CAP
+
+    server, _store, _clock, _installer = _simulate_72h(
+        tmp_path, SELFDEV_CYCLE_ISSUANCE_DAILY_CAP
+    )
     assert server.rejected == []
     assert len(server.cycles) >= 72
+
+
+def test_72h_under_a_low_daily_cap_the_429_retry_path_never_leaves_a_gap(tmp_path):
+    """A low cap opens the breaker before unsafe retry; it never revokes N."""
+    server, store, clock, installer = _simulate_72h(
+        tmp_path, daily_cap=LOW_DAILY_CAP, stop_on_breaker=True
+    )
+    assert store.load()["phase"] == "BREAKER_OPEN"
+    cycle = installer.files["aao-impl-codex"].removeprefix("SECRET-impl-")
+    assert not server.cycles[cycle]["revoked"]
+    assert server.cycles[cycle]["expires"] > clock()
+    assert server.rejected
 
 
 @pytest.mark.parametrize("response", [(429, {"detail": "slow down"}), (409, {"detail": "exists"})])

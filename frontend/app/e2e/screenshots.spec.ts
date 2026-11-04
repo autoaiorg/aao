@@ -64,9 +64,20 @@ test('Capture real screenshots of F4.7 and F4.8 Office', async ({ page }) => {
     await agentButton.click();
     await page.waitForTimeout(500);
     await page.screenshot({ path: path.join(screenshotsDir, '03-office-agent-inspector.png'), fullPage: false });
-    const zoomIn = toolbar.getByRole('button', { name: 'Acercar zoom' });
-    for (let step = 0; step < 3; step += 1) await zoomIn.click({ force: true });
-    await page.waitForTimeout(1200);
+    const officeCanvas = page.locator('canvas').first();
+    const canvasBounds = await officeCanvas.boundingBox();
+    if (!canvasBounds) throw new Error('3D office canvas has no visible bounds');
+    const canvasCenter = {
+      x: canvasBounds.x + canvasBounds.width / 2,
+      y: canvasBounds.y + canvasBounds.height / 2,
+    };
+    await page.mouse.move(canvasCenter.x, canvasCenter.y);
+    // Exercise the same wheel navigation users use, with a rendered frame
+    // between inputs so the scene's eased camera can settle at close range.
+    for (let step = 0; step < 16; step += 1) {
+      await page.mouse.wheel(0, -120);
+      await page.waitForTimeout(90);
+    }
     await page.screenshot({
       path: path.join(v42EvidenceDir, 'office-operational-department-close.png'),
       fullPage: false,
@@ -74,21 +85,14 @@ test('Capture real screenshots of F4.7 and F4.8 Office', async ({ page }) => {
     // Capture a genuine browser close-up of the selected agent, not just the
     // surrounding department. Keep this separate so posture and label
     // occlusion can be reviewed at the scale where they are easiest to spot.
-    for (let step = 0; step < 16; step += 1) {
-      if (!(await zoomIn.isVisible()) || !(await zoomIn.isEnabled())) break;
-      try {
-        await zoomIn.click({ force: true, timeout: 2_000, noWaitAfter: true });
-      } catch {
-        // Browser screenshot evidence is more useful than failing because React
-        // is still settling after an earlier camera event; retain the closest
-        // successfully reached framing and capture it below.
-        break;
-      }
-    }
     await page.waitForTimeout(900);
-    await page.screenshot({
-      path: path.join(v42EvidenceDir, 'office-agent-working-close.png'),
-      fullPage: false,
+    // Exclude application chrome from this close study: leave the same WebGL
+    // viewport and camera framing intact, but use all captured pixels for the
+    // avatar, desk and chair so posture can be inspected at useful scale.
+    await officeCanvas.waitFor({ state: 'visible' });
+    await officeCanvas.screenshot({
+      path: path.join(v42EvidenceDir, 'office-agent-selection-view.png'),
+      animations: 'disabled',
     });
   }
 

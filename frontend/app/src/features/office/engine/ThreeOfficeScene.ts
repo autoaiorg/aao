@@ -30,6 +30,7 @@ export type { AvatarSemanticParts };
 export { computeArchitecturalOutline } from '../liveOfficeLayout';
 
 export const OFFICE_ENVELOPE_EXPANSION_METERS = 2.5;
+export const OFFICE_AGENT_FOCUS_DISTANCE = 6.5;
 // buildRoom's local origin is -0.35m. This places the cushion top at 0.45m in
 // world space, the same plane as the desk surface and avatar standing origin.
 export const OFFICE_CHAIR_ROOT_Y = 0.515;
@@ -1654,12 +1655,14 @@ export class ThreeOfficeScene {
       if (unitId && unitId !== this.activeRoomId) {
         this.selectRoom(unitId);
       }
-      // Selecting a roster or scene agent should frame that person, not leave
-      // the camera parked at the department centroid. Keep current zoom so the
-      // operator controls how close to inspect.
+      // Selecting a roster or scene agent should frame that person at a useful
+      // inspection scale rather than leave the camera parked at the department
+      // centroid. Preserve an already-closer operator zoom, but move in from a
+      // campus/department view so posture and workstation ergonomics are legible.
       // Aim at the torso plane rather than the floor so the head, posture and
       // its adaptive badge remain inside the canvas at close zoom.
       this.desiredTarget.set(agentGroup.position.x, 0.8, agentGroup.position.z);
+      this.desiredDistance = Math.min(this.desiredDistance, OFFICE_AGENT_FOCUS_DISTANCE);
     } else {
       this.selectionRing.visible = false;
     }

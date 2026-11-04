@@ -51,6 +51,10 @@ describe('PR C: Office Furniture, Procedural IDE Textures, Biophilia & Lighting'
       expect(pool.ownsMaterial(pool.plantPotMat)).toBe(true);
       expect(pool.ownsMaterial(pool.plantLeafMat)).toBe(true);
       expect(pool.ownsMaterial(pool.deskTrimMat)).toBe(true);
+      expect(pool.deskWoodMat.color.getHex()).toBe(0x9b8467);
+      expect(pool.deskWoodMat.roughness).toBeGreaterThan(0.6);
+      expect(pool.deskWoodMat.metalness).toBeLessThan(0.1);
+      expect(pool.meetingTableMat.color.getHex()).toBe(0x826c55);
 
       const foreignMat = new THREE.MeshBasicMaterial();
       expect(pool.ownsMaterial(foreignMat)).toBe(false);

@@ -63,28 +63,29 @@ export function createProceduralIdeTexture(): THREE.CanvasTexture {
   canvas.height = 128;
   const ctx = canvas.getContext('2d');
   if (ctx) {
-    // Dark editor background
-    ctx.fillStyle = '#0f172a';
+    // Restrained warm graphite screen; high-saturation syntax colors made the
+    // workstations read like game props at overview distance.
+    ctx.fillStyle = '#242725';
     ctx.fillRect(0, 0, 256, 128);
 
     // Sidebar panel
-    ctx.fillStyle = '#1e293b';
+    ctx.fillStyle = '#343834';
     ctx.fillRect(0, 0, 48, 128);
 
     // Sidebar file tree lines
-    ctx.fillStyle = '#64748b';
+    ctx.fillStyle = '#747a73';
     for (let y = 14; y < 110; y += 14) {
       ctx.fillRect(8, y, 28, 4);
     }
 
     // Tab bar
-    ctx.fillStyle = '#1e293b';
+    ctx.fillStyle = '#343834';
     ctx.fillRect(48, 0, 208, 18);
-    ctx.fillStyle = '#38bdf8';
+    ctx.fillStyle = '#8caaa3';
     ctx.fillRect(52, 4, 46, 10);
 
     // Code lines in editor area with syntax colors
-    const colors = ['#f43f5e', '#38bdf8', '#a855f7', '#22c55e', '#f59e0b', '#e2e8f0'];
+    const colors = ['#b58f88', '#8caaa3', '#a69dab', '#9eae91', '#c0aa83', '#d0cdc3'];
     let lineY = 28;
     for (let i = 0; i < 7; i++) {
       let lineX = 56 + (i % 3 === 0 ? 0 : (i % 2) * 12);
@@ -99,9 +100,9 @@ export function createProceduralIdeTexture(): THREE.CanvasTexture {
     }
 
     // Status bar at bottom
-    ctx.fillStyle = '#2563eb';
+    ctx.fillStyle = '#4b534d';
     ctx.fillRect(48, 116, 208, 12);
-    ctx.fillStyle = '#ffffff';
+    ctx.fillStyle = '#d0cdc3';
     ctx.fillRect(54, 120, 24, 4);
     ctx.fillRect(84, 120, 36, 4);
   }
@@ -139,34 +140,34 @@ export class SharedFurniturePool {
   });
 
   public readonly deskWoodMat = new THREE.MeshStandardMaterial({
-    color: 0x1e293b,
-    roughness: 0.45,
-    metalness: 0.35,
+    color: 0x9b8467,
+    roughness: 0.68,
+    metalness: 0.03,
   });
   public readonly holdingDeskMat = new THREE.MeshStandardMaterial({
-    color: 0x334155,
-    roughness: 0.65,
-    metalness: 0.2,
+    color: 0x716d63,
+    roughness: 0.76,
+    metalness: 0.03,
   });
   public readonly metalLegMat = new THREE.MeshStandardMaterial({
-    color: 0x0f172a,
-    roughness: 0.3,
-    metalness: 0.7,
+    color: 0x484844,
+    roughness: 0.48,
+    metalness: 0.35,
   });
   public readonly chairCushionMat = new THREE.MeshStandardMaterial({
-    color: 0x334155,
-    roughness: 0.65,
-    metalness: 0.15,
+    color: 0x6a665e,
+    roughness: 0.8,
+    metalness: 0.02,
   });
   public readonly keyboardMat = new THREE.MeshStandardMaterial({
-    color: 0xcbd5e1,
-    roughness: 0.4,
-    metalness: 0.4,
+    color: 0xb9b5aa,
+    roughness: 0.62,
+    metalness: 0.08,
   });
   public readonly meetingTableMat = new THREE.MeshStandardMaterial({
-    color: 0x273549,
-    roughness: 0.4,
-    metalness: 0.4,
+    color: 0x826c55,
+    roughness: 0.68,
+    metalness: 0.03,
   });
   public readonly plantPotMat = new THREE.MeshStandardMaterial({
     color: 0xe2e8f0,

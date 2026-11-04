@@ -344,6 +344,40 @@ describe('Phase 1 & 2 (Iteración 2): resolveLiveOrganizationAttribution & build
     }
   });
 
+  it('preserves positions and routes after existing departments gain or lose agents', () => {
+    const units = [
+      unit('unit-exec', 'EXEC', 'Dirección Ejecutiva'),
+      unit('unit-audit', 'AUDIT', 'Auditoría Independiente'),
+      unit('unit-eng', 'ENG', 'Ingeniería'),
+      unit('unit-ops', 'OPS', 'Operaciones'),
+    ];
+    let previousRooms: ReturnType<typeof buildCorporateCampusLayout>['rooms'] = [];
+
+    for (const counts of [[0, 0, 0, 0], [1, 3, 8, 1], [8, 1, 3, 0], [0, 0, 0, 0], [1, 3, 8, 1]] as const) {
+      const agents = units.flatMap((department, unitIndex) =>
+        Array.from({ length: counts[unitIndex] }, (_, agentIndex) =>
+          makeAgent({
+            id: `${department.id}-agent-${agentIndex}`,
+            unitId: department.id,
+            credentialStatus: 'ENABLED',
+          }),
+        ),
+      );
+      const layout = buildCorporateCampusLayout(units, agents, { isDemo: false, previousRooms });
+      expect(() => buildCampusNavGraph(layout.rooms)).not.toThrow();
+      expect(layout.rooms).toHaveLength(units.length);
+
+      const byId = new Map(layout.rooms.map((room) => [room.id, room]));
+      for (const room of previousRooms) {
+        const next = byId.get(room.id);
+        if (next && next.width === room.width && next.depth === room.depth) {
+          expect(next).toMatchObject({ x: room.x, z: room.z });
+        }
+      }
+      previousRooms = layout.rooms;
+    }
+  });
+
   it('keeps an empty LIVE organization free of synthetic rooms', () => {
     const layout = buildCorporateCampusLayout([], [], { isDemo: false });
     expect(layout.rooms).toEqual([]);

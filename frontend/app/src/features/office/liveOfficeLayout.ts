@@ -247,6 +247,32 @@ function routeAroundRooms(
       { x: o.maxX, z: o.minZ }, { x: o.maxX, z: o.maxZ },
     );
   }
+  // If dense/overlapping footprints seal the local visibility graph, widen the
+  // search to a guaranteed exterior loop around the whole plan. Neighborhoods
+  // are placement envelopes, not architectural walls; their local corners can
+  // overlap even though the continuous circulation perimeter remains usable.
+  if (relevant.length !== obstacles.length) {
+    for (const o of obstacles) {
+      points.push(
+        { x: o.minX, z: o.minZ }, { x: o.minX, z: o.maxZ },
+        { x: o.maxX, z: o.minZ }, { x: o.maxX, z: o.maxZ },
+      );
+    }
+  }
+  const outer = {
+    minX: Math.min(...obstacles.map((o) => o.minX), lead.x, end.x) - margin - 2,
+    maxX: Math.max(...obstacles.map((o) => o.maxX), lead.x, end.x) + margin + 2,
+    minZ: Math.min(...obstacles.map((o) => o.minZ), lead.z, end.z) - margin - 2,
+    maxZ: Math.max(...obstacles.map((o) => o.maxZ), lead.z, end.z) + margin + 2,
+  };
+  points.push(
+    { x: outer.minX, z: outer.minZ }, { x: outer.minX, z: outer.maxZ },
+    { x: outer.maxX, z: outer.minZ }, { x: outer.maxX, z: outer.maxZ },
+    { x: outer.minX, z: lead.z }, { x: outer.maxX, z: lead.z },
+    { x: outer.minX, z: end.z }, { x: outer.maxX, z: end.z },
+    { x: lead.x, z: outer.minZ }, { x: lead.x, z: outer.maxZ },
+    { x: end.x, z: outer.minZ }, { x: end.x, z: outer.maxZ },
+  );
   const unique = new Map(points.map((point) => [`${point.x.toFixed(4)},${point.z.toFixed(4)}`, point]));
   const vertices = [...unique.values()];
   const distances = vertices.map(() => Infinity);

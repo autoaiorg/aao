@@ -221,6 +221,7 @@ describe('Stylized Humanoid Worker Avatar Renderer (PR A)', () => {
       // children[1]: Primary geometry (STANDING pedestal)
       expect(group.children[1]).toBeInstanceOf(THREE.Mesh);
       expect(group.children[1].position.y).toBeCloseTo(0.06);
+      expect(group.children[1].visible).toBe(false);
 
       // children[2]: Character Rig
       expect(group.children[2]).toBeInstanceOf(THREE.Group);
@@ -261,7 +262,7 @@ describe('Stylized Humanoid Worker Avatar Renderer (PR A)', () => {
         .material as THREE.MeshBasicMaterial;
       expect(haloMaterial.color.getHex()).toBe(0x668b70);
       expect(haloMaterial.transparent).toBe(true);
-      expect(haloMaterial.opacity).toBe(0.56);
+      expect(haloMaterial.opacity).toBe(0.24);
       expect(haloMaterial.depthWrite).toBe(false);
     });
 
@@ -278,6 +279,7 @@ describe('Stylized Humanoid Worker Avatar Renderer (PR A)', () => {
       });
 
       expect(group.children[1].position.y).toBeCloseTo(0.58);
+      expect(group.children[1].visible).toBe(false);
       expect(group.userData.agentType).toBe('EPHEMERAL');
     });
   });

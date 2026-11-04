@@ -724,7 +724,7 @@ export function buildAgentAvatar(
       color: haloRingColor,
       side: THREE.DoubleSide,
       transparent: true,
-      opacity: 0.56,
+      opacity: 0.24,
       depthWrite: false,
     })
   );
@@ -772,6 +772,12 @@ export function buildAgentAvatar(
     primaryGeometry.castShadow = true;
     group.add(primaryGeometry);
   }
+
+  // The primary meshes are retained for the legacy scene-graph/kinematics
+  // contract, but the articulated humanoid is the visible agent. Rendering a
+  // pedestal or crystal under every person makes the avatar read as a robot or
+  // game token, so keep these compatibility meshes out of the scene image.
+  primaryGeometry.visible = false;
 
   // children[2]: Articulated Humanoid Character Rig
   const appearanceProfile = getAvatarAppearanceProfile(

@@ -597,26 +597,35 @@ export function buildHumanoidCharacterRig(
   const coffeeCup = new THREE.Group();
   coffeeCup.name = 'ambient-coffee-cup';
   const cup = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.035, 0.028, 0.07, 8),
+    new THREE.CylinderGeometry(0.043, 0.036, 0.09, 12),
     new THREE.MeshStandardMaterial({ color: 0xf5f1e8, roughness: 0.65 }),
   );
   cup.position.set(0, -0.015, 0.025);
   coffeeCup.add(cup);
   const coffee = new THREE.Mesh(
-    new THREE.CircleGeometry(0.027, 8),
+    new THREE.CircleGeometry(0.039, 12),
     new THREE.MeshStandardMaterial({ color: 0x53321f, roughness: 0.8, side: THREE.DoubleSide }),
   );
   coffee.rotation.x = -Math.PI / 2;
-  coffee.position.set(0, 0.021, 0.025);
+  coffee.position.set(0, 0.032, 0.025);
   coffeeCup.add(coffee);
+  const rim = new THREE.Mesh(
+    new THREE.TorusGeometry(0.043, 0.0035, 6, 14),
+    new THREE.MeshStandardMaterial({ color: 0xe2ded4, roughness: 0.6 }),
+  );
+  rim.rotation.x = Math.PI / 2;
+  rim.position.set(0, 0.032, 0.025);
+  coffeeCup.add(rim);
   const handle = new THREE.Mesh(
-    new THREE.TorusGeometry(0.022, 0.006, 5, 8, Math.PI),
+    new THREE.TorusGeometry(0.027, 0.006, 6, 10, Math.PI * 1.5),
     new THREE.MeshStandardMaterial({ color: 0xf5f1e8, roughness: 0.65 }),
   );
-  handle.position.set(0.039, -0.012, 0.025);
+  handle.position.set(0.049, -0.008, 0.025);
   handle.rotation.z = -Math.PI / 2;
   coffeeCup.add(handle);
-  coffeeCup.position.set(0, -0.17, 0.09);
+  // Keep the cup centered in the palm's grasp. The previous -0.17 m offset
+  // placed it below the hand, making the small mug read like a dangling prop.
+  coffeeCup.position.set(0, -0.045, 0.09);
   rightHand.add(coffeeCup);
 
   rightArmGroup.add(rightForearmGroup);

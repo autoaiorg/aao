@@ -393,6 +393,13 @@ describe('Stylized Humanoid Worker Avatar Renderer (PR A)', () => {
       const parts = group.userData.parts;
       stepAvatarKinematics(group, createRuntime(ambientWalk), 500, 15);
       expect(parts.coffeeCup.visible).toBe(true);
+      expect(parts.coffeeCup.name).toBe('ambient-coffee-cup');
+      expect(parts.coffeeCup.position.y).toBeCloseTo(-0.045);
+      const mugBody = parts.coffeeCup.children.find(
+        (child: THREE.Object3D) => child instanceof THREE.Mesh && child.geometry instanceof THREE.CylinderGeometry,
+      ) as THREE.Mesh | undefined;
+      expect(mugBody).toBeDefined();
+      expect((mugBody!.geometry as THREE.CylinderGeometry).parameters.height).toBeCloseTo(0.09);
 
       const liveWalk = buildAgentAvatar(baseAgent, walkingActivity, pool, {
         createSpeechBubbleSprite: mockCreateSprite,

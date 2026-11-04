@@ -189,4 +189,56 @@ describe('Phase 1 & 2 (Iteración 2): resolveLiveOrganizationAttribution & build
       expect(navGraph.corridors.some((c) => c.fromRoomId === room.id)).toBe(true);
     }
   });
+
+  it('assigns adaptive zone types, realistic floor finishes, and computes architectural glass walls with doorway portals', () => {
+    const units = [
+      unit('unit-exec', 'EXEC', 'Dirección Ejecutiva'),
+      unit('unit-audit', 'AUDIT', 'Auditoría Independiente'),
+      unit('unit-squad-01', 'SQ-01', 'Equipo de Modernización Frontend', 'unit-eng'),
+      unit('unit-eng', 'ENG', 'Ingeniería de Software'),
+    ];
+    const agents = [
+      makeAgent({ id: 'ag-exec', unitId: 'unit-exec' }),
+      makeAgent({ id: 'ag-audit', unitId: 'unit-audit' }),
+      makeAgent({ id: 'ag-squad', unitId: 'unit-squad-01' }),
+      makeAgent({ id: 'ag-eng', unitId: 'unit-eng' }),
+    ];
+
+    const layout = buildCorporateCampusLayout(units, agents, { isDemo: false });
+
+    const execRoom = layout.rooms.find((r) => r.id === 'unit-exec')!;
+    expect(execRoom).toBeDefined();
+    expect(execRoom.kind).toBe('executive-suite');
+    expect(execRoom.floorFinish).toBe('hardwood-walnut');
+    expect(execRoom.doorway).toBeDefined();
+    expect(execRoom.doorway?.width).toBe(1.4);
+    expect(execRoom.glassWalls).toBeDefined();
+    expect(execRoom.glassWalls?.length).toBe(5);
+
+    const auditRoom = layout.rooms.find((r) => r.id === 'unit-audit')!;
+    expect(auditRoom).toBeDefined();
+    expect(auditRoom.kind).toBe('audit-enclave');
+    expect(auditRoom.floorFinish).toBe('high-security-frosted');
+    // Audit enclave must have acoustic manifestation bands on its glass walls
+    expect(auditRoom.glassWalls?.some((w) => w.hasManifestationBand)).toBe(true);
+
+    const squadRoom = layout.rooms.find((r) => r.id === 'unit-squad-01')!;
+    expect(squadRoom).toBeDefined();
+    expect(squadRoom.kind).toBe('agile-squad-pod');
+    expect(squadRoom.floorFinish).toBe('acoustic-carpet');
+
+    const engRoom = layout.rooms.find((r) => r.id === 'unit-eng')!;
+    expect(engRoom).toBeDefined();
+    expect(engRoom.kind).toBe('canonical-department');
+    expect(engRoom.floorFinish).toBe('acoustic-carpet');
+
+    // Every doorway must match the navigation graph doorway node position exactly
+    const navGraph = buildCampusNavGraph(layout.rooms);
+    for (const room of layout.rooms) {
+      const node = navGraph.nodes.get(`doorway-${room.id}`);
+      expect(node).toBeDefined();
+      expect(node?.x).toBeCloseTo(room.doorway!.x);
+      expect(node?.z).toBeCloseTo(room.doorway!.z);
+    }
+  });
 });

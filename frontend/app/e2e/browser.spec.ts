@@ -230,6 +230,7 @@ test.describe('Real Browser Functional & Accessibility Suite (Google Chrome)', (
   });
 
   test('F4 Virtual Office 3D: WebGL / accessible 2D fallback, room & agent selection, sidebar inspection and cross-navigation', async ({ page }) => {
+    test.setTimeout(90_000);
     // 1. Navigate to "Oficina Virtual" in LIVE mode
     await openNavigation(page);
     const officeNav = page.getByRole('button', { name: 'Oficina Virtual 3D' });
@@ -251,6 +252,8 @@ test.describe('Real Browser Functional & Accessibility Suite (Google Chrome)', (
     // 5. Verify Toolbar is present
     const toolbar = page.getByRole('toolbar', { name: /Barra de herramientas de la Oficina Virtual/i });
     await expect(toolbar).toBeVisible();
+    // Headless Chromium uses software WebGL; run this lifecycle coverage on the supported low profile.
+    await toolbar.getByRole('combobox', { name: 'Perfil de calidad gráfica 3D' }).selectOption('low');
 
     // 5. Check mode switcher buttons in toolbar
     const view3dBtn = toolbar.getByRole('button', { name: /Vista 3D \(WebGL\)/i });

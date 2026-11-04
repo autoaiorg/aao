@@ -15,6 +15,64 @@ export interface PlannedOfficeZone {
   depth: number;
 }
 
+export interface WorkNeighborhoodDeskPlacement {
+  slotIndex: number;
+  x: number;
+  z: number;
+}
+
+/**
+ * Stable sequential circle packing for one desk per observed agent. A prefix
+ * never moves when the department grows; each next desk is placed in the
+ * lowest-cost free gap around the existing neighborhood rather than on a
+ * fixed grid. Spacing is minimum center distance, not a site-wide pitch.
+ */
+export function planWorkNeighborhoodDesks(
+  count: number,
+  rotationSeed = 'office',
+): WorkNeighborhoodDeskPlacement[] {
+  const safeCount = Math.max(0, Math.floor(count));
+  const spacing = 1.48;
+  let hash = 2166136261;
+  for (const char of rotationSeed) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  const rotation = ((hash >>> 0) / 0xffffffff) * Math.PI * 2;
+  const placements: WorkNeighborhoodDeskPlacement[] = [];
+  for (let slotIndex = 0; slotIndex < safeCount; slotIndex += 1) {
+    if (slotIndex === 0) {
+      placements.push({ slotIndex, x: 0, z: 0 });
+      continue;
+    }
+    const candidates = new Map<string, { x: number; z: number; cost: number }>();
+    const phase = rotation + slotIndex * Math.PI * (3 - Math.sqrt(5));
+    for (const anchor of placements) {
+      for (let ray = 0; ray < 32; ray += 1) {
+        const angle = phase + ray * (Math.PI * 2 / 32);
+        const x = Number((anchor.x + Math.cos(angle) * spacing).toFixed(4));
+        const z = Number((anchor.z + Math.sin(angle) * spacing).toFixed(4));
+        if (placements.some((placed) => Math.hypot(x - placed.x, z - placed.z) < spacing - 0.005)) continue;
+        const xs = [...placements.map((placed) => placed.x), x];
+        const zs = [...placements.map((placed) => placed.z), z];
+        const spanX = Math.max(...xs) - Math.min(...xs);
+        const spanZ = Math.max(...zs) - Math.min(...zs);
+        const centroidDistance = Math.hypot(
+          x - xs.reduce((sum, value) => sum + value, 0) / xs.length,
+          z - zs.reduce((sum, value) => sum + value, 0) / zs.length,
+        );
+        const key = `${x},${z}`;
+        const shapePenalty = Math.abs(spanX - spanZ) * 4;
+        candidates.set(key, { x, z, cost: spanX * spanZ + shapePenalty + (spanX + spanZ) * 0.18 + centroidDistance * 0.08 });
+      }
+    }
+    const chosen = [...candidates.values()].sort((a, b) => a.cost - b.cost || a.x - b.x || a.z - b.z)[0];
+    if (!chosen) throw new Error(`Unable to pack desk ${slotIndex} in work neighborhood`);
+    placements.push({ slotIndex, x: chosen.x, z: chosen.z });
+  }
+  return placements;
+}
+
 // A continuous aisle, not a department-to-department grid pitch. The zone
 // contract is retained for consumers during migration to desk-level planning.
 // 1.35m circulation width plus a 0.4m service/avoidance margin.

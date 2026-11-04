@@ -6,7 +6,7 @@ import {
   type OfficeRoomConfig,
   type OfficeZoneKind,
 } from './types';
-import { planOfficeZones } from './spatialPlanningEngine';
+import { planOfficeZones, planWorkNeighborhoodDesks } from './spatialPlanningEngine';
 
 const UNIT_COLORS = [
   ['#1e3a8a', '#3b82f6'],
@@ -682,19 +682,25 @@ export function resolveLiveOrganizationAttribution(
 function computeRoomDimensionsForAgents(
   agentCount: number,
   isUnassignedHolding: boolean,
+  rotationSeed = 'office',
 ): { width: number; depth: number; workstationCapacity: number } {
   // Furniture occupancy comes only from identities present in this projection.
   // Leave a small, discrete organizational marker for empty units; scale occupied
   // neighborhoods from the actual number of desks instead of reserving a 4-seat bay.
   const needed = Math.max(0, agentCount);
-  const columns = needed === 0 ? 0 : Math.min(4, Math.ceil(needed / 2));
-  const rows = needed === 0 ? 0 : Math.ceil(needed / columns);
+  const desks = planWorkNeighborhoodDesks(needed, rotationSeed);
+  const minX = desks.length ? Math.min(...desks.map((desk) => desk.x)) : 0;
+  const maxX = desks.length ? Math.max(...desks.map((desk) => desk.x)) : 0;
+  const minZ = desks.length ? Math.min(...desks.map((desk) => desk.z)) : 0;
+  const maxZ = desks.length ? Math.max(...desks.map((desk) => desk.z)) : 0;
+  const maxAbsX = Math.max(Math.abs(minX), Math.abs(maxX));
+  const maxAbsZ = Math.max(Math.abs(minZ), Math.abs(maxZ));
   const width = needed === 0
     ? (isUnassignedHolding ? 3.8 : 3.2)
-    : Math.max(3.2, (columns - 1) * 1.35 + 2.6);
+    : Math.max(3.2, maxAbsX * 2 + 2.8);
   const depth = needed === 0
     ? 2.8
-    : Math.max(3, (rows - 1) * 1.55 + 2.35);
+    : Math.max(3, maxAbsZ * 2 + 3.0);
   return {
     width: Number(width.toFixed(2)),
     depth: Number(depth.toFixed(2)),
@@ -806,7 +812,7 @@ export function buildCorporateCampusLayout(
     normalizedAgents.some((agent) => agent.unitId === UNASSIGNED_UNIT_ID) ||
     (orderedCanonical.length === 0 && units.length > 0);
   const zoneRequests = orderedCanonical.map((unit) => {
-    const dims = computeRoomDimensionsForAgents(agentCountByUnit.get(unit.id) ?? 0, false);
+    const dims = computeRoomDimensionsForAgents(agentCountByUnit.get(unit.id) ?? 0, false, unit.id);
     return { id: unit.id, parentId: unit.parentId ?? null, width: dims.width, depth: dims.depth };
   });
   if (shouldIncludeUnassignedWing) {
@@ -825,7 +831,7 @@ export function buildCorporateCampusLayout(
   // Guaranteeing |z| >= 4.2 or radial distance >= 6.8 so NO department ever overlaps the Atrium at (0,0)!
   orderedCanonical.forEach((unit) => {
     const countInUnit = agentCountByUnit.get(unit.id) ?? 0;
-    const dims = computeRoomDimensionsForAgents(countInUnit, false);
+    const dims = computeRoomDimensionsForAgents(countInUnit, false, unit.id);
     const [x, z] = [plannedById.get(unit.id)!.x, plannedById.get(unit.id)!.z];
     const [color, accentColor] = UNIT_COLORS[stableColorIndex(unit.id)];
 

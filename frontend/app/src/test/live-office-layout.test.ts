@@ -10,6 +10,7 @@ import {
 } from '../features/office/liveOfficeLayout';
 import { buildDepartmentInteriorLayout } from '../features/office/engine/officeLifeEngine';
 import {
+  planWorkNeighborhoodDesks,
   planOfficeZones,
   WORK_NEIGHBORHOOD_CLEARANCE_METERS,
 } from '../features/office/spatialPlanningEngine';
@@ -67,6 +68,24 @@ describe('buildLiveOfficeRooms', () => {
 });
 
 describe('capacity-aware spatial layout', () => {
+  it('packs exactly one stable, separated desk per assigned agent in an organic neighborhood', () => {
+    const one = planWorkNeighborhoodDesks(1, 'unit-eng');
+    const three = planWorkNeighborhoodDesks(3, 'unit-eng');
+    const eight = planWorkNeighborhoodDesks(8, 'unit-eng');
+    expect(one).toHaveLength(1);
+    expect(three).toHaveLength(3);
+    expect(eight).toHaveLength(8);
+    expect(eight.slice(0, 3)).toEqual(three);
+    expect(planWorkNeighborhoodDesks(8, 'unit-eng')).toEqual(eight);
+    expect(new Set(eight.map(({ x }) => x)).size).toBeGreaterThan(4);
+    expect(new Set(eight.map(({ z }) => z)).size).toBeGreaterThan(4);
+    for (let left = 0; left < eight.length; left += 1) {
+      for (let right = left + 1; right < eight.length; right += 1) {
+        expect(Math.hypot(eight[left].x - eight[right].x, eight[left].z - eight[right].z)).toBeGreaterThanOrEqual(1.35);
+      }
+    }
+  });
+
   it('selects architectural modules from declared nature rather than unit IDs or hierarchy', () => {
     const layout = buildCorporateCampusLayout([
       unit('unit-audit', 'AUDIT', 'Equipo de Investigación'),
@@ -118,8 +137,8 @@ describe('capacity-aware spatial layout', () => {
       expect(room.depth).toBeLessThan(4);
     }
     if (count === 8) {
-      expect(room.width).toBeLessThan(8);
-      expect(room.depth).toBeLessThan(5);
+      expect(room.width).toBeLessThan(9);
+      expect(room.depth).toBeLessThan(10);
     }
   });
 

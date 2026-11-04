@@ -1,5 +1,6 @@
 import type { AgentIdentity } from '../../../domain/models';
 import type { OfficeLabelLodTier, OfficeRoomConfig } from '../types';
+import { planWorkNeighborhoodDesks } from '../spatialPlanningEngine';
 
 /**
  * High-level visual activity state for an agent in the 3D Office.
@@ -426,16 +427,13 @@ export function buildDepartmentInteriorLayout(room: OfficeRoomConfig): Departmen
   // A missing capacity is a legacy rendering contract (e.g. static OFFICE_ROOMS fixtures).
   // Data-driven LIVE/DEMO layouts always set an exact observed count, including zero.
   const capacity = Math.max(0, room.workstationCapacity ?? 4);
-  const columns = Math.max(1, Math.min(4, Math.ceil(capacity / 2)));
-  const rows = Math.max(1, Math.ceil(capacity / columns));
-  const localConfigs = Array.from({ length: capacity }, (_, slotIndex) => {
-    const row = Math.floor(slotIndex / columns);
-    const column = slotIndex % columns;
-    const countInRow = Math.min(columns, capacity - row * columns);
-    const deskX = (column - (countInRow - 1) / 2) * 1.35;
-    const deskZ = (row - (rows - 1) / 2) * 1.55;
-    return { deskX, deskZ, chairX: deskX, chairZ: deskZ + 0.55, facing: Math.PI };
-  });
+  const localConfigs = planWorkNeighborhoodDesks(capacity, room.id).map(({ x, z }) => ({
+    deskX: x,
+    deskZ: z,
+    chairX: x,
+    chairZ: z + 0.55,
+    facing: Math.PI,
+  }));
 
   const workstations: WorkstationSlot[] = localConfigs.map((cfg, idx) => ({
     slotIndex: idx,
@@ -591,7 +589,8 @@ export function planOfficeLifePlacements(
         neighborhoodWaypoint,
         doorWaypoint,
         aisleWaypoint,
-      ];
+      ].filter((point, index, all) => index === 0 ||
+        Math.hypot(point.x - all[index - 1].x, point.z - all[index - 1].z) > 0.01);
 
       if (activity.kind === 'WALKING') {
         isSeated = false;

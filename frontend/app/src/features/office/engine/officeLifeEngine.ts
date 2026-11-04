@@ -224,6 +224,21 @@ export function projectAgentOperationalActivity(
     }
   }
 
+  if (agent.credentialStatus === 'DISABLED' && !validAssignment) {
+    return {
+      agentId: agent.id,
+      kind: 'DISCONNECTED',
+      provenance: isDemo ? 'DEMO_SIMULATION' : 'LIVE_VERIFIED_EVIDENCE',
+      label: 'Identidad deshabilitada (sin puesto activo)',
+      shortBadge: '🔌 INACTIVO',
+      detail: 'Identidad deshabilitada sin tarea vigente; no se representa como agente activo ni ocupa un escritorio departamental.',
+      isLeaseExpired: hasExpiredLease,
+      activeTaskId: null,
+      activeProjectId: null,
+      conversationPartnerId: null,
+    };
+  }
+
   // If the only active assignment has an expired lease, fall back to neutral state immediately
   if (!validAssignment && hasExpiredLease) {
     return {
@@ -541,7 +556,11 @@ export function planOfficeLifePlacements(
   const unassignedAgents: AgentIdentity[] = [];
 
   for (const agent of agents) {
-    if (roomLayouts.has(agent.unitId)) {
+    const hasActiveDeskTask = agent.currentAssignments.some(
+      (assignment) => assignment.status === 'ACTIVE' && Boolean(assignment.taskId),
+    );
+    if (roomLayouts.has(agent.unitId) &&
+        (agent.credentialStatus !== 'DISABLED' || hasActiveDeskTask)) {
       const list = agentsByRoom.get(agent.unitId) || [];
       list.push(agent);
       agentsByRoom.set(agent.unitId, list);

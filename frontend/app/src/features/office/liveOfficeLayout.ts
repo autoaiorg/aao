@@ -770,13 +770,13 @@ export function buildCorporateCampusLayout(
   }
 
   const agentCountByUnit = new Map<string, number>();
+  const hasActiveDeskTask = (agent: AgentIdentity): boolean => agent.currentAssignments.some(
+    (assignment) => assignment.status === 'ACTIVE' && Boolean(assignment.taskId),
+  );
   for (const agent of normalizedAgents) {
     // Historical principals and neutral/unassigned identities have no assigned departmental desk.
-    const hasActiveAssignment = agent.currentAssignments.some(
-      (assignment) => assignment.status === 'ACTIVE' && Boolean(assignment.taskId),
-    );
     if (
-      (agent.credentialStatus === 'DISABLED' && !hasActiveAssignment) ||
+      (agent.credentialStatus === 'DISABLED' && !hasActiveDeskTask(agent)) ||
       agent.unitId === UNASSIGNED_UNIT_ID
     ) continue;
     agentCountByUnit.set(agent.unitId, (agentCountByUnit.get(agent.unitId) ?? 0) + 1);
@@ -809,7 +809,8 @@ export function buildCorporateCampusLayout(
 
   const rooms: OfficeRoomConfig[] = [];
   const shouldIncludeUnassignedWing =
-    normalizedAgents.some((agent) => agent.unitId === UNASSIGNED_UNIT_ID) ||
+    normalizedAgents.some((agent) => agent.unitId === UNASSIGNED_UNIT_ID ||
+      (agent.credentialStatus === 'DISABLED' && !hasActiveDeskTask(agent))) ||
     (orderedCanonical.length === 0 && units.length > 0);
   const zoneRequests = orderedCanonical.map((unit) => {
     const dims = computeRoomDimensionsForAgents(agentCountByUnit.get(unit.id) ?? 0, false, unit.id);

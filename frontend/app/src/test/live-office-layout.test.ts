@@ -8,7 +8,7 @@ import {
   resolveLiveOrganizationAttribution,
   selectOfficeZoneKind,
 } from '../features/office/liveOfficeLayout';
-import { buildDepartmentInteriorLayout } from '../features/office/engine/officeLifeEngine';
+import { buildDepartmentInteriorLayout, planOfficeLifePlacements } from '../features/office/engine/officeLifeEngine';
 import {
   planWorkNeighborhoodDesks,
   planOfficeZones,
@@ -84,6 +84,23 @@ describe('capacity-aware spatial layout', () => {
         expect(Math.hypot(eight[left].x - eight[right].x, eight[left].z - eight[right].z)).toBeGreaterThanOrEqual(1.35);
       }
     }
+  });
+
+  it('does not turn a disabled historical identity into a department desk occupant', () => {
+    const department = unit('unit-eng', 'ENG', 'Ingeniería');
+    const historical = makeAgent({ id: 'agent-historical', unitId: department.id, credentialStatus: 'DISABLED' });
+    const layout = buildCorporateCampusLayout([department], [historical], { isDemo: false });
+    const departmentRoom = layout.rooms.find((room) => room.id === department.id)!;
+    const holdingRoom = layout.rooms.find((room) => room.id === 'unit-unassigned');
+    expect(departmentRoom.workstationCapacity).toBe(0);
+    expect(holdingRoom).toBeDefined();
+
+    const placements = planOfficeLifePlacements(layout.normalizedAgents, layout.rooms, {
+      isDemo: false,
+      ambientWalkEnabled: false,
+    });
+    expect(placements.get(historical.id)?.activity.kind).toBe('DISCONNECTED');
+    expect(placements.get(historical.id)?.isSeated).toBe(false);
   });
 
   it('selects architectural modules from declared nature rather than unit IDs or hierarchy', () => {

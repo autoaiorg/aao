@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { AgentIdentity } from '../../../domain/models';
+import type { OfficeWorldActorPosition } from '../types';
 import type {
   CameraViewState,
   OfficeCameraPreset,
@@ -34,6 +35,7 @@ export interface WebGLCanvasHandle {
   setFollowAgent: (enabled: boolean) => void;
   setQualityProfile: (profile: OfficeGraphicsQuality) => void;
   getPerformanceMetrics: () => OfficeScenePerfMetrics | null;
+  syncWorldActors: (positions: OfficeWorldActorPosition[]) => void;
 }
 
 function checkWebGLSupport(): boolean {
@@ -96,6 +98,9 @@ export const Office3DCanvas = React.forwardRef<WebGLCanvasHandle, Office3DCanvas
       },
       getPerformanceMetrics: () => {
         return sceneRef.current?.getPerformanceMetrics() ?? null;
+      },
+      syncWorldActors: (positions: OfficeWorldActorPosition[]) => {
+        sceneRef.current?.syncWorldActors(positions);
       },
     }));
 

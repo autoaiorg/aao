@@ -22,6 +22,7 @@ import {
   type HudModuleDescriptor,
 } from './components/OfficeBottomTacticalDeck';
 import { buildCorporateCampusLayout } from './liveOfficeLayout';
+import { buildOfficeWorldPlan, resolveLocalNpcPositions } from './officeWorldRuntime';
 import {
   filterOperationalAgents,
   isInteractiveOrEditableElement,
@@ -55,6 +56,7 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
   knowledgeReadPort,
   calendarReadPort,
   routinePort,
+  officeWorldPort,
   conversationSessionId,
   canManageOrganization = false,
   onSaveUnit,
@@ -200,6 +202,44 @@ export const VirtualOfficeView: React.FC<VirtualOfficeViewProps> = ({
   const initialUnitSelectionDone = useRef(false);
   const initialViewModeChosen = useRef(true);
   const canvas3DRef = useRef<WebGLCanvasHandle>(null);
+  const officeWorldPlan = useMemo(() => data ? buildOfficeWorldPlan({
+    agents: allAgents,
+    rooms: roomConfigs,
+    navigation: campusLayout.navGraph,
+  }) : null, [data, allAgents, roomConfigs, campusLayout.navGraph]);
+
+  useEffect(() => {
+    if (!officeWorldPlan) {
+      canvas3DRef.current?.syncWorldActors([]);
+      return;
+    }
+    let cancelled = false;
+    let running = false;
+    const sync = async () => {
+      if (cancelled || running) return;
+      running = true;
+      try {
+        if (isDemo) {
+          canvas3DRef.current?.syncWorldActors(resolveLocalNpcPositions(officeWorldPlan));
+          return;
+        }
+        if (!officeWorldPort) return;
+        if (isCeoSession) {
+          const published = await officeWorldPort.publishPlan(officeWorldPlan);
+          if (cancelled || !published.ok) return;
+        }
+        const positions = await officeWorldPort.getPositions();
+        if (!cancelled && positions && positions.every((position) => position.map_revision === officeWorldPlan.map_revision)) {
+          canvas3DRef.current?.syncWorldActors(positions);
+        }
+      } finally {
+        running = false;
+      }
+    };
+    void sync();
+    const timer = window.setInterval(() => void sync(), 2500);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [officeWorldPlan, isDemo, isCeoSession, officeWorldPort]);
 
   const effectiveBottomDeckState =
     !userToggledDeck && projects.kind === 'unavailable' ? 'minimized' : bottomDeckState;

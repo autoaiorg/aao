@@ -50,6 +50,7 @@ import {
   AgentIdentitySchema,
 } from '../../../domain/validators';
 import { z } from 'zod';
+import type { OfficeWorldActorPosition, OfficeWorldActorRoute, OfficeWorldPort } from '../../../features/office/types';
 
 export interface HttpLiveAdapterConfig {
   baseUrl?: string;
@@ -62,7 +63,7 @@ export interface HttpLiveAdapterConfig {
   requireAuth?: boolean;
 }
 
-export class HttpAaoLiveAdapter implements AaoRoutinePort, AaoReadPort, AaoOrganizationCommandPort, AaoWorkCommandPort, AaoConversationPort {
+export class HttpAaoLiveAdapter implements AaoRoutinePort, AaoReadPort, AaoOrganizationCommandPort, AaoWorkCommandPort, AaoConversationPort, OfficeWorldPort {
   private baseUrl: string;
   private timeoutMs: number;
   private getToken: () => string | null;
@@ -897,6 +898,24 @@ export class HttpAaoLiveAdapter implements AaoRoutinePort, AaoReadPort, AaoOrgan
     return this.request('/v1/organization', OrganizationStructureSchema, {
       cache: 'no-store',
     });
+  }
+
+  async publishPlan(input: { map_revision: string; actors: OfficeWorldActorRoute[] }): Promise<{ ok: boolean }> {
+    if (this.getAuthRole() !== 'CEO') return { ok: false };
+    const result = await this.request('/v1/office/world/plan', undefined, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
+    });
+    return { ok: result.kind === 'ready' };
+  }
+
+  async getPositions(): Promise<OfficeWorldActorPosition[] | null> {
+    const result = await this.request('/v1/office/world', z.object({
+      actors: z.array(z.object({
+        actor_id: z.string(), actor_kind: z.enum(['AGENT', 'NPC']), map_revision: z.string(),
+        x: z.number(), z: z.number(), facing: z.number(), simulation_only: z.literal(true),
+      })),
+    }).passthrough(), { cache: 'no-store' });
+    return result.kind === 'ready' ? result.data.actors as OfficeWorldActorPosition[] : null;
   }
 
   async putOrganizationUnit(input: OrganizationUnitCommand): Promise<DataState<unknown>> {

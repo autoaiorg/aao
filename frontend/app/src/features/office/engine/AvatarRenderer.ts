@@ -900,6 +900,9 @@ export function stepAvatarKinematics(
   cameraDistance: number,
   options: {
     reducedMotion?: boolean;
+    authoritativePosition?: { x: number; z: number; facingAngle: number };
+    /** Presentation-only gesture override for an ambient NPC encounter. */
+    ambientInteraction?: boolean;
     sampleWaypointRoute?: (
       waypoints: ReadonlyArray<{ x: number; z: number }>,
       time: number,
@@ -929,7 +932,7 @@ export function stepAvatarKinematics(
   }
 
   const { placement } = runtime;
-  const kind = placement.activity.kind;
+  const kind = options.ambientInteraction ? 'CONVERSING' : placement.activity.kind;
   if (parts.coffeeCup) {
     parts.coffeeCup.visible =
       kind === 'WALKING' && placement.activity.provenance !== 'LIVE_VERIFIED_EVIDENCE';
@@ -946,6 +949,11 @@ export function stepAvatarKinematics(
     destX = sampled.x;
     destZ = sampled.z;
     destAngle = sampled.facingAngle;
+  }
+  if (options.authoritativePosition) {
+    destX = options.authoritativePosition.x;
+    destZ = options.authoritativePosition.z;
+    destAngle = options.authoritativePosition.facingAngle;
   }
 
   // Smooth position & orientation interpolation
@@ -1024,8 +1032,10 @@ export function stepAvatarKinematics(
     }
 
     if (parts.speechBubble) {
-      parts.speechBubble.visible = true;
-      parts.speechBubble.position.y = 2.02 + Math.sin(time * 0.006 + phase) * 0.03;
+      parts.speechBubble.visible = !options.ambientInteraction;
+      if (!options.ambientInteraction) {
+        parts.speechBubble.position.y = 2.02 + Math.sin(time * 0.006 + phase) * 0.03;
+      }
     }
   } else if (kind === 'WALKING') {
     // Sinusoidal walking stride with counter-swinging arms and vertical bob

@@ -585,6 +585,36 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
     expect(projectedIdleAudit.kind).toBe('IDLE_DESK');
     expect(projectedIdleAudit.provenance).toBe('LIVE_VERIFIED_EVIDENCE');
 
+    // Healthy idle agents use an explicitly ambient coffee walk by default;
+    // it must not create task or project evidence in LIVE.
+    const ambientIdleAudit = projectAgentOperationalActivity(
+      idleAuditAgent,
+      [idleAuditAgent],
+      { isDemo: false, nowMs }
+    );
+    expect(ambientIdleAudit.kind).toBe('WALKING');
+    expect(ambientIdleAudit.provenance).toBe('AMBIENT_ANIMATION');
+    expect(ambientIdleAudit.activeTaskId).toBeNull();
+    expect(ambientIdleAudit.activeProjectId).toBeNull();
+    expect(ambientIdleAudit.shortBadge).toContain('PASEO');
+
+    const demoIdleAudit = projectAgentOperationalActivity(
+      { ...idleAuditAgent, isSyntheticDemo: true },
+      [{ ...idleAuditAgent, isSyntheticDemo: true }],
+      { isDemo: true, nowMs }
+    );
+    expect(demoIdleAudit.kind).toBe('WALKING');
+    expect(demoIdleAudit.provenance).toBe('DEMO_SIMULATION');
+
+    const ambientPlacement = planOfficeLifePlacements([idleAuditAgent], OFFICE_ROOMS, {
+      isDemo: false,
+      nowMs,
+    }).get(idleAuditAgent.id)!;
+    expect(ambientPlacement.activity.kind).toBe('WALKING');
+    expect(ambientPlacement.waypoints[0].z).toBeGreaterThan(
+      ambientPlacement.workstationSlot.chairWorldZ
+    );
+
     // 4. Sharing a projectId in LIVE without explicit coordination evidence must NOT attribute CONVERSING
     const peerA: AgentIdentity = {
       ...activeAuditAgent,
@@ -608,6 +638,8 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
       ...peerA,
       id: 'agent-peer-b',
       name: 'Ingeniera Beta',
+      unitId: 'unit-audit',
+      unitName: 'Auditoría Independiente',
       currentAssignments: [
         {
           id: 'asg-peer-b',
@@ -647,6 +679,20 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
     expect(livePeerAWithCoord.kind).toBe('CONVERSING');
     expect(livePeerAWithCoord.provenance).toBe('LIVE_VERIFIED_EVIDENCE');
     expect(livePeerAWithCoord.conversationPartnerId).toBe('agent-peer-b');
+
+    const conversationPlacements = planOfficeLifePlacements([peerA, peerB], OFFICE_ROOMS, {
+      isDemo: false,
+      nowMs,
+      activeCoordinationAgentIds: new Set(['agent-peer-a', 'agent-peer-b']),
+      ambientWalkEnabled: false,
+    });
+    const placedPeerA = conversationPlacements.get('agent-peer-a')!;
+    const placedPeerB = conversationPlacements.get('agent-peer-b')!;
+    expect(placedPeerA.activity.kind).toBe('CONVERSING');
+    expect(placedPeerB.activity.kind).toBe('CONVERSING');
+    expect(Math.abs(placedPeerA.targetWorldX - placedPeerB.targetWorldX)).toBeCloseTo(0.96);
+    expect((placedPeerA.targetWorldX + placedPeerB.targetWorldX) / 2).toBeCloseTo(6);
+    expect((placedPeerA.targetWorldZ + placedPeerB.targetWorldZ) / 2).toBeGreaterThan(-8);
   });
 
   it('maintains stable workstation slots across LLM/session changes, avoids collisions, and computes deterministic corridor routes', () => {
@@ -871,7 +917,8 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
       Array.from(departmentLabels.departments.values()).filter((state) => state.visible).length
     );
 
-    // 2. In AGENT mode (distance 9.5) with identical world coords: de-overlapping nudges yOffset and suppresses excess
+    // 2. In AGENT mode prioritize only the selected agent so no label cluster
+    // obscures the person being inspected.
     const closeLabels = computeAdaptiveLabelStates({
       rooms: campus.rooms,
       agents: sevenUnassigned,
@@ -884,14 +931,22 @@ describe('Video Game Spatial HUD & 3D Office Prioritization', () => {
       selectedAgentId: 'aao-selfdev-worker-0',
     });
     expect(closeLabels.lodTier).toBe('agent');
+    expect(closeLabels.visibleDepartmentCount).toBe(0);
     const states = Array.from(closeLabels.agents.values());
     const visibleStates = states.filter((s) => s.visible);
     const suppressedStates = states.filter((s) => s.suppressedByOverlap);
-    // At exact screen-space collision, 3 vertical offset tiers fit (1.24, 1.62, 1.98) and the rest are suppressed
-    expect(visibleStates.length).toBe(3);
-    expect(suppressedStates.length).toBe(4);
-    const uniqueYOffsets = new Set(visibleStates.map((s) => s.yOffset));
-    expect(uniqueYOffsets.size).toBe(3);
+    expect(visibleStates.length).toBeGreaterThan(0);
+    expect(visibleStates.length).toBeLessThanOrEqual(1);
+    expect(suppressedStates.length).toBeLessThanOrEqual(7);
+    expect(visibleStates.some((state) => state.agentId === 'aao-selfdev-worker-0')).toBe(true);
+    // The selected label retains priority but moves away from the overlapping
+    // heads instead of covering a face in the close view.
+    expect(
+      Math.abs(visibleStates[0].offsetX) +
+        Math.abs(visibleStates[0].offsetZ) +
+        Math.max(0, visibleStates[0].yOffset - 1.24),
+    ).toBeGreaterThan(0);
+    expect(visibleStates.every((state) => Number.isFinite(state.offsetX) && Number.isFinite(state.offsetZ))).toBe(true);
   });
 
   it('Phase 1 & 4 (Iteración 2): displays LIVE organizational attribution diagnostics, opens Organization shortcut, and compacts HUD toolbar', () => {

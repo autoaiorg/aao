@@ -324,6 +324,7 @@ describe('Stylized Humanoid Worker Avatar Renderer (PR A)', () => {
         createAgentNameSprite: mockCreateSprite,
       });
       const runtime = createRuntime(typingActivity);
+      group.position.y = 0.37;
 
       stepAvatarKinematics(group, runtime, 1000, 15);
 
@@ -334,6 +335,12 @@ describe('Stylized Humanoid Worker Avatar Renderer (PR A)', () => {
       // Legs horizontal in chair
       expect(parts.leftLeg.rotation.x).toBeCloseTo(-Math.PI / 2.3, 1);
       expect(parts.rightLeg.rotation.x).toBeCloseTo(-Math.PI / 2.3, 1);
+      expect(parts.characterRig.position.y).toBeCloseTo(-0.28);
+      expect(parts.coffeeCup.visible).toBe(false);
+      group.updateMatrixWorld(true);
+      const leftShoeBounds = new THREE.Box3().setFromObject(parts.leftShoe);
+      expect(leftShoeBounds.min.y).toBeGreaterThan(-0.08);
+      expect(leftShoeBounds.min.y).toBeLessThan(0.08);
       // Speech bubble hidden
       expect(parts.speechBubble.visible).toBe(false);
       // STANDING pedestal invariant: stays stationary at 0.06
@@ -352,7 +359,7 @@ describe('Stylized Humanoid Worker Avatar Renderer (PR A)', () => {
       const parts = group.userData.parts;
       // Speech bubble is visible
       expect(parts.speechBubble.visible).toBe(true);
-      expect(parts.speechBubble.position.y).toBeGreaterThan(1.5);
+      expect(parts.speechBubble.position.y).toBeGreaterThan(1.9);
       // Legs upright
       expect(parts.leftLeg.rotation.x).toBe(0);
       expect(parts.rightLeg.rotation.x).toBe(0);
@@ -372,6 +379,34 @@ describe('Stylized Humanoid Worker Avatar Renderer (PR A)', () => {
       expect(parts.leftLeg.rotation.x).toBeCloseTo(-parts.rightLeg.rotation.x, 2);
       expect(parts.leftArm.rotation.x).toBeCloseTo(-parts.rightArm.rotation.x, 2);
       expect(parts.speechBubble.visible).toBe(false);
+    });
+
+    it('shows a coffee cup only for a non-business ambient walk', () => {
+      const ambientWalk: ProjectedAgentActivity = {
+        ...walkingActivity,
+        provenance: 'AMBIENT_ANIMATION',
+      };
+      const group = buildAgentAvatar(baseAgent, ambientWalk, pool, {
+        createSpeechBubbleSprite: mockCreateSprite,
+        createAgentNameSprite: mockCreateSprite,
+      });
+      const parts = group.userData.parts;
+      stepAvatarKinematics(group, createRuntime(ambientWalk), 500, 15);
+      expect(parts.coffeeCup.visible).toBe(true);
+      expect(parts.coffeeCup.name).toBe('ambient-coffee-cup');
+      expect(parts.coffeeCup.position.y).toBeCloseTo(-0.045);
+      const mugBody = parts.coffeeCup.children.find(
+        (child: THREE.Object3D) => child instanceof THREE.Mesh && child.geometry instanceof THREE.CylinderGeometry,
+      ) as THREE.Mesh | undefined;
+      expect(mugBody).toBeDefined();
+      expect((mugBody!.geometry as THREE.CylinderGeometry).parameters.height).toBeCloseTo(0.09);
+
+      const liveWalk = buildAgentAvatar(baseAgent, walkingActivity, pool, {
+        createSpeechBubbleSprite: mockCreateSprite,
+        createAgentNameSprite: mockCreateSprite,
+      });
+      stepAvatarKinematics(liveWalk, createRuntime(walkingActivity), 500, 15);
+      expect(liveWalk.userData.parts.coffeeCup.visible).toBe(false);
     });
 
     it('preserves Defect 2 invariant: EPHEMERAL crystal animates while STANDING pedestal does not', () => {

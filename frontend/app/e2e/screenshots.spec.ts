@@ -3,10 +3,18 @@ import path from 'path';
 import fs from 'fs';
 
 test('Capture real screenshots of F4.7 and F4.8 Office', async ({ page }) => {
+  // This capture exercises WebGL scene initialization and post-selection camera
+  // interaction; its real-browser cost exceeds Playwright's 30s default here.
+  test.setTimeout(90_000);
+  // Match a usable desktop viewport so the actual WebGL area, not just the HUD,
+  // occupies a meaningful portion of the evidence frame.
+  await page.setViewportSize({ width: 1600, height: 1000 });
   const screenshotsDir = path.resolve(process.cwd(), 'docs/screenshots');
+  const v42EvidenceDir = path.join(screenshotsDir, 'v42-comparison');
   if (!fs.existsSync(screenshotsDir)) {
     fs.mkdirSync(screenshotsDir, { recursive: true });
   }
+  fs.mkdirSync(v42EvidenceDir, { recursive: true });
 
   // 1. Load app in DEMO mode to showcase 3D office
   await page.goto('/');
@@ -16,9 +24,14 @@ test('Capture real screenshots of F4.7 and F4.8 Office', async ({ page }) => {
   const demoButton = page.getByRole('button', { name: /DEMO/i });
   await demoButton.click();
 
-  // Navigate to Oficina Virtual
-  const officeNav = page.getByRole('button', { name: 'Oficina Virtual' });
+  // The system panels are behind the collapsible side navigation.
+  await page.getByRole('button', { name: 'Alternar menú lateral' }).click();
+  const officeNav = page.getByRole('button', { name: 'Oficina Virtual 3D' });
   await officeNav.click();
+
+  // The legacy toolbar is available in classic layout; the tactical HUD hides it.
+  const hudToggle = page.getByRole('button', { name: /HUD Videojuego/i });
+  if (await hudToggle.isVisible()) await hudToggle.click();
 
   // Wait for 3D toolbar to appear
   const toolbar = page.getByRole('toolbar', { name: /Barra de herramientas de la Oficina Virtual/i });
@@ -26,13 +39,23 @@ test('Capture real screenshots of F4.7 and F4.8 Office', async ({ page }) => {
   await page.waitForTimeout(1000);
 
   // Capture 1: General 3D Overview
-  await page.screenshot({ path: path.join(screenshotsDir, '01-office-3d-overview.png'), fullPage: true });
+  await page.screenshot({ path: path.join(screenshotsDir, '01-office-3d-overview.png'), fullPage: false });
+  await page.screenshot({
+    path: path.join(v42EvidenceDir, 'office-overview-neighborhood-floors.png'),
+    fullPage: false,
+  });
+
+  // Capture the semantically selected Audit neighborhood separately from its sign.
+  const auditChip = toolbar.getByRole('button', { name: /\[AUDIT\]/i });
+  await auditChip.click({ force: true });
+  await page.waitForTimeout(800);
+  await page.screenshot({ path: path.join(v42EvidenceDir, 'office-audit-neighborhood.png'), fullPage: false });
 
   // Capture 2: Zoomed Department (ENG)
   const engChip = toolbar.getByRole('button', { name: /\[ENG\] Ingeniería/i });
-  await engChip.click();
+  await engChip.click({ force: true });
   await page.waitForTimeout(800);
-  await page.screenshot({ path: path.join(screenshotsDir, '02-office-3d-department-eng.png'), fullPage: true });
+  await page.screenshot({ path: path.join(screenshotsDir, '02-office-3d-department-eng.png'), fullPage: false });
 
   // Capture 3: Agent Inspector
   const sidebar = page.locator('aside');
@@ -40,12 +63,46 @@ test('Capture real screenshots of F4.7 and F4.8 Office', async ({ page }) => {
   if (await agentButton.isVisible()) {
     await agentButton.click();
     await page.waitForTimeout(500);
-    await page.screenshot({ path: path.join(screenshotsDir, '03-office-agent-inspector.png'), fullPage: true });
+    await page.screenshot({ path: path.join(screenshotsDir, '03-office-agent-inspector.png'), fullPage: false });
+    const officeCanvas = page.locator('canvas').first();
+    const canvasBounds = await officeCanvas.boundingBox();
+    if (!canvasBounds) throw new Error('3D office canvas has no visible bounds');
+    const canvasCenter = {
+      x: canvasBounds.x + canvasBounds.width / 2,
+      y: canvasBounds.y + canvasBounds.height / 2,
+    };
+    await page.mouse.move(canvasCenter.x, canvasCenter.y);
+    // Exercise the same wheel navigation users use, with a rendered frame
+    // between inputs so the scene's eased camera can settle at close range.
+    for (let step = 0; step < 16; step += 1) {
+      await page.mouse.wheel(0, -120);
+      await page.waitForTimeout(90);
+    }
+    const inspectionDistance = Number(await officeCanvas.getAttribute('data-camera-distance'));
+    if (!Number.isFinite(inspectionDistance) || inspectionDistance > 3.5) {
+      throw new Error(`Agent close-up did not reach the inspection distance (got ${inspectionDistance})`);
+    }
+    await page.screenshot({
+      path: path.join(v42EvidenceDir, 'office-operational-department-close.png'),
+      fullPage: false,
+    });
+    // Capture a genuine browser close-up of the selected agent, not just the
+    // surrounding department. Keep this separate so posture and label
+    // occlusion can be reviewed at the scale where they are easiest to spot.
+    await page.waitForTimeout(900);
+    // Exclude application chrome from this close study: leave the same WebGL
+    // viewport and camera framing intact, but use all captured pixels for the
+    // avatar, desk and chair so posture can be inspected at useful scale.
+    await officeCanvas.waitFor({ state: 'visible' });
+    await officeCanvas.screenshot({
+      path: path.join(v42EvidenceDir, 'office-agent-selection-view.png'),
+      animations: 'disabled',
+    });
   }
 
   // Capture 4: Accessible 2D Plan
   const plan2dBtn = toolbar.getByRole('button', { name: /Plano 2D Accesible/i });
   await plan2dBtn.click();
   await page.waitForTimeout(500);
-  await page.screenshot({ path: path.join(screenshotsDir, '04-office-2d-plan.png'), fullPage: true });
+  await page.screenshot({ path: path.join(screenshotsDir, '04-office-2d-plan.png'), fullPage: false });
 });

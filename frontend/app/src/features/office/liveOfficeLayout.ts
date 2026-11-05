@@ -1,13 +1,12 @@
 import type { AgentIdentity, OrgUnit } from '../../domain/models';
 import {
-  OFFICE_ROOMS,
   type OfficeDoorwayPortal,
   type OfficeFloorFinish,
   type OfficeGlassWallSegment,
   type OfficeRoomConfig,
   type OfficeZoneKind,
 } from './types';
-import { planOfficeZones } from './spatialPlanningEngine';
+import { planOfficeZones, planWorkNeighborhoodDesks } from './spatialPlanningEngine';
 
 const UNIT_COLORS = [
   ['#1e3a8a', '#3b82f6'],
@@ -20,6 +19,37 @@ const UNIT_COLORS = [
 
 export const UNASSIGNED_UNIT_ID = 'unit-unassigned';
 export const UNASSIGNED_HOLDING_COLORS = ['#334155', '#94a3b8'] as const;
+
+export interface ArchitecturalOutlinePoint { x: number; z: number }
+
+/** Shared deterministic envelope used by both rendered facade and circulation entry. */
+export function computeArchitecturalOutline(
+  rooms: readonly Pick<OfficeRoomConfig, 'x' | 'z' | 'width' | 'depth'>[],
+  reserve = 2.5,
+): ArchitecturalOutlinePoint[] {
+  const candidates = rooms.length
+    ? rooms.flatMap((room) => [
+        { x: room.x - room.width / 2 - reserve, z: room.z - room.depth / 2 - reserve },
+        { x: room.x + room.width / 2 + reserve, z: room.z - room.depth / 2 - reserve },
+        { x: room.x + room.width / 2 + reserve, z: room.z + room.depth / 2 + reserve },
+        { x: room.x - room.width / 2 - reserve, z: room.z + room.depth / 2 + reserve },
+      ])
+    : [{ x: -9, z: -8 }, { x: 9, z: -8 }, { x: 9, z: 8 }, { x: -9, z: 8 }];
+  const sorted = [...candidates].sort((a, b) => a.x - b.x || a.z - b.z);
+  const cross = (o: ArchitecturalOutlinePoint, a: ArchitecturalOutlinePoint, b: ArchitecturalOutlinePoint) =>
+    (a.x - o.x) * (b.z - o.z) - (a.z - o.z) * (b.x - o.x);
+  const lower: ArchitecturalOutlinePoint[] = [];
+  for (const point of sorted) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], point) <= 0) lower.pop();
+    lower.push(point);
+  }
+  const upper: ArchitecturalOutlinePoint[] = [];
+  for (const point of [...sorted].reverse()) {
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], point) <= 0) upper.pop();
+    upper.push(point);
+  }
+  return [...lower.slice(0, -1), ...upper.slice(0, -1)];
+}
 
 /**
  * Computes architectural features (doorway portal and glass wall segments with doorway cutouts)
@@ -147,7 +177,7 @@ export interface OrganizationAttributionDiagnostics {
 
 export interface CampusNavNode {
   id: string;
-  kind: 'atrium-center' | 'atrium-ring' | 'corridor-junction' | 'room-doorway' | 'room-aisle';
+  kind: 'main-entry' | 'corridor-junction' | 'room-doorway' | 'room-aisle';
   roomId?: string;
   x: number;
   z: number;
@@ -248,6 +278,32 @@ function routeAroundRooms(
       { x: o.maxX, z: o.minZ }, { x: o.maxX, z: o.maxZ },
     );
   }
+  // If dense/overlapping footprints seal the local visibility graph, widen the
+  // search to a guaranteed exterior loop around the whole plan. Neighborhoods
+  // are placement envelopes, not architectural walls; their local corners can
+  // overlap even though the continuous circulation perimeter remains usable.
+  if (relevant.length !== obstacles.length) {
+    for (const o of obstacles) {
+      points.push(
+        { x: o.minX, z: o.minZ }, { x: o.minX, z: o.maxZ },
+        { x: o.maxX, z: o.minZ }, { x: o.maxX, z: o.maxZ },
+      );
+    }
+  }
+  const outer = {
+    minX: Math.min(...obstacles.map((o) => o.minX), lead.x, end.x) - margin - 2,
+    maxX: Math.max(...obstacles.map((o) => o.maxX), lead.x, end.x) + margin + 2,
+    minZ: Math.min(...obstacles.map((o) => o.minZ), lead.z, end.z) - margin - 2,
+    maxZ: Math.max(...obstacles.map((o) => o.maxZ), lead.z, end.z) + margin + 2,
+  };
+  points.push(
+    { x: outer.minX, z: outer.minZ }, { x: outer.minX, z: outer.maxZ },
+    { x: outer.maxX, z: outer.minZ }, { x: outer.maxX, z: outer.maxZ },
+    { x: outer.minX, z: lead.z }, { x: outer.maxX, z: lead.z },
+    { x: outer.minX, z: end.z }, { x: outer.maxX, z: end.z },
+    { x: lead.x, z: outer.minZ }, { x: lead.x, z: outer.maxZ },
+    { x: end.x, z: outer.minZ }, { x: end.x, z: outer.maxZ },
+  );
   const unique = new Map(points.map((point) => [`${point.x.toFixed(4)},${point.z.toFixed(4)}`, point]));
   const vertices = [...unique.values()];
   const distances = vertices.map(() => Infinity);
@@ -277,7 +333,59 @@ function routeAroundRooms(
   }
 
   if (!Number.isFinite(distances[1])) {
-    throw new Error(`Unable to route corridor from ${sourceRoomId} to the atrium`);
+    // Fallback to a rectilinear visibility grid. A corner-only visibility graph
+    // can be disconnected when several expanded work-neighborhood footprints
+    // overlap; boundary-coordinate intersections preserve free gaps around the
+    // union without widening the normal (shortest-path) search.
+    const xs = [...new Set([lead.x, end.x, outer.minX, outer.maxX,
+      ...obstacles.flatMap((o) => [o.minX, o.maxX])])].sort((a, b) => a - b);
+    const zs = [...new Set([lead.z, end.z, outer.minZ, outer.maxZ,
+      ...obstacles.flatMap((o) => [o.minZ, o.maxZ])])].sort((a, b) => a - b);
+    const key = (x: number, z: number) => `${x.toFixed(4)},${z.toFixed(4)}`;
+    const grid = new Map<string, { x: number; z: number }>();
+    for (const x of xs) for (const z of zs) {
+      if (obstacles.some((o) => x > o.minX && x < o.maxX && z > o.minZ && z < o.maxZ)) continue;
+      grid.set(key(x, z), { x, z });
+    }
+    const startKey = key(lead.x, lead.z);
+    const endKey = key(end.x, end.z);
+    const gridDistances = new Map<string, number>([[startKey, 0]]);
+    const gridPrevious = new Map<string, string>();
+    const pending = new Set(grid.keys());
+    while (pending.size) {
+      let currentKey: string | undefined;
+      let best = Infinity;
+      for (const candidate of pending) {
+        const distance = gridDistances.get(candidate) ?? Infinity;
+        if (distance < best) { best = distance; currentKey = candidate; }
+      }
+      if (!currentKey || !Number.isFinite(best)) break;
+      if (currentKey === endKey) break;
+      pending.delete(currentKey);
+      const current = grid.get(currentKey)!;
+      const neighbors = [
+        ...zs.map((z) => grid.get(key(current.x, z))).filter((p): p is { x: number; z: number } => !!p && p.z !== current.z),
+        ...xs.map((x) => grid.get(key(x, current.z))).filter((p): p is { x: number; z: number } => !!p && p.x !== current.x),
+      ].filter((point) => clear(current, point));
+      for (const neighbor of neighbors) {
+        const neighborKey = key(neighbor.x, neighbor.z);
+        if (!pending.has(neighborKey)) continue;
+        const candidate = best + Math.hypot(neighbor.x - current.x, neighbor.z - current.z);
+        if (candidate < (gridDistances.get(neighborKey) ?? Infinity)) {
+          gridDistances.set(neighborKey, candidate);
+          gridPrevious.set(neighborKey, currentKey);
+        }
+      }
+    }
+    if (!Number.isFinite(gridDistances.get(endKey))) {
+      throw new Error(`Unable to route corridor from ${sourceRoomId} to the main entry`);
+    }
+    const fallback: Array<{ x: number; z: number }> = [];
+    for (let cursor: string | undefined = endKey; cursor; cursor = gridPrevious.get(cursor)) {
+      fallback.push(grid.get(cursor)!);
+      if (cursor === startKey) break;
+    }
+    return [start, ...fallback.reverse()];
   }
   const route: Array<{ x: number; z: number }> = [];
   for (let current = 1; current >= 0; current = previous[current]) {
@@ -574,25 +682,46 @@ export function resolveLiveOrganizationAttribution(
 function computeRoomDimensionsForAgents(
   agentCount: number,
   isUnassignedHolding: boolean,
-  plannedCapacity = 0,
+  rotationSeed = 'office',
 ): { width: number; depth: number; workstationCapacity: number } {
-  // Persisted roster counts describe declared standing/ephemeral staffing even
-  // when no corresponding identities are currently materialized. Reserve the
-  // larger of declared capacity and observed identities; never fabricate agents.
-  const needed = Math.max(4, agentCount, plannedCapacity);
-  // buildDepartmentInteriorLayout adds two desk columns per pair, with each
-  // successive pair moving out by 1.1 units. Size the room from that actual
-  // geometry instead of capping capacity while desks spill through walls.
-  const extraPairs = Math.ceil(Math.max(0, needed - 4) / 2);
-  const outerDeskCenter = extraPairs === 0
-    ? 1.25
-    : 2.35 + Math.floor((extraPairs - 1) / 2) * 1.1;
-  const width = Math.max(isUnassignedHolding ? 5.2 : 4.8, (outerDeskCenter + 0.95) * 2);
+  // Furniture occupancy comes only from identities present in this projection.
+  // Leave a small, discrete organizational marker for empty units; scale occupied
+  // neighborhoods from the actual number of desks instead of reserving a 4-seat bay.
+  const needed = Math.max(0, agentCount);
+  const desks = planWorkNeighborhoodDesks(needed, rotationSeed);
+  const minX = desks.length ? Math.min(...desks.map((desk) => desk.x)) : 0;
+  const maxX = desks.length ? Math.max(...desks.map((desk) => desk.x)) : 0;
+  const minZ = desks.length ? Math.min(...desks.map((desk) => desk.z)) : 0;
+  const maxZ = desks.length ? Math.max(...desks.map((desk) => desk.z)) : 0;
+  const maxAbsX = Math.max(Math.abs(minX), Math.abs(maxX));
+  const maxAbsZ = Math.max(Math.abs(minZ), Math.abs(maxZ));
+  const width = needed === 0
+    ? (isUnassignedHolding ? 3.8 : 3.2)
+    : Math.max(3.2, maxAbsX * 2 + 2.8);
+  const depth = needed === 0
+    ? 2.8
+    : Math.max(3, maxAbsZ * 2 + 3.0);
   return {
     width: Number(width.toFixed(2)),
-    depth: needed <= 4 ? 4.2 : 5.2,
-    workstationCapacity: 4 + extraPairs * 2,
+    depth: Number(depth.toFixed(2)),
+    workstationCapacity: needed,
   };
+}
+
+/**
+ * Selects a visual neighborhood module from explicit organizational language,
+ * never from generated/persisted identifiers or tree position. This is only a
+ * presentation hint; it does not imply backend authority or access control.
+ */
+export function selectOfficeZoneKind(unit: Pick<OrgUnit, 'name' | 'description' | 'leadRole'>): OfficeZoneKind {
+  const nature = `${unit.name} ${unit.description} ${unit.leadRole}`.normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  if (/\b(audit|auditoria|independencia|independent review|verificacion independiente)\b/.test(nature)) {
+    return 'audit-enclave';
+  }
+  if (/\b(executive|ejecutiva|direccion general|presidencia)\b/.test(nature)) return 'executive-suite';
+  if (/\b(agile squad|escuadra agil|squad temporal|equipo temporal)\b/.test(nature)) return 'agile-squad-pod';
+  return 'canonical-department';
 }
 
 /**
@@ -606,55 +735,50 @@ export function buildCorporateCampusLayout(
   agents: readonly AgentIdentity[],
   options: { isDemo?: boolean; previousRooms?: readonly OfficeRoomConfig[] } = {}
 ): CorporateCampusLayout {
-  if (options.isDemo) {
-    const demoCounts = new Map<string, number>();
-    for (const a of agents) {
-      demoCounts.set(a.unitId, (demoCounts.get(a.unitId) ?? 0) + 1);
-    }
-    const demoRooms: OfficeRoomConfig[] = OFFICE_ROOMS.map((r) => {
-      const arch = computeRoomArchitectureFeatures(r);
-      return {
-        ...r,
-        doorway: arch.doorway,
-        glassWalls: arch.glassWalls,
-        workstationCapacity: Math.max(4, demoCounts.get(r.id) ?? 4),
-      };
-    });
-    const navGraph = buildCampusNavGraph(demoRooms);
-    return {
-      rooms: demoRooms,
-      effectiveUnits: [...units],
-      normalizedAgents: [...agents].sort((a, b) => a.id.localeCompare(b.id)),
-      diagnostics: {
-        canonicalUnitsCount: demoRooms.length,
-        hasOnlyUnassignedUnit: false,
-        totalAgentsCount: agents.length,
-        resolvedAgentsCount: agents.length,
-        unassignedAgentsCount: 0,
-        enabledCredentialsCount: agents.length,
-        disabledCredentialsCount: 0,
-        breakdown: {
-          executionNoProfile: 0,
-          reviewNoProfile: 0,
-          profileWithoutUnit: 0,
-          orphanUnitRef: 0,
-          otherUnassigned: 0,
-        },
-        headline: 'Simulación corporativa DEMO',
-        explanation: 'Estructura departamental sintética de demostración.',
-        remediationHint: '',
-        byAgentId: new Map(),
-      },
-      navGraph,
-      bounds: computeCampusBounds(demoRooms),
+  const isDemo = options.isDemo === true;
+  const liveOrganization = isDemo ? null : resolveLiveOrganizationAttribution(units, agents);
+  const canonicalUnits = isDemo
+    ? units.filter((unit) => unit.id !== UNASSIGNED_UNIT_ID && unit.code.toUpperCase() !== 'UNKNOWN')
+    : liveOrganization!.canonicalUnits;
+  let normalizedAgents: AgentIdentity[];
+  let diagnostics: OrganizationAttributionDiagnostics;
+  if (isDemo) {
+    const canonicalIds = new Set(canonicalUnits.map((unit) => unit.id));
+    normalizedAgents = [...agents]
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((agent) => canonicalIds.has(agent.unitId)
+        ? { ...agent }
+        : { ...agent, unitId: UNASSIGNED_UNIT_ID, unitName: agent.unitName || 'Adscripción desconocida' });
+    const resolvedAgentsCount = normalizedAgents.filter((agent) => canonicalIds.has(agent.unitId)).length;
+    diagnostics = {
+      canonicalUnitsCount: canonicalUnits.length,
+      hasOnlyUnassignedUnit: canonicalUnits.length === 0,
+      totalAgentsCount: agents.length,
+      resolvedAgentsCount,
+      unassignedAgentsCount: agents.length - resolvedAgentsCount,
+      enabledCredentialsCount: 0,
+      disabledCredentialsCount: 0,
+      breakdown: { executionNoProfile: 0, reviewNoProfile: 0, profileWithoutUnit: 0, orphanUnitRef: 0, otherUnassigned: 0 },
+      headline: 'Simulación corporativa DEMO',
+      explanation: 'Proyección de unidades y agentes sintéticos; distribución compartida con LIVE.',
+      remediationHint: '',
+      byAgentId: new Map(),
     };
+  } else {
+    normalizedAgents = liveOrganization!.normalizedAgents;
+    diagnostics = liveOrganization!.diagnostics;
   }
 
-  const { canonicalUnits, normalizedAgents, diagnostics } =
-    resolveLiveOrganizationAttribution(units, agents);
-
   const agentCountByUnit = new Map<string, number>();
+  const hasActiveDeskTask = (agent: AgentIdentity): boolean => agent.currentAssignments.some(
+    (assignment) => assignment.status === 'ACTIVE' && Boolean(assignment.taskId),
+  );
   for (const agent of normalizedAgents) {
+    // Historical principals and neutral/unassigned identities have no assigned departmental desk.
+    if (
+      (agent.credentialStatus === 'DISABLED' && !hasActiveDeskTask(agent)) ||
+      agent.unitId === UNASSIGNED_UNIT_ID
+    ) continue;
     agentCountByUnit.set(agent.unitId, (agentCountByUnit.get(agent.unitId) ?? 0) + 1);
   }
 
@@ -685,11 +809,11 @@ export function buildCorporateCampusLayout(
 
   const rooms: OfficeRoomConfig[] = [];
   const shouldIncludeUnassignedWing =
-    (agentCountByUnit.get(UNASSIGNED_UNIT_ID) ?? 0) > 0 ||
+    normalizedAgents.some((agent) => agent.unitId === UNASSIGNED_UNIT_ID ||
+      (agent.credentialStatus === 'DISABLED' && !hasActiveDeskTask(agent))) ||
     (orderedCanonical.length === 0 && units.length > 0);
   const zoneRequests = orderedCanonical.map((unit) => {
-    const declaredCapacity = Math.max(0, unit.standingCount) + Math.max(0, unit.ephemeralCount);
-    const dims = computeRoomDimensionsForAgents(agentCountByUnit.get(unit.id) ?? 0, false, declaredCapacity);
+    const dims = computeRoomDimensionsForAgents(agentCountByUnit.get(unit.id) ?? 0, false, unit.id);
     return { id: unit.id, parentId: unit.parentId ?? null, width: dims.width, depth: dims.depth };
   });
   if (shouldIncludeUnassignedWing) {
@@ -708,24 +832,14 @@ export function buildCorporateCampusLayout(
   // Guaranteeing |z| >= 4.2 or radial distance >= 6.8 so NO department ever overlaps the Atrium at (0,0)!
   orderedCanonical.forEach((unit) => {
     const countInUnit = agentCountByUnit.get(unit.id) ?? 0;
-    const declaredCapacity = Math.max(0, unit.standingCount) + Math.max(0, unit.ephemeralCount);
-    const dims = computeRoomDimensionsForAgents(countInUnit, false, declaredCapacity);
+    const dims = computeRoomDimensionsForAgents(countInUnit, false, unit.id);
     const [x, z] = [plannedById.get(unit.id)!.x, plannedById.get(unit.id)!.z];
     const [color, accentColor] = UNIT_COLORS[stableColorIndex(unit.id)];
 
-    const isExec = unit.code === 'EXEC' || unit.id === 'unit-exec';
-    const isAudit = unit.code === 'AUDIT' || unit.id === 'unit-audit';
-    const kind: OfficeZoneKind = isExec
-      ? 'executive-suite'
-      : isAudit
-      ? 'audit-enclave'
-      : 'canonical-department';
-
-    const floorFinish: OfficeFloorFinish = isExec
-      ? 'hardwood-walnut'
-      : isAudit
-      ? 'high-security-frosted'
-      : 'acoustic-carpet';
+    // Use declared organizational nature only; the visual role grants no business authority.
+    const kind = selectOfficeZoneKind(unit);
+    const floorFinish: OfficeFloorFinish = kind === 'audit-enclave' ? 'high-security-frosted'
+      : kind === 'executive-suite' ? 'hardwood-walnut' : 'acoustic-carpet';
 
     const arch = computeRoomArchitectureFeatures({
       x,
@@ -757,8 +871,7 @@ export function buildCorporateCampusLayout(
   // Determine whether the Unassigned Holding Wing (`unit-unassigned`) should be materialized:
   // Always materialize when there are unassigned agents OR when 0 canonical units exist in LIVE.
   if (shouldIncludeUnassignedWing) {
-    const unassignedCount = agentCountByUnit.get(UNASSIGNED_UNIT_ID) ?? 0;
-    const dims = computeRoomDimensionsForAgents(unassignedCount, true);
+    const dims = computeRoomDimensionsForAgents(0, true);
     const existingUnassignedUnit = units.find((u) => u.id === UNASSIGNED_UNIT_ID);
     const plannedUnassigned = plannedById.get(UNASSIGNED_UNIT_ID)!;
     const holdingX = plannedUnassigned.x;
@@ -812,10 +925,7 @@ export function buildCorporateCampusLayout(
   };
 }
 
-/**
- * Builds the navigable connectivity graph connecting the Central Coordination Atrium (0, 0)
- * to every room's doorway and internal central aisle.
- */
+/** Builds a circulation graph linking each neighborhood to the actual envelope entry. */
 export function buildCampusNavGraph(rooms: readonly OfficeRoomConfig[]): CampusNavGraph {
   const nodes = new Map<string, CampusNavNode>();
   const adjacency = new Map<string, string[]>();
@@ -833,26 +943,23 @@ export function buildCampusNavGraph(rooms: readonly OfficeRoomConfig[]): CampusN
     adjacency.get(b)?.push(a);
   };
 
-  // Central Atrium Hub & 8 Ring Waypoints around the Atrium perimeter (radius 2.9)
-  addNode({ id: 'atrium-center', kind: 'atrium-center', x: 0, z: 0 });
-  const ringCount = 8;
-  const ringRadius = 2.9;
-  for (let i = 0; i < ringCount; i += 1) {
-    const angle = (i / ringCount) * Math.PI * 2;
-    const id = `atrium-ring-${i}`;
-    addNode({
-      id,
-      kind: 'atrium-ring',
-      x: Number((Math.cos(angle) * ringRadius).toFixed(2)),
-      z: Number((Math.sin(angle) * ringRadius).toFixed(2)),
-    });
-    connect('atrium-center', id);
-  }
-  for (let i = 0; i < ringCount; i += 1) {
-    connect(`atrium-ring-${i}`, `atrium-ring-${(i + 1) % ringCount}`);
-  }
+  const outline = computeArchitecturalOutline(rooms);
+  const entryEdge = [...outline].map((start, index) => ({
+    start,
+    end: outline[(index + 1) % outline.length],
+  })).sort((a, b) => ((b.start.z + b.end.z) / 2) - ((a.start.z + a.end.z) / 2))[0];
+  const edgeDx = entryEdge.end.x - entryEdge.start.x;
+  const edgeDz = entryEdge.end.z - entryEdge.start.z;
+  const edgeLength = Math.hypot(edgeDx, edgeDz) || 1;
+  // The convex outline is consistently wound; the right-hand edge normal points
+  // outward. Keep the route target in front of the very same south facade edge.
+  const entry = {
+    x: (entryEdge.start.x + entryEdge.end.x) / 2 + (edgeDz / edgeLength) * 2.4,
+    z: (entryEdge.start.z + entryEdge.end.z) / 2 - (edgeDx / edgeLength) * 2.4,
+  };
+  addNode({ id: 'main-entry', kind: 'main-entry', ...entry });
 
-  // Connect each room's doorway to the nearest Atrium Ring node via a corridor segment
+  // Connect each neighborhood to the entry with an obstacle-aware path.
   for (const room of rooms) {
     const doorwayX = room.doorway ? room.doorway.x : room.x;
     const doorwayZ = room.doorway
@@ -868,23 +975,10 @@ export function buildCampusNavGraph(rooms: readonly OfficeRoomConfig[]): CampusN
     addNode({ id: aisleId, kind: 'room-aisle', roomId: room.id, x: room.x, z: room.z });
     connect(doorwayId, aisleId);
 
-    // Find closest atrium ring node
-    let nearestRingId = 'atrium-ring-0';
-    let bestDist = Infinity;
-    for (let i = 0; i < ringCount; i += 1) {
-      const rNode = nodes.get(`atrium-ring-${i}`)!;
-      const d = Math.hypot(doorwayX - rNode.x, doorwayZ - rNode.z);
-      if (d < bestDist) {
-        bestDist = d;
-        nearestRingId = rNode.id;
-      }
-    }
-
-    const ringNode = nodes.get(nearestRingId)!;
     const width = room.kind === 'unassigned-holding' ? 1.1 : 1.35;
     const points = routeAroundRooms(
       { x: doorwayX, z: doorwayZ },
-      { x: ringNode.x, z: ringNode.z },
+      entry,
       rooms,
       room.id,
       width,
@@ -897,16 +991,16 @@ export function buildCampusNavGraph(rooms: readonly OfficeRoomConfig[]): CampusN
       connect(previousNodeId, junctionId);
       previousNodeId = junctionId;
     }
-    connect(previousNodeId, nearestRingId);
+    connect(previousNodeId, 'main-entry');
 
     corridors.push({
       id: `corridor-${room.id}`,
       fromRoomId: room.id,
-      toNodeId: nearestRingId,
+      toNodeId: 'main-entry',
       startX: doorwayX,
       startZ: doorwayZ,
-      endX: ringNode.x,
-      endZ: ringNode.z,
+      endX: entry.x,
+      endZ: entry.z,
       points,
       width,
       isUnassignedWing: room.kind === 'unassigned-holding',
@@ -917,7 +1011,7 @@ export function buildCampusNavGraph(rooms: readonly OfficeRoomConfig[]): CampusN
 }
 
 /**
- * Computes the bounding box of all rooms + central atrium and the ideal camera distance
+ * Computes an adaptive envelope from occupied neighborhoods and the ideal camera distance
  * to frame the entire campus without clipping any department.
  */
 export function computeCampusBounds(rooms: readonly OfficeRoomConfig[]): CorporateCampusLayout['bounds'] {
@@ -935,10 +1029,10 @@ export function computeCampusBounds(rooms: readonly OfficeRoomConfig[]): Corpora
     };
   }
 
-  let minX = -3.8; // Include central atrium
-  let maxX = 3.8;
-  let minZ = -3.8;
-  let maxZ = 3.8;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
 
   for (const r of rooms) {
     minX = Math.min(minX, r.x - r.width / 2 - 1.2);

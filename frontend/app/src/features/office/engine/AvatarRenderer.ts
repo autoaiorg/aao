@@ -55,6 +55,7 @@ export interface AvatarSemanticParts {
   rightForearm?: THREE.Object3D;
   leftHand?: THREE.Object3D;
   rightHand?: THREE.Object3D;
+  coffeeCup?: THREE.Group;
   leftLeg?: THREE.Object3D;
   rightLeg?: THREE.Object3D;
   leftShin?: THREE.Object3D;
@@ -591,6 +592,42 @@ export function buildHumanoidCharacterRig(
   rightHand.castShadow = true;
   rightForearmGroup.add(rightHand);
 
+  // Small reusable prop, shown only during explicitly ambient walking. It is
+  // visual storytelling, never a claim about real agent activity.
+  const coffeeCup = new THREE.Group();
+  coffeeCup.name = 'ambient-coffee-cup';
+  const cup = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.043, 0.036, 0.09, 12),
+    new THREE.MeshStandardMaterial({ color: 0xf5f1e8, roughness: 0.65 }),
+  );
+  cup.position.set(0, -0.015, 0.025);
+  coffeeCup.add(cup);
+  const coffee = new THREE.Mesh(
+    new THREE.CircleGeometry(0.039, 12),
+    new THREE.MeshStandardMaterial({ color: 0x53321f, roughness: 0.8, side: THREE.DoubleSide }),
+  );
+  coffee.rotation.x = -Math.PI / 2;
+  coffee.position.set(0, 0.032, 0.025);
+  coffeeCup.add(coffee);
+  const rim = new THREE.Mesh(
+    new THREE.TorusGeometry(0.043, 0.0035, 6, 14),
+    new THREE.MeshStandardMaterial({ color: 0xe2ded4, roughness: 0.6 }),
+  );
+  rim.rotation.x = Math.PI / 2;
+  rim.position.set(0, 0.032, 0.025);
+  coffeeCup.add(rim);
+  const handle = new THREE.Mesh(
+    new THREE.TorusGeometry(0.027, 0.006, 6, 10, Math.PI * 1.5),
+    new THREE.MeshStandardMaterial({ color: 0xf5f1e8, roughness: 0.65 }),
+  );
+  handle.position.set(0.049, -0.008, 0.025);
+  handle.rotation.z = -Math.PI / 2;
+  coffeeCup.add(handle);
+  // Keep the cup centered in the palm's grasp. The previous -0.17 m offset
+  // placed it below the hand, making the small mug read like a dangling prop.
+  coffeeCup.position.set(0, -0.045, 0.09);
+  rightHand.add(coffeeCup);
+
   rightArmGroup.add(rightForearmGroup);
   rig.add(rightArmGroup);
 
@@ -660,6 +697,7 @@ export function buildHumanoidCharacterRig(
     rightForearm: rightForearmGroup,
     leftHand,
     rightHand,
+    coffeeCup,
     leftLeg: leftLegGroup,
     rightLeg: rightLegGroup,
     leftShin: leftShinGroup,
@@ -794,7 +832,10 @@ export function buildAgentAvatar(
 
   // children[3]: Speech Bubble
   const speechBubble = options.createSpeechBubbleSprite();
-  speechBubble.position.set(0, 1.56, 0);
+  // Keep conversation markers above the name badge footprint. The prior
+  // 1.56m anchor overlapped the 1.24m-high label sprite whenever both were
+  // visible in a close camera view.
+  speechBubble.position.set(0, 2.02, 0);
   speechBubble.visible = activity.kind === 'CONVERSING';
   group.add(speechBubble);
 
@@ -833,6 +874,7 @@ export function buildAgentAvatar(
     rightForearm: rigParts.rightForearm,
     leftHand: rigParts.leftHand,
     rightHand: rigParts.rightHand,
+    coffeeCup: rigParts.coffeeCup,
     leftLeg: rigParts.leftLeg,
     rightLeg: rigParts.rightLeg,
     leftShin: rigParts.leftShin,
@@ -888,6 +930,10 @@ export function stepAvatarKinematics(
 
   const { placement } = runtime;
   const kind = placement.activity.kind;
+  if (parts.coffeeCup) {
+    parts.coffeeCup.visible =
+      kind === 'WALKING' && placement.activity.provenance !== 'LIVE_VERIFIED_EVIDENCE';
+  }
   const phaseSeed = hashStringSeed(agentId) % 100;
   const phase = phaseSeed * 0.1;
 
@@ -916,7 +962,9 @@ export function stepAvatarKinematics(
 
   if (kind === 'TYPING_DEV' || kind === 'TYPING_AUDIT' || kind === 'TYPING_DOCS') {
     // Natural seated typing kinematics
-    parts.characterRig.position.y = -0.06;
+    // Avatar root is at world y=0.37 and seat is at world y=0.45. Align the
+    // pelvis/hips with the cushion rather than leaving the torso perched above.
+    parts.characterRig.position.y = -0.28;
 
     // Thighs horizontal in chair
     if (parts.leftLeg) parts.leftLeg.rotation.x = -Math.PI / 2.3;
@@ -925,6 +973,8 @@ export function stepAvatarKinematics(
     // Knees bent 90 degrees downward to floor
     if (parts.leftShin) parts.leftShin.rotation.x = Math.PI / 2.2;
     if (parts.rightShin) parts.rightShin.rotation.x = Math.PI / 2.2;
+    if (parts.leftShin) parts.leftShin.scale.y = 2;
+    if (parts.rightShin) parts.rightShin.scale.y = 2;
 
     // Arms raised onto desk keyboard with natural elbow hinge
     const typingJitterL = isFarDistance ? 0 : Math.sin(time * 0.024 + phase) * 0.14;
@@ -947,6 +997,8 @@ export function stepAvatarKinematics(
   } else if (kind === 'CONVERSING') {
     // Standing or seated collaborative conversation
     parts.characterRig.position.y = 0;
+    if (parts.leftShin) parts.leftShin.scale.y = 1;
+    if (parts.rightShin) parts.rightShin.scale.y = 1;
 
     if (parts.leftLeg) parts.leftLeg.rotation.x = 0;
     if (parts.rightLeg) parts.rightLeg.rotation.x = 0;
@@ -973,7 +1025,7 @@ export function stepAvatarKinematics(
 
     if (parts.speechBubble) {
       parts.speechBubble.visible = true;
-      parts.speechBubble.position.y = 1.58 + Math.sin(time * 0.006 + phase) * 0.03;
+      parts.speechBubble.position.y = 2.02 + Math.sin(time * 0.006 + phase) * 0.03;
     }
   } else if (kind === 'WALKING') {
     // Sinusoidal walking stride with counter-swinging arms and vertical bob
@@ -981,6 +1033,8 @@ export function stepAvatarKinematics(
     const stride = Math.sin(walkCycle);
 
     parts.characterRig.position.y = isFarDistance ? 0 : Math.abs(stride) * 0.025;
+    if (parts.leftShin) parts.leftShin.scale.y = 1;
+    if (parts.rightShin) parts.rightShin.scale.y = 1;
 
     // Alternating leg swing with knee flexion on back-step
     if (parts.leftLeg) parts.leftLeg.rotation.x = stride * 0.44;
@@ -1011,12 +1065,15 @@ export function stepAvatarKinematics(
     if (parts.speechBubble) parts.speechBubble.visible = false;
   } else if (kind === 'IDLE_DESK') {
     // Relaxed seated posture
-    parts.characterRig.position.y = -0.06;
+    parts.characterRig.position.y = -0.28;
+    if (parts.coffeeCup) parts.coffeeCup.visible = false;
 
     if (parts.leftLeg) parts.leftLeg.rotation.x = -Math.PI / 2.3;
     if (parts.rightLeg) parts.rightLeg.rotation.x = -Math.PI / 2.3;
     if (parts.leftShin) parts.leftShin.rotation.x = Math.PI / 2.2;
     if (parts.rightShin) parts.rightShin.rotation.x = Math.PI / 2.2;
+    if (parts.leftShin) parts.leftShin.scale.y = 2;
+    if (parts.rightShin) parts.rightShin.scale.y = 2;
 
     if (parts.leftArm) {
       parts.leftArm.rotation.x = -0.28;

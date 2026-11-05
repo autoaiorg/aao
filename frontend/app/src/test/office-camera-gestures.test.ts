@@ -12,7 +12,11 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as THREE from 'three';
-import { ThreeOfficeScene, type ThreeSceneCallbacks } from '../features/office/engine/ThreeOfficeScene';
+import {
+  OFFICE_AGENT_FOCUS_DISTANCE,
+  ThreeOfficeScene,
+  type ThreeSceneCallbacks,
+} from '../features/office/engine/ThreeOfficeScene';
 import { DEMO_AGENTS } from '../data/adapters/demo/fixtures';
 import { OFFICE_ROOMS } from '../features/office/types';
 
@@ -94,6 +98,27 @@ describe('Immersive Gestural Camera Controls & Navigation (PR B)', () => {
     expect(newTarget.z).not.toBeCloseTo(initialTarget.z, 3);
   });
 
+  it('frames the selected agent at inspection scale without zooming out from a closer view', () => {
+    const agent = DEMO_AGENTS[0];
+    const placement = scene.getAgentPlacement(agent.id);
+    expect(placement).toBeDefined();
+    scene.selectRoom(agent.unitId);
+    const distanceBeforeSelection = scene.getDesiredDistance();
+
+    scene.selectAgent(agent.id);
+
+    const target = scene.getDesiredTarget();
+    expect(target.x).toBeCloseTo(placement!.targetWorldX, 4);
+    expect(target.z).toBeCloseTo(placement!.targetWorldZ, 4);
+    expect(scene.getDesiredDistance()).toBeLessThan(distanceBeforeSelection);
+    expect(scene.getDesiredDistance()).toBe(OFFICE_AGENT_FOCUS_DISTANCE);
+
+    scene.simulateGesturePinch(0.5);
+    const closerDistance = scene.getDesiredDistance();
+    scene.selectAgent(agent.id);
+    expect(scene.getDesiredDistance()).toBe(closerDistance);
+  });
+
   it('performs pinch-to-zoom with distance boundary clamping', () => {
     const initialDistance = scene.getCameraDistance();
 
@@ -101,11 +126,11 @@ describe('Immersive Gestural Camera Controls & Navigation (PR B)', () => {
     scene.simulateGesturePinch(0.7);
     expect(scene.getDesiredDistance()).toBeLessThan(initialDistance);
 
-    // Extreme zoom in: must not breach minDistance (8)
+    // Extreme zoom in: retain a usable close-up of an agent and workstation.
     for (let i = 0; i < 15; i++) {
       scene.simulateGesturePinch(0.5);
     }
-    expect(scene.getDesiredDistance()).toBeGreaterThanOrEqual(8);
+    expect(scene.getDesiredDistance()).toBeGreaterThanOrEqual(3.2);
 
     // Extreme zoom out: the overview fit may require more than 38 units for
     // this viewport; once clamped, further pinches must not change the bound.

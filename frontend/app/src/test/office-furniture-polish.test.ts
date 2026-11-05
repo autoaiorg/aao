@@ -14,6 +14,11 @@ import * as THREE from 'three';
 import {
   ThreeOfficeScene,
   SharedFurniturePool,
+  computeArchitecturalEnvelope,
+  computeArchitecturalOutline,
+  OFFICE_ENVELOPE_EXPANSION_METERS,
+  OFFICE_CHAIR_ROOT_Y,
+  OFFICE_CHAIR_SEAT_SURFACE_Y,
   createProceduralIdeTexture,
   type ThreeSceneCallbacks,
 } from '../features/office/engine/ThreeOfficeScene';
@@ -21,6 +26,33 @@ import { DEMO_AGENTS } from '../data/adapters/demo/fixtures';
 import { OFFICE_ROOMS } from '../features/office/types';
 
 describe('PR C: Office Furniture, Procedural IDE Textures, Biophilia & Lighting', () => {
+  it('keeps workstation chair seat at ergonomic height', () => {
+    expect(OFFICE_CHAIR_ROOT_Y).toBe(0.515);
+    expect(OFFICE_CHAIR_SEAT_SURFACE_Y).toBeCloseTo(0.45);
+    expect(OFFICE_CHAIR_SEAT_SURFACE_Y).toBeLessThan(0.5);
+  });
+
+  it('fits the architectural shell to occupied neighborhoods with a bounded reserve', () => {
+    const empty = computeArchitecturalEnvelope([]);
+    expect(empty).toEqual({ halfWidth: 9, halfDepth: 8 });
+    const room = { ...OFFICE_ROOMS[0], x: 3, z: -2, width: 10, depth: 8 };
+    const fitted = computeArchitecturalEnvelope([room]);
+    expect(fitted.halfWidth).toBe(Math.abs(room.x) + room.width / 2 + OFFICE_ENVELOPE_EXPANSION_METERS);
+    expect(fitted.halfDepth).toBe(Math.abs(room.z) + room.depth / 2 + OFFICE_ENVELOPE_EXPANSION_METERS);
+    expect(computeArchitecturalEnvelope([{ ...room, x: 20 }]).halfWidth).toBeGreaterThan(fitted.halfWidth);
+  });
+
+  it('cuts unused perimeter corners around articulated neighborhood clusters', () => {
+    const rooms = [
+      { ...OFFICE_ROOMS[0], x: 0, z: 0, width: 4, depth: 4 },
+      { ...OFFICE_ROOMS[1], x: 8, z: 0, width: 4, depth: 4 },
+      { ...OFFICE_ROOMS[2], x: 0, z: 8, width: 4, depth: 4 },
+    ];
+    const outline = computeArchitecturalOutline(rooms);
+    expect(outline.length).toBeGreaterThan(4);
+    expect(outline).toEqual(computeArchitecturalOutline(rooms));
+  });
+
   describe('SharedFurniturePool & Procedural Textures', () => {
     it('creates procedural IDE code editor texture with correct dimensions and mipmaps', () => {
       const texture = createProceduralIdeTexture();
@@ -172,7 +204,7 @@ describe('PR C: Office Furniture, Procedural IDE Textures, Biophilia & Lighting'
       const slab = groundGroup.children.find((child) => child.name === 'campus-continuous-floor') as THREE.Mesh;
 
       expect(slab).toBeDefined();
-      const slabTop = slab.position.y + (slab.geometry as THREE.BoxGeometry).parameters.height / 2;
+      const slabTop = slab.position.y + ((slab.geometry as THREE.ExtrudeGeometry).parameters.options?.depth ?? 0);
       expect(walkwaysGroup.children.length).toBeGreaterThan(0);
 
       for (const segment of walkwaysGroup.children as THREE.Mesh[]) {
@@ -193,12 +225,7 @@ describe('PR C: Office Furniture, Procedural IDE Textures, Biophilia & Lighting'
       const visitorLounge = reception.getObjectByName('reception-visitor-lounge') as THREE.Group;
       expect(visitorLounge).toBeDefined();
       expect(visitorLounge.children).toHaveLength(4);
-      const centralLounge = root.getObjectByName('architectural-central-lounge') as THREE.Group;
-      expect(centralLounge).toBeDefined();
-      expect(centralLounge.userData).toMatchObject({ role: 'architectural-common-space', sourceNeutral: true });
-      expect(centralLounge.getObjectByName('central-lounge-sofa-west')).toBeDefined();
-      expect(centralLounge.getObjectByName('central-lounge-sofa-east')).toBeDefined();
-      expect(centralLounge.getObjectByName('central-lounge-coffee-table')).toBeDefined();
+      expect(root.getObjectByName('architectural-central-lounge')).toBeUndefined();
 
       const roomGroups = (scene as unknown as { roomsGroup: THREE.Group }).roomsGroup;
       const room = roomGroups.children.find((child) => child.name === 'room-unit-eng');
@@ -213,6 +240,13 @@ describe('PR C: Office Furniture, Procedural IDE Textures, Biophilia & Lighting'
       expect(selectableFloor.position.y + room!.position.y).toBeCloseTo(0.02);
       const hitMaterial = selectableFloor.material as THREE.MeshBasicMaterial;
       expect(hitMaterial.opacity).toBe(0);
+      const furniturePool = scene.getFurniturePool();
+      const renderedGeometry: THREE.BufferGeometry[] = [];
+      room!.traverse((object) => {
+        if (object instanceof THREE.Mesh) renderedGeometry.push(object.geometry);
+      });
+      expect(renderedGeometry).not.toContain(furniturePool.meetingTableTopGeo);
+      expect(renderedGeometry).not.toContain(furniturePool.meetingTablePedGeo);
       expect(hitMaterial.colorWrite).toBe(false);
       expect(hitMaterial.depthWrite).toBe(false);
 
@@ -220,19 +254,19 @@ describe('PR C: Office Furniture, Procedural IDE Textures, Biophilia & Lighting'
 
       const backPartition = room!.getObjectByName('department-back-partition') as THREE.Mesh<THREE.BoxGeometry>;
       const sideGlass = room!.getObjectByName('department-side-glass-left') as THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial>;
-      const frontGlass = room!.getObjectByName('department-front-glass-left') as THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial>;
       expect(backPartition.geometry.parameters.height).toBeLessThan(0.65);
       expect(sideGlass.geometry.parameters.height).toBeLessThan(0.65);
-      expect(frontGlass.geometry.parameters.height).toBeLessThan(0.65);
+      expect(room!.getObjectByName('department-front-glass-left')).toBeUndefined();
+      expect(room!.getObjectByName('department-front-glass-right')).toBeUndefined();
       const roomConfig = (room as THREE.Group).userData.room as (typeof OFFICE_ROOMS)[number];
       expect(backPartition.geometry.parameters.width).toBeLessThan(roomConfig.width * 0.5);
       expect(sideGlass.geometry.parameters.depth).toBeLessThan(roomConfig.depth * 0.3);
-      expect(frontGlass.geometry.parameters.width).toBeLessThan(0.5);
       expect(sideGlass.material.opacity).toBeLessThan(0.15);
       expect(room!.getObjectByName('department-wall-sign')).toBeDefined();
       const departmentLabel = room!.children.find((child) => child instanceof THREE.Sprite);
       expect(departmentLabel).toBeDefined();
       expect((departmentLabel as THREE.Sprite).scale.x).toBeGreaterThan(1.8);
+      expect(((departmentLabel as THREE.Sprite).material as THREE.SpriteMaterial).depthTest).toBe(true);
     });
 
     it('keeps an accessible opening in the continuous curtain facade', () => {
@@ -244,23 +278,36 @@ describe('PR C: Office Furniture, Procedural IDE Textures, Biophilia & Lighting'
       expect(entrance.userData.accessible).toBe(true);
       expect(entrance.children).toHaveLength(4);
 
-      const frontGlassWidth = facade.children
-        .filter((child) => child instanceof THREE.Mesh && child.rotation.y === 0 && child.position.z > 0)
+      const glassWidth = facade.children
+        .filter((child) => child instanceof THREE.Mesh)
         .filter((child) => (child as THREE.Mesh).geometry instanceof THREE.BoxGeometry)
         .map((child) => (child as THREE.Mesh<THREE.BoxGeometry>).geometry.parameters)
         .filter((geometry) => geometry.height === 2.65)
         .reduce((sum, geometry) => sum + geometry.width, 0);
-      expect(facade.userData.facadeWidth - frontGlassWidth).toBeCloseTo(
+      expect(facade.userData.facadeWidth - glassWidth).toBeCloseTo(
         facade.userData.entranceWidth,
         5,
       );
     });
 
+    it('marks the audit enclave with open low acoustic baffles rather than a closed department room', () => {
+      const roomGroups = (scene as unknown as { roomsGroup: THREE.Group }).roomsGroup;
+      const audit = roomGroups.getObjectByName('room-unit-audit') as THREE.Group;
+      expect(audit).toBeDefined();
+      expect(audit.getObjectByName('audit-manifestation-band-left')).toBeDefined();
+      expect(audit.getObjectByName('audit-manifestation-band-right')).toBeDefined();
+      const sideBaffle = audit.getObjectByName('department-side-glass-left') as THREE.Mesh<THREE.BoxGeometry>;
+      expect(sideBaffle.geometry.parameters.height).toBeCloseTo(0.92);
+      expect(sideBaffle.position.y + sideBaffle.geometry.parameters.height / 2).toBeLessThan(1.4);
+      expect(audit.getObjectByName('department-front-glass-left')).toBeUndefined();
+      expect(audit.getObjectByName('department-front-glass-right')).toBeUndefined();
+    });
+
     it('uses a locally generated stone finish and disposes its texture with the scene', () => {
       const groundGroup = (scene as unknown as { groundGroup: THREE.Group }).groundGroup;
       const slab = groundGroup.children.find(
-        (child) => child instanceof THREE.Mesh && child.geometry instanceof THREE.BoxGeometry
-      ) as THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial>;
+        (child) => child instanceof THREE.Mesh && child.name === 'campus-continuous-floor'
+      ) as THREE.Mesh<THREE.ExtrudeGeometry, THREE.MeshStandardMaterial>;
       expect(slab).toBeDefined();
       expect(slab.material.map).toBeInstanceOf(THREE.CanvasTexture);
       const textureDispose = vi.spyOn(slab.material.map!, 'dispose');
@@ -300,29 +347,14 @@ describe('PR C: Office Furniture, Procedural IDE Textures, Biophilia & Lighting'
       expect(foliageMesh.castShadow).toBe(true);
     });
 
-    it('places biophilic plants around central atrium perimeter and in canonical department rooms', () => {
+    it('places biophilic plants in canonical department neighborhoods without a mandatory central atrium', () => {
       const groundGroup = (scene as unknown as { groundGroup: THREE.Group }).groundGroup;
       expect(groundGroup).toBeDefined();
-
-      // Atrium plants at ±3.4, ±3.4
-      const atriumPlantCorners: [number, number][] = [
-        [-3.4, -3.4],
-        [3.4, -3.4],
-        [3.4, 3.4],
-        [-3.4, 3.4],
-      ];
-
-      for (const [px, pz] of atriumPlantCorners) {
-        const found = groundGroup.children.some((child) => {
-          if (child instanceof THREE.Group && child.children.length === 2) {
-            return (
-              Math.abs(child.position.x - px) < 0.01 &&
-              Math.abs(child.position.z - pz) < 0.01
-            );
-          }
-          return false;
-        });
-        expect(found).toBe(true);
+      const forcedAtriumCoordinates: [number, number][] = [[-3.4, -3.4], [3.4, -3.4], [3.4, 3.4], [-3.4, 3.4]];
+      for (const [x, z] of forcedAtriumCoordinates) {
+        expect(groundGroup.children.some((child) =>
+          child instanceof THREE.Group && Math.abs(child.position.x - x) < 0.01 && Math.abs(child.position.z - z) < 0.01
+        )).toBe(false);
       }
 
       // Check canonical department rooms have biophilic plants

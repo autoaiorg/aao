@@ -1,5 +1,6 @@
 import type { AgentIdentity } from '../../../domain/models';
 import type { OfficeLabelLodTier, OfficeRoomConfig } from '../types';
+import { planWorkNeighborhoodDesks } from '../spatialPlanningEngine';
 
 /**
  * High-level visual activity state for an agent in the 3D Office.
@@ -223,6 +224,21 @@ export function projectAgentOperationalActivity(
     }
   }
 
+  if (agent.credentialStatus === 'DISABLED' && !validAssignment) {
+    return {
+      agentId: agent.id,
+      kind: 'DISCONNECTED',
+      provenance: isDemo ? 'DEMO_SIMULATION' : 'LIVE_VERIFIED_EVIDENCE',
+      label: 'Identidad deshabilitada (sin puesto activo)',
+      shortBadge: '🔌 INACTIVO',
+      detail: 'Identidad deshabilitada sin tarea vigente; no se representa como agente activo ni ocupa un escritorio departamental.',
+      isLeaseExpired: hasExpiredLease,
+      activeTaskId: null,
+      activeProjectId: null,
+      conversationPartnerId: null,
+    };
+  }
+
   // If the only active assignment has an expired lease, fall back to neutral state immediately
   if (!validAssignment && hasExpiredLease) {
     return {
@@ -347,59 +363,31 @@ export function projectAgentOperationalActivity(
     };
   }
 
-  // 6. Demo-only simulated conversation for idle pairs in the same unit or executive coordination
-  if (isDemo && agent.status === 'IDLE' && agent.heartbeatStatus === 'HEALTHY') {
-    const idlePeers = allAgents.filter(
-      (other) =>
-        other.id !== agent.id &&
-        (other.isSyntheticDemo || isDemo) &&
-        other.status === 'IDLE' &&
-        other.heartbeatStatus === 'HEALTHY' &&
-        !other.currentAssignments.some((a) => isAssignmentLeaseValid(a, nowMs).valid)
-    );
-    if (idlePeers.length > 0) {
-      const partner = idlePeers[0];
-      return {
-        agentId: agent.id,
-        kind: 'CONVERSING',
-        provenance: 'DEMO_SIMULATION',
-        label: `Conversando con ${partner.name.split(' ')[0]} (Simulación DEMO)`,
-        shortBadge: '💬 DEMO CHAT',
-        detail: `Interacción simulada en modo DEMO con ${partner.name}; no representa una conversación real del backend.`,
-        isLeaseExpired: false,
-        activeTaskId: null,
-        activeProjectId: null,
-        conversationPartnerId: partner.id,
-      };
-    }
-  }
-
-  // 7. Ambient Walking Animation (explicitly identified as ambient animation, NEVER business evidence)
+  // 6. Idle, healthy agents take an ambient coffee walk rather than standing
+  // at their chair. This remains purely visual: it creates no task, event, or
+  // business evidence, and reduced-motion callers can disable it.
   if (
     ambientWalkEnabled &&
     agent.status === 'IDLE' &&
     agent.heartbeatStatus === 'HEALTHY'
   ) {
-    // Deterministic cycle based on stable hash and time window so idle connected agents occasionally stretch/walk
-    const cycleSlot = Math.floor(nowMs / 20_000 + (stableAgentHash(agent.id) % 5)) % 3;
-    if (cycleSlot === 1) {
-      return {
-        agentId: agent.id,
-        kind: 'WALKING',
-        provenance: isDemo ? 'DEMO_SIMULATION' : 'AMBIENT_ANIMATION',
-        label: 'Paseo ambiental por la oficina (Sin acción de negocio)',
-        shortBadge: '🚶 AMBIENTAL',
-        detail:
-          'Animación ambiental de desplazamiento visual para agente disponible; no representa una tarea ni evento empresarial.',
-        isLeaseExpired: false,
-        activeTaskId: null,
-        activeProjectId: null,
-        conversationPartnerId: null,
-      };
-    }
+    return {
+      agentId: agent.id,
+      kind: 'WALKING',
+      provenance: isDemo ? 'DEMO_SIMULATION' : 'AMBIENT_ANIMATION',
+      label: 'Paseo ambiental con café (Sin acción de negocio)',
+      shortBadge: '☕ PASEO AMBIENTAL',
+      detail:
+        'Desplazamiento visual con café para agente disponible; no representa una tarea ni evento empresarial.',
+      isLeaseExpired: false,
+      activeTaskId: null,
+      activeProjectId: null,
+      conversationPartnerId: null,
+    };
   }
 
-  // 8. Default: Seated & Idle at Assigned Workstation
+  // 7. Reduced motion or other explicitly disabled ambient animation:
+  // remain seated at the assigned workstation.
   return {
     agentId: agent.id,
     kind: 'IDLE_DESK',
@@ -423,32 +411,16 @@ export function projectAgentOperationalActivity(
  * Ensures every department visually has real desks, chairs, and a meeting area.
  */
 export function buildDepartmentInteriorLayout(room: OfficeRoomConfig): DepartmentInteriorLayout {
-  const capacity = Math.max(4, room.workstationCapacity ?? 4);
-  const localConfigs: Array<{ deskX: number; deskZ: number; chairX: number; chairZ: number; facing: number }> = [
-    // Front-left workstation (agent sits facing -Z toward monitor)
-    { deskX: -1.25, deskZ: -0.95, chairX: -1.25, chairZ: -0.42, facing: Math.PI },
-    // Front-right workstation (agent sits facing -Z toward monitor)
-    { deskX: 1.25, deskZ: -0.95, chairX: 1.25, chairZ: -0.42, facing: Math.PI },
-    // Rear-left workstation (agent sits facing -Z toward monitor)
-    { deskX: -1.25, deskZ: 0.35, chairX: -1.25, chairZ: 0.88, facing: Math.PI },
-    // Rear-right workstation (agent sits facing -Z toward monitor)
-    { deskX: 1.25, deskZ: 0.35, chairX: 1.25, chairZ: 0.88, facing: Math.PI },
-  ];
-
-  // If the department or holding wing has > 4 agents, add lateral workstation pairs so every agent gets a dedicated station
-  if (capacity > 4) {
-    const extraPairs = Math.ceil((capacity - 4) / 2);
-    for (let p = 0; p < extraPairs; p += 1) {
-      const colOffset = 2.35 + Math.floor(p / 2) * 1.1;
-      const isRearRow = p % 2 === 1;
-      const deskZ = isRearRow ? 0.35 : -0.95;
-      const chairZ = isRearRow ? 0.88 : -0.42;
-      localConfigs.push(
-        { deskX: -colOffset, deskZ, chairX: -colOffset, chairZ, facing: Math.PI },
-        { deskX: colOffset, deskZ, chairX: colOffset, chairZ, facing: Math.PI }
-      );
-    }
-  }
+  // A missing capacity is a legacy rendering contract (e.g. static OFFICE_ROOMS fixtures).
+  // Data-driven LIVE/DEMO layouts always set an exact observed count, including zero.
+  const capacity = Math.max(0, room.workstationCapacity ?? 4);
+  const localConfigs = planWorkNeighborhoodDesks(capacity, room.id).map(({ x, z }) => ({
+    deskX: x,
+    deskZ: z,
+    chairX: x,
+    chairZ: z + 0.55,
+    facing: Math.PI,
+  }));
 
   const workstations: WorkstationSlot[] = localConfigs.map((cfg, idx) => ({
     slotIndex: idx,
@@ -556,7 +528,11 @@ export function planOfficeLifePlacements(
   const unassignedAgents: AgentIdentity[] = [];
 
   for (const agent of agents) {
-    if (roomLayouts.has(agent.unitId)) {
+    const hasActiveDeskTask = agent.currentAssignments.some(
+      (assignment) => assignment.status === 'ACTIVE' && Boolean(assignment.taskId),
+    );
+    if (roomLayouts.has(agent.unitId) &&
+        (agent.credentialStatus !== 'DISABLED' || hasActiveDeskTask)) {
       const list = agentsByRoom.get(agent.unitId) || [];
       list.push(agent);
       agentsByRoom.set(agent.unitId, list);
@@ -588,23 +564,30 @@ export function planOfficeLifePlacements(
         activity.kind === 'TYPING_DOCS' ||
         activity.kind === 'IDLE_DESK';
 
-      // Build obstacle-free corridor waypoints (Chair -> Central Aisle -> Room Door -> Atrium Ring)
-      const aisleWaypoint = { x: room.x, z: slot.chairWorldZ };
+      // Leave the chair footprint before following the neighborhood aisle.
+      // Starting a WALKING loop at chairWorldX/Z made idle avatars stand on
+      // top of their own seats for the first segment of every ambient route.
+      const chairExitWaypoint = {
+        x: slot.chairWorldX,
+        z: slot.chairWorldZ + 0.75,
+      };
+      const aisleWaypoint = { x: room.x, z: chairExitWaypoint.z };
       const doorWaypoint = layout.corridorEntryWorld;
-      const hashAngle = ((stableAgentHash(agent.id) % 12) / 12) * Math.PI * 2;
-      const atriumWaypoint = {
-        x: Math.cos(hashAngle) * 2.1,
-        z: Math.sin(hashAngle) * 2.1,
+      const walkSide = stableAgentHash(agent.id) % 2 === 0 ? -1 : 1;
+      const neighborhoodWaypoint = {
+        x: room.x + walkSide * (room.width / 2 + 0.75),
+        z: doorWaypoint.z,
       };
 
       const waypoints = [
-        { x: slot.chairWorldX, z: slot.chairWorldZ },
+        chairExitWaypoint,
         aisleWaypoint,
         doorWaypoint,
-        atriumWaypoint,
+        neighborhoodWaypoint,
         doorWaypoint,
         aisleWaypoint,
-      ];
+      ].filter((point, index, all) => index === 0 ||
+        Math.hypot(point.x - all[index - 1].x, point.z - all[index - 1].z) > 0.01);
 
       if (activity.kind === 'WALKING') {
         isSeated = false;
@@ -626,7 +609,8 @@ export function planOfficeLifePlacements(
     });
   }
 
-  // Unassigned agents placed on distinct outer ring spots in the central atrium
+  // Unassigned agents remain in a neutral holding area near the campus origin;
+  // no organizational unit is inferred for them.
   const sortedUnassigned = [...unassignedAgents].sort((a, b) => a.id.localeCompare(b.id));
   sortedUnassigned.forEach((agent, index) => {
     const ring = Math.floor(index / 8);
@@ -685,52 +669,25 @@ export function planOfficeLifePlacements(
     pairedVisited.add(placement.agentId);
     pairedVisited.add(partnerPlacement.agentId);
 
-    // If both belong to the same room, use that room's meeting table spots; otherwise meet in the central atrium hub
-    const sameRoomLayout =
-      placement.unitId === partnerPlacement.unitId
-        ? roomLayouts.get(placement.unitId)
-        : undefined;
+    // Conversations use a local standing pair in a real team neighborhood,
+    // never a fabricated radial gathering around the origin.
+    const conversationRoomId = [placement.unitId, partnerPlacement.unitId].sort()[0];
+    const conversationRoom = rooms.find((room) => room.id === conversationRoomId);
+    const baseX = conversationRoom?.x ?? (placement.workstationSlot.chairWorldX + partnerPlacement.workstationSlot.chairWorldX) / 2;
+    const baseZ = conversationRoom?.z ?? (placement.workstationSlot.chairWorldZ + partnerPlacement.workstationSlot.chairWorldZ) / 2;
+    const offset = 0.48 + (conversationClusterIdx % 3) * 0.24;
+    conversationClusterIdx += 1;
+    const spotAX = baseX - offset;
+    const spotBX = baseX + offset;
 
-    if (sameRoomLayout && sameRoomLayout.meetingSpots.length >= 2) {
-      const spotA = sameRoomLayout.meetingSpots[0];
-      const spotB = sameRoomLayout.meetingSpots[1];
-      placement.targetWorldX = spotA.worldX;
-      placement.targetWorldZ = spotA.worldZ;
-      placement.targetFacingAngle = Math.atan2(
-        spotB.worldX - spotA.worldX,
-        spotB.worldZ - spotA.worldZ
-      );
-      placement.isSeated = false;
-
-      partnerPlacement.targetWorldX = spotB.worldX;
-      partnerPlacement.targetWorldZ = spotB.worldZ;
-      partnerPlacement.targetFacingAngle = Math.atan2(
-        spotA.worldX - spotB.worldX,
-        spotA.worldZ - spotB.worldZ
-      );
-      partnerPlacement.isSeated = false;
-    } else {
-      // Distinct conversation spot on the central atrium hub
-      const hubAngle = (conversationClusterIdx * Math.PI) / 3 + 0.35;
-      conversationClusterIdx += 1;
-      const centerX = Math.cos(hubAngle) * 1.65;
-      const centerZ = Math.sin(hubAngle) * 1.65;
-
-      const spotAX = centerX - 0.42;
-      const spotAZ = centerZ;
-      const spotBX = centerX + 0.42;
-      const spotBZ = centerZ;
-
-      placement.targetWorldX = spotAX;
-      placement.targetWorldZ = spotAZ;
-      placement.targetFacingAngle = Math.atan2(spotBX - spotAX, spotBZ - spotAZ);
-      placement.isSeated = false;
-
-      partnerPlacement.targetWorldX = spotBX;
-      partnerPlacement.targetWorldZ = spotBZ;
-      partnerPlacement.targetFacingAngle = Math.atan2(spotAX - spotBX, spotAZ - spotBZ);
-      partnerPlacement.isSeated = false;
-    }
+    placement.targetWorldX = spotAX;
+    placement.targetWorldZ = baseZ + 0.15;
+    placement.targetFacingAngle = Math.PI / 2;
+    placement.isSeated = false;
+    partnerPlacement.targetWorldX = spotBX;
+    partnerPlacement.targetWorldZ = baseZ + 0.15;
+    partnerPlacement.targetFacingAngle = -Math.PI / 2;
+    partnerPlacement.isSeated = false;
   }
 
   return result;
@@ -805,6 +762,8 @@ export interface AdaptiveAgentLabelState {
   priority: number;
   scale: number;
   yOffset: number;
+  offsetX: number;
+  offsetZ: number;
   suppressedByOverlap: boolean;
   provenanceCode: 'LIVE' | 'DEMO' | 'AMBIENT' | 'UNKNOWN';
 }
@@ -866,10 +825,11 @@ export function computeAdaptiveLabelStates(params: {
     const isSelected = room.id === selectedRoomId;
     const roomDistance = Math.hypot(room.x - cameraTargetX, room.z - cameraTargetZ);
     // Keep distant room headers out of focused views; room geometry remains selectable.
-    const visible =
+    const visible = lodTier !== 'agent' && (
       lodTier === 'overview' ||
       isSelected ||
-      roomDistance <= (lodTier === 'department' ? 8 : 4.2);
+      roomDistance <= 8
+    );
     const scale =
       lodTier === 'overview'
         ? isSelected
@@ -964,7 +924,7 @@ export function computeAdaptiveLabelStates(params: {
     } else if (lodTier === 'department') {
       eligibleByLod = isSelected || hasCriticalAlert || isInSelectedRoom || distToCameraTarget <= 6.2;
     } else {
-      eligibleByLod = isSelected || hasCriticalAlert || isInSelectedRoom || distToCameraTarget <= 8.5;
+      eligibleByLod = isSelected || hasCriticalAlert || distToCameraTarget <= 4.5;
     }
 
     candidates.push({
@@ -984,9 +944,18 @@ export function computeAdaptiveLabelStates(params: {
   });
 
   const acceptedBoxes: Array<{ screenX: number; screenY: number }> = [];
-  const minSepX = lodTier === 'agent' ? 1.05 : 1.25;
-  const minSepY = 0.34;
-  const maxVisibleAgentLabels = lodTier === 'overview' ? 3 : lodTier === 'department' ? 8 : 12;
+  // A label must avoid not only other labels but also other agents' heads.
+  // Otherwise a collision-free label cluster can still hide a face in the 3D view.
+  const projectedHeads = candidates.map((candidate) => ({
+    agentId: candidate.agent.id,
+    ...projectToScreenPlane(candidate.pos.x, candidate.pos.z, 1.62),
+  }));
+  // A label sprite is roughly 1.6 world units wide. Give each accepted label
+  // at least its own footprint, then shift colliding labels sideways in the
+  // camera plane before lifting them above heads and monitors.
+  const minSepX = 1.85;
+  const minSepY = 0.56;
+  const maxVisibleAgentLabels = lodTier === 'overview' ? 3 : lodTier === 'department' ? 8 : 1;
 
   let visibleAgentCount = 0;
   let suppressedOverlapCount = 0;
@@ -1001,6 +970,8 @@ export function computeAdaptiveLabelStates(params: {
         priority: cand.priority,
         scale: 0.85,
         yOffset: 1.24,
+        offsetX: 0,
+        offsetZ: 0,
         suppressedByOverlap: false,
         provenanceCode: cand.provenanceCode,
       });
@@ -1016,6 +987,8 @@ export function computeAdaptiveLabelStates(params: {
         priority: cand.priority,
         scale: 0.85,
         yOffset: 1.24,
+        offsetX: 0,
+        offsetZ: 0,
         suppressedByOverlap: true,
         provenanceCode: cand.provenanceCode,
       });
@@ -1023,30 +996,42 @@ export function computeAdaptiveLabelStates(params: {
     }
 
     let baseWy = 1.24;
+    let offsetX = 0;
+    let offsetZ = 0;
     let proj = projectToScreenPlane(cand.pos.x, cand.pos.z, baseWy);
     const collides = (sx: number, sy: number) =>
       acceptedBoxes.some(
         (box) => Math.abs(box.screenX - sx) < minSepX && Math.abs(box.screenY - sy) < minSepY
+      ) || projectedHeads.some((head) =>
+        head.agentId !== cand.agent.id &&
+        Math.abs(head.screenX - sx) < minSepX / 2 &&
+        Math.abs(head.screenY - sy) < minSepY
       );
 
     let hasOverlap = collides(proj.screenX, proj.screenY);
     if (hasOverlap) {
-      // Try vertical nudge Tier 1 (+0.38)
-      const nudgedWy1 = 1.62;
-      const proj1 = projectToScreenPlane(cand.pos.x, cand.pos.z, nudgedWy1);
-      if (!collides(proj1.screenX, proj1.screenY)) {
-        baseWy = nudgedWy1;
-        proj = proj1;
-        hasOverlap = false;
-      } else {
-        // Try vertical nudge Tier 2 (+0.74)
-        const nudgedWy2 = 1.98;
-        const proj2 = projectToScreenPlane(cand.pos.x, cand.pos.z, nudgedWy2);
-        if (!collides(proj2.screenX, proj2.screenY)) {
-          baseWy = nudgedWy2;
-          proj = proj2;
+      const lateralOffsets = [0, -1.2, 1.2, -2, 2];
+      const verticalOffsets = [1.24, 1.62, 1.98, 2.35, 2.65, 2.95];
+      for (const yOffset of verticalOffsets) {
+        let placed = false;
+        for (const screenOffset of lateralOffsets) {
+          const candidateX = screenOffset * cosA;
+          const candidateZ = -screenOffset * sinA;
+          const candidateProjection = projectToScreenPlane(
+            cand.pos.x + candidateX,
+            cand.pos.z + candidateZ,
+            yOffset,
+          );
+          if (collides(candidateProjection.screenX, candidateProjection.screenY)) continue;
+          baseWy = yOffset;
+          offsetX = candidateX;
+          offsetZ = candidateZ;
+          proj = candidateProjection;
           hasOverlap = false;
+          placed = true;
+          break;
         }
+        if (placed) break;
       }
     }
 
@@ -1059,6 +1044,8 @@ export function computeAdaptiveLabelStates(params: {
         priority: cand.priority,
         scale: 0.85,
         yOffset: 1.24,
+        offsetX: 0,
+        offsetZ: 0,
         suppressedByOverlap: true,
         provenanceCode: cand.provenanceCode,
       });
@@ -1069,9 +1056,9 @@ export function computeAdaptiveLabelStates(params: {
     visibleAgentCount += 1;
     const scale =
       cand.priority >= 1000
-        ? 1.12
+        ? lodTier === 'agent' ? 0.48 : 1.12
         : lodTier === 'agent'
-        ? 1.02
+        ? 0.48
         : lodTier === 'department'
         ? 0.92
         : 0.88;
@@ -1083,6 +1070,8 @@ export function computeAdaptiveLabelStates(params: {
       priority: cand.priority,
       scale,
       yOffset: baseWy,
+      offsetX,
+      offsetZ,
       suppressedByOverlap: false,
       provenanceCode: cand.provenanceCode,
     });

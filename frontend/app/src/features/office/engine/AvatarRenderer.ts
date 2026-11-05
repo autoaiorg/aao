@@ -174,6 +174,23 @@ export class AvatarResourcePool {
   public readonly shinGeo: THREE.BufferGeometry;
   public readonly shoeGeo: THREE.BufferGeometry;
 
+  // High-fidelity MMORPG anatomical & sartorial geometries
+  public readonly chinGeo: THREE.BufferGeometry;
+  public readonly hairBangsSideGeo: THREE.BufferGeometry;
+  public readonly hairBangsCropGeo: THREE.BufferGeometry;
+  public readonly hairBangsMidGeo: THREE.BufferGeometry;
+  public readonly suitLapelGeo: THREE.BufferGeometry;
+  public readonly beltBuckleGeo: THREE.BufferGeometry;
+  public readonly pocketSquareGeo: THREE.BufferGeometry;
+  public readonly cuffGeo: THREE.BufferGeometry;
+  public readonly watchGeo: THREE.BufferGeometry;
+  public readonly shoeSoleGeo: THREE.BufferGeometry;
+  public readonly shoeHeelGeo: THREE.BufferGeometry;
+  public readonly eyePupilGeo: THREE.BufferGeometry;
+  public readonly eyeGlintGeo: THREE.BufferGeometry;
+  public readonly eyelashGeo: THREE.BufferGeometry;
+  public readonly mouthGeo: THREE.BufferGeometry;
+
   // Lanyard & Badge
   public readonly lanyardGeo: THREE.BufferGeometry;
   public readonly badgeCardGeo: THREE.BufferGeometry;
@@ -199,26 +216,26 @@ export class AvatarResourcePool {
     this.torsoLowerGeo.scale(1.7, 0.7, 1);
 
     // Neck
-    this.neckGeo = new THREE.CylinderGeometry(0.045, 0.052, 0.07, 12);
+    this.neckGeo = new THREE.CylinderGeometry(0.032, 0.038, 0.065, 12);
 
-    // Head (Subtly anatomical proportion, scaled sphere)
-    this.headGeo = new THREE.SphereGeometry(0.115, 16, 14);
-    this.headGeo.scale(0.88, 1.05, 0.96);
+    // Head (Refined anatomical scale for realistic 7.5-head human proportions)
+    this.headGeo = new THREE.SphereGeometry(0.082, 16, 14);
+    this.headGeo.scale(0.86, 1.06, 0.94);
 
     // Hairstyle variants
     // 1. Short classic: compact skull cap with side burns
-    this.hairShortGeo = new THREE.SphereGeometry(0.122, 14, 12, 0, Math.PI * 2, 0, Math.PI * 0.58);
+    this.hairShortGeo = new THREE.SphereGeometry(0.088, 14, 12, 0, Math.PI * 2, 0, Math.PI * 0.58);
     this.hairShortGeo.scale(0.92, 1.08, 0.98);
 
     // 2. Executive side part: slightly raised volume with swept asymmetry
-    this.hairSidePartGeo = new THREE.SphereGeometry(0.12, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.56);
-    this.hairSidePartGeo.scale(0.98, 0.78, 0.92);
+    this.hairSidePartGeo = new THREE.SphereGeometry(0.087, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.56);
+    this.hairSidePartGeo.scale(0.98, 0.82, 0.94);
 
     // 3. Crop textured: clean modern crop with forward crown
-    this.hairCropGeo = new THREE.CylinderGeometry(0.11, 0.124, 0.07, 12);
+    this.hairCropGeo = new THREE.CylinderGeometry(0.078, 0.088, 0.05, 12);
 
     // 4. Modern mid-length: frames temples with gentle cheek drop
-    this.hairMidGeo = new THREE.SphereGeometry(0.12, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.62);
+    this.hairMidGeo = new THREE.SphereGeometry(0.087, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.62);
     this.hairMidGeo.scale(1, 1.04, 0.98);
 
     // Arms: shoulder pivot, upper arm, forearm, hand
@@ -239,6 +256,27 @@ export class AvatarResourcePool {
     this.lanyardGeo = new THREE.TorusGeometry(0.09, 0.007, 8, 20);
     this.badgeCardGeo = new THREE.BoxGeometry(0.065, 0.095, 0.006);
     this.badgeClipGeo = new THREE.BoxGeometry(0.02, 0.015, 0.01);
+
+    // High-fidelity MMORPG anatomical & sartorial geometries
+    this.chinGeo = new THREE.ConeGeometry(0.046, 0.048, 10);
+    this.chinGeo.rotateX(Math.PI);
+
+    this.hairBangsSideGeo = new THREE.BoxGeometry(0.05, 0.04, 0.03);
+    this.hairBangsCropGeo = new THREE.BoxGeometry(0.06, 0.025, 0.025);
+    this.hairBangsMidGeo = new THREE.BoxGeometry(0.035, 0.07, 0.03);
+
+    this.suitLapelGeo = new THREE.BoxGeometry(0.038, 0.22, 0.016);
+    this.beltBuckleGeo = new THREE.BoxGeometry(0.038, 0.022, 0.014);
+    this.pocketSquareGeo = new THREE.BoxGeometry(0.03, 0.02, 0.01);
+    this.cuffGeo = new THREE.CylinderGeometry(0.036, 0.038, 0.025, 8);
+    this.watchGeo = new THREE.BoxGeometry(0.022, 0.022, 0.012);
+    this.shoeSoleGeo = new THREE.BoxGeometry(0.078, 0.018, 0.15);
+    this.shoeHeelGeo = new THREE.BoxGeometry(0.072, 0.022, 0.05);
+
+    this.eyePupilGeo = new THREE.SphereGeometry(0.005, 6, 6);
+    this.eyeGlintGeo = new THREE.SphereGeometry(0.0028, 4, 4);
+    this.eyelashGeo = new THREE.BoxGeometry(0.026, 0.004, 0.008);
+    this.mouthGeo = new THREE.BoxGeometry(0.024, 0.004, 0.005);
 
     // Compatibility primitives (Preserve Defect 2 tests)
     this.haloGeo = new THREE.RingGeometry(0.24, 0.36, 16);
@@ -265,6 +303,21 @@ export class AvatarResourcePool {
       this.thighGeo,
       this.shinGeo,
       this.shoeGeo,
+      this.chinGeo,
+      this.hairBangsSideGeo,
+      this.hairBangsCropGeo,
+      this.hairBangsMidGeo,
+      this.suitLapelGeo,
+      this.beltBuckleGeo,
+      this.pocketSquareGeo,
+      this.cuffGeo,
+      this.watchGeo,
+      this.shoeSoleGeo,
+      this.shoeHeelGeo,
+      this.eyePupilGeo,
+      this.eyeGlintGeo,
+      this.eyelashGeo,
+      this.mouthGeo,
       this.lanyardGeo,
       this.badgeCardGeo,
       this.badgeClipGeo,
@@ -319,6 +372,21 @@ export class AvatarResourcePool {
       this.thighGeo,
       this.shinGeo,
       this.shoeGeo,
+      this.chinGeo,
+      this.hairBangsSideGeo,
+      this.hairBangsCropGeo,
+      this.hairBangsMidGeo,
+      this.suitLapelGeo,
+      this.beltBuckleGeo,
+      this.pocketSquareGeo,
+      this.cuffGeo,
+      this.watchGeo,
+      this.shoeSoleGeo,
+      this.shoeHeelGeo,
+      this.eyePupilGeo,
+      this.eyeGlintGeo,
+      this.eyelashGeo,
+      this.mouthGeo,
       this.lanyardGeo,
       this.badgeCardGeo,
       this.badgeClipGeo,
@@ -425,56 +493,227 @@ export function buildHumanoidCharacterRig(
   waistMesh.castShadow = true;
   torsoGroup.add(waistMesh);
 
+  // Sartorial Tailored Lapels (diagonal V-contour characteristic of enterprise blazers)
+  const lapelLeft = new THREE.Mesh(pool.suitLapelGeo, suitMat);
+  lapelLeft.position.set(-0.046, 0.11, 0.082);
+  lapelLeft.rotation.z = -0.2;
+  lapelLeft.castShadow = true;
+  torsoGroup.add(lapelLeft);
+
+  const lapelRight = new THREE.Mesh(pool.suitLapelGeo, suitMat);
+  lapelRight.position.set(0.046, 0.11, 0.082);
+  lapelRight.rotation.z = 0.2;
+  lapelRight.castShadow = true;
+  torsoGroup.add(lapelRight);
+
+  // Breast pocket square with department accent color
+  const pocketSquareMat = pool.getMaterial(`pocket-square-${profile.badgeAccentHex}`, () =>
+    new THREE.MeshStandardMaterial({
+      color: profile.badgeAccentHex,
+      roughness: 0.45,
+      metalness: 0.1,
+    })
+  );
+  const pocketSquare = new THREE.Mesh(pool.pocketSquareGeo, pocketSquareMat);
+  pocketSquare.position.set(-0.07, 0.135, 0.082);
+  torsoGroup.add(pocketSquare);
+
+  // Belt & Metallic Buckle separating upper torso from trousers
+  const beltMat = pool.getMaterial('avatar-leather-belt', () =>
+    new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.42, metalness: 0.25 })
+  );
+  const buckleMat = pool.getMaterial('avatar-belt-buckle', () =>
+    new THREE.MeshStandardMaterial({ color: 0xd4d4d8, roughness: 0.2, metalness: 0.9 })
+  );
+  const belt = new THREE.Mesh(new THREE.BoxGeometry(0.245, 0.024, 0.145), beltMat);
+  belt.position.set(0, -0.125, 0);
+  torsoGroup.add(belt);
+  const buckle = new THREE.Mesh(pool.beltBuckleGeo, buckleMat);
+  buckle.position.set(0, -0.125, 0.075);
+  torsoGroup.add(buckle);
+
   // Pelvis / Belt zone
   const pelvisMesh = new THREE.Mesh(pool.hipPelvisGeo, trouserMat);
   pelvisMesh.position.set(0, -0.16, 0);
   pelvisMesh.castShadow = true;
   torsoGroup.add(pelvisMesh);
 
+  // Executive necktie / accent ribbon
+  const tieMat = pool.getMaterial(`tie-${profile.badgeAccentHex}`, () =>
+    new THREE.MeshStandardMaterial({
+      color: profile.badgeAccentHex,
+      roughness: 0.65,
+      metalness: 0.1,
+    })
+  );
+  const tieGeo = new THREE.BoxGeometry(0.032, 0.14, 0.012);
+  const tieMesh = new THREE.Mesh(tieGeo, tieMat);
+  tieMesh.position.set(0, 0.08, 0.08);
+  torsoGroup.add(tieMesh);
+
   rig.add(torsoGroup);
 
-  // 2. Neck & Head
+  // 2. Neck & Head with Realistic Facial Features
   const neckMesh = new THREE.Mesh(pool.neckGeo, skinMat);
-  neckMesh.position.set(0, 0.76, 0.01);
+  neckMesh.position.set(0, 0.74, 0.01);
   neckMesh.castShadow = true;
   rig.add(neckMesh);
 
   const headGroup = new THREE.Group();
   headGroup.name = 'head-group';
-  headGroup.position.set(0, 0.88, 0.02);
+  headGroup.position.set(0, 0.83, 0.02);
 
   const headMesh = new THREE.Mesh(pool.headGeo, skinMat);
   headMesh.castShadow = true;
   headGroup.add(headMesh);
 
+  // Anatomical chin & jaw contour: transforms spherical head into realistic human jawline
+  const chinMesh = new THREE.Mesh(pool.chinGeo, skinMat);
+  chinMesh.position.set(0, -0.054, 0.022);
+  chinMesh.castShadow = true;
+  headGroup.add(chinMesh);
+
+  // Stylized realistic facial features
+  const eyeWhiteMat = pool.getMaterial('avatar-eye-white', () =>
+    new THREE.MeshBasicMaterial({ color: 0xffffff })
+  );
+  const eyeMat = pool.getMaterial('avatar-eye-iris', () =>
+    new THREE.MeshBasicMaterial({ color: 0x243c5a })
+  );
+  const pupilMat = pool.getMaterial('avatar-eye-pupil', () =>
+    new THREE.MeshBasicMaterial({ color: 0x09090b })
+  );
+  const glintMat = pool.getMaterial('avatar-eye-glint', () =>
+    new THREE.MeshBasicMaterial({ color: 0xffffff })
+  );
+  const lashMat = pool.getMaterial('avatar-eye-lash', () =>
+    new THREE.MeshBasicMaterial({ color: 0x0f172a })
+  );
+  const browMat = pool.getMaterial(`avatar-brow-${hairColor}`, () =>
+    new THREE.MeshBasicMaterial({ color: hairColor })
+  );
+
+  const eyeWhiteGeo = new THREE.SphereGeometry(0.012, 6, 6);
+  const eyeGeo = new THREE.SphereGeometry(0.008, 6, 6);
+  const browGeo = new THREE.BoxGeometry(0.018, 0.005, 0.008);
+
+  for (const side of [-1, 1]) {
+    // Sclera (eye white)
+    const eyeWhite = new THREE.Mesh(eyeWhiteGeo, eyeWhiteMat);
+    eyeWhite.position.set(side * 0.025, 0.008, 0.065);
+    headGroup.add(eyeWhite);
+
+    // Iris (colored)
+    const eye = new THREE.Mesh(eyeGeo, eyeMat);
+    eye.position.set(side * 0.025, 0.008, 0.073);
+    headGroup.add(eye);
+
+    // Dark inner pupil
+    const pupil = new THREE.Mesh(pool.eyePupilGeo, pupilMat);
+    pupil.position.set(side * 0.025, 0.008, 0.078);
+    headGroup.add(pupil);
+
+    // Specular catchlight / glint (gives eyes lifelike MMORPG expression)
+    const glint = new THREE.Mesh(pool.eyeGlintGeo, glintMat);
+    glint.position.set(side * 0.025 + 0.003, 0.011, 0.081);
+    headGroup.add(glint);
+
+    // Upper eyelash contour
+    const lash = new THREE.Mesh(pool.eyelashGeo, lashMat);
+    lash.position.set(side * 0.025, 0.017, 0.072);
+    headGroup.add(lash);
+
+    // Eyebrow
+    const brow = new THREE.Mesh(browGeo, browMat);
+    brow.position.set(side * 0.025, 0.025, 0.07);
+    brow.rotation.z = side * -0.06;
+    headGroup.add(brow);
+
+    // Subtle ear definition
+    const ear = new THREE.Mesh(new THREE.SphereGeometry(0.013, 6, 6), skinMat);
+    ear.scale.set(0.4, 1.1, 0.7);
+    ear.position.set(side * 0.068, 0.005, -0.008);
+    headGroup.add(ear);
+  }
+
+  // Architectural nose bridge contour
+  const nose = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.018, 0.012), skinMat);
+  nose.position.set(0, 0.004, 0.071);
+  headGroup.add(nose);
+
+  // Subtle mouth expression
+  const mouthMat = pool.getMaterial('avatar-mouth-tint', () =>
+    new THREE.MeshBasicMaterial({ color: 0x9e6758 })
+  );
+  const mouth = new THREE.Mesh(pool.mouthGeo, mouthMat);
+  mouth.position.set(0, -0.034, 0.066);
+  headGroup.add(mouth);
+
+  // Professional glasses on intellectual/executive profiles
+  const hasGlasses = (hashStringSeed(agent.id) % 3) === 0;
+  if (hasGlasses) {
+    const glassesFrameMat = pool.getMaterial('avatar-glasses-frame', () =>
+      new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.25, metalness: 0.85 })
+    );
+    const rimGeo = new THREE.TorusGeometry(0.016, 0.0024, 6, 12);
+    for (const side of [-1, 1]) {
+      const rim = new THREE.Mesh(rimGeo, glassesFrameMat);
+      rim.position.set(side * 0.025, 0.008, 0.076);
+      headGroup.add(rim);
+    }
+    const bridge = new THREE.Mesh(new THREE.BoxGeometry(0.016, 0.003, 0.003), glassesFrameMat);
+    bridge.position.set(0, 0.01, 0.077);
+    headGroup.add(bridge);
+  }
+
   // Hair according to deterministic style
   let hairGeo: THREE.BufferGeometry;
-  let hairOffsetY = 0.04;
-  let hairOffsetZ = -0.01;
+  let hairOffsetY = 0.025;
+  let hairOffsetZ = -0.008;
   switch (hairStyle) {
     case 'EXECUTIVE_SIDE_PART':
       hairGeo = pool.hairSidePartGeo;
-      hairOffsetY = 0.07;
+      hairOffsetY = 0.045;
       break;
     case 'CROP_TEXTURED':
       hairGeo = pool.hairCropGeo;
-      hairOffsetY = 0.06;
+      hairOffsetY = 0.038;
       break;
     case 'MODERN_MID':
       hairGeo = pool.hairMidGeo;
-      hairOffsetY = 0.04;
-      hairOffsetZ = -0.015;
+      hairOffsetY = 0.025;
+      hairOffsetZ = -0.01;
       break;
     case 'SHORT_CLASSIC':
     default:
       hairGeo = pool.hairShortGeo;
-      hairOffsetY = 0.04;
+      hairOffsetY = 0.025;
       break;
   }
   const hairMesh = new THREE.Mesh(hairGeo, hairMat);
   hairMesh.position.set(0, hairOffsetY, hairOffsetZ);
   hairMesh.castShadow = true;
   headGroup.add(hairMesh);
+
+  // Stylized 3D hair bangs / locks framing forehead and temples for MMORPG depth
+  if (hairStyle === 'EXECUTIVE_SIDE_PART') {
+    const bangs = new THREE.Mesh(pool.hairBangsSideGeo, hairMat);
+    bangs.position.set(-0.025, 0.048, 0.068);
+    bangs.rotation.z = -0.25;
+    bangs.rotation.y = 0.15;
+    headGroup.add(bangs);
+  } else if (hairStyle === 'CROP_TEXTURED') {
+    const bangs = new THREE.Mesh(pool.hairBangsCropGeo, hairMat);
+    bangs.position.set(0, 0.046, 0.068);
+    headGroup.add(bangs);
+  } else if (hairStyle === 'MODERN_MID') {
+    for (const side of [-1, 1]) {
+      const strand = new THREE.Mesh(pool.hairBangsMidGeo, hairMat);
+      strand.position.set(side * 0.068, 0.005, 0.025);
+      strand.rotation.z = side * 0.12;
+      headGroup.add(strand);
+    }
+  }
 
   rig.add(headGroup);
 
@@ -562,6 +801,19 @@ export function buildHumanoidCharacterRig(
   leftHand.castShadow = true;
   leftForearmGroup.add(leftHand);
 
+  // Sartorial sleeve cuff & executive wristwatch
+  const leftCuff = new THREE.Mesh(pool.cuffGeo, suitMat);
+  leftCuff.position.set(0, -0.13, 0.045);
+  leftCuff.rotation.x = -0.35;
+  leftForearmGroup.add(leftCuff);
+
+  const watchMat = pool.getMaterial('avatar-watch-metal', () =>
+    new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.25, metalness: 0.9 })
+  );
+  const watch = new THREE.Mesh(pool.watchGeo, watchMat);
+  watch.position.set(-0.038, -0.13, 0.045);
+  leftForearmGroup.add(watch);
+
   leftArmGroup.add(leftForearmGroup);
   rig.add(leftArmGroup);
 
@@ -586,6 +838,11 @@ export function buildHumanoidCharacterRig(
   rightForearm.rotation.x = -0.35;
   rightForearm.castShadow = true;
   rightForearmGroup.add(rightForearm);
+
+  const rightCuff = new THREE.Mesh(pool.cuffGeo, suitMat);
+  rightCuff.position.set(0, -0.13, 0.045);
+  rightCuff.rotation.x = -0.35;
+  rightForearmGroup.add(rightCuff);
 
   const rightHand = new THREE.Mesh(pool.handGeo, skinMat);
   rightHand.position.set(0, -0.17, 0.06);
@@ -650,10 +907,24 @@ export function buildHumanoidCharacterRig(
   leftShin.castShadow = true;
   leftShinGroup.add(leftShin);
 
+  const soleMat = pool.getMaterial('avatar-shoe-sole-mat', () =>
+    new THREE.MeshStandardMaterial({ color: 0x09090b, roughness: 0.85, metalness: 0.1 })
+  );
+
   const leftShoe = new THREE.Mesh(pool.shoeGeo, shoeMat);
   leftShoe.position.set(0, -0.17, 0.035);
   leftShoe.castShadow = true;
   leftShinGroup.add(leftShoe);
+
+  const leftSole = new THREE.Mesh(pool.shoeSoleGeo, soleMat);
+  leftSole.position.set(0, -0.19, 0.035);
+  leftSole.castShadow = true;
+  leftShinGroup.add(leftSole);
+
+  const leftHeel = new THREE.Mesh(pool.shoeHeelGeo, soleMat);
+  leftHeel.position.set(0, -0.20, -0.015);
+  leftHeel.castShadow = true;
+  leftShinGroup.add(leftHeel);
 
   leftLegGroup.add(leftShinGroup);
   rig.add(leftLegGroup);
@@ -680,6 +951,16 @@ export function buildHumanoidCharacterRig(
   rightShoe.position.set(0, -0.17, 0.035);
   rightShoe.castShadow = true;
   rightShinGroup.add(rightShoe);
+
+  const rightSole = new THREE.Mesh(pool.shoeSoleGeo, soleMat);
+  rightSole.position.set(0, -0.19, 0.035);
+  rightSole.castShadow = true;
+  rightShinGroup.add(rightSole);
+
+  const rightHeel = new THREE.Mesh(pool.shoeHeelGeo, soleMat);
+  rightHeel.position.set(0, -0.20, -0.015);
+  rightHeel.castShadow = true;
+  rightShinGroup.add(rightHeel);
 
   rightLegGroup.add(rightShinGroup);
   rig.add(rightLegGroup);
@@ -991,6 +1272,7 @@ export function stepAvatarKinematics(
       time: number,
       offsetSec: number
     ) => { x: number; z: number; facingAngle: number };
+    obstacleAvoidance?: { x: number; z: number };
   } = {}
 ): void {
   const parts = group.userData?.parts as AvatarSemanticParts | undefined;
@@ -1037,6 +1319,10 @@ export function stepAvatarKinematics(
     destX = options.authoritativePosition.x;
     destZ = options.authoritativePosition.z;
     destAngle = options.authoritativePosition.facingAngle;
+  }
+  if (options.obstacleAvoidance) {
+    destX += options.obstacleAvoidance.x;
+    destZ += options.obstacleAvoidance.z;
   }
 
   // Smooth position & orientation interpolation
@@ -1134,13 +1420,13 @@ export function stepAvatarKinematics(
     if (parts.rightLeg) parts.rightLeg.rotation.x = -stride * 0.44;
 
     if (parts.leftShin) {
-      parts.leftShin.rotation.x = stride > 0 ? stride * 0.35 : 0;
+      parts.leftShin.rotation.x = stride > 0 ? stride * 0.48 : 0;
     }
     if (parts.rightShin) {
-      parts.rightShin.rotation.x = stride < 0 ? -stride * 0.35 : 0;
+      parts.rightShin.rotation.x = stride < 0 ? -stride * 0.48 : 0;
     }
 
-    // Counter-swinging arms
+    // Counter-swinging arms with natural elbow flexion
     if (parts.leftArm) {
       parts.leftArm.rotation.x = -stride * 0.34;
       parts.leftArm.rotation.z = -0.06;
@@ -1148,6 +1434,12 @@ export function stepAvatarKinematics(
     if (parts.rightArm) {
       parts.rightArm.rotation.x = stride * 0.34;
       parts.rightArm.rotation.z = 0.06;
+    }
+    if (parts.leftForearm) {
+      parts.leftForearm.rotation.x = -0.35 + Math.max(0, -stride * 0.2);
+    }
+    if (parts.rightForearm) {
+      parts.rightForearm.rotation.x = -0.35 + Math.max(0, stride * 0.2);
     }
 
     if (parts.head) {
@@ -1184,8 +1476,13 @@ export function stepAvatarKinematics(
 
     if (parts.speechBubble) parts.speechBubble.visible = false;
   } else {
-    // Default neutral standing posture
+    // Default neutral standing posture with natural idle breathing & weight shift
     parts.characterRig.position.y = 0;
+
+    if (parts.torso) {
+      parts.torso.position.y = 0.52 + (isFarDistance ? 0 : Math.sin(time * 0.003 + phase) * 0.004);
+      parts.torso.rotation.z = isFarDistance ? 0 : Math.sin(time * 0.0015 + phase) * 0.012;
+    }
 
     if (parts.leftLeg) parts.leftLeg.rotation.x = 0;
     if (parts.rightLeg) parts.rightLeg.rotation.x = 0;
@@ -1203,7 +1500,8 @@ export function stepAvatarKinematics(
 
     if (parts.head) {
       parts.head.rotation.x = 0;
-      parts.head.rotation.y = 0;
+      parts.head.rotation.y = isFarDistance ? 0 : Math.sin(time * 0.002 + phase) * 0.04;
+      parts.head.rotation.z = isFarDistance ? 0 : -Math.sin(time * 0.0015 + phase) * 0.008;
     }
 
     if (parts.speechBubble) parts.speechBubble.visible = false;

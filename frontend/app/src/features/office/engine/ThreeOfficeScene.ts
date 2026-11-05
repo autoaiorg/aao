@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { AgentIdentity } from '../../../domain/models';
+import type { OfficeWorldActorPosition } from '../types';
 import {
   OFFICE_ROOMS,
   type CameraViewState,
@@ -305,14 +306,22 @@ export class ThreeOfficeScene {
   // Groups and Interactive Meshes
   private roomsGroup = new THREE.Group();
   private agentsGroup = new THREE.Group();
+  private ambientNpcGroup = new THREE.Group();
   private lightsGroup = new THREE.Group();
   private walkwaysGroup = new THREE.Group();
   private interactiveMeshes: THREE.Object3D[] = [];
   private roomLabels: Map<string, THREE.Sprite> = new Map();
   private agentMeshes: Map<string, THREE.Group> = new Map();
   private agentRuntimeStates: Map<string, AgentAnimatedRuntimeState> = new Map();
+  private worldPositions = new Map<string, OfficeWorldActorPosition>();
+  private ambientNpcMeshes = new Map<string, THREE.Group>();
+  private ambientNpcTargets = new Map<string, OfficeWorldActorPosition>();
+  private npcInteractionUntil = 0;
+  private npcConversationAgentId: string | null = null;
   private currentAgents: AgentIdentity[] = [];
-  private lastStateEvaluationMs = 0;
+  // requestAnimationFrame timestamps are monotonic-relative; wall-clock time is
+  // passed separately to the lease evaluator. Never compare the two clocks.
+  private lastStateEvaluationFrameMs = 0;
 
   // Performance & Adaptive Label Telemetry
   private lastFrameTimestampMs = 0;
@@ -380,6 +389,7 @@ export class ThreeOfficeScene {
     this.scene.add(this.walkwaysGroup);
     this.scene.add(this.roomsGroup);
     this.scene.add(this.agentsGroup);
+    this.scene.add(this.ambientNpcGroup);
     this.scene.add(this.lightsGroup);
     this.scene.add(this.groundGroup);
 
@@ -387,6 +397,7 @@ export class ThreeOfficeScene {
     const sceneBuildStartedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
     this.setupLighting();
     this.buildWorld();
+    this.buildAmbientNpcMeshes();
     this.syncAdaptiveLabels();
     this.sceneBuildDurationMs = Math.max(0, (typeof performance !== 'undefined' ? performance.now() : Date.now()) - sceneBuildStartedAt);
 
@@ -1242,7 +1253,7 @@ export class ThreeOfficeScene {
   public updateAgents(agents: AgentIdentity[], nowMs = Date.now()): void {
     const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
     this.currentAgents = [...agents];
-    this.lastStateEvaluationMs = nowMs;
+    this.lastStateEvaluationFrameMs = typeof performance !== 'undefined' ? performance.now() : 0;
 
     // 1. Remove old agent meshes from interactive raycast array to avoid stale objects and cumulative growth
     this.interactiveMeshes = this.interactiveMeshes.filter(
@@ -1326,6 +1337,66 @@ export class ThreeOfficeScene {
     this.lastStateUpdateDurationMs = Math.max(0, t1 - t0);
   }
 
+  /** Applies server-owned world positions; demo/local movement is untouched. */
+  public syncWorldActors(positions: OfficeWorldActorPosition[]): void {
+    this.worldPositions = new Map(positions.filter((actor) => actor.actor_kind === 'AGENT')
+      .map((actor) => [actor.actor_id, actor]));
+    this.ambientNpcTargets = new Map(positions.filter((actor) => actor.actor_kind === 'NPC')
+      .map((actor) => [actor.actor_id, actor]));
+    for (const [id, target] of this.ambientNpcTargets) {
+      const mesh = this.ambientNpcMeshes.get(id);
+      if (mesh) mesh.visible = true;
+      if (!mesh) continue;
+      mesh.userData.worldTarget = target;
+      if (!mesh.userData.worldInitialized) {
+        mesh.position.set(target.x, 0, target.z);
+        mesh.rotation.y = target.facing;
+        mesh.userData.worldInitialized = true;
+      }
+    }
+    for (const [id, mesh] of this.ambientNpcMeshes) {
+      if (!this.ambientNpcTargets.has(id)) mesh.visible = false;
+    }
+  }
+
+  private buildAmbientNpcMeshes(): void {
+    const roles = [
+      ['npc:receptionist', 0x315f5b],
+      ['npc:copy-room', 0x786445],
+      ['npc:office-runner', 0x526180],
+    ] as const;
+    for (const [id, color] of roles) {
+      const group = new THREE.Group();
+      group.name = id;
+      group.visible = false;
+      const skin = new THREE.MeshStandardMaterial({ color: 0xc99873, roughness: 0.78 });
+      const clothes = new THREE.MeshStandardMaterial({ color, roughness: 0.72 });
+      const swingParts: THREE.Object3D[] = [];
+      const make = (geometry: THREE.BufferGeometry, material: THREE.Material, x: number, y: number, z: number) => {
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.position.set(x, y, z);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        group.add(mesh);
+        return mesh;
+      };
+      make(new THREE.CapsuleGeometry(0.18, 0.42, 4, 8), clothes, 0, 0.75, 0);
+      make(new THREE.SphereGeometry(0.145, 10, 8), skin, 0, 1.12, 0);
+      swingParts.push(make(new THREE.CylinderGeometry(0.052, 0.05, 0.34, 7), clothes, -0.13, 0.36, 0));
+      swingParts.push(make(new THREE.CylinderGeometry(0.052, 0.05, 0.34, 7), clothes, 0.13, 0.36, 0));
+      swingParts.push(make(new THREE.CapsuleGeometry(0.045, 0.27, 3, 6), clothes, -0.23, 0.78, 0.01));
+      swingParts.push(make(new THREE.CapsuleGeometry(0.045, 0.27, 3, 6), clothes, 0.23, 0.78, 0.01));
+      if (id === 'npc:office-runner') {
+        make(new THREE.CylinderGeometry(0.045, 0.04, 0.09, 8), new THREE.MeshStandardMaterial({ color: 0xf0e5ce }), 0.27, 0.68, 0.04);
+      } else if (id === 'npc:copy-room') {
+        make(new THREE.BoxGeometry(0.16, 0.11, 0.025), new THREE.MeshStandardMaterial({ color: 0xf4f0e6 }), -0.24, 0.87, 0.04);
+      }
+      group.userData.parts = swingParts;
+      this.ambientNpcGroup.add(group);
+      this.ambientNpcMeshes.set(id, group);
+    }
+  }
+
   /**
    * Synchronizes department and agent 3D labels with the Adaptive Label LOD & De-overlapping Engine.
    */
@@ -1385,7 +1456,7 @@ export class ThreeOfficeScene {
    */
   public refreshAgentActivities(nowMs = Date.now()): void {
     const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
-    this.lastStateEvaluationMs = nowMs;
+    this.lastStateEvaluationFrameMs = typeof performance !== 'undefined' ? performance.now() : 0;
     if (this.currentAgents.length === 0) return;
 
     const placements = planOfficeLifePlacements(this.currentAgents, this.rooms, {
@@ -2099,10 +2170,13 @@ export class ThreeOfficeScene {
     }
     this.lastFrameTimestampMs = time;
 
+    // Decoupled operational evidence/lease reevaluation every 1500ms.
+    // `time` is the RAF monotonic clock; refreshAgentActivities intentionally
+    // receives Unix wall-clock milliseconds for Date.parse lease comparisons.
     let shouldRefreshLabels = false;
-    // Decoupled state & label evaluation every 1500ms
-    if (time - this.lastStateEvaluationMs >= 1500 && this.currentAgents.length > 0) {
-      this.lastStateEvaluationMs = time;
+    if (time - this.lastStateEvaluationFrameMs >= 1500 && this.currentAgents.length > 0) {
+      this.lastStateEvaluationFrameMs = time;
+      this.refreshAgentActivities(Date.now());
       shouldRefreshLabels = true;
     }
 
@@ -2192,13 +2266,63 @@ export class ThreeOfficeScene {
 
     // 2. Agent Animations (Preserving Defect 2 contract on children[1] + Articulating characterRig)
     if (!this.options.reducedMotion) {
+      this.ambientNpcMeshes.forEach((mesh, npcId) => {
+        const serverTarget = this.ambientNpcTargets.get(npcId);
+        if (!serverTarget) return;
+        const runner = npcId === 'npc:office-runner';
+        let stopAndFace: THREE.Group | undefined;
+        if (runner && time >= this.npcInteractionUntil) {
+          let closest: { id: string; mesh: THREE.Group; distance: number } | null = null;
+          for (const [agentId, agentMesh] of this.agentMeshes) {
+            const activity = this.agentRuntimeStates.get(agentId)?.placement.activity;
+            if (activity?.kind !== 'WALKING' || activity.provenance !== 'AMBIENT_ANIMATION') continue;
+            const distance = agentMesh.position.distanceTo(mesh.position);
+            if (distance <= 1.25 && (!closest || distance < closest.distance)) {
+              closest = { id: agentId, mesh: agentMesh, distance };
+            }
+          }
+          if (closest) {
+            this.npcConversationAgentId = closest.id;
+            this.npcInteractionUntil = time + 2800;
+          }
+        }
+        if (runner && time < this.npcInteractionUntil && this.npcConversationAgentId) {
+          stopAndFace = this.agentMeshes.get(this.npcConversationAgentId);
+        }
+        const targetX = stopAndFace ? mesh.position.x : serverTarget.x;
+        const targetZ = stopAndFace ? mesh.position.z : serverTarget.z;
+        mesh.position.x += (targetX - mesh.position.x) * 0.16;
+        mesh.position.z += (targetZ - mesh.position.z) * 0.16;
+        const faceTarget = stopAndFace
+          ? Math.atan2(stopAndFace.position.x - mesh.position.x, stopAndFace.position.z - mesh.position.z)
+          : serverTarget.facing;
+        mesh.rotation.y += Math.atan2(Math.sin(faceTarget - mesh.rotation.y), Math.cos(faceTarget - mesh.rotation.y)) * 0.18;
+        mesh.userData.parts?.forEach((part: THREE.Object3D, index: number) => {
+          if (index > 1) part.rotation.x = stopAndFace ? 0 : Math.sin(time * 0.012 + index) * 0.22;
+        });
+      });
+
       this.agentMeshes.forEach((group, agentId) => {
         const runtime = this.agentRuntimeStates.get(agentId);
         if (!runtime) return;
+        const serverPosition = this.worldPositions.get(agentId);
+        const conversingWithNpc = this.npcConversationAgentId === agentId && time < this.npcInteractionUntil
+          ? this.ambientNpcMeshes.get('npc:office-runner')
+          : undefined;
+        const authoritativePosition = serverPosition ? {
+          x: conversingWithNpc ? group.position.x : serverPosition.x,
+          z: conversingWithNpc ? group.position.z : serverPosition.z,
+          facingAngle: conversingWithNpc
+            ? Math.atan2(conversingWithNpc.position.x - group.position.x,
+                conversingWithNpc.position.z - group.position.z)
+            : serverPosition.facing,
+        } : undefined;
 
         stepAvatarKinematics(group, runtime, time, this.cameraDistance, {
           reducedMotion: false,
           sampleWaypointRoute,
+          authoritativePosition,
+          ambientInteraction: Boolean(conversingWithNpc),
         });
       });
 

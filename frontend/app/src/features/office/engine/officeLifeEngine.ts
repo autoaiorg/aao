@@ -117,7 +117,7 @@ export function stableAgentHash(agentId: string): number {
 
 /**
  * Checks whether an assignment has a valid, non-expired active lease.
- * If leaseExpiresAt is present and <= nowMs, the evidence has expired.
+ * A present but unparseable expiry is unknown evidence and fails closed.
  */
 export function isAssignmentLeaseValid(
   assignment: AgentIdentity['currentAssignments'][number],
@@ -128,7 +128,10 @@ export function isAssignmentLeaseValid(
   }
   if (assignment.leaseExpiresAt) {
     const expiresMs = Date.parse(assignment.leaseExpiresAt);
-    if (Number.isFinite(expiresMs) && expiresMs <= nowMs) {
+    if (!Number.isFinite(expiresMs)) {
+      return { valid: false, expired: false };
+    }
+    if (expiresMs <= nowMs) {
       return { valid: false, expired: true };
     }
   }

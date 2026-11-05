@@ -379,6 +379,38 @@ describe('ThreeOfficeScene Engine Direct Regression Tests (Defects 1 & 2)', () =
     scene.dispose();
   });
 
+  it('reevaluates lease expiry on the animation clock without waiting for a React agent refresh', () => {
+    vi.useFakeTimers();
+    const now = Date.now();
+    const expiresAt = new Date(now + 1000).toISOString();
+    const agent: AgentIdentity = {
+      ...DEMO_AGENTS[0],
+      id: 'lease-expiry-agent',
+      status: 'BUSY',
+      operationalState: 'EJECUTANDO',
+      currentAssignments: [{
+        id: 'assignment-1', projectId: 'project-1', projectName: 'Project', taskId: 'task-1',
+        taskTitle: 'Implement feature', assignedAt: new Date(now - 1000).toISOString(),
+        leaseExpiresAt: expiresAt, status: 'ACTIVE',
+      }],
+    };
+    const container = document.createElement('div');
+    const scene = new ThreeOfficeScene(container, {
+      renderer: createMockRenderer(), callbacks: { onSelectRoom: vi.fn(), onSelectAgent: vi.fn(), onHoverObject: vi.fn() },
+    });
+    try {
+      scene.updateAgents([agent], now);
+      expect(scene.getAgentPlacement(agent.id)?.activity.kind).toMatch(/^TYPING_/);
+      const frameNow = performance.now();
+      vi.setSystemTime(now + 1500);
+      scene.stepAnimation(frameNow + 1501);
+      expect(scene.getAgentPlacement(agent.id)?.activity.kind).toBe('UNKNOWN_NEUTRAL');
+    } finally {
+      scene.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it('F4.7: smart zoom smoothly focuses onto selected department and resetCamera() restores a fitted overview', () => {
     const container = document.createElement('div');
     const scene = new ThreeOfficeScene(container, {

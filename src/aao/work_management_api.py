@@ -716,6 +716,38 @@ class OrganizationProfileRequest(BaseModel):
         return normalized
 
 
+class OfficeWorldPoint(BaseModel):
+    x: float = Field(allow_inf_nan=False, ge=-500, le=500)
+    z: float = Field(allow_inf_nan=False, ge=-500, le=500)
+
+
+class OfficeWorldActorRoute(BaseModel):
+    actor_id: str = Field(min_length=1, max_length=160, pattern=r"^[a-zA-Z0-9:_-]+$")
+    actor_kind: Literal["AGENT", "NPC"]
+    route: list[OfficeWorldPoint] = Field(min_length=2, max_length=128)
+    speed: float = Field(ge=0.05, le=2.0, allow_inf_nan=False)
+
+
+class OfficeWorldPlanRequest(BaseModel):
+    map_revision: str = Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9._:-]+$")
+    actors: list[OfficeWorldActorRoute] = Field(max_length=250)
+
+    @field_validator("actors")
+    @classmethod
+    def unique_actor_ids(cls, actors: list[OfficeWorldActorRoute]) -> list[OfficeWorldActorRoute]:
+        ids = [actor.actor_id for actor in actors]
+        if len(set(ids)) != len(ids):
+            raise ValueError("Office world plan contains duplicate actor IDs")
+        for actor in actors:
+            if actor.actor_kind == "NPC" and actor.actor_id not in {
+                "npc:receptionist", "npc:copy-room", "npc:office-runner"
+            }:
+                raise ValueError("Unknown ambient NPC actor")
+            if actor.actor_kind == "AGENT" and actor.actor_id.startswith("npc:"):
+                raise ValueError("Agent IDs cannot use the NPC namespace")
+        return actors
+
+
 app = FastAPI(title="AAO PostgreSQL development core", version="0.2.0")
 _CEO_PRINCIPAL = object()
 
@@ -2304,6 +2336,119 @@ def organization(response: Response, principal: str = Depends(read_principal)):
             "coverage": {"totalProjects": len(project_ids),
                          "inspectedProjects": len(project_ids),
                          "failedProjects": 0, "isPartial": False}}
+
+
+@app.put("/v1/office/world/plan")
+def put_office_world_plan(payload: OfficeWorldPlanRequest, _: str = Depends(require_ceo)):
+    """Publish visual routes for idle, placed agents and ambient NPCs only.
+
+    Routes are derived from a versioned visual floor plan. Motion never creates
+    organizational placement, assignments, messages, or business evidence.
+    """
+    from aao.office_world import Point, validate_route
+
+    for actor in payload.actors:
+        try:
+            validate_route([Point(x=point.x, z=point.z) for point in actor.route])
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+    with tx() as db:
+        eligible_rows = db.execute(
+            "SELECT p.principal_id FROM organization_profiles p "
+            "JOIN organization_units u ON u.id=p.unit_id AND u.enabled "
+            "JOIN principal_credentials c ON c.principal_id=p.principal_id "
+            "WHERE p.enabled AND c.enabled AND c.kind='AGENT'"
+        ).fetchall()
+        eligible_ids = {str(row[0]) for row in eligible_rows}
+        busy_ids = {str(row[0]) for row in db.execute(
+            "SELECT DISTINCT worker_id FROM execution_queue "
+            "WHERE status='RUNNING' AND lease_expires_at > clock_timestamp()"
+        ).fetchall()}
+        accepted_actors = []
+        skipped_busy_agents = 0
+        for actor in payload.actors:
+            if actor.actor_kind == "AGENT":
+                if actor.actor_id not in eligible_ids:
+                    raise HTTPException(409, "Agent has no enabled organizational placement")
+                if actor.actor_id in busy_ids:
+                    skipped_busy_agents += 1
+                    continue
+            accepted_actors.append(actor)
+        accepted_ids = [actor.actor_id for actor in accepted_actors]
+        for actor in accepted_actors:
+            route = json.dumps([point.model_dump() for point in actor.route], separators=(",", ":"))
+            db.execute(
+                "INSERT INTO office_world_routes(actor_id,actor_kind,map_revision,route_json,speed) "
+                "VALUES (%s,%s,%s,%s::jsonb,%s) ON CONFLICT(actor_id) DO UPDATE SET "
+                "started_at=CASE WHEN office_world_routes.route_json IS DISTINCT FROM EXCLUDED.route_json "
+                "OR office_world_routes.speed IS DISTINCT FROM EXCLUDED.speed "
+                "THEN clock_timestamp() ELSE office_world_routes.started_at END, "
+                "actor_kind=EXCLUDED.actor_kind,map_revision=EXCLUDED.map_revision, "
+                "route_json=EXCLUDED.route_json,speed=EXCLUDED.speed,updated_at=clock_timestamp()",
+                (actor.actor_id, actor.actor_kind, payload.map_revision, route, actor.speed),
+            )
+        if accepted_ids:
+            db.execute("DELETE FROM office_world_routes WHERE NOT (actor_id = ANY(%s))", (accepted_ids,))
+        else:
+            db.execute("DELETE FROM office_world_routes")
+    return {"map_revision": payload.map_revision, "route_count": len(accepted_ids),
+            "skipped_busy_agents": skipped_busy_agents,
+            "simulation_only": True, "creates_business_evidence": False}
+
+
+@app.get("/v1/office/world")
+def get_office_world(response: Response, principal: str = Depends(read_principal)):
+    """Resolve actor positions from persisted route anchors and database time."""
+    from aao.office_world import Point, position_on_route
+
+    response.headers["Cache-Control"] = "no-store"
+    with tx() as db:
+        rows = db.execute(
+            "SELECT actor_id,actor_kind,map_revision,route_json,speed,started_at "
+            "FROM office_world_routes ORDER BY actor_kind,actor_id"
+        ).fetchall()
+        now = db.execute("SELECT clock_timestamp()").fetchone()[0]
+        if principal is not _CEO_PRINCIPAL:
+            if not isinstance(principal, AuthenticatedPrincipal):
+                raise HTTPException(403, "Individual reader credential required")
+            from aao.principal_credentials import (
+                PrincipalDenied, authenticate_identity_in_transaction,
+            )
+            try:
+                own_id = authenticate_identity_in_transaction(db, principal, kind="AGENT")
+            except PrincipalDenied as exc:
+                raise HTTPException(403, "Individual reader invalid or revoked") from exc
+        else:
+            own_id = None
+        busy_ids = {str(row[0]) for row in db.execute(
+            "SELECT DISTINCT worker_id FROM execution_queue "
+            "WHERE status='RUNNING' AND lease_expires_at > %s", (now,)
+        ).fetchall()}
+        if own_id is None:
+            eligible_ids = {str(row[0]) for row in db.execute(
+                "SELECT p.principal_id FROM organization_profiles p "
+                "JOIN organization_units u ON u.id=p.unit_id AND u.enabled "
+                "JOIN principal_credentials c ON c.principal_id=p.principal_id "
+                "WHERE p.enabled AND c.enabled AND c.kind='AGENT'"
+            ).fetchall()}
+        else:
+            eligible_ids = {own_id}
+    actors = []
+    for actor_id, kind, map_revision, route_json, speed, started_at in rows:
+        if kind == "AGENT" and (actor_id not in eligible_ids or actor_id in busy_ids):
+            continue
+        if own_id is not None and kind == "AGENT" and actor_id != own_id:
+            continue
+        raw_route = route_json if isinstance(route_json, list) else json.loads(route_json)
+        position = position_on_route(
+            [Point(x=float(point["x"]), z=float(point["z"])) for point in raw_route],
+            started_at=started_at, now=now, speed=float(speed),
+        )
+        actors.append({"actor_id": actor_id, "actor_kind": kind,
+                       "map_revision": map_revision, "x": position.x, "z": position.z,
+                       "facing": position.facing, "simulation_only": True})
+    return {"server_time": now.isoformat(), "actors": actors,
+            "simulation_only": True, "creates_business_evidence": False}
 
 
 @app.post("/v1/organization/proposals")

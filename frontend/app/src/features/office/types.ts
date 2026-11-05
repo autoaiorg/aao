@@ -221,6 +221,7 @@ export interface VirtualOfficeViewProps {
   activityReadPort?: Pick<AaoReadPort, 'getProjectActivity'>;
   knowledgeReadPort?: Pick<AaoReadPort, 'getKnowledgeSourceIndex'>;
   routinePort?: AaoRoutinePort;
+  officeWorldPort?: OfficeWorldPort;
   calendarReadPort?: Pick<AaoReadPort, 'getProjectBoard'>;
   conversationSessionId?: string;
   canManageOrganization?: boolean;
@@ -233,6 +234,29 @@ export interface VirtualOfficeViewProps {
     workId?: string
   ) => void;
   onRefresh?: () => void;
+}
+
+export interface OfficeWorldPoint { x: number; z: number }
+export interface OfficeWorldActorRoute {
+  actor_id: string;
+  actor_kind: 'AGENT' | 'NPC';
+  route: OfficeWorldPoint[];
+  speed: number;
+}
+export interface OfficeWorldActorPosition {
+  actor_id: string;
+  actor_kind: 'AGENT' | 'NPC';
+  map_revision: string;
+  x: number;
+  z: number;
+  facing: number;
+  simulation_only: true;
+}
+export interface OfficeWorldPort {
+  publishPlan(input: { map_revision: string; actors: OfficeWorldActorRoute[] }): Promise<{
+    ok: boolean;
+  }>;
+  getPositions(): Promise<OfficeWorldActorPosition[] | null>;
 }
 
 export interface OfficeInteractionState {

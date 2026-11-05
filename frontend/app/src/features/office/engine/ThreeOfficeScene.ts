@@ -14,7 +14,9 @@ import { buildCampusNavGraph, computeArchitecturalOutline, computeCampusBounds }
 import {
   AvatarResourcePool,
   buildAgentAvatar as buildHumanoidAgentAvatar,
+  buildAmbientHumanoidNpc,
   stepAvatarKinematics,
+  type AvatarAppearanceProfile,
   type AvatarSemanticParts,
 } from './AvatarRenderer';
 import {
@@ -130,6 +132,93 @@ export function createProceduralIdeTexture(): THREE.CanvasTexture {
   return texture;
 }
 
+export function createProceduralWoodTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    ctx.fillStyle = '#947e62';
+    ctx.fillRect(0, 0, 256, 256);
+    for (let x = 0; x < 256; x += 2) {
+      const grainVar = Math.sin(x * 0.12) * 8 + Math.cos(x * 0.04) * 12;
+      const shadeAlpha = 0.04 + ((x * 17) % 11) * 0.008;
+      ctx.fillStyle = x % 6 === 0 ? '#7a644b' : '#a88f70';
+      ctx.globalAlpha = shadeAlpha;
+      ctx.fillRect(x + grainVar * 0.2, 0, 1.5, 256);
+    }
+    ctx.globalAlpha = 1;
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.generateMipmaps = true;
+  return texture;
+}
+
+export function createProceduralCarpetTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    ctx.fillStyle = '#b8b3a8';
+    ctx.fillRect(0, 0, 128, 128);
+    ctx.fillStyle = '#a6a095';
+    for (let y = 0; y < 128; y += 4) {
+      for (let x = 0; x < 128; x += 4) {
+        if ((x + y) % 8 === 0) {
+          ctx.fillRect(x, y, 2, 2);
+        }
+      }
+    }
+    ctx.strokeStyle = '#c8c2b7';
+    ctx.lineWidth = 0.5;
+    for (let i = 0; i < 128; i += 8) {
+      ctx.beginPath();
+      ctx.moveTo(0, i);
+      ctx.lineTo(128, i);
+      ctx.stroke();
+    }
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(3, 3);
+  texture.generateMipmaps = true;
+  return texture;
+}
+
+export function createProceduralTerminalTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    ctx.fillStyle = '#1e242b';
+    ctx.fillRect(0, 0, 256, 128);
+    ctx.fillStyle = '#2d3748';
+    ctx.fillRect(0, 0, 256, 16);
+    ctx.fillStyle = '#38bdf8';
+    ctx.font = '600 12px monospace';
+    ctx.fillText('AAO STANDBY TERMINAL · READY', 10, 12);
+    ctx.fillStyle = '#64748b';
+    ctx.font = '11px monospace';
+    ctx.fillText('> SYSTEM IDLE · AWAITING ASSIGNMENT', 10, 36);
+    ctx.fillText('> HEARTBEAT OK · AGENT SLOTS READY', 10, 54);
+    ctx.fillStyle = '#10b981';
+    ctx.fillRect(10, 72, 8, 8);
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillText('DAEMON OPERATIONAL', 24, 80);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.generateMipmaps = true;
+  return texture;
+}
+
 export class SharedFurniturePool {
   public readonly deskTopGeo = new THREE.BoxGeometry(0.95, 0.06, 0.48);
   public readonly deskLegGeo = new THREE.BoxGeometry(0.06, 0.42, 0.44);
@@ -153,16 +242,22 @@ export class SharedFurniturePool {
   public readonly plantFoliageGeo = new THREE.DodecahedronGeometry(0.24, 1);
 
   public readonly ideTexture = createProceduralIdeTexture();
+  public readonly woodTexture = createProceduralWoodTexture();
+  public readonly carpetTexture = createProceduralCarpetTexture();
+  public readonly terminalTexture = createProceduralTerminalTexture();
+
   public readonly monitorIdeMat = new THREE.MeshBasicMaterial({
     map: this.ideTexture,
   });
 
   public readonly deskWoodMat = new THREE.MeshStandardMaterial({
+    map: this.woodTexture,
     color: 0x9b8467,
     roughness: 0.68,
     metalness: 0.03,
   });
   public readonly holdingDeskMat = new THREE.MeshStandardMaterial({
+    map: this.woodTexture,
     color: 0x716d63,
     roughness: 0.76,
     metalness: 0.03,
@@ -183,6 +278,7 @@ export class SharedFurniturePool {
     metalness: 0.08,
   });
   public readonly meetingTableMat = new THREE.MeshStandardMaterial({
+    map: this.woodTexture,
     color: 0x826c55,
     roughness: 0.68,
     metalness: 0.03,
@@ -260,6 +356,9 @@ export class SharedFurniturePool {
     this.allGeometries.forEach((g) => g.dispose());
     this.allMaterials.forEach((m) => m.dispose());
     this.ideTexture.dispose();
+    this.woodTexture.dispose();
+    this.carpetTexture.dispose();
+    this.terminalTexture.dispose();
   }
 }
 
@@ -420,6 +519,9 @@ export class ThreeOfficeScene {
           : Math.min(dpr, 2);
       this.renderer.setPixelRatio(targetRatio);
     }
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.0;
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     if (this.renderer.shadowMap) {
       this.renderer.shadowMap.enabled = this.qualityProfile !== 'low';
       this.renderer.shadowMap.type =
@@ -510,6 +612,8 @@ export class ThreeOfficeScene {
     dirLight.shadow.mapSize.width = shadowSize;
     dirLight.shadow.mapSize.height = shadowSize;
     dirLight.shadow.bias = -0.0004; // Architectural soft contact shadow bias
+    dirLight.shadow.normalBias = 0.02;
+    dirLight.shadow.radius = 2.0;
     dirLight.shadow.camera.near = 0.5;
     dirLight.shadow.camera.far = 90;
     const d = 18;
@@ -963,11 +1067,12 @@ export class ThreeOfficeScene {
     const rug = new THREE.Mesh(
       new THREE.ShapeGeometry(rugShape),
       new THREE.MeshStandardMaterial({
+        map: this.furniturePool.carpetTexture,
         color: finishColors[room.floorFinish ?? 'acoustic-carpet'],
-        roughness: 0.96,
-        metalness: 0,
+        roughness: 0.94,
+        metalness: 0.01,
         transparent: true,
-        opacity: 0.54,
+        opacity: 0.68,
       }),
     );
     rug.name = 'neighborhood-soft-finish';
@@ -1015,9 +1120,6 @@ export class ThreeOfficeScene {
     isUnassignedHolding: boolean
   ): void {
     const layout = buildDepartmentInteriorLayout(room);
-    const screenMat = new THREE.MeshBasicMaterial({
-      color: 0x747e82,
-    });
     const chairAccentMat = new THREE.MeshStandardMaterial({
       color: 0x8f877a,
       roughness: 0.55,
@@ -1067,8 +1169,9 @@ export class ThreeOfficeScene {
         mouse.position.set(0.2, 0.48, 0.1);
         deskGroup.add(mouse);
       } else {
-        // Unassigned Holding Station: Single standby terminal in sleep mode
-        const standbyMon = new THREE.Mesh(this.furniturePool.monitorPanelGeo, screenMat);
+        // Unassigned Holding Station: Standby terminal in sleep mode with operational prompt
+        const standbyMat = new THREE.MeshBasicMaterial({ map: this.furniturePool.terminalTexture });
+        const standbyMon = new THREE.Mesh(this.furniturePool.monitorPanelGeo, standbyMat);
         standbyMon.position.set(0, 0.62, -0.1);
         deskGroup.add(standbyMon);
 
@@ -1360,40 +1463,54 @@ export class ThreeOfficeScene {
   }
 
   private buildAmbientNpcMeshes(): void {
-    const roles = [
-      ['npc:receptionist', 0x315f5b],
-      ['npc:copy-room', 0x786445],
-      ['npc:office-runner', 0x526180],
-    ] as const;
-    for (const [id, color] of roles) {
-      const group = new THREE.Group();
-      group.name = id;
+    const configs: Array<{
+      id: string;
+      profile: AvatarAppearanceProfile;
+      accessory?: 'runner-tablet' | 'copy-documents' | 'reception-folder';
+    }> = [
+      {
+        id: 'npc:receptionist',
+        profile: {
+          clothingPalette: { suitOrJacket: 0x242a38, shirt: 0xf1f5f9, trousers: 0x1e2430, shoes: 0x12151c },
+          skinTone: 0xecba9d,
+          hairStyle: 'MODERN_MID',
+          hairColor: 0x463223,
+          badgeDepartmentCode: 'REC',
+          badgeAccentHex: '#38bdf8',
+        },
+        accessory: 'reception-folder',
+      },
+      {
+        id: 'npc:copy-room',
+        profile: {
+          clothingPalette: { suitOrJacket: 0x364152, shirt: 0xf8fafc, trousers: 0x1f2937, shoes: 0x181a1f },
+          skinTone: 0xdfb18b,
+          hairStyle: 'EXECUTIVE_SIDE_PART',
+          hairColor: 0x2b1e17,
+          badgeDepartmentCode: 'OPS',
+          badgeAccentHex: '#f59e0b',
+        },
+        accessory: 'copy-documents',
+      },
+      {
+        id: 'npc:office-runner',
+        profile: {
+          clothingPalette: { suitOrJacket: 0x2a3d45, shirt: 0xe0f2fe, trousers: 0x1b282e, shoes: 0x161c20 },
+          skinTone: 0xc6966f,
+          hairStyle: 'SHORT_CLASSIC',
+          hairColor: 0x1a1a1c,
+          badgeDepartmentCode: 'RUN',
+          badgeAccentHex: '#10b981',
+        },
+        accessory: 'runner-tablet',
+      },
+    ];
+
+    for (const cfg of configs) {
+      const { group } = buildAmbientHumanoidNpc(cfg.id, cfg.profile, this.avatarPool, cfg.accessory);
       group.visible = false;
-      const skin = new THREE.MeshStandardMaterial({ color: 0xc99873, roughness: 0.78 });
-      const clothes = new THREE.MeshStandardMaterial({ color, roughness: 0.72 });
-      const swingParts: THREE.Object3D[] = [];
-      const make = (geometry: THREE.BufferGeometry, material: THREE.Material, x: number, y: number, z: number) => {
-        const mesh = new THREE.Mesh(geometry, material);
-        mesh.position.set(x, y, z);
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
-        group.add(mesh);
-        return mesh;
-      };
-      make(new THREE.CapsuleGeometry(0.18, 0.42, 4, 8), clothes, 0, 0.75, 0);
-      make(new THREE.SphereGeometry(0.145, 10, 8), skin, 0, 1.12, 0);
-      swingParts.push(make(new THREE.CylinderGeometry(0.052, 0.05, 0.34, 7), clothes, -0.13, 0.36, 0));
-      swingParts.push(make(new THREE.CylinderGeometry(0.052, 0.05, 0.34, 7), clothes, 0.13, 0.36, 0));
-      swingParts.push(make(new THREE.CapsuleGeometry(0.045, 0.27, 3, 6), clothes, -0.23, 0.78, 0.01));
-      swingParts.push(make(new THREE.CapsuleGeometry(0.045, 0.27, 3, 6), clothes, 0.23, 0.78, 0.01));
-      if (id === 'npc:office-runner') {
-        make(new THREE.CylinderGeometry(0.045, 0.04, 0.09, 8), new THREE.MeshStandardMaterial({ color: 0xf0e5ce }), 0.27, 0.68, 0.04);
-      } else if (id === 'npc:copy-room') {
-        make(new THREE.BoxGeometry(0.16, 0.11, 0.025), new THREE.MeshStandardMaterial({ color: 0xf4f0e6 }), -0.24, 0.87, 0.04);
-      }
-      group.userData.parts = swingParts;
       this.ambientNpcGroup.add(group);
-      this.ambientNpcMeshes.set(id, group);
+      this.ambientNpcMeshes.set(cfg.id, group);
     }
   }
 
@@ -1794,15 +1911,25 @@ export class ThreeOfficeScene {
       this.desiredElevation = 78;
       this.desiredDistance = Math.max(25, bounds.recommendedOverviewDistance);
       this.desiredTarget.set(bounds.centerX, 0, bounds.centerZ);
+    } else if (preset === 'reception') {
+      this.followSelectedAgent = false;
+      const { halfDepth } = computeArchitecturalEnvelope(this.rooms);
+      const entranceInteriorZ = halfDepth - 3.5;
+      this.cameraAngle = 20;
+      this.desiredAngle = 20;
+      this.cameraElevation = 28;
+      this.desiredElevation = 28;
+      this.desiredDistance = 8.0;
+      this.desiredTarget.set(-2.1, 0.7, entranceInteriorZ);
     } else if (preset === 'agent-focus') {
-      this.cameraElevation = 34;
-      this.desiredElevation = 34;
+      this.cameraElevation = 26;
+      this.desiredElevation = 26;
       if (this.activeAgentId) {
         const agentGroup = this.agentMeshes.get(this.activeAgentId);
         if (agentGroup) {
           this.followSelectedAgent = true;
-          this.desiredTarget.set(agentGroup.position.x, 0, agentGroup.position.z);
-          this.desiredDistance = 10;
+          this.desiredTarget.set(agentGroup.position.x, 0.65, agentGroup.position.z);
+          this.desiredDistance = 3.2;
         }
       } else {
         this.followSelectedAgent = false;
@@ -2297,8 +2424,17 @@ export class ThreeOfficeScene {
           ? Math.atan2(stopAndFace.position.x - mesh.position.x, stopAndFace.position.z - mesh.position.z)
           : serverTarget.facing;
         mesh.rotation.y += Math.atan2(Math.sin(faceTarget - mesh.rotation.y), Math.cos(faceTarget - mesh.rotation.y)) * 0.18;
+        const isMoving = !stopAndFace && Math.hypot(targetX - mesh.position.x, targetZ - mesh.position.z) > 0.02;
         mesh.userData.parts?.forEach((part: THREE.Object3D, index: number) => {
-          if (index > 1) part.rotation.x = stopAndFace ? 0 : Math.sin(time * 0.012 + index) * 0.22;
+          if (!isMoving || stopAndFace) {
+            part.rotation.x = 0;
+          } else if (index < 2) {
+            // Legs alternating stride
+            part.rotation.x = Math.sin(time * 0.012 + (index === 0 ? 0 : Math.PI)) * 0.36;
+          } else {
+            // Arms alternating counter-swing
+            part.rotation.x = Math.sin(time * 0.012 + (index === 2 ? Math.PI : 0)) * 0.26;
+          }
         });
       });
 

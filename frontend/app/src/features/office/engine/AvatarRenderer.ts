@@ -710,6 +710,89 @@ export function buildHumanoidCharacterRig(
 }
 
 /**
+ * Builds an articulated enterprise humanoid NPC for ambient office world operations
+ * (Receptionist, Runner, Copy-Room Courier) adhering to the naturalistic 3D quality standard.
+ * Strictly separates ambient visual presence from authorized agent identity and business evidence.
+ */
+export function buildAmbientHumanoidNpc(
+  npcId: string,
+  profile: AvatarAppearanceProfile,
+  pool: AvatarResourcePool,
+  accessory?: 'runner-tablet' | 'copy-documents' | 'reception-folder'
+): { group: THREE.Group; swingParts: THREE.Object3D[] } {
+  const syntheticAgent: AgentIdentity = {
+    id: npcId,
+    name:
+      npcId === 'npc:receptionist'
+        ? 'Recepción AAO'
+        : npcId === 'npc:office-runner'
+        ? 'Mensajería Interna'
+        : 'Centro de Documentación',
+    type: 'STANDING',
+    status: 'IDLE',
+    unitId: 'unit-amenities',
+    currentAssignments: [],
+    authorityBoundary: 'AMBIENT_SIMULATION',
+    heartbeatStatus: 'HEALTHY',
+    lastHeartbeatAt: null,
+    roleTitle: 'Servicios de Edificio',
+    capabilities: [],
+  };
+  const syntheticActivity: ProjectedAgentActivity = {
+    agentId: npcId,
+    kind: 'WALKING',
+    provenance: 'AMBIENT_ANIMATION',
+    label: 'Servicio General',
+    shortBadge: profile.badgeDepartmentCode,
+    detail: 'Movimiento ambiental de edificio',
+    isLeaseExpired: false,
+    activeTaskId: null,
+    activeProjectId: null,
+    conversationPartnerId: null,
+  };
+
+  const { rig, parts } = buildHumanoidCharacterRig(syntheticAgent, syntheticActivity, profile, pool);
+  const group = new THREE.Group();
+  group.name = npcId;
+  group.add(rig);
+
+  if (accessory === 'runner-tablet' && parts.rightHand) {
+    const tabletGeo = new THREE.BoxGeometry(0.14, 0.012, 0.2);
+    const tabletMat = pool.getMaterial('npc-tablet-mat', () =>
+      new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.35, metalness: 0.6 })
+    );
+    const tabletScreenMat = pool.getMaterial('npc-tablet-screen-mat', () =>
+      new THREE.MeshBasicMaterial({ color: 0x38bdf8 })
+    );
+    const tablet = new THREE.Mesh(tabletGeo, tabletMat);
+    tablet.position.set(0, -0.04, 0.08);
+    const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.11, 0.16), tabletScreenMat);
+    screen.rotation.x = -Math.PI / 2;
+    screen.position.set(0, 0.007, 0);
+    tablet.add(screen);
+    parts.rightHand.add(tablet);
+  } else if (accessory === 'copy-documents' && parts.leftForearm) {
+    const docGeo = new THREE.BoxGeometry(0.16, 0.03, 0.22);
+    const docMat = pool.getMaterial('npc-documents-mat', () =>
+      new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.85, metalness: 0.02 })
+    );
+    const docs = new THREE.Mesh(docGeo, docMat);
+    docs.position.set(0.06, -0.08, 0.06);
+    parts.leftForearm.add(docs);
+  }
+
+  // swingParts: [leftLeg, rightLeg, leftArm, rightArm]
+  const swingParts: THREE.Object3D[] = [];
+  if (parts.leftLeg) swingParts.push(parts.leftLeg);
+  if (parts.rightLeg) swingParts.push(parts.rightLeg);
+  if (parts.leftArm) swingParts.push(parts.leftArm);
+  if (parts.rightArm) swingParts.push(parts.rightArm);
+
+  group.userData = { parts: swingParts, semanticParts: parts };
+  return { group, swingParts };
+}
+
+/**
  * Builds the top-level agent group conforming strictly to all required contracts:
  * children[0]: Telemetry Halo
  * children[1]: Primary geometry (satisfies Defect 2 test assertions)

@@ -424,6 +424,14 @@ export const OfficeTopRibbon: React.FC<OfficeTopRibbonProps> = ({
             >
               🎯 Enfoque
             </button>
+            <button
+              type="button"
+              onClick={() => onSelectCameraPreset('reception')}
+              className={`aao-hud-btn ${cameraPreset === 'reception' ? 'aao-hud-btn--active' : ''}`}
+              aria-label="Cámara en Recepción y Entrada"
+            >
+              🚪 Recepción
+            </button>
 
             {onToggleFollowAgent && (
               <button

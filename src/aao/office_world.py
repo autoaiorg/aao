@@ -6,10 +6,11 @@ creates organization records, assignments, messages, tasks, or evidence.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from itertools import pairwise
 from math import atan2, hypot, isfinite
-from typing import Sequence
 
 
 @dataclass(frozen=True)
@@ -34,7 +35,7 @@ def validate_route(points: Sequence[Point]) -> tuple[Point, ...]:
     result = tuple(points)
     if any(not isfinite(p.x) or not isfinite(p.z) or abs(p.x) > 500 or abs(p.z) > 500 for p in result):
         raise ValueError("World route coordinates must be finite and inside the map bounds")
-    if any(hypot(a.x - b.x, a.z - b.z) < 0.05 for a, b in zip(result, result[1:])):
+    if any(hypot(a.x - b.x, a.z - b.z) < 0.05 for a, b in pairwise(result)):
         raise ValueError("Adjacent route waypoints must be distinct")
     if hypot(result[0].x - result[-1].x, result[0].z - result[-1].z) < 0.05:
         raise ValueError("Route must not repeat its first waypoint as the last")

@@ -2412,7 +2412,8 @@ def get_office_world(response: Response, principal: str = Depends(read_principal
             if not isinstance(principal, AuthenticatedPrincipal):
                 raise HTTPException(403, "Individual reader credential required")
             from aao.principal_credentials import (
-                PrincipalDenied, authenticate_identity_in_transaction,
+                PrincipalDenied,
+                authenticate_identity_in_transaction,
             )
             try:
                 own_id = authenticate_identity_in_transaction(db, principal, kind="AGENT")

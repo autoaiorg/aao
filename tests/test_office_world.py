@@ -1,12 +1,12 @@
-from datetime import UTC, datetime, timedelta
-from contextlib import contextmanager
 import json
+from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
 
-from aao.office_world import Point, position_on_route, validate_route
 from aao import work_management_api
+from aao.office_world import Point, position_on_route, validate_route
 from aao.work_management_api import OfficeWorldPlanRequest
 
 

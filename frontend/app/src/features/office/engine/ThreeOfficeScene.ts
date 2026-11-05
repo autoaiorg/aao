@@ -219,6 +219,59 @@ export function createProceduralTerminalTexture(): THREE.CanvasTexture {
   return texture;
 }
 
+/**
+ * Generates an architectural procedural studio environment map (IBL)
+ * providing natural sky illumination, warm daylight highlights, and realistic
+ * specular reflections for PBR standard materials (metals, glass, polished wood).
+ */
+export function createProceduralStudioEnvironment(
+  renderer: THREE.WebGLRenderer
+): THREE.WebGLRenderTarget | null {
+  if (typeof document === 'undefined' || typeof window === 'undefined') return null;
+  try {
+    if (
+      !renderer ||
+      typeof renderer.render !== 'function' ||
+      (!renderer.capabilities?.isWebGL2 && !renderer.capabilities?.precision)
+    ) {
+      return null;
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 256;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+
+    // Atmospheric architectural gradient
+    const grad = ctx.createLinearGradient(0, 0, 0, 256);
+    grad.addColorStop(0.0, '#f8fafc'); // Zenith soft daylight
+    grad.addColorStop(0.35, '#e2e8f0'); // Neutral sky
+    grad.addColorStop(0.5, '#cbd5e1'); // Horizon soft slate
+    grad.addColorStop(0.65, '#475569'); // Architectural ground horizon
+    grad.addColorStop(1.0, '#1e293b'); // Nadir deep tone
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 512, 256);
+
+    // Architectural soft window light patches for realistic specular highlights
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+    ctx.fillRect(80, 25, 100, 75);
+    ctx.fillRect(290, 40, 120, 65);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.mapping = THREE.EquirectangularReflectionMapping;
+    texture.colorSpace = THREE.SRGBColorSpace;
+
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    pmrem.compileEquirectangularShader();
+    const rt = pmrem.fromEquirectangular(texture);
+    texture.dispose();
+    pmrem.dispose();
+    return rt;
+  } catch {
+    return null;
+  }
+}
+
 export class SharedFurniturePool {
   public readonly deskTopGeo = new THREE.BoxGeometry(0.95, 0.06, 0.48);
   public readonly deskLegGeo = new THREE.BoxGeometry(0.06, 0.42, 0.44);
@@ -415,6 +468,7 @@ export class ThreeOfficeScene {
   private worldPositions = new Map<string, OfficeWorldActorPosition>();
   private ambientNpcMeshes = new Map<string, THREE.Group>();
   private ambientNpcTargets = new Map<string, OfficeWorldActorPosition>();
+  private structuralColumnPositions: [number, number][] = [];
   private npcInteractionUntil = 0;
   private npcConversationAgentId: string | null = null;
   private currentAgents: AgentIdentity[] = [];
@@ -451,8 +505,8 @@ export class ThreeOfficeScene {
 
     // 1. Scene
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x0a1628);
-    this.scene.fog = new THREE.FogExp2(0x0a1628, 0.016);
+    this.scene.background = new THREE.Color(0x0c1424);
+    this.scene.fog = new THREE.FogExp2(0x0c1424, 0.006);
 
     // 2. Camera framed to campus bounds
     const width = container.clientWidth || 800;
@@ -483,6 +537,12 @@ export class ThreeOfficeScene {
       container.removeChild(container.firstChild);
     }
     container.appendChild(this.renderer.domElement);
+
+    // Initialize procedural architectural studio IBL environment
+    const envTarget = createProceduralStudioEnvironment(this.renderer);
+    if (envTarget) {
+      this.scene.environment = envTarget.texture;
+    }
 
     // 4. Hierarchy Groups
     this.scene.add(this.walkwaysGroup);
@@ -602,11 +662,12 @@ export class ThreeOfficeScene {
   }
 
   private setupLighting(): void {
-    const ambient = new THREE.AmbientLight(0xe5ddcc, 1.25);
+    // High-fidelity natural lighting calibrated for ACESFilmic tone mapping and IBL
+    const ambient = new THREE.AmbientLight(0xe2e8f0, 0.18);
     this.lightsGroup.add(ambient);
 
-    const dirLight = new THREE.DirectionalLight(0xfff2dc, 2.0);
-    dirLight.position.set(18, 32, 16);
+    const dirLight = new THREE.DirectionalLight(0xfff7ed, 2.4);
+    dirLight.position.set(22, 34, 18);
     dirLight.castShadow = this.qualityProfile !== 'low';
     const shadowSize = this.qualityProfile === 'high' ? 2048 : 1024;
     dirLight.shadow.mapSize.width = shadowSize;
@@ -615,8 +676,8 @@ export class ThreeOfficeScene {
     dirLight.shadow.normalBias = 0.02;
     dirLight.shadow.radius = 2.0;
     dirLight.shadow.camera.near = 0.5;
-    dirLight.shadow.camera.far = 90;
-    const d = 18;
+    dirLight.shadow.camera.far = 120;
+    const d = 30;
     dirLight.shadow.camera.left = -d;
     dirLight.shadow.camera.right = d;
     dirLight.shadow.camera.top = d;
@@ -627,8 +688,8 @@ export class ThreeOfficeScene {
     const hemiLight = new THREE.HemisphereLight(0xfff7e8, 0x5b554c, 0.9);
     this.lightsGroup.add(hemiLight);
 
-    const fillLight = new THREE.DirectionalLight(0xdce9f2, 0.55);
-    fillLight.position.set(-20, 15, -15);
+    const fillLight = new THREE.DirectionalLight(0xdce9f2, 0.35);
+    fillLight.position.set(-24, 18, -18);
     this.lightsGroup.add(fillLight);
 
     this.roomSpotlight = new THREE.SpotLight(0xffe6bd, 1.6, 32, Math.PI / 4, 0.4, 1);
@@ -648,7 +709,7 @@ export class ThreeOfficeScene {
     pot.receiveShadow = true;
     plantGroup.add(pot);
 
-    // Architectural botanical foliage
+    // Architectural botanical foliage (conforms to strict 2-child contract)
     const foliage = new THREE.Mesh(this.furniturePool.plantFoliageGeo, this.furniturePool.plantLeafMat);
     foliage.position.y = 0.44;
     foliage.scale.set(1.15, 1.25, 1.15);
@@ -813,43 +874,65 @@ export class ThreeOfficeScene {
     // Subtle, locally generated stone aggregate gives the shared floor a physical
     // finish without a network asset or a high-resolution texture dependency.
     const stoneCanvas = document.createElement('canvas');
-    stoneCanvas.width = 256;
-    stoneCanvas.height = 256;
+    stoneCanvas.width = 512;
+    stoneCanvas.height = 512;
     const stoneContext = stoneCanvas.getContext('2d');
     if (stoneContext) {
-      stoneContext.fillStyle = '#a9a69d';
-      stoneContext.fillRect(0, 0, 256, 256);
+      stoneContext.fillStyle = '#e2e8f0';
+      stoneContext.fillRect(0, 0, 512, 512);
+
+      // Procedural marble & terrazzo mineral aggregate flecks
       let seed = 0x41a0;
       const next = () => {
         seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
         return seed / 0x1_0000_0000;
       };
-      for (let index = 0; index < 1400; index += 1) {
-        const shade = next() > 0.5 ? '#d0ccc2' : '#8f8c84';
-        const size = 0.5 + next() * 1.4;
-        stoneContext.globalAlpha = 0.05 + next() * 0.08;
+      for (let index = 0; index < 3200; index += 1) {
+        const rand = next();
+        const shade = rand > 0.65 ? '#ffffff' : rand > 0.3 ? '#cbd5e1' : '#94a3b8';
+        const size = 0.8 + next() * 2.2;
+        stoneContext.globalAlpha = 0.08 + next() * 0.14;
         stoneContext.fillStyle = shade;
-        stoneContext.fillRect(next() * 256, next() * 256, size, size);
+        stoneContext.fillRect(next() * 512, next() * 512, size, size);
       }
-      stoneContext.globalAlpha = 0.12;
-      stoneContext.fillStyle = '#77746d';
-      stoneContext.fillRect(0, 0, 256, 1);
-      stoneContext.fillRect(0, 0, 1, 256);
+
+      // Elegant architectural 1.2m tile grid with clean grout joints
+      stoneContext.globalAlpha = 0.42;
+      stoneContext.strokeStyle = '#94a3b8';
+      stoneContext.lineWidth = 2.5;
+      for (let pos = 0; pos <= 512; pos += 128) {
+        stoneContext.beginPath();
+        stoneContext.moveTo(pos, 0);
+        stoneContext.lineTo(pos, 512);
+        stoneContext.moveTo(0, pos);
+        stoneContext.lineTo(512, pos);
+        stoneContext.stroke();
+      }
+
+      // Subtle inner tile bevel shadow
+      stoneContext.globalAlpha = 0.06;
+      stoneContext.fillStyle = '#475569';
+      for (let pos = 0; pos < 512; pos += 128) {
+        stoneContext.fillRect(pos + 1, 0, 1, 512);
+        stoneContext.fillRect(0, pos + 1, 512, 1);
+      }
       stoneContext.globalAlpha = 1;
     }
     const stoneTexture = new THREE.CanvasTexture(stoneCanvas);
     stoneTexture.colorSpace = THREE.SRGBColorSpace;
     stoneTexture.wrapS = THREE.RepeatWrapping;
     stoneTexture.wrapT = THREE.RepeatWrapping;
-    // Apply a single continuous stone finish across the slab. Repeating a small
-    // texture on a 5 m grid made its tile boundaries read as room-sized floor pads.
-    stoneTexture.repeat.set(1, 1);
+    stoneTexture.repeat.set(16, 16);
 
-    // Continuous Corporate Campus Floor Slab
+    // Continuous Corporate Campus Floor Slab with PBR honed travertine sheen
     const campusSlab = new THREE.Mesh(
       new THREE.ExtrudeGeometry(outlineShape(outline), { depth: 0.12, bevelEnabled: false }),
-      // Keep the continuous slab visibly distinct from the lighter circulation paths.
-      new THREE.MeshStandardMaterial({ map: stoneTexture, color: 0xffffff, roughness: 0.9, metalness: 0.01 })
+      new THREE.MeshStandardMaterial({
+        map: stoneTexture,
+        color: 0xeae6dc,
+        roughness: 0.28,
+        metalness: 0.04,
+      })
     );
     campusSlab.name = 'campus-continuous-floor';
     campusSlab.rotation.x = -Math.PI / 2;
@@ -860,27 +943,204 @@ export class ThreeOfficeScene {
     const groundOutline = computeArchitecturalOutline(this.rooms, OFFICE_ENVELOPE_EXPANSION_METERS + 3);
     const ground = new THREE.Mesh(
       new THREE.ExtrudeGeometry(outlineShape(groundOutline), { depth: 0.4, bevelEnabled: false }),
-      new THREE.MeshStandardMaterial({ color: 0x8c877d, roughness: 0.92, metalness: 0.01 })
+      new THREE.MeshStandardMaterial({ color: 0x3d4348, roughness: 0.85, metalness: 0.12 })
     );
     ground.rotation.x = -Math.PI / 2;
     ground.position.y = -0.46;
     ground.receiveShadow = true;
     this.groundGroup.add(ground);
 
+    // Architectural exterior plaza: grounds the campus in physical slate terrace space
+    const plazaCanvas = document.createElement('canvas');
+    plazaCanvas.width = 512;
+    plazaCanvas.height = 512;
+    const pctx = plazaCanvas.getContext('2d');
+    if (pctx) {
+      pctx.fillStyle = '#0f172a';
+      pctx.fillRect(0, 0, 512, 512);
+      pctx.fillStyle = '#141e33';
+      for (let x = 0; x < 512; x += 128) {
+        for (let y = 0; y < 512; y += 64) {
+          if ((x / 128 + y / 64) % 2 === 0) {
+            pctx.fillRect(x + 2, y + 2, 124, 60);
+          }
+        }
+      }
+      pctx.strokeStyle = '#090d16';
+      pctx.lineWidth = 2;
+      for (let x = 0; x <= 512; x += 128) {
+        pctx.beginPath();
+        pctx.moveTo(x, 0);
+        pctx.lineTo(x, 512);
+        pctx.stroke();
+      }
+      for (let y = 0; y <= 512; y += 64) {
+        pctx.beginPath();
+        pctx.moveTo(0, y);
+        pctx.lineTo(512, y);
+        pctx.stroke();
+      }
+    }
+    const plazaTex = new THREE.CanvasTexture(plazaCanvas);
+    plazaTex.colorSpace = THREE.SRGBColorSpace;
+    plazaTex.wrapS = THREE.RepeatWrapping;
+    plazaTex.wrapT = THREE.RepeatWrapping;
+    plazaTex.repeat.set(12, 12);
+    const exteriorPlaza = new THREE.Mesh(
+      new THREE.PlaneGeometry(160, 160),
+      new THREE.MeshStandardMaterial({
+        map: plazaTex,
+        roughness: 0.88,
+        metalness: 0.04,
+      })
+    );
+    exteriorPlaza.name = 'architectural-exterior-plaza';
+    exteriorPlaza.rotation.x = -Math.PI / 2;
+    exteriorPlaza.position.y = -0.48;
+    exteriorPlaza.receiveShadow = true;
+    this.groundGroup.add(exteriorPlaza);
+
+    // Outdoor terrace perimeter glass railing & landscape planters
+    const railingGroup = new THREE.Group();
+    railingGroup.name = 'architectural-plaza-railing';
+    const railingGlassMat = new THREE.MeshStandardMaterial({
+      color: 0x94a3b8,
+      transparent: true,
+      opacity: 0.35,
+      roughness: 0.15,
+      metalness: 0.1,
+    });
+    const railingPostMat = new THREE.MeshStandardMaterial({
+      color: 0x1e293b,
+      roughness: 0.4,
+      metalness: 0.8,
+    });
+    for (const rz of [-24, 24]) {
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(48, 0.9, 0.05), railingGlassMat);
+      rail.position.set(0, 0.45, rz);
+      railingGroup.add(rail);
+      const railCap = new THREE.Mesh(new THREE.BoxGeometry(48.2, 0.05, 0.08), railingPostMat);
+      railCap.position.set(0, 0.9, rz);
+      railingGroup.add(railCap);
+    }
+    this.groundGroup.add(railingGroup);
+
+    // Structural columns: provides architectural scale, vertical rhythm, and load-bearing logic
+    const columnsGroup = new THREE.Group();
+    columnsGroup.name = 'architectural-structural-columns';
+    const columnGeo = new THREE.CylinderGeometry(0.2, 0.2, 3.6, 16);
+    const columnBaseGeo = new THREE.CylinderGeometry(0.26, 0.26, 0.08, 16);
+    const columnMat = new THREE.MeshStandardMaterial({
+      color: 0x94a3b8,
+      roughness: 0.72,
+      metalness: 0.08,
+    });
+    const columnBaseMat = new THREE.MeshStandardMaterial({
+      color: 0x334155,
+      roughness: 0.45,
+      metalness: 0.65,
+    });
+    const columnPositions: [number, number][] = [];
+    for (const r of this.rooms) {
+      columnPositions.push([r.x - r.width / 2 - 0.45, r.z - r.depth / 2 - 0.45]);
+      columnPositions.push([r.x + r.width / 2 + 0.45, r.z - r.depth / 2 - 0.45]);
+    }
+    const filteredColumns: [number, number][] = [];
+    for (const [cx, cz] of columnPositions) {
+      if (!filteredColumns.some(([fx, fz]) => Math.hypot(cx - fx, cz - fz) < 2.8)) {
+        filteredColumns.push([cx, cz]);
+      }
+    }
+    this.structuralColumnPositions = filteredColumns;
+    for (const [cx, cz] of filteredColumns) {
+      const col = new THREE.Mesh(columnGeo, columnMat);
+      col.position.set(cx, 1.8, cz);
+      col.castShadow = true;
+      col.receiveShadow = true;
+      const base = new THREE.Mesh(columnBaseGeo, columnBaseMat);
+      base.position.set(cx, 0.04, cz);
+      const cap = new THREE.Mesh(columnBaseGeo, columnBaseMat);
+      cap.position.set(cx, 3.56, cz);
+      columnsGroup.add(col);
+      columnsGroup.add(base);
+      columnsGroup.add(cap);
+    }
+    this.groundGroup.add(columnsGroup);
+
+    // Open-plenum architectural ceiling lintels: connects department column pods into unified structural frame
+    const ceilingBeamsGroup = new THREE.Group();
+    ceilingBeamsGroup.name = 'architectural-ceiling-structure';
+    const beamMat = new THREE.MeshStandardMaterial({
+      color: 0x1e293b,
+      roughness: 0.55,
+      metalness: 0.7,
+    });
+    for (const r of this.rooms) {
+      const roomBeamGeo = new THREE.BoxGeometry(r.width + 1.1, 0.14, 0.16);
+      const rBeam = new THREE.Mesh(roomBeamGeo, beamMat);
+      rBeam.position.set(r.x, 3.56, r.z - r.depth / 2 - 0.45);
+      ceilingBeamsGroup.add(rBeam);
+    }
+    // Longitudinal connection girders along East and West column alignments
+    const longBeamGeo = new THREE.BoxGeometry(0.16, 0.14, 22);
+    const longWest = new THREE.Mesh(longBeamGeo, beamMat);
+    longWest.position.set(-6.8, 3.56, 0);
+    ceilingBeamsGroup.add(longWest);
+
+    const longEast = new THREE.Mesh(longBeamGeo, beamMat);
+    longEast.position.set(6.8, 3.56, 0);
+    ceilingBeamsGroup.add(longEast);
+
+    this.groundGroup.add(ceilingBeamsGroup);
+
+    // Suspended architectural linear LED luminaires over department work zones
+    const luminaireGroup = new THREE.Group();
+    luminaireGroup.name = 'architectural-linear-luminaires';
+    const luminaireBarGeo = new THREE.BoxGeometry(2.4, 0.06, 0.08);
+    const cableGeo = new THREE.CylinderGeometry(0.003, 0.003, 1.2, 6);
+    const luminaireMat = new THREE.MeshStandardMaterial({
+      color: 0x1e293b,
+      roughness: 0.35,
+      metalness: 0.7,
+    });
+    const emissiveDiffuserMat = new THREE.MeshStandardMaterial({
+      color: 0xfffbeb,
+      emissive: 0xffedd5,
+      emissiveIntensity: 1.2,
+      roughness: 0.2,
+    });
+    const cableMat = new THREE.MeshBasicMaterial({ color: 0x475569 });
+    for (const r of this.rooms) {
+      const fixture = new THREE.Group();
+      fixture.position.set(r.x, 3.2, r.z);
+      const bar = new THREE.Mesh(luminaireBarGeo, luminaireMat);
+      fixture.add(bar);
+      const diffuser = new THREE.Mesh(new THREE.BoxGeometry(2.36, 0.01, 0.06), emissiveDiffuserMat);
+      diffuser.position.y = -0.035;
+      fixture.add(diffuser);
+      for (const cx of [-0.9, 0.9]) {
+        const cable = new THREE.Mesh(cableGeo, cableMat);
+        cable.position.set(cx, 0.6, 0);
+        fixture.add(cable);
+      }
+      luminaireGroup.add(fixture);
+    }
+    this.groundGroup.add(luminaireGroup);
+
     // Roofless cutaway curtain wall: the building reads as one continuous structure while
     // remaining open enough for the isometric camera and ordinary GPU budgets.
     const outlineEdges = outline.map((point, index) => ({ start: point, end: outline[(index + 1) % outline.length] }));
     const facadeY = 1.42;
     const glassMaterial = new THREE.MeshStandardMaterial({
-      color: 0xc3d0d0,
+      color: 0xc5d0d2,
       transparent: true,
-      opacity: 0.12,
-      roughness: 0.32,
-      metalness: 0.04,
+      opacity: 0.16,
+      roughness: 0.22,
+      metalness: 0.12,
       depthWrite: false,
       side: THREE.DoubleSide,
     });
-    const frameMaterial = new THREE.MeshStandardMaterial({ color: 0x777b78, roughness: 0.62, metalness: 0.12 });
+    const frameMaterial = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.42, metalness: 0.65 });
     const facadeGroup = new THREE.Group();
     facadeGroup.name = 'architectural-curtain-facade';
     this.groundGroup.add(facadeGroup);
@@ -889,10 +1149,14 @@ export class ThreeOfficeScene {
       glass.position.set(x, facadeY, z);
       glass.rotation.y = rotationY;
       facadeGroup.add(glass);
-      const base = new THREE.Mesh(new THREE.BoxGeometry(length, 0.1, 0.12), frameMaterial);
+      const base = new THREE.Mesh(new THREE.BoxGeometry(length, 0.12, 0.12), frameMaterial);
       base.position.set(x, 0.1, z);
       base.rotation.y = rotationY;
       facadeGroup.add(base);
+      const transom = new THREE.Mesh(new THREE.BoxGeometry(length, 0.06, 0.09), frameMaterial);
+      transom.position.set(x, 2.1, z);
+      transom.rotation.y = rotationY;
+      facadeGroup.add(transom);
       const head = new THREE.Mesh(new THREE.BoxGeometry(length, 0.1, 0.12), frameMaterial);
       head.position.set(x, 2.75, z);
       head.rotation.y = rotationY;
@@ -967,14 +1231,14 @@ export class ThreeOfficeScene {
 
   private buildWalkways(): void {
     const walkwayMat = new THREE.MeshStandardMaterial({
-      color: 0xaaa79e,
-      roughness: 0.88,
-      metalness: 0.02,
+      color: 0xdcd7cb,
+      roughness: 0.72,
+      metalness: 0.04,
     });
     const holdingWalkwayMat = new THREE.MeshStandardMaterial({
-      color: 0xaaa79e,
-      roughness: 0.88,
-      metalness: 0.02,
+      color: 0xdcd7cb,
+      roughness: 0.72,
+      metalness: 0.04,
     });
 
     const navGraph = buildCampusNavGraph(this.rooms);
@@ -1059,20 +1323,24 @@ export class ThreeOfficeScene {
     rugShape.lineTo(-rugWidth / 2, -rugDepth / 2 + radius);
     rugShape.quadraticCurveTo(-rugWidth / 2, -rugDepth / 2, -rugWidth / 2 + radius, -rugDepth / 2);
     const finishColors: Record<NonNullable<OfficeRoomConfig['floorFinish']>, number> = {
-      'acoustic-carpet': new THREE.Color(room.color).lerp(new THREE.Color('#c5c1b7'), 0.76).getHex(),
-      'hardwood-walnut': 0x8c7660,
-      'polished-terrazzo': 0x9c9991,
-      'high-security-frosted': 0x9ba79c,
+      'acoustic-carpet': new THREE.Color(room.color).lerp(new THREE.Color('#1e293b'), 0.52).getHex(),
+      'hardwood-walnut': 0x5a4233,
+      'polished-terrazzo': 0x7c8594,
+      'high-security-frosted': 0x4f6560,
     };
     const rug = new THREE.Mesh(
-      new THREE.ShapeGeometry(rugShape),
+      new THREE.ExtrudeGeometry(rugShape, {
+        depth: 0.016,
+        bevelEnabled: true,
+        bevelSegments: 2,
+        bevelSize: 0.012,
+        bevelThickness: 0.008,
+      }),
       new THREE.MeshStandardMaterial({
         map: this.furniturePool.carpetTexture,
         color: finishColors[room.floorFinish ?? 'acoustic-carpet'],
-        roughness: 0.94,
-        metalness: 0.01,
-        transparent: true,
-        opacity: 0.68,
+        roughness: 0.82,
+        metalness: 0.05,
       }),
     );
     rug.name = 'neighborhood-soft-finish';
@@ -1161,13 +1429,45 @@ export class ThreeOfficeScene {
         grommet.position.set(0.32, 0.45, -0.15);
         deskGroup.add(grommet);
 
+        // Leather desk blotter pad
+        const deskPad = new THREE.Mesh(
+          new THREE.BoxGeometry(0.56, 0.005, 0.26),
+          this.furniturePool.deskTrimMat
+        );
+        deskPad.position.set(0.04, 0.472, 0.06);
+        deskGroup.add(deskPad);
+
         const keyboard = new THREE.Mesh(this.furniturePool.keyboardGeo, this.furniturePool.keyboardMat);
-        keyboard.position.set(-0.04, 0.48, 0.1);
+        keyboard.position.set(-0.04, 0.485, 0.08);
         deskGroup.add(keyboard);
 
         const mouse = new THREE.Mesh(this.furniturePool.mouseGeo, this.furniturePool.keyboardMat);
-        mouse.position.set(0.2, 0.48, 0.1);
+        mouse.position.set(0.2, 0.485, 0.08);
         deskGroup.add(mouse);
+
+        // Modesty panel and cable raceway under desk
+        const modesty = new THREE.Mesh(
+          new THREE.BoxGeometry(0.78, 0.18, 0.02),
+          this.furniturePool.deskTrimMat
+        );
+        modesty.position.set(0, 0.24, -0.16);
+        deskGroup.add(modesty);
+
+        // Under-desk mobile drawer pedestal (cajonera)
+        const pedestal = new THREE.Mesh(
+          new THREE.BoxGeometry(0.22, 0.3, 0.34),
+          this.furniturePool.metalLegMat
+        );
+        pedestal.position.set(0.26, 0.16, 0);
+        deskGroup.add(pedestal);
+
+        // Ceramic coffee tumbler on desk
+        const cup = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.026, 0.022, 0.065, 10),
+          this.furniturePool.plantPotMat
+        );
+        cup.position.set(-0.35, 0.5, 0.1);
+        deskGroup.add(cup);
       } else {
         // Unassigned Holding Station: Standby terminal in sleep mode with operational prompt
         const standbyMat = new THREE.MeshBasicMaterial({ map: this.furniturePool.terminalTexture });
@@ -1202,6 +1502,16 @@ export class ThreeOfficeScene {
     base.position.y = 0.03;
     chair.add(base);
 
+    // 5-star caster wheels
+    const casterGeo = new THREE.SphereGeometry(0.02, 6, 6);
+    const casterMat = this.furniturePool.deskTrimMat;
+    for (let i = 0; i < 5; i++) {
+      const angle = (i / 5) * Math.PI * 2;
+      const caster = new THREE.Mesh(casterGeo, casterMat);
+      caster.position.set(Math.cos(angle) * 0.17, 0.02, Math.sin(angle) * 0.17);
+      chair.add(caster);
+    }
+
     const stem = new THREE.Mesh(this.furniturePool.chairStemGeo, this.furniturePool.metalLegMat);
     stem.position.y = 0.14;
     chair.add(stem);
@@ -1215,6 +1525,16 @@ export class ThreeOfficeScene {
     back.position.set(0, 0.46, -0.15);
     back.castShadow = true;
     chair.add(back);
+
+    // Lumbar support cushion
+    const lumbar = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.08, 0.04), this.furniturePool.chairCushionMat);
+    lumbar.position.set(0, 0.38, -0.12);
+    chair.add(lumbar);
+
+    // Ergonomic headrest
+    const headrest = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.09, 0.04), this.furniturePool.chairCushionMat);
+    headrest.position.set(0, 0.67, -0.16);
+    chair.add(headrest);
 
     const leftArm = new THREE.Mesh(this.furniturePool.chairArmGeo, this.furniturePool.metalLegMat);
     leftArm.position.set(-0.17, 0.34, -0.02);
@@ -1404,7 +1724,8 @@ export class ThreeOfficeScene {
       });
 
       const agentGroup = this.buildAgentAvatar(agent, placement.activity);
-      agentGroup.position.set(startX, 0.37, startZ);
+      const startY = placement.isSeated ? 0.37 : 0.02;
+      agentGroup.position.set(startX, startY, startZ);
       const parts = agentGroup.userData.parts as AvatarSemanticParts;
       if (parts?.characterRig) {
         parts.characterRig.rotation.y = startAngle;
@@ -1876,8 +2197,8 @@ export class ThreeOfficeScene {
     const bounds = computeCampusBounds(this.rooms);
     this.cameraAngle = 35;
     this.desiredAngle = 35;
-    this.cameraElevation = 42;
-    this.desiredElevation = 42;
+    this.cameraElevation = 38;
+    this.desiredElevation = 38;
     this.desiredDistance = this.computeOverviewDistance(bounds, this.camera.aspect);
     this.desiredTarget.set(bounds.centerX, 0, bounds.centerZ);
 
@@ -2393,6 +2714,8 @@ export class ThreeOfficeScene {
 
     // 2. Agent Animations (Preserving Defect 2 contract on children[1] + Articulating characterRig)
     if (!this.options.reducedMotion) {
+      const dt = Math.min(0.05, Math.max(0.008, this.lastFrameIntervalMs * 0.001));
+
       this.ambientNpcMeshes.forEach((mesh, npcId) => {
         const serverTarget = this.ambientNpcTargets.get(npcId);
         if (!serverTarget) return;
@@ -2416,24 +2739,83 @@ export class ThreeOfficeScene {
         if (runner && time < this.npcInteractionUntil && this.npcConversationAgentId) {
           stopAndFace = this.agentMeshes.get(this.npcConversationAgentId);
         }
-        const targetX = stopAndFace ? mesh.position.x : serverTarget.x;
-        const targetZ = stopAndFace ? mesh.position.z : serverTarget.z;
-        mesh.position.x += (targetX - mesh.position.x) * 0.16;
-        mesh.position.z += (targetZ - mesh.position.z) * 0.16;
-        const faceTarget = stopAndFace
-          ? Math.atan2(stopAndFace.position.x - mesh.position.x, stopAndFace.position.z - mesh.position.z)
-          : serverTarget.facing;
-        mesh.rotation.y += Math.atan2(Math.sin(faceTarget - mesh.rotation.y), Math.cos(faceTarget - mesh.rotation.y)) * 0.18;
-        const isMoving = !stopAndFace && Math.hypot(targetX - mesh.position.x, targetZ - mesh.position.z) > 0.02;
+
+        const currentX = mesh.position.x;
+        const currentZ = mesh.position.z;
+        const targetX = stopAndFace ? currentX : serverTarget.x;
+        const targetZ = stopAndFace ? currentZ : serverTarget.z;
+
+        // Dynamic obstacle avoidance forces (steer smoothly around other NPCs, agents, and columns)
+        let avoidX = 0;
+        let avoidZ = 0;
+        if (!stopAndFace) {
+          for (const [otherId, otherMesh] of this.ambientNpcMeshes) {
+            if (otherId === npcId) continue;
+            const dist = Math.hypot(currentX - otherMesh.position.x, currentZ - otherMesh.position.z);
+            if (dist < 1.15 && dist > 0.01) {
+              const push = (1.15 - dist) / dist;
+              avoidX += (currentX - otherMesh.position.x) * push * 1.2;
+              avoidZ += (currentZ - otherMesh.position.z) * push * 1.2;
+            }
+          }
+          for (const [agentId, agentMesh] of this.agentMeshes) {
+            if (agentId === this.npcConversationAgentId && time < this.npcInteractionUntil) continue;
+            const dist = Math.hypot(currentX - agentMesh.position.x, currentZ - agentMesh.position.z);
+            if (dist < 1.15 && dist > 0.01) {
+              const push = (1.15 - dist) / dist;
+              avoidX += (currentX - agentMesh.position.x) * push * 1.2;
+              avoidZ += (currentZ - agentMesh.position.z) * push * 1.2;
+            }
+          }
+          for (const [cx, cz] of this.structuralColumnPositions) {
+            const dist = Math.hypot(currentX - cx, currentZ - cz);
+            if (dist < 0.85 && dist > 0.01) {
+              const push = (0.85 - dist) / dist;
+              avoidX += (currentX - cx) * push * 1.5;
+              avoidZ += (currentZ - cz) * push * 1.5;
+            }
+          }
+        }
+
+        const dx = targetX - currentX;
+        const dz = targetZ - currentZ;
+        const targetDist = Math.hypot(dx, dz);
+
+        let isMoving = false;
+        if (!stopAndFace && targetDist > 0.04) {
+          isMoving = true;
+          const walkSpeed = 1.25; // Continuous natural human stride speed (1.25 m/s)
+          let dirX = dx / targetDist + avoidX;
+          let dirZ = dz / targetDist + avoidZ;
+          const dirLen = Math.hypot(dirX, dirZ);
+          if (dirLen > 0.001) {
+            dirX /= dirLen;
+            dirZ /= dirLen;
+          }
+          const stepDist = Math.min(targetDist, walkSpeed * dt);
+          mesh.position.x += dirX * stepDist;
+          mesh.position.z += dirZ * stepDist;
+
+          const moveHeading = Math.atan2(dirX, dirZ);
+          const angleDiff = Math.atan2(Math.sin(moveHeading - mesh.rotation.y), Math.cos(moveHeading - mesh.rotation.y));
+          mesh.rotation.y += angleDiff * Math.min(1.0, 8.0 * dt);
+        } else {
+          const faceTarget = stopAndFace
+            ? Math.atan2(stopAndFace.position.x - mesh.position.x, stopAndFace.position.z - mesh.position.z)
+            : serverTarget.facing;
+          const angleDiff = Math.atan2(Math.sin(faceTarget - mesh.rotation.y), Math.cos(faceTarget - mesh.rotation.y));
+          mesh.rotation.y += angleDiff * Math.min(1.0, 5.0 * dt);
+        }
+
         mesh.userData.parts?.forEach((part: THREE.Object3D, index: number) => {
           if (!isMoving || stopAndFace) {
             part.rotation.x = 0;
           } else if (index < 2) {
             // Legs alternating stride
-            part.rotation.x = Math.sin(time * 0.012 + (index === 0 ? 0 : Math.PI)) * 0.36;
+            part.rotation.x = Math.sin(time * 0.01 + (index === 0 ? 0 : Math.PI)) * 0.38;
           } else {
             // Arms alternating counter-swing
-            part.rotation.x = Math.sin(time * 0.012 + (index === 2 ? Math.PI : 0)) * 0.26;
+            part.rotation.x = Math.sin(time * 0.01 + (index === 2 ? Math.PI : 0)) * 0.28;
           }
         });
       });
@@ -2454,11 +2836,50 @@ export class ThreeOfficeScene {
             : serverPosition.facing,
         } : undefined;
 
+        // Obstacle avoidance for walking agents
+        let obstacleAvoidance: { x: number; z: number } | undefined;
+        const activity = runtime.placement.activity;
+        if (activity.kind === 'WALKING' && !authoritativePosition) {
+          let ax = 0;
+          let az = 0;
+          const curX = group.position.x;
+          const curZ = group.position.z;
+          for (const [otherId, otherGroup] of this.agentMeshes) {
+            if (otherId === agentId) continue;
+            const d = Math.hypot(curX - otherGroup.position.x, curZ - otherGroup.position.z);
+            if (d < 1.1 && d > 0.01) {
+              const push = (1.1 - d) / d;
+              ax += (curX - otherGroup.position.x) * push * 0.8;
+              az += (curZ - otherGroup.position.z) * push * 0.8;
+            }
+          }
+          for (const [, npcMesh] of this.ambientNpcMeshes) {
+            const d = Math.hypot(curX - npcMesh.position.x, curZ - npcMesh.position.z);
+            if (d < 1.1 && d > 0.01) {
+              const push = (1.1 - d) / d;
+              ax += (curX - npcMesh.position.x) * push * 0.8;
+              az += (curZ - npcMesh.position.z) * push * 0.8;
+            }
+          }
+          for (const [cx, cz] of this.structuralColumnPositions) {
+            const d = Math.hypot(curX - cx, curZ - cz);
+            if (d < 0.85 && d > 0.01) {
+              const push = (0.85 - d) / d;
+              ax += (curX - cx) * push * 1.2;
+              az += (curZ - cz) * push * 1.2;
+            }
+          }
+          if (ax !== 0 || az !== 0) {
+            obstacleAvoidance = { x: ax, z: az };
+          }
+        }
+
         stepAvatarKinematics(group, runtime, time, this.cameraDistance, {
           reducedMotion: false,
           sampleWaypointRoute,
           authoritativePosition,
           ambientInteraction: Boolean(conversingWithNpc),
+          obstacleAvoidance,
         });
       });
 
@@ -2570,6 +2991,10 @@ export class ThreeOfficeScene {
     }
 
     this.disposeHierarchy(this.scene);
+    if (this.scene.environment && typeof this.scene.environment.dispose === 'function') {
+      this.scene.environment.dispose();
+      this.scene.environment = null;
+    }
     this.furniturePool.dispose();
     this.avatarPool.dispose();
     if (this.renderer && typeof this.renderer.dispose === 'function') {

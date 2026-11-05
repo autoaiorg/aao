@@ -663,10 +663,10 @@ export class ThreeOfficeScene {
 
   private setupLighting(): void {
     // High-fidelity natural lighting calibrated for ACESFilmic tone mapping and IBL
-    const ambient = new THREE.AmbientLight(0xe2e8f0, 0.45);
+    const ambient = new THREE.AmbientLight(0xe2e8f0, 0.18);
     this.lightsGroup.add(ambient);
 
-    const dirLight = new THREE.DirectionalLight(0xfff7ed, 2.2);
+    const dirLight = new THREE.DirectionalLight(0xfff7ed, 2.4);
     dirLight.position.set(22, 34, 18);
     dirLight.castShadow = this.qualityProfile !== 'low';
     const shadowSize = this.qualityProfile === 'high' ? 2048 : 1024;
@@ -924,14 +924,14 @@ export class ThreeOfficeScene {
     stoneTexture.wrapT = THREE.RepeatWrapping;
     stoneTexture.repeat.set(16, 16);
 
-    // Continuous Corporate Campus Floor Slab with PBR polished terrazzo sheen
+    // Continuous Corporate Campus Floor Slab with PBR honed travertine sheen
     const campusSlab = new THREE.Mesh(
       new THREE.ExtrudeGeometry(outlineShape(outline), { depth: 0.12, bevelEnabled: false }),
       new THREE.MeshStandardMaterial({
         map: stoneTexture,
-        color: 0xf8fafc,
-        roughness: 0.32,
-        metalness: 0.08,
+        color: 0xeae6dc,
+        roughness: 0.28,
+        metalness: 0.04,
       })
     );
     campusSlab.name = 'campus-continuous-floor';
@@ -943,29 +943,41 @@ export class ThreeOfficeScene {
     const groundOutline = computeArchitecturalOutline(this.rooms, OFFICE_ENVELOPE_EXPANSION_METERS + 3);
     const ground = new THREE.Mesh(
       new THREE.ExtrudeGeometry(outlineShape(groundOutline), { depth: 0.4, bevelEnabled: false }),
-      new THREE.MeshStandardMaterial({ color: 0x8c877d, roughness: 0.92, metalness: 0.01 })
+      new THREE.MeshStandardMaterial({ color: 0x3d4348, roughness: 0.85, metalness: 0.12 })
     );
     ground.rotation.x = -Math.PI / 2;
     ground.position.y = -0.46;
     ground.receiveShadow = true;
     this.groundGroup.add(ground);
 
-    // Architectural exterior plaza / courtyard: grounds the campus in real physical space
+    // Architectural exterior plaza: grounds the campus in physical slate terrace space
     const plazaCanvas = document.createElement('canvas');
-    plazaCanvas.width = 256;
-    plazaCanvas.height = 256;
+    plazaCanvas.width = 512;
+    plazaCanvas.height = 512;
     const pctx = plazaCanvas.getContext('2d');
     if (pctx) {
-      pctx.fillStyle = '#1e293b';
-      pctx.fillRect(0, 0, 256, 256);
-      pctx.strokeStyle = '#334155';
+      pctx.fillStyle = '#0f172a';
+      pctx.fillRect(0, 0, 512, 512);
+      pctx.fillStyle = '#141e33';
+      for (let x = 0; x < 512; x += 128) {
+        for (let y = 0; y < 512; y += 64) {
+          if ((x / 128 + y / 64) % 2 === 0) {
+            pctx.fillRect(x + 2, y + 2, 124, 60);
+          }
+        }
+      }
+      pctx.strokeStyle = '#090d16';
       pctx.lineWidth = 2;
-      for (let i = 0; i <= 256; i += 64) {
+      for (let x = 0; x <= 512; x += 128) {
         pctx.beginPath();
-        pctx.moveTo(i, 0);
-        pctx.lineTo(i, 256);
-        pctx.moveTo(0, i);
-        pctx.lineTo(256, i);
+        pctx.moveTo(x, 0);
+        pctx.lineTo(x, 512);
+        pctx.stroke();
+      }
+      for (let y = 0; y <= 512; y += 64) {
+        pctx.beginPath();
+        pctx.moveTo(0, y);
+        pctx.lineTo(512, y);
         pctx.stroke();
       }
     }
@@ -973,7 +985,7 @@ export class ThreeOfficeScene {
     plazaTex.colorSpace = THREE.SRGBColorSpace;
     plazaTex.wrapS = THREE.RepeatWrapping;
     plazaTex.wrapT = THREE.RepeatWrapping;
-    plazaTex.repeat.set(24, 24);
+    plazaTex.repeat.set(12, 12);
     const exteriorPlaza = new THREE.Mesh(
       new THREE.PlaneGeometry(160, 160),
       new THREE.MeshStandardMaterial({
@@ -987,56 +999,6 @@ export class ThreeOfficeScene {
     exteriorPlaza.position.y = -0.48;
     exteriorPlaza.receiveShadow = true;
     this.groundGroup.add(exteriorPlaza);
-
-    // Distant Cyber-Metropolis Skyline Panorama: grounds the office atop a high-rise tower
-    const skylineGroup = new THREE.Group();
-    skylineGroup.name = 'architectural-metropolis-skyline';
-    const towerMat = new THREE.MeshStandardMaterial({
-      color: 0x0f172a,
-      roughness: 0.35,
-      metalness: 0.85,
-    });
-    const towerLitWindowMat = new THREE.MeshStandardMaterial({
-      color: 0x1e293b,
-      emissive: 0x38bdf8,
-      emissiveIntensity: 0.65,
-      roughness: 0.2,
-      metalness: 0.9,
-    });
-    const towerWarmLitMat = new THREE.MeshStandardMaterial({
-      color: 0x1e293b,
-      emissive: 0xffedd5,
-      emissiveIntensity: 0.75,
-      roughness: 0.2,
-      metalness: 0.9,
-    });
-    const beaconMat = new THREE.MeshBasicMaterial({ color: 0xef4444 });
-
-    // Procedural skyscraper towers along the horizon
-    const skylineDist = 65;
-    for (let i = 0; i < 18; i++) {
-      const angle = -Math.PI * 0.85 + (i / 17) * Math.PI * 0.7;
-      const dist = skylineDist + ((i * 17) % 15);
-      const tx = Math.cos(angle) * dist;
-      const tz = Math.sin(angle) * dist;
-      const height = 18 + ((i * 13) % 32);
-      const width = 8 + ((i * 7) % 10);
-      const depth = 8 + ((i * 11) % 10);
-
-      const tower = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), (i % 2 === 0) ? towerLitWindowMat : towerWarmLitMat);
-      tower.position.set(tx, height / 2 - 12, tz);
-      skylineGroup.add(tower);
-
-      // Rooftop crown spire + red aircraft warning beacon
-      const spire = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.4, 4, 6), towerMat);
-      spire.position.set(tx, height - 10, tz);
-      skylineGroup.add(spire);
-
-      const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.25, 6, 6), beaconMat);
-      beacon.position.set(tx, height - 8, tz);
-      skylineGroup.add(beacon);
-    }
-    this.groundGroup.add(skylineGroup);
 
     // Outdoor terrace perimeter glass railing & landscape planters
     const railingGroup = new THREE.Group();
@@ -1269,14 +1231,14 @@ export class ThreeOfficeScene {
 
   private buildWalkways(): void {
     const walkwayMat = new THREE.MeshStandardMaterial({
-      color: 0xaaa79e,
-      roughness: 0.88,
-      metalness: 0.02,
+      color: 0xdcd7cb,
+      roughness: 0.72,
+      metalness: 0.04,
     });
     const holdingWalkwayMat = new THREE.MeshStandardMaterial({
-      color: 0xaaa79e,
-      roughness: 0.88,
-      metalness: 0.02,
+      color: 0xdcd7cb,
+      roughness: 0.72,
+      metalness: 0.04,
     });
 
     const navGraph = buildCampusNavGraph(this.rooms);
@@ -1762,7 +1724,8 @@ export class ThreeOfficeScene {
       });
 
       const agentGroup = this.buildAgentAvatar(agent, placement.activity);
-      agentGroup.position.set(startX, 0.37, startZ);
+      const startY = placement.isSeated ? 0.37 : 0.02;
+      agentGroup.position.set(startX, startY, startZ);
       const parts = agentGroup.userData.parts as AvatarSemanticParts;
       if (parts?.characterRig) {
         parts.characterRig.rotation.y = startAngle;

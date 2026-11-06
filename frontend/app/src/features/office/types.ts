@@ -18,7 +18,7 @@ import type { AaoRoutinePort } from '../../data/ports/AaoRoutinePort';
 
 export type OfficeViewMode = '3d' | '2d';
 export type OfficeLayoutMode = 'hud' | 'classic';
-export type OfficeCameraPreset = 'overview' | 'isometric' | 'top-down' | 'agent-focus';
+export type OfficeCameraPreset = 'overview' | 'isometric' | 'top-down' | 'agent-focus' | 'reception';
 export type OfficeBottomDeckState = 'minimized' | 'docked' | 'maximized';
 export type OfficeGraphicsQuality = 'low' | 'balanced' | 'high';
 export type OfficeLabelLodTier = 'overview' | 'department' | 'agent';

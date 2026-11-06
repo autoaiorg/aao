@@ -3,13 +3,14 @@ import path from 'path';
 import fs from 'fs';
 
 test('Capture real screenshots of F4.7 and F4.8 Office', async ({ page }) => {
-  // This capture exercises WebGL scene initialization and post-selection camera
-  // interaction; its real-browser cost exceeds Playwright's 30s default here.
-  test.setTimeout(90_000);
+  // This capture exercises WebGL scene initialization, multi-view camera presets,
+  // HUD transitions and post-selection camera interaction; give ample timeout for 8+ frames.
+  test.setTimeout(150_000);
   // Match a usable desktop viewport so the actual WebGL area, not just the HUD,
   // occupies a meaningful portion of the evidence frame.
   await page.setViewportSize({ width: 1600, height: 1000 });
-  const screenshotsDir = path.resolve(process.cwd(), 'docs/screenshots');
+  const targetDir = path.resolve(process.cwd(), 'frontend/app/docs/screenshots');
+  const screenshotsDir = fs.existsSync(targetDir) ? targetDir : path.resolve(process.cwd(), 'docs/screenshots');
   const v42EvidenceDir = path.join(screenshotsDir, 'v42-comparison');
   if (!fs.existsSync(screenshotsDir)) {
     fs.mkdirSync(screenshotsDir, { recursive: true });
@@ -105,4 +106,52 @@ test('Capture real screenshots of F4.7 and F4.8 Office', async ({ page }) => {
   await plan2dBtn.click();
   await page.waitForTimeout(500);
   await page.screenshot({ path: path.join(screenshotsDir, '04-office-2d-plan.png'), fullPage: false });
+
+  // Switch back to 3D View to capture Top-Down and Tactical HUD evidence
+  const view3dBtn = toolbar.getByRole('button', { name: /Vista 3D/i });
+  await view3dBtn.click();
+  await page.waitForTimeout(800);
+
+  // Switch to Video Game HUD layout to exercise the full spatial interface
+  const hudButton = page.getByRole('button', { name: /Cambiar a HUD Videojuego/i });
+  if (await hudButton.isVisible()) {
+    await hudButton.click();
+    await page.waitForTimeout(1000);
+    await page.screenshot({
+      path: path.join(v42EvidenceDir, 'office-tactical-hud-deck.png'),
+      fullPage: false,
+    });
+  }
+
+  // Expand controls drawer if collapsed
+  const controlsDrawer = page.getByRole('button', { name: /Controles/i });
+  if (await controlsDrawer.isVisible()) {
+    const isExpanded = await controlsDrawer.getAttribute('aria-expanded');
+    if (isExpanded === 'false') {
+      await controlsDrawer.click();
+      await page.waitForTimeout(400);
+    }
+  }
+
+  // Exercise Reception camera preset if available in the top ribbon
+  const receptionPresetBtn = page.getByRole('button', { name: /Recepción/i });
+  if (await receptionPresetBtn.isVisible()) {
+    await receptionPresetBtn.click();
+    await page.waitForTimeout(1200);
+    await page.screenshot({
+      path: path.join(v42EvidenceDir, 'office-reception-arrival.png'),
+      fullPage: false,
+    });
+  }
+
+  // Exercise Top-Down camera preset
+  const topDownPresetBtn = page.getByRole('button', { name: /Cenital/i });
+  if (await topDownPresetBtn.isVisible()) {
+    await topDownPresetBtn.click();
+    await page.waitForTimeout(1200);
+    await page.screenshot({
+      path: path.join(v42EvidenceDir, 'office-topdown-tactical.png'),
+      fullPage: false,
+    });
+  }
 });
